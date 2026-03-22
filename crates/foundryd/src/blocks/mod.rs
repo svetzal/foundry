@@ -5,6 +5,7 @@ mod install;
 mod release;
 mod remediate;
 mod scan;
+mod validate;
 
 pub use audit::{AuditMainBranch, AuditReleaseTag};
 pub use git_ops::CommitAndPush;
@@ -13,3 +14,4 @@ pub use install::InstallLocally;
 pub use release::{CutRelease, WatchPipeline};
 pub use remediate::RemediateVulnerability;
 pub use scan::ScanDependencies;
+pub use validate::ValidateProject;

@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use foundry_core::registry::Registry;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
 mod service;
+pub mod shell;
 mod trace_store;
 
 pub mod proto {
@@ -21,7 +23,11 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
+    // Load registry from FOUNDRY_REGISTRY_PATH if set, otherwise use an empty registry.
+    let registry: Arc<Registry> = Arc::new(Registry::new());
+
     let mut engine = engine::Engine::new();
+    engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
     engine.register(Box::new(blocks::ScanDependencies));
