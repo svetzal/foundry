@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
+
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -37,6 +39,8 @@ pub struct ProcessResult {
 pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
     event_writer: Option<Arc<EventWriter>>,
+    /// Optional broadcast channel for real-time event streaming to Watch clients.
+    event_tx: Option<broadcast::Sender<Event>>,
 }
 
 /// Execute a block with retry logic, sleeping `policy.backoff` between attempts.
@@ -83,6 +87,7 @@ impl Engine {
         Self {
             blocks: vec![],
             event_writer: None,
+            event_tx: None,
         }
     }
 
@@ -91,6 +96,12 @@ impl Engine {
     /// never interrupt event processing.
     pub fn with_event_writer(mut self, writer: Arc<EventWriter>) -> Self {
         self.event_writer = Some(writer);
+        self
+    }
+
+    /// Attach a broadcast sender so events are pushed to Watch subscribers in real time.
+    pub fn with_event_broadcaster(mut self, tx: broadcast::Sender<Event>) -> Self {
+        self.event_tx = Some(tx);
         self
     }
 
@@ -146,6 +157,10 @@ impl Engine {
                                 );
                             }
                         }
+                        // Broadcast each emitted event in real time to Watch subscribers.
+                        if let Some(tx) = &self.event_tx {
+                            let _ = tx.send(emitted.clone()); // No receivers is normal.
+                        }
                         emitted_ids.push(emitted.id.clone());
                         all_events.push(emitted.clone());
                         queue.push(emitted);
@@ -199,6 +214,11 @@ impl Engine {
             if let Err(e) = writer.write(&event) {
                 tracing::warn!(error = %e, "failed to write root event to JSONL");
             }
+        }
+
+        // Broadcast the root event immediately so Watch clients see it in real time.
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event.clone()); // No receivers is normal — not an error.
         }
 
         let mut all_events = vec![event.clone()];

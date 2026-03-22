@@ -46,10 +46,11 @@ enum Commands {
         workflow_id: Option<String>,
     },
 
-    /// Stream live workflow updates
+    /// Stream live events in real-time
     Watch {
-        /// Specific workflow ID (omit for all active)
-        workflow_id: Option<String>,
+        /// Filter by project name (omit for all projects)
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// View the trace of a completed event chain
@@ -82,7 +83,7 @@ async fn main() -> Result<()> {
             payload,
         } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload).await,
         Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
-        Commands::Watch { workflow_id } => commands::watch(&cli.addr, workflow_id).await,
+        Commands::Watch { project } => commands::watch(&cli.addr, project).await,
         Commands::Trace { event_id } => commands::trace(&cli.addr, &event_id).await,
         Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
     }

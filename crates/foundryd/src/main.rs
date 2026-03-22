@@ -55,7 +55,11 @@ async fn main() -> Result<()> {
     });
     let event_writer = Arc::new(event_writer::EventWriter::new(&events_dir));
 
-    let mut engine = engine::Engine::new().with_event_writer(event_writer);
+    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+
+    let mut engine = engine::Engine::new()
+        .with_event_writer(event_writer)
+        .with_event_broadcaster(event_tx.clone());
     engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
@@ -68,16 +72,11 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::WatchPipeline::stub()));
     engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
-    engine.register(Box::new(blocks::RemediateVulnerability::new(registry.clone())));
-    engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
-    engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
-    engine.register(Box::new(blocks::WatchPipeline::stub()));
-    engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
     engine.register(Box::new(blocks::RunHoneMaintain));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
-    let service = service::FoundryService::new(engine, trace_store);
+    let service = service::FoundryService::new(engine, trace_store, event_tx);
 
     let addr = "[::1]:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");
