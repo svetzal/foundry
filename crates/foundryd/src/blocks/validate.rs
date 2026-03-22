@@ -138,7 +138,7 @@ impl TaskBlock for ValidateProject {
             };
 
             let path = Path::new(&entry.path);
-            let expected_branch = entry.branch.clone().unwrap_or_else(|| "main".to_string());
+            let expected_branch = entry.branch.clone();
 
             // 1. Directory must exist.
             if !path.exists() {
@@ -190,15 +190,23 @@ mod tests {
     }
 
     fn make_registry(entries: Vec<ProjectEntry>) -> Arc<Registry> {
-        Arc::new(Registry::from_entries(entries))
+        Arc::new(Registry {
+            version: 2,
+            projects: entries,
+        })
     }
 
     fn active_entry(name: &str, path: &str) -> ProjectEntry {
         ProjectEntry {
             name: name.to_string(),
             path: path.to_string(),
-            branch: Some("main".to_string()),
-            skip: false,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }
     }
 
@@ -206,8 +214,13 @@ mod tests {
         ProjectEntry {
             name: name.to_string(),
             path: path.to_string(),
-            branch: Some("main".to_string()),
-            skip: true,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(true),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }
     }
 
@@ -295,8 +308,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "workspace".to_string(),
             path: repo_root.to_string_lossy().to_string(),
-            branch: Some(current_branch),
-            skip: false,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: current_branch,
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("workspace");
@@ -319,8 +337,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "workspace".to_string(),
             path: repo_root.to_string_lossy().to_string(),
-            branch: Some("branch-that-does-not-exist-xyzzy".to_string()),
-            skip: false,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "branch-that-does-not-exist-xyzzy".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("workspace");
@@ -367,8 +390,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "test-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            skip: false,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");
@@ -391,8 +419,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "test-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            skip: false,
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");

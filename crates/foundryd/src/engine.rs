@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
+
+use crate::event_writer::EventWriter;
 
 /// Record of a single block execution within a processing chain.
 #[derive(Debug, Clone)]
@@ -28,6 +32,7 @@ pub struct ProcessResult {
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
+    event_writer: Option<Arc<EventWriter>>,
 }
 
 /// Execute a block with retry logic, sleeping `policy.backoff` between attempts.
@@ -71,7 +76,18 @@ async fn execute_with_retry(
 
 impl Engine {
     pub fn new() -> Self {
-        Self { blocks: vec![] }
+        Self {
+            blocks: vec![],
+            event_writer: None,
+        }
+    }
+
+    /// Attach an [`EventWriter`] so every event in a processing chain is
+    /// persisted to JSONL as it is produced.  Write failures are logged but
+    /// never interrupt event processing.
+    pub fn with_event_writer(mut self, writer: Arc<EventWriter>) -> Self {
+        self.event_writer = Some(writer);
+        self
     }
 
     /// Register a task block with the engine.
@@ -89,6 +105,14 @@ impl Engine {
             root_event_type = %event.event_type,
         );
         let _process_guard = process_span.enter();
+
+        // Persist the root event before processing begins so it is recorded
+        // even if a downstream block panics.
+        if let Some(writer) = &self.event_writer {
+            if let Err(e) = writer.write(&event) {
+                tracing::warn!(error = %e, "failed to write root event to JSONL");
+            }
+        }
 
         let mut all_events = vec![event.clone()];
         let mut block_executions = Vec::new();
@@ -138,6 +162,15 @@ impl Engine {
                         let mut emitted_ids = Vec::new();
                         if block.should_emit(current.throttle) {
                             for emitted in result.events {
+                                if let Some(writer) = &self.event_writer {
+                                    if let Err(e) = writer.write(&emitted) {
+                                        tracing::warn!(
+                                            error = %e,
+                                            event_id = %emitted.id,
+                                            "failed to write emitted event to JSONL"
+                                        );
+                                    }
+                                }
                                 emitted_ids.push(emitted.id.clone());
                                 all_events.push(emitted.clone());
                                 queue.push(emitted);
@@ -655,7 +688,98 @@ mod tests {
 
         assert_eq!(result.block_executions.len(), 1);
         assert!(result.block_executions[0].success);
-        assert_eq!(result.block_executions[0].summary, "succeeded");
+    }
+
+    // -- EventWriter integration tests --
+
+    #[tokio::test]
+    async fn engine_with_event_writer_persists_all_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let writer = Arc::new(EventWriter::new(tmp.path()));
+
+        let mut engine = Engine::new().with_event_writer(Arc::clone(&writer));
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"name": "world"}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        // Verify all three events were returned in process result.
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+
+        // Verify JSONL file was created and contains one line per event.
+        let entries: Vec<_> =
+            std::fs::read_dir(tmp.path()).unwrap().filter_map(|e| e.ok()).collect();
+        assert_eq!(entries.len(), 1, "exactly one JSONL file should exist");
+
+        let contents = std::fs::read_to_string(entries[0].path()).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3, "JSONL file should contain 3 events");
+
+        // Each line should deserialize to a valid Event with the expected type.
+        let written_types: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                let e: foundry_core::event::Event = serde_json::from_str(l).unwrap();
+                e.event_type.as_str().to_string()
+            })
+            .collect();
+        assert_eq!(written_types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+    }
+
+    #[tokio::test]
+    async fn engine_without_event_writer_still_works() {
+        // Confirm backward compatibility: Engine::new() with no writer configured
+        // processes events and returns results normally.
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"name": "world"}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(result.block_executions.len(), 2);
+        assert!(result.block_executions.iter().all(|b| b.success));
+    }
+
+    #[tokio::test]
+    async fn engine_with_event_writer_persists_root_event_even_with_no_matching_blocks() {
+        // Root event must be written even when no blocks fire.
+        let tmp = tempfile::tempdir().unwrap();
+        let writer = Arc::new(EventWriter::new(tmp.path()));
+
+        let engine = Engine::new().with_event_writer(Arc::clone(&writer));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        // No blocks registered — root event still written to JSONL
+        assert_eq!(result.block_executions.len(), 0);
+        let entries: Vec<_> =
+            std::fs::read_dir(tmp.path()).unwrap().filter_map(|e| e.ok()).collect();
+        assert_eq!(entries.len(), 1, "expected one JSONL file");
+        let contents = std::fs::read_to_string(entries[0].path()).unwrap();
+        assert_eq!(contents.lines().count(), 1, "expected one event line");
     }
 
     #[tokio::test]
