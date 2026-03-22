@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 mod blocks;
 mod engine;
 mod event_writer;
+mod orchestrator;
 mod service;
 mod shell;
 #[allow(dead_code)]
@@ -31,7 +32,7 @@ async fn main() -> Result<()> {
         format!("{home}/.foundry/registry.json")
     });
 
-    let _registry = match foundry_core::registry::Registry::load(std::path::Path::new(
+    let registry = match foundry_core::registry::Registry::load(std::path::Path::new(
         &registry_path,
     )) {
         Ok(r) => {
@@ -47,7 +48,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    let mut engine = engine::Engine::new();
+    let events_dir = env::var("FOUNDRY_EVENTS_DIR").unwrap_or_else(|_| {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/.foundry/events")
+    });
+    let event_writer = Arc::new(event_writer::EventWriter::new(&events_dir));
+
+    let mut engine = engine::Engine::new().with_event_writer(event_writer);
+    engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
     engine.register(Box::new(blocks::ScanDependencies));
