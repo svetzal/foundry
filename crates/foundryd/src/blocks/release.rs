@@ -1,13 +1,33 @@
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::throttle::Throttle;
 
 /// Tags a patch release when the main branch is clean (vulnerability already fixed).
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
 /// Self-filters: only acts when `dirty=false` in the trigger payload.
-pub struct CutRelease;
+///
+/// Invokes the Claude CLI to draft the changelog, bump the version, create
+/// the tag, and push. Requires `AGENTS.md` to exist in the project directory
+/// (Claude Code convention for agentic automation).
+pub struct CutRelease {
+    registry: Arc<Registry>,
+}
+
+impl CutRelease {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+
+    /// Generous timeout for Claude CLI — release tasks can take several minutes.
+    const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
+}
 
 impl TaskBlock for CutRelease {
     fn name(&self) -> &'static str {
@@ -54,21 +74,126 @@ impl TaskBlock for CutRelease {
             .unwrap_or("unknown")
             .to_string();
 
+        let project_path = self.registry.find_project(&project).map(|p| p.path.clone());
+
         tracing::info!(%cve, "cutting patch release");
 
-        Box::pin(async move {
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::AutoReleaseCompleted,
-                    project,
-                    throttle,
-                    serde_json::json!({ "cve": cve, "release": "patch" }),
-                )],
-                success: true,
-                summary: format!("Cut patch release for {cve}"),
-            })
-        })
+        Box::pin(run_release(project, throttle, cve, project_path))
     }
+}
+
+async fn run_release(
+    project: String,
+    throttle: Throttle,
+    cve: String,
+    project_path: Option<String>,
+) -> anyhow::Result<TaskBlockResult> {
+    let Some(path_str) = project_path else {
+        tracing::warn!(project = %project, "project not found in registry, skipping release");
+        return Ok(TaskBlockResult {
+            events: vec![],
+            success: false,
+            summary: format!("Project '{project}' not found in registry"),
+        });
+    };
+
+    let project_dir = Path::new(&path_str);
+
+    // Verify AGENTS.md exists — required by Claude Code for agentic automation.
+    let agents_md = project_dir.join("AGENTS.md");
+    if !agents_md.exists() {
+        tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
+        return Ok(TaskBlockResult {
+            events: vec![],
+            success: false,
+            summary: format!(
+                "AGENTS.md not found at {}; cannot invoke Claude CLI",
+                agents_md.display()
+            ),
+        });
+    }
+
+    let prompt = format!(
+        "Cut a patch release for {project} fixing {cve}. \
+         Create a changelog entry, bump the patch version, tag the release, and push."
+    );
+
+    // CLAUDECODE="" prevents Claude from detecting a nested session and erroring out.
+    let env = vec![("CLAUDECODE".to_string(), String::new())];
+
+    tracing::info!(%project, %cve, "invoking claude CLI for release");
+
+    let run_result = crate::shell::run(
+        project_dir,
+        "claude",
+        &["--print", "--dangerously-skip-permissions", &prompt],
+        Some(&env),
+        Some(CutRelease::CLAUDE_TIMEOUT),
+    )
+    .await;
+
+    let (cli_success, new_tag, cli_summary) = match run_result {
+        Ok(r) if r.success => {
+            let tag = extract_version_tag(&r.stdout);
+            let s = format!(
+                "Cut patch release for {cve}{}",
+                tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
+            );
+            (true, tag, s)
+        }
+        Ok(r) => {
+            tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
+            let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
+            (
+                false,
+                None,
+                format!("Claude CLI exited with code {}; stderr: {first_stderr}", r.exit_code),
+            )
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
+            (false, None, format!("claude CLI unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(
+        project = %project,
+        new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
+        success = cli_success,
+        "release step completed"
+    );
+
+    Ok(TaskBlockResult {
+        events: vec![Event::new(
+            EventType::AutoReleaseCompleted,
+            project,
+            throttle,
+            serde_json::json!({
+                "cve": cve,
+                "release": "patch",
+                "new_tag": new_tag,
+                "success": cli_success,
+            }),
+        )],
+        success: cli_success,
+        summary: cli_summary,
+    })
+}
+
+/// Scan output words for a semver tag of the form `v<major>.<minor>.<patch>`.
+fn extract_version_tag(output: &str) -> Option<String> {
+    for word in output.split_whitespace() {
+        // Strip trailing punctuation before matching.
+        let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+        if w.starts_with('v')
+            && w.len() > 1
+            && w[1..].split('.').count() == 3
+            && w[1..].split('.').all(|part| part.chars().all(char::is_numeric))
+        {
+            return Some(w.to_string());
+        }
+    }
+    None
 }
 
 /// Watches the CI pipeline after a release tag is pushed.
@@ -112,5 +237,113 @@ impl TaskBlock for WatchPipeline {
                 summary: "Release pipeline completed successfully".to_string(),
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_registry() -> Arc<Registry> {
+        Arc::new(Registry::default())
+    }
+
+    fn registry_with_project(name: &str, path: &str, has_agents_md: bool) -> Arc<Registry> {
+        use foundry_core::registry::{ActionFlags, ProjectEntry};
+        use tempfile::TempDir;
+
+        // Create a real temp dir when has_agents_md is requested.
+        // The path parameter is ignored in that case so tests are hermetic.
+        let project_path = if has_agents_md {
+            let dir = TempDir::new().unwrap();
+            let agents_path = dir.path().join("AGENTS.md");
+            std::fs::write(&agents_path, "# Agent guidance").unwrap();
+            // Leak the TempDir so it persists for the test lifetime.
+            let p = dir.path().to_str().unwrap().to_string();
+            std::mem::forget(dir);
+            p
+        } else {
+            path.to_string()
+        };
+
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: name.to_string(),
+                path: project_path,
+                agent: None,
+                repo: None,
+                branch: None,
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+            }],
+        })
+    }
+
+    #[tokio::test]
+    async fn skips_when_dirty() {
+        let block = CutRelease::new(empty_registry());
+        let trigger = Event::new(
+            EventType::MainBranchAudited,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "dirty": true, "cve": "CVE-2026-1234" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("dirty"));
+    }
+
+    #[tokio::test]
+    async fn fails_when_project_not_in_registry() {
+        let block = CutRelease::new(empty_registry());
+        let trigger = Event::new(
+            EventType::MainBranchAudited,
+            "unknown-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-1234" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("not found in registry"));
+    }
+
+    #[tokio::test]
+    async fn fails_when_agents_md_missing() {
+        // Use a path that definitely doesn't have AGENTS.md.
+        let registry = registry_with_project("my-project", "/nonexistent/path", false);
+        let block = CutRelease::new(registry);
+        let trigger = Event::new(
+            EventType::MainBranchAudited,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-1234" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("AGENTS.md not found"));
+    }
+
+    #[test]
+    fn extract_version_tag_finds_semver() {
+        let output = "Release complete! Tagged as v1.2.3 and pushed.";
+        assert_eq!(extract_version_tag(output), Some("v1.2.3".to_string()));
+    }
+
+    #[test]
+    fn extract_version_tag_returns_none_when_absent() {
+        assert_eq!(extract_version_tag("No version info here."), None);
+    }
+
+    #[test]
+    fn extract_version_tag_ignores_non_semver() {
+        assert_eq!(extract_version_tag("version v1.2 released"), None);
     }
 }
