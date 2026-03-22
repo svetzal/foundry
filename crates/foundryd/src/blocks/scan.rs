@@ -7,7 +7,7 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Observer — always runs regardless of throttle.
 ///
 /// Sinks on `ScanRequested` and emits zero or more `VulnerabilityDetected`
-/// events, one per discovered CVE. Downstream blocks (AuditReleaseTag, etc.)
+/// events, one per discovered CVE. Downstream blocks (`AuditReleaseTag`, etc.)
 /// then handle the remediation chain for each vulnerability independently.
 pub struct ScanDependencies;
 
@@ -47,21 +47,13 @@ impl TaskBlock for ScanDependencies {
             "dirty": true,
         })];
 
-        tracing::info!(
-            found = vulnerabilities.len(),
-            "dependency scan complete (stub)"
-        );
+        tracing::info!(found = vulnerabilities.len(), "dependency scan complete (stub)");
 
         Box::pin(async move {
             let events: Vec<Event> = vulnerabilities
                 .into_iter()
                 .map(|payload| {
-                    Event::new(
-                        EventType::VulnerabilityDetected,
-                        project.clone(),
-                        throttle,
-                        payload,
-                    )
+                    Event::new(EventType::VulnerabilityDetected, project.clone(), throttle, payload)
                 })
                 .collect();
 

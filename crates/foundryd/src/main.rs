@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RemediateVulnerability));
     engine.register(Box::new(blocks::CommitAndPush));
     engine.register(Box::new(blocks::CutRelease));
-    engine.register(Box::new(blocks::WatchPipeline));
+    engine.register(Box::new(blocks::WatchPipeline::stub()));
     engine.register(Box::new(blocks::InstallLocally));
 
     let engine = Arc::new(engine);

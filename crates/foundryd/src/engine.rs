@@ -299,7 +299,7 @@ mod tests {
         engine.register(Box::new(crate::blocks::RemediateVulnerability));
         engine.register(Box::new(crate::blocks::CommitAndPush));
         engine.register(Box::new(crate::blocks::CutRelease));
-        engine.register(Box::new(crate::blocks::WatchPipeline));
+        engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
         engine.register(Box::new(crate::blocks::InstallLocally));
         engine
     }
