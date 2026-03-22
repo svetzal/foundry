@@ -169,6 +169,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn event_serializes_to_evt_cli_compatible_schema() {
+        let event = Event::new(
+            EventType::VulnerabilityDetected,
+            "project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+
+        // evt-cli required fields must be present
+        assert!(json.get("id").is_some(), "id field must be present");
+        assert!(
+            json.get("event_type").is_some(),
+            "event_type field must be present (not 'type')"
+        );
+        assert!(json.get("project").is_some(), "project field must be present");
+        assert!(json.get("occurred_at").is_some(), "occurred_at field must be present");
+        assert!(json.get("recorded_at").is_some(), "recorded_at field must be present");
+        assert!(json.get("payload").is_some(), "payload field must be present");
+
+        // event_type must serialize as snake_case string
+        assert_eq!(json["event_type"], "vulnerability_detected");
+
+        // timestamps must be RFC3339 parseable strings
+        let occurred_at = json["occurred_at"].as_str().expect("occurred_at must be a string");
+        chrono::DateTime::parse_from_rfc3339(occurred_at)
+            .expect("occurred_at must be RFC3339 formatted");
+
+        let recorded_at = json["recorded_at"].as_str().expect("recorded_at must be a string");
+        chrono::DateTime::parse_from_rfc3339(recorded_at)
+            .expect("recorded_at must be RFC3339 formatted");
+    }
+
+    #[test]
+    fn all_event_type_variants_serialize_as_snake_case() {
+        let cases = [
+            (EventType::ScanRequested, "scan_requested"),
+            (EventType::VulnerabilityDetected, "vulnerability_detected"),
+            (EventType::MainBranchAudited, "main_branch_audited"),
+            (EventType::RemediationStarted, "remediation_started"),
+            (EventType::RemediationCompleted, "remediation_completed"),
+            (EventType::AutoReleaseTriggered, "auto_release_triggered"),
+            (EventType::AutoReleaseCompleted, "auto_release_completed"),
+            (EventType::ReleasePipelineCompleted, "release_pipeline_completed"),
+            (EventType::LocalInstallCompleted, "local_install_completed"),
+            (EventType::ProjectValidationCompleted, "project_validation_completed"),
+            (EventType::ProjectIterateCompleted, "project_iterate_completed"),
+            (EventType::ProjectMaintainCompleted, "project_maintain_completed"),
+            (EventType::ProjectChangesCommitted, "project_changes_committed"),
+            (EventType::ProjectChangesPushed, "project_changes_pushed"),
+            (EventType::MaintenanceRunStarted, "maintenance_run_started"),
+            (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
+            (EventType::ReleaseTagAudited, "release_tag_audited"),
+            (EventType::GreetRequested, "greet_requested"),
+            (EventType::GreetingComposed, "greeting_composed"),
+            (EventType::GreetingDelivered, "greeting_delivered"),
+        ];
+
+        for (variant, expected) in &cases {
+            let serialized = serde_json::to_value(variant).unwrap();
+            assert_eq!(
+                serialized,
+                serde_json::Value::String((*expected).to_string()),
+                "EventType::{variant:?} should serialize as {expected:?}",
+            );
+        }
+    }
+
+    #[test]
     fn event_id_is_deterministic() {
         let payload = serde_json::json!({"severity": "high"});
         let event_type = EventType::VulnerabilityDetected;

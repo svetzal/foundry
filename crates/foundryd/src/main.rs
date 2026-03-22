@@ -7,6 +7,8 @@ use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
+#[allow(dead_code)]
+mod event_writer;
 mod service;
 mod trace_store;
 
