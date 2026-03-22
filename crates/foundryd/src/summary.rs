@@ -18,18 +18,104 @@ pub(crate) struct ProjectResult {
     pub(crate) duration_secs: Option<u64>,
 }
 
+/// A single release tag audit result.
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseAuditEntry {
+    pub(crate) name: String,
+    pub(crate) tag: String,
+    pub(crate) status: String,
+}
+
+/// A single auto-release result.
+#[derive(Debug, Clone)]
+pub(crate) struct AutoReleaseEntry {
+    pub(crate) name: String,
+    pub(crate) new_tag: Option<String>,
+    pub(crate) success: bool,
+}
+
+/// A single local install result.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalInstallEntry {
+    pub(crate) name: String,
+    pub(crate) method: String,
+    pub(crate) success: bool,
+}
+
 /// Aggregate results for a full maintenance run.
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceRunSummary {
     pub(crate) run_at: DateTime<Utc>,
     pub(crate) total_duration_secs: Option<u64>,
     pub(crate) projects: Vec<ProjectResult>,
+    pub(crate) release_audits: Vec<ReleaseAuditEntry>,
+    pub(crate) auto_releases: Vec<AutoReleaseEntry>,
+    pub(crate) local_installs: Vec<LocalInstallEntry>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
     match secs {
         Some(s) => format!("{s}s"),
         None => "\u{2014}".to_string(),
+    }
+}
+
+fn render_release_audits(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.release_audits.is_empty() {
+        return;
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "## Release Audit").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "| Project | Tag | Status |").unwrap();
+    writeln!(out, "|---------|-----|--------|").unwrap();
+    for entry in &summary.release_audits {
+        let status_icon = if entry.status == "clean" {
+            "\u{2705}"
+        } else {
+            "\u{26a0}\u{fe0f}"
+        };
+        writeln!(out, "| {} | {} | {} {} |", entry.name, entry.tag, status_icon, entry.status)
+            .unwrap();
+    }
+}
+
+fn render_auto_releases(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.auto_releases.is_empty() {
+        return;
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "## Auto-Releases").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "| Project | Tag | Status |").unwrap();
+    writeln!(out, "|---------|-----|--------|").unwrap();
+    for entry in &summary.auto_releases {
+        let status_icon = if entry.success {
+            "\u{2705}"
+        } else {
+            "\u{274c}"
+        };
+        let tag_str = entry.new_tag.as_deref().unwrap_or("\u{2014}");
+        writeln!(out, "| {} | {} | {} |", entry.name, tag_str, status_icon).unwrap();
+    }
+}
+
+fn render_local_installs(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.local_installs.is_empty() {
+        return;
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "## Local Installs").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "| Project | Method | Status |").unwrap();
+    writeln!(out, "|---------|--------|--------|").unwrap();
+    for entry in &summary.local_installs {
+        let status_icon = if entry.success {
+            "\u{2705}"
+        } else {
+            "\u{274c}"
+        };
+        writeln!(out, "| {} | {} | {} |", entry.name, entry.method, status_icon).unwrap();
     }
 }
 
@@ -76,6 +162,10 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
             }
         }
     }
+
+    render_release_audits(summary, &mut out);
+    render_auto_releases(summary, &mut out);
+    render_local_installs(summary, &mut out);
 
     // Timing summary
     let total = summary.projects.len();
@@ -137,6 +227,9 @@ mod tests {
                     duration_secs: Some(45),
                 },
             ],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -170,6 +263,9 @@ mod tests {
                     duration_secs: Some(12),
                 },
             ],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -203,6 +299,9 @@ mod tests {
                     duration_secs: None,
                 },
             ],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -223,6 +322,9 @@ mod tests {
             run_at: fixed_time(),
             total_duration_secs: Some(0),
             projects: vec![],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -244,6 +346,9 @@ mod tests {
                 status: ProjectStatus::Success,
                 duration_secs: Some(10),
             }],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -256,6 +361,9 @@ mod tests {
             run_at: fixed_time(),
             total_duration_secs: None,
             projects: vec![],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -273,6 +381,9 @@ mod tests {
                 status: ProjectStatus::Success,
                 duration_secs: Some(5),
             }],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -290,6 +401,9 @@ mod tests {
                 status: ProjectStatus::Success,
                 duration_secs: Some(3),
             }],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -314,6 +428,9 @@ mod tests {
                     duration_secs: Some(15),
                 },
             ],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
         };
 
         let md = render(&summary);
@@ -322,5 +439,104 @@ mod tests {
         assert!(md.contains("### proj-b"));
         assert!(md.contains("build error"));
         assert!(md.contains("- Failed: 2"));
+    }
+
+    #[test]
+    fn render_release_audit_section() {
+        let summary = MaintenanceRunSummary {
+            run_at: fixed_time(),
+            total_duration_secs: Some(10),
+            projects: vec![],
+            release_audits: vec![
+                ReleaseAuditEntry {
+                    name: "alpha".to_string(),
+                    tag: "v1.0.0".to_string(),
+                    status: "clean".to_string(),
+                },
+                ReleaseAuditEntry {
+                    name: "beta".to_string(),
+                    tag: "v2.1.0".to_string(),
+                    status: "dirty".to_string(),
+                },
+            ],
+            auto_releases: vec![],
+            local_installs: vec![],
+        };
+        let md = render(&summary);
+        assert!(md.contains("## Release Audit"));
+        assert!(md.contains("| alpha | v1.0.0 |"));
+        assert!(md.contains("| beta | v2.1.0 |"));
+        assert!(md.contains("clean"));
+        assert!(md.contains("dirty"));
+    }
+
+    #[test]
+    fn render_auto_releases_section() {
+        let summary = MaintenanceRunSummary {
+            run_at: fixed_time(),
+            total_duration_secs: Some(10),
+            projects: vec![],
+            release_audits: vec![],
+            auto_releases: vec![
+                AutoReleaseEntry {
+                    name: "alpha".to_string(),
+                    new_tag: Some("v1.0.1".to_string()),
+                    success: true,
+                },
+                AutoReleaseEntry {
+                    name: "beta".to_string(),
+                    new_tag: None,
+                    success: false,
+                },
+            ],
+            local_installs: vec![],
+        };
+        let md = render(&summary);
+        assert!(md.contains("## Auto-Releases"));
+        assert!(md.contains("| alpha | v1.0.1 |"));
+        assert!(md.contains("| beta |"));
+    }
+
+    #[test]
+    fn render_local_installs_section() {
+        let summary = MaintenanceRunSummary {
+            run_at: fixed_time(),
+            total_duration_secs: Some(10),
+            projects: vec![],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![
+                LocalInstallEntry {
+                    name: "alpha".to_string(),
+                    method: "cargo".to_string(),
+                    success: true,
+                },
+                LocalInstallEntry {
+                    name: "beta".to_string(),
+                    method: "brew".to_string(),
+                    success: false,
+                },
+            ],
+        };
+        let md = render(&summary);
+        assert!(md.contains("## Local Installs"));
+        assert!(md.contains("| alpha | cargo |"));
+        assert!(md.contains("| beta | brew |"));
+    }
+
+    #[test]
+    fn empty_new_sections_not_rendered() {
+        let summary = MaintenanceRunSummary {
+            run_at: fixed_time(),
+            total_duration_secs: Some(10),
+            projects: vec![],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
+        };
+        let md = render(&summary);
+        assert!(!md.contains("## Release Audit"));
+        assert!(!md.contains("## Auto-Releases"));
+        assert!(!md.contains("## Local Installs"));
     }
 }
