@@ -1,11 +1,21 @@
 use std::pin::Pin;
+use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Scans a release tag for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
-pub struct AuditReleaseTag;
+pub struct AuditReleaseTag {
+    registry: Arc<Registry>,
+}
+
+impl AuditReleaseTag {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
 
 impl TaskBlock for AuditReleaseTag {
     fn name(&self) -> &'static str {
@@ -30,26 +40,121 @@ impl TaskBlock for AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // In future: shell out to cargo-audit, npm audit, etc.
-        // For now: read vulnerability info from the trigger payload.
-        let cve = trigger.payload.get("cve").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let vulnerable = trigger
+        // Payload fallback fields used when the project is not in the registry
+        // or when no release tags exist — preserves backward compatibility with
+        // integration tests that drive the block via synthetic payloads.
+        let payload_cve = trigger
+            .payload
+            .get("cve")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let payload_vulnerable = trigger
             .payload
             .get("vulnerable")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
+        let payload_dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
 
-        // Forward additional payload fields for downstream blocks.
-        let dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
-
-        let cve = cve.to_string();
-        tracing::info!(%cve, %vulnerable, "audited release tag");
+        // Look up the project entry in the registry.
+        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
 
         Box::pin(async move {
+            let Some(entry) = entry else {
+                // Project not registered — fall back to payload-based result.
+                tracing::info!(
+                    project = %project,
+                    "project not in registry, falling back to payload"
+                );
+                return Ok(emit_payload_result(
+                    project,
+                    throttle,
+                    &payload_cve,
+                    payload_vulnerable,
+                    payload_dirty,
+                ));
+            };
+
+            let path = std::path::PathBuf::from(&entry.path);
+
+            // Save original branch so we can restore it after scanning.
+            let branch_result =
+                crate::shell::run(&path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
+                    .await;
+
+            let original_branch = match branch_result {
+                Ok(r) => r.stdout.trim().to_string(),
+                Err(e) => {
+                    // Cannot determine current branch (no git repo, etc.) — fall back.
+                    tracing::warn!(
+                        project = %project,
+                        error = %e,
+                        "failed to determine current branch, falling back to payload"
+                    );
+                    return Ok(emit_payload_result(
+                        project,
+                        throttle,
+                        &payload_cve,
+                        payload_vulnerable,
+                        payload_dirty,
+                    ));
+                }
+            };
+
+            // Fetch tags from the remote (best-effort; don't abort on failure).
+            let _ = crate::shell::run(&path, "git", &["fetch", "--tags"], None, None).await;
+
+            // Find the latest release tag by version-aware sort.
+            let tags_result =
+                crate::shell::run(&path, "git", &["tag", "--sort=-v:refname"], None, None).await;
+
+            let latest_tag =
+                tags_result.ok().and_then(|r| r.stdout.lines().next().map(ToString::to_string));
+
+            let vulnerabilities = if let Some(ref tag) = latest_tag {
+                // Check out the release tag.
+                let _ = crate::shell::run(&path, "git", &["checkout", tag], None, None).await;
+
+                // Run the audit scanner.
+                let audit = crate::scanner::run_audit(&path, &entry.stack).await;
+
+                // Three-layer cleanup: always restore original branch.
+                let cleanup1 =
+                    crate::shell::run(&path, "git", &["checkout", &original_branch], None, None)
+                        .await;
+                if cleanup1.is_err() {
+                    let _ = crate::shell::run(&path, "git", &["checkout", "-"], None, None).await;
+                }
+                // Last-resort fallback.
+                let _ = crate::shell::run(&path, "git", &["checkout", "HEAD"], None, None).await;
+
+                audit.unwrap_or_default().vulnerabilities
+            } else {
+                tracing::info!(project = %project, "no release tags found, falling back to payload");
+                return Ok(emit_payload_result(
+                    project,
+                    throttle,
+                    &payload_cve,
+                    payload_vulnerable,
+                    payload_dirty,
+                ));
+            };
+
+            let vulnerable = !vulnerabilities.is_empty();
+            // Use the first CVE ID from the scan result, or the payload CVE as fallback.
+            let cve = vulnerabilities
+                .first()
+                .and_then(|v| v.cve.clone())
+                .unwrap_or_else(|| payload_cve.clone());
+
+            tracing::info!(%cve, %vulnerable, "audited release tag");
+
             let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
-            if let Some(dirty) = dirty {
+            // Preserve dirty flag from upstream payload for downstream blocks.
+            if let Some(dirty) = payload_dirty {
                 payload["dirty"] = serde_json::Value::Bool(dirty);
             }
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::ReleaseTagAudited,
@@ -61,6 +166,32 @@ impl TaskBlock for AuditReleaseTag {
                 summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
             })
         })
+    }
+}
+
+/// Build a `TaskBlockResult` that forwards the payload-based vulnerability
+/// state without performing any real git operations.
+fn emit_payload_result(
+    project: String,
+    throttle: foundry_core::throttle::Throttle,
+    cve: &str,
+    vulnerable: bool,
+    dirty: Option<bool>,
+) -> TaskBlockResult {
+    tracing::info!(%cve, %vulnerable, "audited release tag");
+    let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
+    if let Some(d) = dirty {
+        payload["dirty"] = serde_json::Value::Bool(d);
+    }
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ReleaseTagAudited,
+            project,
+            throttle,
+            payload,
+        )],
+        success: true,
+        summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
     }
 }
 

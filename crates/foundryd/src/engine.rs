@@ -389,7 +389,7 @@ mod tests {
         });
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies));
-        engine.register(Box::new(crate::blocks::AuditReleaseTag));
+        engine.register(Box::new(crate::blocks::AuditReleaseTag::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::AuditMainBranch));
         engine
             .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
@@ -648,7 +648,7 @@ mod tests {
         }
     }
 
-    /// A block that always returns an Err from execute().
+    /// A block that always returns an `Err` from `execute()`.
     struct AlwaysErrors {
         policy: RetryPolicy,
         call_count: Arc<AtomicU32>,
@@ -740,7 +740,7 @@ mod tests {
 
         // Verify JSONL file was created and contains one line per event.
         let entries: Vec<_> =
-            std::fs::read_dir(tmp.path()).unwrap().filter_map(|e| e.ok()).collect();
+            std::fs::read_dir(tmp.path()).unwrap().filter_map(Result::ok).collect();
         assert_eq!(entries.len(), 1, "exactly one JSONL file should exist");
 
         let contents = std::fs::read_to_string(entries[0].path()).unwrap();
@@ -800,7 +800,7 @@ mod tests {
         // No blocks registered — root event still written to JSONL
         assert_eq!(result.block_executions.len(), 0);
         let entries: Vec<_> =
-            std::fs::read_dir(tmp.path()).unwrap().filter_map(|e| e.ok()).collect();
+            std::fs::read_dir(tmp.path()).unwrap().filter_map(Result::ok).collect();
         assert_eq!(entries.len(), 1, "expected one JSONL file");
         let contents = std::fs::read_to_string(entries[0].path()).unwrap();
         assert_eq!(contents.lines().count(), 1, "expected one event line");

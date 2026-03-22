@@ -225,7 +225,7 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
-        assert_eq!(result.events[0].payload["success"].as_bool().unwrap(), false);
+        assert!(!result.events[0].payload["success"].as_bool().unwrap());
         assert!(result.summary.contains("failed"));
     }
 }
