@@ -95,6 +95,16 @@ pub enum InstallConfig {
     Brew(String),
 }
 
+impl std::fmt::Display for Stack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rust => write!(f, "rust"),
+            Self::Python => write!(f, "python"),
+            Self::TypeScript => write!(f, "typescript"),
+            Self::Elixir => write!(f, "elixir"),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;

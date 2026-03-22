@@ -62,11 +62,11 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::ScanDependencies));
     engine.register(Box::new(blocks::AuditReleaseTag));
     engine.register(Box::new(blocks::AuditMainBranch));
-    engine.register(Box::new(blocks::RemediateVulnerability));
+    engine.register(Box::new(blocks::RemediateVulnerability::new(registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush));
-    engine.register(Box::new(blocks::CutRelease));
+    engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline));
-    engine.register(Box::new(blocks::InstallLocally));
+    engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));

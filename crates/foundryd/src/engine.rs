@@ -364,15 +364,39 @@ mod tests {
     // -- Vulnerability remediation integration tests --
 
     fn vuln_engine() -> Engine {
+        use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
+
+        // CutRelease requires AGENTS.md to exist before invoking Claude.
+        // Leak the temp dir so it outlives the test.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# test").unwrap();
+        let project_path = dir.path().to_str().unwrap().to_string();
+        std::mem::forget(dir);
+
+        let registry = Arc::new(foundry_core::registry::Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: "test-project".to_string(),
+                path: project_path,
+                stack: Stack::Rust,
+                agent: "claude".to_string(),
+                repo: String::new(),
+                branch: "main".to_string(),
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+            }],
+        });
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies));
         engine.register(Box::new(crate::blocks::AuditReleaseTag));
         engine.register(Box::new(crate::blocks::AuditMainBranch));
-        engine.register(Box::new(crate::blocks::RemediateVulnerability));
+        engine
+            .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::CommitAndPush));
-        engine.register(Box::new(crate::blocks::CutRelease));
+        engine.register(Box::new(crate::blocks::CutRelease::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::WatchPipeline));
-        engine.register(Box::new(crate::blocks::InstallLocally));
+        engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));
         engine
     }
 
