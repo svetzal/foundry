@@ -369,9 +369,49 @@ mod tests {
         // CutRelease requires AGENTS.md to exist before invoking Claude.
         // Leak the temp dir so it outlives the test.
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("AGENTS.md"), "# test").unwrap();
         let project_path = dir.path().to_str().unwrap().to_string();
+        // Initialize a git repo with an uncommitted change so CommitAndPush has work to do.
+        let _ = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&project_path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&project_path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&project_path)
+            .output();
+        // Create an initial commit so there's a HEAD reference
+        std::fs::write(dir.path().join("AGENTS.md"), "# test").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&project_path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&project_path)
+            .output();
+        // Set up a local bare repo as remote so git push succeeds
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        let remote_path = remote_dir.path().to_str().unwrap().to_string();
+        let _ = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(&remote_path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&project_path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(&project_path)
+            .output();
+        // Create an uncommitted change so CommitAndPush triggers
+        std::fs::write(dir.path().join("CHANGES.md"), "changes").unwrap();
         std::mem::forget(dir);
+        std::mem::forget(remote_dir);
 
         let registry = Arc::new(foundry_core::registry::Registry {
             version: 2,
@@ -383,7 +423,13 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
-                actions: ActionFlags::default(),
+                actions: ActionFlags {
+                    iterate: false,
+                    maintain: false,
+                    push: true,
+                    audit: false,
+                    release: false,
+                },
                 install: None,
             }],
         });
@@ -393,7 +439,7 @@ mod tests {
         engine.register(Box::new(crate::blocks::AuditMainBranch));
         engine
             .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::CommitAndPush));
+        engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::CutRelease::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
         engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));

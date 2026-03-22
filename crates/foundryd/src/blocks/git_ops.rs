@@ -60,7 +60,7 @@ impl TaskBlock for CommitAndPush {
 
         Box::pin(async move {
             // Resolve the project path and push flag from the registry.
-            let Some(entry) = registry.find_project(&project) else {
+            let Some(entry) = registry.projects.iter().find(|p| p.name == project) else {
                 // Project not in registry — emit stub events for test compatibility.
                 tracing::warn!(
                     project = %project,
@@ -201,7 +201,19 @@ mod tests {
             projects: vec![ProjectEntry {
                 name: name.to_string(),
                 path: path.to_string(),
-                actions: ActionFlags { push },
+                stack: foundry_core::registry::Stack::Rust,
+                agent: String::new(),
+                repo: String::new(),
+                branch: "main".to_string(),
+                skip: Some(false),
+                actions: foundry_core::registry::ActionFlags {
+                    push,
+                    iterate: false,
+                    maintain: false,
+                    audit: false,
+                    release: false,
+                },
+                install: None,
             }],
         })
     }
