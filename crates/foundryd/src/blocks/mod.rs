@@ -1,6 +1,7 @@
 mod audit;
 mod git_ops;
 mod greet;
+mod hone_common;
 mod hone_iterate;
 mod hone_maintain;
 mod install;

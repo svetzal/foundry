@@ -74,8 +74,8 @@ async fn main() -> Result<()> {
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
     // correct sub-workflow via IterationRequested or MaintenanceRequested.
     engine.register(Box::new(blocks::RouteProjectWorkflow));
-    engine.register(Box::new(blocks::RunHoneIterate));
-    engine.register(Box::new(blocks::RunHoneMaintain));
+    engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
+    engine.register(Box::new(blocks::RunHoneMaintain::new(registry.clone())));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));

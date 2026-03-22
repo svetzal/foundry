@@ -1,6 +1,9 @@
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Runs `hone maintain` for a project.
@@ -10,7 +13,15 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// maintain-only path via `RouteProjectWorkflow`, or post-iterate chain via
 /// `RunHoneIterate`) has already been made before this event was emitted.
 /// This block simply runs `hone maintain` and emits `ProjectMaintainCompleted`.
-pub struct RunHoneMaintain;
+pub struct RunHoneMaintain {
+    registry: Arc<Registry>,
+}
+
+impl RunHoneMaintain {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
 
 impl TaskBlock for RunHoneMaintain {
     fn name(&self) -> &'static str {
@@ -33,22 +44,84 @@ impl TaskBlock for RunHoneMaintain {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // TODO: Look up agent and path from registry.
-        // TODO: Run real command: `hone maintain <agent> <path> --json`
-        // The stub unconditionally reports success so the chain can be exercised.
-        tracing::info!(%project, "running hone maintain (stub)");
+        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+
+        tracing::info!(%project, "running hone maintain");
 
         Box::pin(async move {
-            // TODO: Parse real hone JSON output and surface it in the payload.
+            let Some(entry) = entry else {
+                tracing::warn!(project = %project, "project not found in registry, cannot maintain");
+                return Ok(TaskBlockResult {
+                    events: vec![Event::new(
+                        EventType::ProjectMaintainCompleted,
+                        project.clone(),
+                        throttle,
+                        serde_json::json!({ "project": project, "success": false }),
+                    )],
+                    success: false,
+                    summary: format!("Project '{project}' not found in registry"),
+                });
+            };
+
+            let agent = if entry.agent.is_empty() {
+                "claude"
+            } else {
+                &entry.agent
+            };
+            let project_path = &entry.path;
+
+            tracing::info!(
+                project = %project,
+                agent = agent,
+                path = %project_path,
+                "invoking hone maintain"
+            );
+
+            let run_result = crate::shell::run(
+                Path::new(project_path),
+                "hone",
+                &["maintain", agent, project_path, "--json"],
+                None,
+                None,
+            )
+            .await;
+
+            let (success, hone_summary) = match run_result {
+                Ok(result) => {
+                    let s = result.success;
+                    let summary = super::hone_common::parse_hone_summary(&result.stdout, s);
+                    (s, summary)
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "hone not available or failed to spawn");
+                    (false, format!("hone unavailable: {err}"))
+                }
+            };
+
+            tracing::info!(
+                project = %project,
+                success = success,
+                summary = %hone_summary,
+                "hone maintain completed"
+            );
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::ProjectMaintainCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({ "project": project, "success": true }),
+                    serde_json::json!({
+                        "project": project,
+                        "success": success,
+                        "summary": hone_summary,
+                    }),
                 )],
-                success: true,
-                summary: format!("{project}: hone maintain completed (stub)"),
+                success,
+                summary: if success {
+                    format!("{project}: hone maintain completed")
+                } else {
+                    format!("{project}: hone maintain failed: {hone_summary}")
+                },
             })
         })
     }
@@ -56,54 +129,109 @@ impl TaskBlock for RunHoneMaintain {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::task_block::TaskBlock;
+    use std::sync::Arc;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
-    fn maintenance_event() -> Event {
+    use super::RunHoneMaintain;
+
+    fn registry_with_project(name: &str, path: &str, agent: &str) -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: name.to_string(),
+                path: path.to_string(),
+                stack: Stack::Rust,
+                agent: agent.to_string(),
+                repo: String::new(),
+                branch: "main".to_string(),
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+            }],
+        })
+    }
+
+    fn maintenance_event(project: &str) -> Event {
         Event::new(
             EventType::MaintenanceRequested,
-            "my-project".to_string(),
+            project.to_string(),
             Throttle::Full,
-            serde_json::json!({ "project": "my-project" }),
+            serde_json::json!({ "project": project }),
         )
     }
 
     #[test]
     fn sinks_on_maintenance_requested_only() {
-        let sinks = RunHoneMaintain.sinks_on();
-        assert_eq!(sinks, &[EventType::MaintenanceRequested]);
+        let block = RunHoneMaintain::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert_eq!(block.sinks_on(), &[EventType::MaintenanceRequested]);
     }
 
     #[test]
     fn kind_is_mutator() {
-        assert_eq!(RunHoneMaintain.kind(), BlockKind::Mutator);
+        let block = RunHoneMaintain::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert_eq!(block.kind(), BlockKind::Mutator);
     }
 
     #[tokio::test]
     async fn emits_project_maintain_completed_on_success() {
-        let trigger = maintenance_event();
-        let result = RunHoneMaintain.execute(&trigger).await.unwrap();
+        // hone won't be available in CI, so success=false is acceptable.
+        // The important thing is that exactly one ProjectMaintainCompleted event is emitted.
+        let registry = registry_with_project("my-project", "/tmp", "claude");
+        let block = RunHoneMaintain::new(registry);
+        let trigger = maintenance_event("my-project");
 
-        assert!(result.success);
+        let result = block.execute(&trigger).await.unwrap();
+
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
         assert_eq!(result.events[0].project, "my-project");
+    }
+
+    #[test]
+    fn does_not_sink_on_project_validation_completed() {
+        let block = RunHoneMaintain::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert!(!block.sinks_on().contains(&EventType::ProjectValidationCompleted));
+    }
+
+    #[test]
+    fn does_not_sink_on_project_iterate_completed() {
+        let block = RunHoneMaintain::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert!(!block.sinks_on().contains(&EventType::ProjectIterateCompleted));
+    }
+
+    #[tokio::test]
+    async fn fails_when_project_not_in_registry() {
+        let block = RunHoneMaintain::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let trigger = maintenance_event("unknown-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
         assert_eq!(
             result.events[0].payload.get("success").and_then(serde_json::Value::as_bool),
-            Some(true)
+            Some(false)
         );
-    }
-
-    #[tokio::test]
-    async fn does_not_sink_on_project_validation_completed() {
-        // Verify the old dual-sink path is no longer registered
-        assert!(!RunHoneMaintain.sinks_on().contains(&EventType::ProjectValidationCompleted));
-    }
-
-    #[tokio::test]
-    async fn does_not_sink_on_project_iterate_completed() {
-        // Verify the old dual-sink path is no longer registered
-        assert!(!RunHoneMaintain.sinks_on().contains(&EventType::ProjectIterateCompleted));
+        assert!(result.summary.contains("not found in registry"));
     }
 }
