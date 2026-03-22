@@ -152,10 +152,17 @@ fn print_event_tree(
 }
 
 pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<()> {
-    let mut client = FoundryClient::connect(addr.to_string()).await?;
-
     let project_name = project.unwrap_or_else(|| "system".to_string());
 
+    // Subscribe to the watch stream before emitting so we don't miss events.
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let watch_request = WatchRequest {
+        project: project_name.clone(),
+    };
+    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+    // Now emit the maintenance run event using a separate connection.
+    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
     let request = EmitRequest {
         event_type: "maintenance_run_started".to_string(),
         project: project_name.clone(),
@@ -163,10 +170,36 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         payload_json: String::new(),
     };
 
-    let response = client.emit(request).await?.into_inner();
-
+    let response = emit_client.emit(request).await?.into_inner();
     println!("Triggered maintenance run for {project_name}");
     println!("Event: {}", response.event_id);
+    println!();
+
+    // Stream progress events until the stream ends.
+    while let Some(event) = stream.message().await? {
+        let status = extract_status(&event.payload_json);
+        println!("[{}] {} {}", event.project, event.event_type, status);
+    }
 
     Ok(())
+}
+
+/// Extract a compact status hint from the event payload JSON.
+fn extract_status(payload_json: &str) -> String {
+    if payload_json.is_empty() || payload_json == "{}" {
+        return String::new();
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
+        if let Some(success) = v.get("success").and_then(serde_json::Value::as_bool) {
+            return if success {
+                "(ok)".to_string()
+            } else {
+                "(FAILED)".to_string()
+            };
+        }
+        if let Some(status) = v.get("status").and_then(serde_json::Value::as_str) {
+            return format!("({status})");
+        }
+    }
+    String::new()
 }
