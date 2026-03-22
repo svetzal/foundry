@@ -68,6 +68,12 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::WatchPipeline::stub()));
     engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
+    engine.register(Box::new(blocks::RemediateVulnerability::new(registry.clone())));
+    engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
+    engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
+    engine.register(Box::new(blocks::WatchPipeline::stub()));
+    engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
+    engine.register(Box::new(blocks::RunHoneMaintain));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
