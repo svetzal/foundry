@@ -10,6 +10,8 @@ mod engine;
 mod event_writer;
 mod service;
 mod shell;
+#[allow(dead_code)]
+mod summary;
 mod trace_store;
 
 pub mod proto {
