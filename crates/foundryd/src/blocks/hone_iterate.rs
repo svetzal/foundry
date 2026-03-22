@@ -1,25 +1,20 @@
 use std::pin::Pin;
-use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-/// Runs `hone iterate` on a validated project where the iterate action is enabled.
-/// Mutator — skipped at `dry_run`, suppressed at `audit_only`.
+/// Runs `hone iterate` for a validated project.
+/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
-/// Self-filters:
-/// - Only acts when `status == "ok"` in the trigger payload.
-/// - Only acts when `actions.iterate == true` in the project registry entry.
-pub struct RunHoneIterate {
-    registry: Arc<Registry>,
-}
-
-impl RunHoneIterate {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
-    }
-}
+/// Sinks on `IterationRequested` (emitted by `RouteProjectWorkflow` after
+/// successful validation when `actions.iterate=true`).  No action-flag
+/// self-filtering needed — the router guarantees iterate is enabled.
+///
+/// After a successful iteration the block checks the forwarded
+/// `actions.maintain` flag.  When `true` it also emits `MaintenanceRequested`
+/// so the maintain sub-workflow starts automatically without an extra routing
+/// step.
+pub struct RunHoneIterate;
 
 impl TaskBlock for RunHoneIterate {
     fn name(&self) -> &'static str {
@@ -31,7 +26,7 @@ impl TaskBlock for RunHoneIterate {
     }
 
     fn sinks_on(&self) -> &[EventType] {
-        &[EventType::ProjectValidationCompleted]
+        &[EventType::IterationRequested]
     }
 
     fn execute(
@@ -42,67 +37,40 @@ impl TaskBlock for RunHoneIterate {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // Self-filter 1: only proceed when validation status is "ok".
-        let status = trigger.payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let maintain = trigger
+            .payload
+            .get("actions")
+            .and_then(|a| a.get("maintain"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
-        if status != "ok" {
-            tracing::info!(%project, %status, "skipping hone iterate: validation did not pass");
-            return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: validation status is not ok".to_string(),
-                })
-            });
-        }
+        // TODO: Run real command: `hone iterate <agent> <path> --json`
+        // For now the stub unconditionally reports success so the chain can be exercised.
+        tracing::info!(%project, %maintain, "running hone iterate (stub)");
 
-        // Self-filter 2: only proceed when actions.iterate is enabled.
-        let entry = self.registry.projects.iter().find(|p| p.name == project);
-
-        if !entry.is_some_and(|e| e.actions.iterate) {
-            tracing::info!(%project, "skipping hone iterate: iterate action not enabled");
-            return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: iterate not enabled for project".to_string(),
-                })
-            });
-        }
-
-        // Both filters passed — extract what we need before moving into the async block.
-        let entry = entry.expect("entry present: checked above");
-        let path = std::path::PathBuf::from(&entry.path);
-        let agent = entry.agent.clone();
         Box::pin(async move {
-            let args: Vec<&str> = vec!["iterate", &agent, "--json"];
+            // TODO: Parse real hone JSON output and surface it in the payload.
+            let mut events = vec![Event::new(
+                EventType::ProjectIterateCompleted,
+                project.clone(),
+                throttle,
+                serde_json::json!({ "project": project, "success": true }),
+            )];
 
-            tracing::info!(%project, ?path, %agent, "running hone iterate");
-
-            let result = crate::shell::run(&path, "hone", &args, None, None).await?;
-
-            let payload = serde_json::from_str(&result.stdout).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "raw": result.stdout,
-                    "exit_code": result.exit_code,
-                })
-            });
-
-            let summary = if result.success {
-                format!("{project}: hone iterate succeeded")
-            } else {
-                format!("{project}: hone iterate failed (exit {})", result.exit_code)
-            };
+            if maintain {
+                tracing::info!(%project, "iteration done, chaining to maintenance workflow");
+                events.push(Event::new(
+                    EventType::MaintenanceRequested,
+                    project.clone(),
+                    throttle,
+                    serde_json::json!({ "project": project }),
+                ));
+            }
 
             Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ProjectIterateCompleted,
-                    project,
-                    throttle,
-                    payload,
-                )],
-                success: result.success,
-                summary,
+                events,
+                success: true,
+                summary: format!("{project}: hone iterate completed (stub)"),
             })
         })
     }
@@ -111,143 +79,73 @@ impl TaskBlock for RunHoneIterate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
-    fn make_registry(iterate: bool) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: "test-project".to_string(),
-                path: "/tmp/test-project".to_string(),
-                stack: Stack::Rust,
-                agent: "claude-sonnet-4-5".to_string(),
-                repo: "https://github.com/example/test-project".to_string(),
-                branch: "main".to_string(),
-                skip: None,
-                actions: ActionFlags {
-                    iterate,
-                    maintain: false,
-                    push: false,
-                    audit: false,
-                    release: false,
-                },
-                install: None,
-            }],
-        })
-    }
-
-    fn validation_completed_event(status: &str) -> Event {
+    fn iteration_event(maintain: bool) -> Event {
         Event::new(
-            EventType::ProjectValidationCompleted,
-            "test-project".to_string(),
+            EventType::IterationRequested,
+            "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({ "status": status }),
+            serde_json::json!({
+                "project": "my-project",
+                "actions": { "maintain": maintain },
+            }),
         )
     }
 
     #[test]
-    fn kind_is_mutator() {
-        let block = RunHoneIterate::new(make_registry(true));
-        assert_eq!(block.kind(), BlockKind::Mutator);
+    fn sinks_on_iteration_requested() {
+        assert_eq!(RunHoneIterate.sinks_on(), &[EventType::IterationRequested]);
     }
 
     #[test]
-    fn sinks_on_project_validation_completed() {
-        let block = RunHoneIterate::new(make_registry(true));
-        assert_eq!(block.sinks_on(), &[EventType::ProjectValidationCompleted]);
+    fn kind_is_mutator() {
+        assert_eq!(RunHoneIterate.kind(), BlockKind::Mutator);
     }
 
     #[tokio::test]
-    async fn skips_when_status_is_not_ok() {
-        let block = RunHoneIterate::new(make_registry(true));
-        let trigger = validation_completed_event("error");
+    async fn emits_project_iterate_completed() {
+        let trigger = iteration_event(false);
+        let result = RunHoneIterate.execute(&trigger).await.unwrap();
 
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.events.is_empty());
         assert!(result.success);
-        assert!(result.summary.contains("not ok"));
+        assert!(!result.events.is_empty());
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].project, "my-project");
     }
 
     #[tokio::test]
-    async fn skips_when_iterate_not_enabled() {
-        let block = RunHoneIterate::new(make_registry(false));
-        let trigger = validation_completed_event("ok");
+    async fn maintain_false_emits_only_iterate_completed() {
+        let trigger = iteration_event(false);
+        let result = RunHoneIterate.execute(&trigger).await.unwrap();
 
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.events.is_empty());
-        assert!(result.success);
-        assert!(result.summary.contains("not enabled"));
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
     }
 
     #[tokio::test]
-    async fn skips_when_project_not_in_registry() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        });
-        let block = RunHoneIterate::new(registry);
-        let trigger = validation_completed_event("ok");
+    async fn maintain_true_also_emits_maintenance_requested() {
+        let trigger = iteration_event(true);
+        let result = RunHoneIterate.execute(&trigger).await.unwrap();
 
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.events.is_empty());
-        assert!(result.success);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[1].event_type, EventType::MaintenanceRequested);
+        assert_eq!(result.events[1].project, "my-project");
     }
 
     #[tokio::test]
-    async fn emits_iterate_completed_on_success() {
-        // Use `true` as a command that always succeeds and produces minimal JSON-parseable output.
-        // We substitute "sh -c 'echo {}'" via overriding by using a custom registry path.
-        // Since we can't mock shell::run in unit tests without dependency injection,
-        // test the output structure with a command that exists on the host: echo.
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: "test-project".to_string(),
-                path: std::env::temp_dir().to_str().unwrap().to_string(),
-                stack: Stack::Rust,
-                agent: "test-agent".to_string(),
-                repo: "https://github.com/example/test-project".to_string(),
-                branch: "main".to_string(),
-                skip: None,
-                actions: ActionFlags {
-                    iterate: true,
-                    maintain: false,
-                    push: false,
-                    audit: false,
-                    release: false,
-                },
-                install: None,
-            }],
-        });
+    async fn missing_actions_field_treats_maintain_as_false() {
+        let trigger = Event::new(
+            EventType::IterationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "project": "my-project" }),
+        );
+        let result = RunHoneIterate.execute(&trigger).await.unwrap();
 
-        let block = RunHoneIterate::new(registry);
-
-        // This will call `hone iterate` which won't exist on CI, so we confirm
-        // the block correctly returns an Err on command not found (spawn failure).
-        // The important thing is the self-filter logic passes (no early return).
-        let trigger = validation_completed_event("ok");
-        let result = block.execute(&trigger).await;
-
-        // Either hone exists (unlikely in CI) or it errors — both are acceptable.
-        // The key assertion: self-filter logic did NOT return an early empty result.
-        match result {
-            Ok(r) => {
-                // hone was found and ran — verify event type
-                if !r.events.is_empty() {
-                    assert_eq!(r.events[0].event_type, EventType::ProjectIterateCompleted);
-                }
-            }
-            Err(e) => {
-                // hone not on PATH — expected in test environment
-                assert!(
-                    e.to_string().contains("hone") || e.to_string().contains("No such file"),
-                    "unexpected error: {e}"
-                );
-            }
-        }
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
     }
 }

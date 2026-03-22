@@ -70,8 +70,11 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline::stub()));
-    engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
+    // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
+    // correct sub-workflow via IterationRequested or MaintenanceRequested.
+    engine.register(Box::new(blocks::RouteProjectWorkflow));
+    engine.register(Box::new(blocks::RunHoneIterate));
     engine.register(Box::new(blocks::RunHoneMaintain));
 
     let engine = Arc::new(engine);

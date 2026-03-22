@@ -315,9 +315,6 @@ mod tests {
         // can run concurrently with it.
         use tokio::sync::Notify;
 
-        let started = Arc::new(Notify::new());
-        let proceed = Arc::new(Notify::new());
-
         struct LatchBlock {
             started: Arc<Notify>,
             proceed: Arc<Notify>,
@@ -357,6 +354,9 @@ mod tests {
                 })
             }
         }
+
+        let started = Arc::new(Notify::new());
+        let proceed = Arc::new(Notify::new());
 
         let mut engine = Engine::new();
         engine.register(Box::new(LatchBlock {

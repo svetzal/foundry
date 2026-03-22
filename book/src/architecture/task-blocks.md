@@ -63,19 +63,22 @@ post-push re-audit, confirming the fix is clean before anything downstream acts.
 
 ### Maintenance
 
-These blocks form the maintenance workflow triggered by `MaintenanceRunStarted`.
-
-`RunHoneMaintain` has dual-sink routing: when `iterate` is enabled it waits for
-`ProjectIterateCompleted`; when `iterate` is disabled it fires directly from
-`ProjectValidationCompleted`.
+The maintenance workflow uses an explicit routing Observer (`Route Project
+Workflow`) to delineate which sub-workflow runs. This keeps each downstream
+block focused on a single responsibility.
 
 | Block | Kind | Sinks On | Emits | Self-filters |
 |-------|------|----------|-------|--------------|
 | Validate Project | Observer | `maintenance_run_started` | `project_validation_completed` | Skips projects not in active registry |
-| Run Hone Iterate | Mutator | `project_validation_completed` | `project_iterate_completed` | Only when `status=ok` and `actions.iterate=true` |
-| Run Hone Maintain | Mutator | `project_validation_completed`, `project_iterate_completed` | `project_maintain_completed` | Routing logic described above |
+| Route Project Workflow | Observer | `project_validation_completed` | `iteration_requested` or `maintenance_requested` | Stops when `status != "ok"` or no actions enabled |
+| Run Hone Iterate | Mutator | `iteration_requested` | `project_iterate_completed`, optionally `maintenance_requested` | — |
+| Run Hone Maintain | Mutator | `maintenance_requested` | `project_maintain_completed` | — |
 | Commit and Push | Mutator | `project_iterate_completed`, `project_maintain_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean |
 | Audit Release Tag | Observer | `project_changes_pushed` | `release_tag_audited` | Skips when project not in registry |
+
+The `actions.maintain` flag is forwarded inside the `iteration_requested`
+payload so that `Run Hone Iterate` can chain directly to `maintenance_requested`
+after a successful iteration without re-querying the project configuration.
 
 ## Vulnerability Workflow Chain
 
@@ -109,25 +112,17 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[maintenance_run_started] --> B([Validate Project])
-    B --> C[project_validation_completed]
-    C --> D{iterate?}
-    D -->|actions.iterate=true| E([Run Hone Iterate])
-    E --> F[project_iterate_completed]
-    F --> G([Run Hone Maintain])
-    G --> H[project_maintain_completed]
-    H --> I([Commit and Push])
-    I --> J[project_changes_committed]
-    I --> K[project_changes_pushed]
-    K --> L([Audit Release Tag])
-    L --> M[release_tag_audited]
-    D -->|actions.iterate=false, actions.maintain=true| N([Run Hone Maintain])
-    N --> O[project_maintain_completed]
-    O --> P([Commit and Push])
-    P --> Q[project_changes_committed]
-    P --> R[project_changes_pushed]
-    R --> S([Audit Release Tag])
-    S --> T[release_tag_audited]
+    A([maintenance_run_started]) --> B[[Validate Project]]
+    B --> C([project_validation_completed])
+    C --> D[[Route Project Workflow]]
+    D -->|iterate=true| E([iteration_requested])
+    D -->|iterate=false, maintain=true| F([maintenance_requested])
+    D -->|no actions| G([end — no automation])
+    E --> H[[Run Hone Iterate]]
+    H --> I([project_iterate_completed])
+    H -->|maintain=true| F
+    F --> J[[Run Hone Maintain]]
+    J --> K([project_maintain_completed])
 ```
 
 ## RetryPolicy

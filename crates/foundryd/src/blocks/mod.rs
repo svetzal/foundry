@@ -6,6 +6,7 @@ mod hone_maintain;
 mod install;
 mod release;
 mod remediate;
+mod route_project;
 mod scan;
 mod validate;
 
@@ -17,5 +18,6 @@ pub use hone_maintain::RunHoneMaintain;
 pub use install::InstallLocally;
 pub use release::{CutRelease, WatchPipeline};
 pub use remediate::RemediateVulnerability;
+pub use route_project::RouteProjectWorkflow;
 pub use scan::ScanDependencies;
 pub use validate::ValidateProject;

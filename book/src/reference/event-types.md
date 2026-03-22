@@ -159,6 +159,13 @@ present directly in the payload.
 |------|-------------|
 | `local_install_completed` | Local tool reinstallation finished |
 
+## Maintenance Workflow
+
+| Type | Payload | Description |
+|------|---------|-------------|
+| `iteration_requested` | `{ project }` | Triggers the iterate sub-workflow for a validated project |
+| `maintenance_requested` | `{ project }` | Triggers the maintain sub-workflow for a validated project |
+
 ## Maintenance Run Lifecycle
 
 | Type | Description |
