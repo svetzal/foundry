@@ -40,23 +40,12 @@ impl Default for AuditReleaseTag {
     }
 }
 
-impl TaskBlock for AuditReleaseTag {
-    fn name(&self) -> &'static str {
-        "Audit Release Tag"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::VulnerabilityDetected,
-            EventType::ProjectChangesPushed,
-        ]
-    }
-
-    fn execute(
+impl AuditReleaseTag {
+    /// Handle the `ProjectChangesPushed` trigger path.
+    ///
+    /// Looks up the project in the registry and emits a clean `ReleaseTagAudited`
+    /// event when found, or returns an empty result when the project is unknown.
+    fn audit_after_push(
         &self,
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
@@ -64,46 +53,55 @@ impl TaskBlock for AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        if trigger.event_type == EventType::ProjectChangesPushed {
-            // Post-push audit path: look up the project in the registry.
-            // If the project isn't registered, emit nothing — no audit performed.
-            let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
 
-            let Some(entry) = entry else {
-                tracing::info!(%project, "project not in registry, skipping post-push audit");
-                return Box::pin(async {
-                    Ok(TaskBlockResult {
-                        events: vec![],
-                        success: true,
-                        summary: "Skipped: project not in registry".to_string(),
-                    })
-                });
-            };
-
-            tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
-
-            // TODO: Shell out to the appropriate scanner (cargo audit, npm audit, etc.)
-            //       using `entry.path` and `entry.stack`.
-            // Stub: report clean (no vulnerabilities found after push).
-            return Box::pin(async move {
+        let Some(entry) = entry else {
+            tracing::info!(%project, "project not in registry, skipping post-push audit");
+            return Box::pin(async {
                 Ok(TaskBlockResult {
-                    events: vec![Event::new(
-                        EventType::ReleaseTagAudited,
-                        project,
-                        throttle,
-                        serde_json::json!({
-                            "cve": "none",
-                            "vulnerable": false,
-                            "dirty": false,
-                        }),
-                    )],
+                    events: vec![],
                     success: true,
-                    summary: format!("Post-push audit: {} (stub, no vulnerabilities)", entry.stack),
+                    summary: "Skipped: project not in registry".to_string(),
                 })
             });
-        }
+        };
 
-        // VulnerabilityDetected path (original behaviour — unchanged).
+        tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
+
+        // TODO: Shell out to the appropriate scanner (cargo audit, npm audit, etc.)
+        //       using `entry.path` and `entry.stack`.
+        // Stub: report clean (no vulnerabilities found after push).
+        Box::pin(async move {
+            Ok(TaskBlockResult {
+                events: vec![Event::new(
+                    EventType::ReleaseTagAudited,
+                    project,
+                    throttle,
+                    serde_json::json!({
+                        "cve": "none",
+                        "vulnerable": false,
+                        "dirty": false,
+                    }),
+                )],
+                success: true,
+                summary: format!("Post-push audit: {} (stub, no vulnerabilities)", entry.stack),
+            })
+        })
+    }
+
+    /// Handle the `VulnerabilityDetected` trigger path.
+    ///
+    /// Checks out the latest release tag, runs the appropriate scanner, restores
+    /// the original branch, and emits a `ReleaseTagAudited` event.  Falls back
+    /// to the trigger payload when the project is not registered or git/scanner
+    /// operations fail.
+    fn audit_after_vulnerability_detected(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
 
         // Payload fallback fields used when the project is not in the registry
         // or when no release tags exist — preserves backward compatibility with
@@ -166,72 +164,129 @@ impl TaskBlock for AuditReleaseTag {
                 }
             };
 
-            // Fetch tags from the remote (best-effort; don't abort on failure).
-            let _ = crate::shell::run(&path, "git", &["fetch", "--tags"], None, None).await;
-
-            // Find the latest release tag by version-aware sort.
-            let tags_result =
-                crate::shell::run(&path, "git", &["tag", "--sort=-v:refname"], None, None).await;
-
-            let latest_tag =
-                tags_result.ok().and_then(|r| r.stdout.lines().next().map(ToString::to_string));
-
-            let vulnerabilities = if let Some(ref tag) = latest_tag {
-                // Check out the release tag.
-                let _ = crate::shell::run(&path, "git", &["checkout", tag], None, None).await;
-
-                // Run the audit scanner.
-                let audit = crate::scanner::run_audit(&path, &entry.stack).await;
-
-                // Three-layer cleanup: always restore original branch.
-                let cleanup1 =
-                    crate::shell::run(&path, "git", &["checkout", &original_branch], None, None)
-                        .await;
-                if cleanup1.is_err() {
-                    let _ = crate::shell::run(&path, "git", &["checkout", "-"], None, None).await;
-                }
-                // Last-resort fallback.
-                let _ = crate::shell::run(&path, "git", &["checkout", "HEAD"], None, None).await;
-
-                audit.unwrap_or_default().vulnerabilities
-            } else {
-                tracing::info!(project = %project, "no release tags found, falling back to payload");
-                return Ok(emit_payload_result(
-                    project,
-                    throttle,
-                    &payload_cve,
-                    payload_vulnerable,
-                    payload_dirty,
-                ));
-            };
-
-            let vulnerable = !vulnerabilities.is_empty();
-            // Use the first CVE ID from the scan result, or the payload CVE as fallback.
-            let cve = vulnerabilities
-                .first()
-                .and_then(|v| v.cve.clone())
-                .unwrap_or_else(|| payload_cve.clone());
-
-            tracing::info!(%cve, %vulnerable, "audited release tag");
-
-            let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
-            // Preserve dirty flag from upstream payload for downstream blocks.
-            if let Some(dirty) = payload_dirty {
-                payload["dirty"] = serde_json::Value::Bool(dirty);
-            }
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ReleaseTagAudited,
-                    project,
-                    throttle,
-                    payload,
-                )],
-                success: true,
-                summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
-            })
+            perform_tag_checkout_and_scan(
+                &path,
+                &entry.stack,
+                &original_branch,
+                &project,
+                throttle,
+                &payload_cve,
+                payload_vulnerable,
+                payload_dirty,
+            )
+            .await
         })
     }
+}
+
+impl TaskBlock for AuditReleaseTag {
+    fn name(&self) -> &'static str {
+        "Audit Release Tag"
+    }
+
+    fn kind(&self) -> BlockKind {
+        BlockKind::Observer
+    }
+
+    fn sinks_on(&self) -> &[EventType] {
+        &[
+            EventType::VulnerabilityDetected,
+            EventType::ProjectChangesPushed,
+        ]
+    }
+
+    fn execute(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        if trigger.event_type == EventType::ProjectChangesPushed {
+            self.audit_after_push(trigger)
+        } else {
+            self.audit_after_vulnerability_detected(trigger)
+        }
+    }
+}
+
+/// Checks out the latest release tag, runs the scanner, restores the original
+/// branch, and returns a `TaskBlockResult` with a `ReleaseTagAudited` event.
+///
+/// Falls back to the payload values when no release tags exist or when the
+/// scanner cannot run.
+#[allow(clippy::too_many_arguments)]
+async fn perform_tag_checkout_and_scan(
+    path: &std::path::Path,
+    stack: &foundry_core::registry::Stack,
+    original_branch: &str,
+    project: &str,
+    throttle: foundry_core::throttle::Throttle,
+    payload_cve: &str,
+    payload_vulnerable: bool,
+    payload_dirty: Option<bool>,
+) -> anyhow::Result<TaskBlockResult> {
+    // Fetch tags from the remote (best-effort; don't abort on failure).
+    let _ = crate::shell::run(path, "git", &["fetch", "--tags"], None, None).await;
+
+    // Find the latest release tag by version-aware sort.
+    let tags_result =
+        crate::shell::run(path, "git", &["tag", "--sort=-v:refname"], None, None).await;
+
+    let latest_tag =
+        tags_result.ok().and_then(|r| r.stdout.lines().next().map(ToString::to_string));
+
+    let vulnerabilities = if let Some(ref tag) = latest_tag {
+        // Check out the release tag.
+        let _ = crate::shell::run(path, "git", &["checkout", tag], None, None).await;
+
+        // Run the audit scanner.
+        let audit = crate::scanner::run_audit(path, stack).await;
+
+        // Three-layer cleanup: always restore original branch.
+        let cleanup1 =
+            crate::shell::run(path, "git", &["checkout", original_branch], None, None).await;
+        if cleanup1.is_err() {
+            let _ = crate::shell::run(path, "git", &["checkout", "-"], None, None).await;
+        }
+        // Last-resort fallback.
+        let _ = crate::shell::run(path, "git", &["checkout", "HEAD"], None, None).await;
+
+        audit.unwrap_or_default().vulnerabilities
+    } else {
+        tracing::info!(project = %project, "no release tags found, falling back to payload");
+        return Ok(emit_payload_result(
+            project.to_string(),
+            throttle,
+            payload_cve,
+            payload_vulnerable,
+            payload_dirty,
+        ));
+    };
+
+    let vulnerable = !vulnerabilities.is_empty();
+    // Use the first CVE ID from the scan result, or the payload CVE as fallback.
+    let cve = vulnerabilities
+        .first()
+        .and_then(|v| v.cve.clone())
+        .unwrap_or_else(|| payload_cve.to_string());
+
+    tracing::info!(%cve, %vulnerable, "audited release tag");
+
+    let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
+    // Preserve dirty flag from upstream payload for downstream blocks.
+    if let Some(dirty) = payload_dirty {
+        payload["dirty"] = serde_json::Value::Bool(dirty);
+    }
+
+    Ok(TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ReleaseTagAudited,
+            project.to_string(),
+            throttle,
+            payload,
+        )],
+        success: true,
+        summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+    })
 }
 
 /// Build a `TaskBlockResult` that forwards the payload-based vulnerability
