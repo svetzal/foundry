@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use foundry_core::registry::Registry;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
 mod service;
+mod shell;
 mod trace_store;
 
 pub mod proto {
@@ -21,6 +23,14 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
+    // TODO: load registry from config file; using empty registry until
+    // registry-loading task is implemented (projects not found in registry
+    // fall back to stub commit-and-push behaviour).
+    let registry = Arc::new(Registry {
+        version: 2,
+        projects: vec![],
+    });
+
     let mut engine = engine::Engine::new();
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
@@ -28,7 +38,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::AuditReleaseTag));
     engine.register(Box::new(blocks::AuditMainBranch));
     engine.register(Box::new(blocks::RemediateVulnerability));
-    engine.register(Box::new(blocks::CommitAndPush));
+    engine.register(Box::new(blocks::CommitAndPush::new(Arc::clone(&registry))));
     engine.register(Box::new(blocks::CutRelease));
     engine.register(Box::new(blocks::WatchPipeline));
     engine.register(Box::new(blocks::InstallLocally));
