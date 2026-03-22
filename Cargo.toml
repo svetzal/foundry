@@ -59,5 +59,8 @@ hex = "0.4"
 # Async stream utilities
 async-stream = "0.3"
 
+# TUI
+comfy-table = "7"
+
 # Testing
 tempfile = "3"

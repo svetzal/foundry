@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use comfy_table::{ContentArrangement, Table};
 use foundry_core::registry::{ActionFlags, InstallConfig, ProjectEntry, Registry, Stack};
 
 pub fn init(registry_path: &Path) -> Result<()> {
@@ -26,14 +27,21 @@ pub fn list(registry_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<14} {:<8} ACTIONS", "NAME", "STACK", "SKIP");
-    println!("{}", "-".repeat(80));
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["Name", "Stack", "Skip", "Actions"]);
 
     for p in &registry.projects {
         let skip = if p.skip.is_some() { "yes" } else { "no" };
-        let actions = format_actions(&p.actions);
-        println!("{:<20} {:<14} {:<8} {}", p.name, p.stack, skip, actions);
+        table.add_row(vec![
+            &p.name,
+            &p.stack.to_string(),
+            skip,
+            &format_actions(&p.actions),
+        ]);
     }
+
+    println!("{table}");
 
     Ok(())
 }

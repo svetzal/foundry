@@ -3,6 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use comfy_table::{ContentArrangement, Table};
 
 use foundry_core::trace::{ProcessResult, TraceIndex};
 
@@ -277,14 +278,23 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
 }
 
 fn print_trace_table(date: &str, indices: &[TraceIndex]) {
-    println!("  {date}");
+    println!("{date}");
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["Event ID", "Status", "Duration", "Type", "Project"]);
+
     for idx in indices {
-        let status = if idx.success { "ok     " } else { "FAILED " };
-        println!(
-            "    {} {} {:>6}ms  {}  {}",
-            idx.event_id, status, idx.total_duration_ms, idx.event_type, idx.project
-        );
+        let status = if idx.success { "ok" } else { "FAILED" };
+        table.add_row(vec![
+            &idx.event_id,
+            status,
+            &format!("{}ms", idx.total_duration_ms),
+            &idx.event_type,
+            &idx.project,
+        ]);
     }
+
+    println!("{table}");
 }
 
 // The Result return type is consistent with the other command functions even
