@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
+mod event_writer;
 mod service;
 mod trace_store;
 
@@ -21,7 +22,14 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
-    let mut engine = engine::Engine::new();
+    let events_dir = std::env::var("FOUNDRY_EVENTS_DIR").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/.foundry/events")
+    });
+    let event_writer = Arc::new(event_writer::EventWriter::new(&events_dir));
+    tracing::info!(dir = %events_dir, "event writer configured");
+
+    let mut engine = engine::Engine::new().with_event_writer(event_writer);
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
     engine.register(Box::new(blocks::ScanDependencies));
