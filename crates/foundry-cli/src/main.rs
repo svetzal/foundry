@@ -57,6 +57,17 @@ enum Commands {
         /// The root event ID to look up
         event_id: String,
     },
+
+    /// Trigger a maintenance run for all or specific projects
+    Run {
+        /// Limit run to a single project by name
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Throttle level: full, `audit_only`, `dry_run`
+        #[arg(long, default_value = "full")]
+        throttle: String,
+    },
 }
 
 #[tokio::main]
@@ -73,5 +84,6 @@ async fn main() -> Result<()> {
         Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
         Commands::Watch { workflow_id } => commands::watch(&cli.addr, workflow_id).await,
         Commands::Trace { event_id } => commands::trace(&cli.addr, &event_id).await,
+        Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
     }
 }

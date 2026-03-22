@@ -75,7 +75,9 @@ mod tests {
                 success: true,
                 summary: "did stuff".to_string(),
                 emitted_event_ids: vec![],
+                duration_ms: 0,
             }],
+            total_duration_ms: 0,
         }
     }
 

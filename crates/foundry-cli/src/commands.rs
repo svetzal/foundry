@@ -3,15 +3,14 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::proto::{
-    EmitRequest, StatusRequest, Throttle, TraceRequest, TraceResponse,
-    foundry_client::FoundryClient,
+    EmitRequest, StatusRequest, TraceRequest, TraceResponse, foundry_client::FoundryClient,
 };
 
-fn parse_throttle(s: &str) -> Throttle {
+fn parse_throttle(s: &str) -> i32 {
     match s {
-        "audit_only" => Throttle::AuditOnly,
-        "dry_run" => Throttle::DryRun,
-        _ => Throttle::Full,
+        "audit_only" => 1,
+        "dry_run" => 2,
+        _ => 0,
     }
 }
 
@@ -27,7 +26,7 @@ pub async fn emit(
     let request = EmitRequest {
         event_type: event_type.to_string(),
         project: project.to_string(),
-        throttle: parse_throttle(throttle).into(),
+        throttle: parse_throttle(throttle),
         payload_json: payload.unwrap_or_default(),
     };
 
@@ -104,6 +103,7 @@ pub async fn trace(addr: &str, event_id: &str) -> Result<()> {
     }
 
     render_trace(&response);
+    println!("Total: {}ms", response.total_duration_ms);
 
     Ok(())
 }
@@ -141,8 +141,8 @@ fn print_event_tree(
         for block in blocks {
             let status = if block.success { "ok" } else { "FAILED" };
             println!(
-                "{}  \u{2192} {}: {} \u{2014} {}",
-                indent, block.block_name, status, block.summary
+                "{}  \u{2192} {} ({}ms): {} \u{2014} {}",
+                indent, block.block_name, block.duration_ms, status, block.summary
             );
 
             // Recurse into emitted events
@@ -153,4 +153,24 @@ fn print_event_tree(
             }
         }
     }
+}
+
+pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<()> {
+    let mut client = FoundryClient::connect(addr.to_string()).await?;
+
+    let project_name = project.unwrap_or_else(|| "system".to_string());
+
+    let request = EmitRequest {
+        event_type: "maintenance_run_started".to_string(),
+        project: project_name.clone(),
+        throttle: parse_throttle(throttle),
+        payload_json: String::new(),
+    };
+
+    let response = client.emit(request).await?.into_inner();
+
+    println!("Triggered maintenance run for {project_name}");
+    println!("Event: {}", response.event_id);
+
+    Ok(())
 }
