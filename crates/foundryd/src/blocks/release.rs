@@ -74,6 +74,8 @@ impl TaskBlock for CutRelease {
                     events: vec![],
                     success: true,
                     summary: "Skipped: main branch is dirty".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             });
         }
@@ -113,6 +115,8 @@ async fn run_release(
             events: vec![],
             success: false,
             summary: format!("Project '{project}' not found in registry"),
+            raw_output: None,
+            exit_code: None,
         });
     };
 
@@ -129,6 +133,8 @@ async fn run_release(
                 "AGENTS.md not found at {}; cannot invoke Claude CLI",
                 agents_md.display()
             ),
+            raw_output: None,
+            exit_code: None,
         });
     }
 
@@ -151,6 +157,14 @@ async fn run_release(
             Some(CutRelease::CLAUDE_TIMEOUT),
         )
         .await;
+
+    let (raw_output, exit_code) = match &run_result {
+        Ok(r) => (
+            Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+            Some(r.exit_code),
+        ),
+        Err(_) => (None, None),
+    };
 
     let (cli_success, new_tag, cli_summary) = match run_result {
         Ok(r) if r.success => {
@@ -197,6 +211,8 @@ async fn run_release(
         )],
         success: cli_success,
         summary: cli_summary,
+        raw_output,
+        exit_code,
     })
 }
 
@@ -305,6 +321,8 @@ fn stub_success(project: String, throttle: foundry_core::throttle::Throttle) -> 
         )],
         success: true,
         summary: "Release pipeline completed successfully".to_string(),
+        raw_output: None,
+        exit_code: None,
     }
 }
 
@@ -340,6 +358,8 @@ async fn poll_pipeline(
                 )],
                 success: false,
                 summary: "Pipeline watch timed out after 30 minutes".to_string(),
+                raw_output: None,
+                exit_code: None,
             });
         }
 
@@ -360,6 +380,8 @@ async fn poll_pipeline(
                         )],
                         success,
                         summary: format!("Release pipeline completed: {conclusion}"),
+                        raw_output: None,
+                        exit_code: None,
                     });
                 }
                 s @ ("in_progress" | "queued" | "waiting") => {

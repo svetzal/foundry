@@ -72,6 +72,8 @@ impl TaskBlock for RunHoneMaintain {
                     )],
                     success: false,
                     summary: format!("Project '{project}' not found in registry"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -98,6 +100,14 @@ impl TaskBlock for RunHoneMaintain {
                     Some(entry.timeout()),
                 )
                 .await;
+
+            let (raw_output, exit_code) = match &run_result {
+                Ok(r) => (
+                    Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+                    Some(r.exit_code),
+                ),
+                Err(_) => (None, None),
+            };
 
             let (success, hone_summary) = match run_result {
                 Ok(result) => {
@@ -135,6 +145,8 @@ impl TaskBlock for RunHoneMaintain {
                 } else {
                     format!("{project}: hone maintain failed: {hone_summary}")
                 },
+                raw_output,
+                exit_code,
             })
         })
     }

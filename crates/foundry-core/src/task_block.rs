@@ -35,6 +35,10 @@ pub struct TaskBlockResult {
     pub success: bool,
     /// Human-readable summary of what happened.
     pub summary: String,
+    /// Combined stdout+stderr from any shell command run by this block.
+    pub raw_output: Option<String>,
+    /// Exit code from any shell command run by this block.
+    pub exit_code: Option<i32>,
 }
 
 /// Whether a task block performs mutations or only observes.

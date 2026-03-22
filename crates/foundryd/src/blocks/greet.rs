@@ -42,6 +42,8 @@ impl TaskBlock for ComposeGreeting {
                 )],
                 success: true,
                 summary: format!("Composed: {greeting}"),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }
@@ -90,6 +92,8 @@ impl TaskBlock for DeliverGreeting {
                 )],
                 success: true,
                 summary: format!("Delivered: {greeting}"),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }

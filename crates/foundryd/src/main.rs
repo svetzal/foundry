@@ -17,6 +17,7 @@ mod shell;
 #[allow(dead_code)]
 mod summary;
 mod trace_store;
+mod trace_writer;
 mod workflow_tracker;
 
 pub mod proto {
@@ -57,6 +58,12 @@ async fn main() -> Result<()> {
     });
     let event_writer = Arc::new(event_writer::EventWriter::new(&events_dir));
 
+    let traces_dir = env::var("FOUNDRY_TRACES_DIR").unwrap_or_else(|_| {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/.foundry/traces")
+    });
+    let trace_writer = Arc::new(trace_writer::TraceWriter::new(&traces_dir));
+
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
     let mut engine = engine::Engine::new()
@@ -80,9 +87,13 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RunHoneMaintain::new(registry.clone())));
 
     let engine = Arc::new(engine);
-    let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
+    let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
+        Duration::from_secs(3600),
+        trace_writer.clone(),
+    ));
     let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
-    let service = service::FoundryService::new(engine, trace_store, event_tx, workflow_tracker);
+    let service =
+        service::FoundryService::new(engine, trace_store, event_tx, workflow_tracker, trace_writer);
 
     let addr = "[::1]:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");

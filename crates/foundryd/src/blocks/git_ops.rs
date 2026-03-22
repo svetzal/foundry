@@ -88,6 +88,8 @@ impl TaskBlock for CommitAndPush {
                     events: vec![],
                     success: true,
                     summary: "No changes to commit".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             });
         }
@@ -126,6 +128,8 @@ impl TaskBlock for CommitAndPush {
                     events: vec![],
                     success: true,
                     summary: "No changes to commit".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 });
             }
 
@@ -182,6 +186,8 @@ impl TaskBlock for CommitAndPush {
                 success: true,
                 summary: "Committed and pushed changes".to_string(),
                 events,
+                raw_output: None,
+                exit_code: None,
             })
         })
     }
@@ -210,6 +216,8 @@ fn stub_result(
         ],
         success: true,
         summary: format!("Committed and pushed fix for {cve} (stub)"),
+        raw_output: None,
+        exit_code: None,
     }
 }
 

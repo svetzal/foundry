@@ -104,6 +104,8 @@ fn error_result(
         )],
         success: false,
         summary: format!("Validation failed for {project}: {reason}"),
+        raw_output: None,
+        exit_code: None,
     }
 }
 
@@ -147,6 +149,8 @@ impl TaskBlock for ValidateProject {
                     )],
                     success: true,
                     summary: format!("Project {project} skipped"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -182,6 +186,8 @@ impl TaskBlock for ValidateProject {
                 )],
                 success: true,
                 summary: format!("Project {project} validated"),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }

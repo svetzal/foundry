@@ -226,6 +226,8 @@ mod tests {
                     events: vec![],
                     success: true,
                     summary: format!("maintenance started for {project}"),
+                    raw_output: None,
+                    exit_code: None,
                 })
             })
         }
@@ -287,6 +289,8 @@ mod tests {
                     events: vec![],
                     success: true,
                     summary: format!("counted for {project}"),
+                    raw_output: None,
+                    exit_code: None,
                 })
             })
         }
@@ -350,6 +354,8 @@ mod tests {
                         events: vec![],
                         success: true,
                         summary: "latched".to_string(),
+                        raw_output: None,
+                        exit_code: None,
                     })
                 })
             }

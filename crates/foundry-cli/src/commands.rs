@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 
-use std::collections::HashMap;
+use foundry_core::trace::{ProcessResult, TraceIndex};
 
 use crate::proto::{
     EmitRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest,
@@ -45,7 +49,7 @@ pub async fn emit(
             };
             let trace_resp = client.trace(trace_req).await?.into_inner();
             if trace_resp.found {
-                render_trace(&trace_resp);
+                render_trace(&trace_resp, false);
                 let block_sum: u64 =
                     trace_resp.block_executions.iter().map(|b| b.duration_ms).sum();
                 println!("---");
@@ -101,7 +105,7 @@ pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn trace(addr: &str, event_id: &str) -> Result<()> {
+pub async fn trace(addr: &str, event_id: &str, verbose: bool) -> Result<()> {
     let mut client = FoundryClient::connect(addr.to_string()).await?;
 
     let request = TraceRequest {
@@ -115,7 +119,7 @@ pub async fn trace(addr: &str, event_id: &str) -> Result<()> {
         return Ok(());
     }
 
-    render_trace(&response);
+    render_trace(&response, verbose);
     let block_sum: u64 = response.block_executions.iter().map(|b| b.duration_ms).sum();
     println!("---");
     println!("Total: {}ms (blocks: {}ms)", response.total_duration_ms, block_sum);
@@ -123,7 +127,7 @@ pub async fn trace(addr: &str, event_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_trace(response: &TraceResponse) {
+fn render_trace(response: &TraceResponse, verbose: bool) {
     // Build a lookup: event_id -> event
     let events: HashMap<&str, _> =
         response.events.iter().map(|e| (e.event_id.as_str(), e)).collect();
@@ -139,7 +143,7 @@ fn render_trace(response: &TraceResponse) {
 
     // Start with the root event (first in the list)
     if let Some(root) = response.events.first() {
-        print_event_tree(root, &events, &blocks_by_trigger, 0);
+        print_event_tree(root, &events, &blocks_by_trigger, 0, verbose);
     }
 }
 
@@ -148,6 +152,7 @@ fn print_event_tree(
     events: &HashMap<&str, &crate::proto::TraceEvent>,
     blocks_by_trigger: &HashMap<&str, Vec<&crate::proto::TraceBlockExecution>>,
     depth: usize,
+    verbose: bool,
 ) {
     let indent = "  ".repeat(depth);
     println!("{}{} ({}) project={}", indent, event.event_type, event.event_id, event.project);
@@ -160,10 +165,28 @@ fn print_event_tree(
                 indent, block.block_name, block.duration_ms, status, block.summary
             );
 
+            if verbose {
+                // Show trigger payload
+                if !block.trigger_payload_json.is_empty() && block.trigger_payload_json != "{}" {
+                    println!("{indent}    trigger: {}", block.trigger_payload_json);
+                }
+                // Show emitted payloads
+                for (i, payload) in block.emitted_payload_jsons.iter().enumerate() {
+                    println!("{indent}    emitted[{i}]: {payload}");
+                }
+                // Show raw output if non-empty
+                if !block.raw_output.is_empty() {
+                    println!("{indent}    output:");
+                    for line in block.raw_output.lines() {
+                        println!("{indent}      {line}");
+                    }
+                }
+            }
+
             // Recurse into emitted events
             for emitted_id in &block.emitted_event_ids {
                 if let Some(emitted_event) = events.get(emitted_id.as_str()) {
-                    print_event_tree(emitted_event, events, blocks_by_trigger, depth + 2);
+                    print_event_tree(emitted_event, events, blocks_by_trigger, depth + 2, verbose);
                 }
             }
         }
@@ -198,6 +221,103 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     while let Some(event) = stream.message().await? {
         let status = extract_status(&event.payload_json);
         println!("[{}] {} {}", event.project, event.event_type, status);
+    }
+
+    Ok(())
+}
+
+/// Resolve the traces directory from env or default.
+fn traces_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_TRACES_DIR") {
+        PathBuf::from(p)
+    } else {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(format!("{home}/.foundry/traces"))
+    }
+}
+
+/// Read all trace index entries from a single date directory.
+fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceIndex> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut indices = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(result) = serde_json::from_str::<ProcessResult>(&content) else {
+            continue;
+        };
+        let event_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let (event_type, project) = result
+            .events
+            .first()
+            .map(|e| (e.event_type.to_string(), e.project.clone()))
+            .unwrap_or_default();
+        if let Some(filter) = project_filter {
+            if project != filter {
+                continue;
+            }
+        }
+        let success = result.block_executions.iter().all(|b| b.success);
+        indices.push(TraceIndex {
+            event_id,
+            event_type,
+            project,
+            success,
+            total_duration_ms: result.total_duration_ms,
+        });
+    }
+    indices
+}
+
+fn print_trace_table(date: &str, indices: &[TraceIndex]) {
+    println!("  {date}");
+    for idx in indices {
+        let status = if idx.success { "ok     " } else { "FAILED " };
+        println!(
+            "    {} {} {:>6}ms  {}  {}",
+            idx.event_id, status, idx.total_duration_ms, idx.event_type, idx.project
+        );
+    }
+}
+
+// The Result return type is consistent with the other command functions even
+// though this function's current body never fails.
+#[allow(clippy::unnecessary_wraps)]
+pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
+    let base_dir = traces_dir();
+
+    if let Some(date_str) = date {
+        let dir = base_dir.join(date_str);
+        let indices = read_index_from_dir(&dir, project);
+        if indices.is_empty() {
+            println!("No traces found for {date_str}.");
+        } else {
+            print_trace_table(date_str, &indices);
+        }
+    } else {
+        // List recent 7 days
+        let today = chrono::Utc::now().date_naive();
+        let mut found_any = false;
+        for offset in 0..7_i64 {
+            let day = today - chrono::Duration::days(offset);
+            let date_str = day.format("%Y-%m-%d").to_string();
+            let dir = base_dir.join(&date_str);
+            let indices = read_index_from_dir(&dir, project);
+            if !indices.is_empty() {
+                print_trace_table(&date_str, &indices);
+                found_any = true;
+            }
+        }
+        if !found_any {
+            println!("No traces found in the last 7 days.");
+        }
     }
 
     Ok(())

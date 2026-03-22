@@ -65,6 +65,10 @@ enum Commands {
     Trace {
         /// The root event ID to look up
         event_id: String,
+
+        /// Show raw output and payloads for each block
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Trigger a maintenance run for all or specific projects
@@ -76,6 +80,16 @@ enum Commands {
         /// Throttle level: full, `audit_only`, `dry_run`
         #[arg(long, default_value = "full")]
         throttle: String,
+    },
+
+    /// Show trace history from disk
+    History {
+        /// Date to show (YYYY-MM-DD); omit for recent 7 days
+        date: Option<String>,
+
+        /// Filter by project name
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Manage the project registry
@@ -249,8 +263,13 @@ async fn main() -> Result<()> {
         } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
         Commands::Watch { project } => commands::watch(&cli.addr, project).await,
-        Commands::Trace { event_id } => commands::trace(&cli.addr, &event_id).await,
+        Commands::Trace { event_id, verbose } => {
+            commands::trace(&cli.addr, &event_id, verbose).await
+        }
         Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
+        Commands::History { date, project } => {
+            commands::history(date.as_deref(), project.as_deref())
+        }
         Commands::Registry(sub) => {
             let path = registry_path();
             match sub {

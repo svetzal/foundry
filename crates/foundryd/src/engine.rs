@@ -4,36 +4,9 @@ use tokio::sync::broadcast;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
+pub use foundry_core::trace::{BlockExecution, ProcessResult};
 
 use crate::event_writer::EventWriter;
-
-/// Record of a single block execution within a processing chain.
-#[derive(Debug, Clone)]
-pub struct BlockExecution {
-    /// Name of the block that ran.
-    pub block_name: String,
-    /// The `event_id` that triggered this block.
-    pub trigger_event_id: String,
-    /// Whether the block succeeded.
-    pub success: bool,
-    /// Human-readable summary from the block.
-    pub summary: String,
-    /// Event IDs emitted by this block (empty if suppressed or failed).
-    pub emitted_event_ids: Vec<String>,
-    /// Wall-clock milliseconds spent executing this block (including retries).
-    pub duration_ms: u64,
-}
-
-/// The full result of processing an event chain.
-#[derive(Debug, Clone)]
-pub struct ProcessResult {
-    /// All events produced during the chain (including the root).
-    pub events: Vec<Event>,
-    /// Record of each block execution in order.
-    pub block_executions: Vec<BlockExecution>,
-    /// Wall-clock milliseconds for the entire `process()` call.
-    pub total_duration_ms: u64,
-}
 
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
@@ -132,6 +105,10 @@ impl Engine {
                 summary: "skipped (throttle)".to_string(),
                 emitted_event_ids: vec![],
                 duration_ms: u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                raw_output: None,
+                exit_code: None,
+                trigger_payload: current.payload.clone(),
+                emitted_payloads: vec![],
             };
         }
 
@@ -145,7 +122,11 @@ impl Engine {
                     emitted = result.events.len(),
                     "completed"
                 );
+                let raw_output = result.raw_output.clone();
+                let exit_code = result.exit_code;
+                let trigger_payload = current.payload.clone();
                 let mut emitted_ids = Vec::new();
+                let mut emitted_payloads = Vec::new();
                 if block.should_emit(current.throttle) {
                     for emitted in result.events {
                         if let Some(writer) = &self.event_writer {
@@ -162,6 +143,7 @@ impl Engine {
                             let _ = tx.send(emitted.clone()); // No receivers is normal.
                         }
                         emitted_ids.push(emitted.id.clone());
+                        emitted_payloads.push(emitted.payload.clone());
                         all_events.push(emitted.clone());
                         queue.push(emitted);
                     }
@@ -178,6 +160,10 @@ impl Engine {
                     summary: result.summary,
                     emitted_event_ids: emitted_ids,
                     duration_ms,
+                    raw_output,
+                    exit_code,
+                    trigger_payload,
+                    emitted_payloads,
                 }
             }
             Err(err) => {
@@ -191,6 +177,10 @@ impl Engine {
                     summary: format!("error: {err}"),
                     emitted_event_ids: vec![],
                     duration_ms,
+                    raw_output: None,
+                    exit_code: None,
+                    trigger_payload: current.payload.clone(),
+                    emitted_payloads: vec![],
                 }
             }
         }
@@ -303,6 +293,8 @@ mod tests {
                     )],
                     success: true,
                     summary: "composed greeting".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             })
         }
@@ -340,6 +332,8 @@ mod tests {
                     )],
                     success: true,
                     summary: "delivered greeting".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             })
         }
@@ -871,6 +865,8 @@ mod tests {
                         events: vec![],
                         success: false,
                         summary: "transient failure".to_string(),
+                        raw_output: None,
+                        exit_code: None,
                     })
                 } else {
                     Ok(TaskBlockResult {
@@ -882,6 +878,8 @@ mod tests {
                         )],
                         success: true,
                         summary: "succeeded".to_string(),
+                        raw_output: None,
+                        exit_code: None,
                     })
                 }
             })

@@ -15,6 +15,7 @@ use crate::proto::{
     foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
+use crate::trace_writer::TraceWriter;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowGuard, WorkflowTracker};
 
 pub struct FoundryService {
@@ -23,6 +24,7 @@ pub struct FoundryService {
     workflow_tracker: Arc<WorkflowTracker>,
     /// Sender held so new receivers can be created for each Watch subscriber.
     event_tx: broadcast::Sender<Event>,
+    trace_writer: Arc<TraceWriter>,
 }
 
 impl FoundryService {
@@ -31,12 +33,14 @@ impl FoundryService {
         trace_store: Arc<TraceStore>,
         event_tx: broadcast::Sender<Event>,
         workflow_tracker: Arc<WorkflowTracker>,
+        trace_writer: Arc<TraceWriter>,
     ) -> Self {
         Self {
             engine,
             trace_store,
             workflow_tracker,
             event_tx,
+            trace_writer,
         }
     }
 }
@@ -88,6 +92,7 @@ impl Foundry for FoundryService {
         let engine = Arc::clone(&self.engine);
         let trace_store = Arc::clone(&self.trace_store);
         let tracker = Arc::clone(&self.workflow_tracker);
+        let trace_writer = Arc::clone(&self.trace_writer);
 
         let span = tracing::info_span!(
             "process",
@@ -109,6 +114,11 @@ impl Foundry for FoundryService {
                     blocks_executed = result.block_executions.len(),
                     "event chain complete"
                 );
+
+                // Persist trace to disk before inserting into the in-memory store.
+                if let Err(e) = trace_writer.write(&bg_event_id, &result) {
+                    tracing::warn!(error = %e, event_id = %bg_event_id, "failed to write trace to disk");
+                }
 
                 trace_store.insert(bg_event_id, result);
             }
@@ -226,6 +236,14 @@ impl Foundry for FoundryService {
                     summary: b.summary.clone(),
                     emitted_event_ids: b.emitted_event_ids.clone(),
                     duration_ms: b.duration_ms,
+                    raw_output: b.raw_output.clone().unwrap_or_default(),
+                    exit_code: b.exit_code.unwrap_or(0),
+                    trigger_payload_json: b.trigger_payload.to_string(),
+                    emitted_payload_jsons: b
+                        .emitted_payloads
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
                 })
                 .collect();
 

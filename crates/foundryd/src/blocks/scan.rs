@@ -63,6 +63,8 @@ impl TaskBlock for ScanDependencies {
                     events: vec![],
                     success: false,
                     summary: format!("Project '{project}' not found in registry"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -77,6 +79,8 @@ impl TaskBlock for ScanDependencies {
                     events: vec![],
                     success: true,
                     summary: format!("Scan skipped: {err}"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             }
 
@@ -86,6 +90,8 @@ impl TaskBlock for ScanDependencies {
                     events: vec![],
                     success: true,
                     summary: format!("{project}: no vulnerabilities found"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             }
 
@@ -117,6 +123,8 @@ impl TaskBlock for ScanDependencies {
                 events,
                 success: true,
                 summary: format!("{project}: {count} vulnerabilities found ({})", cves.join(", ")),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }

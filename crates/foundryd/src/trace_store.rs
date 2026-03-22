@@ -1,8 +1,10 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::engine::ProcessResult;
+use foundry_core::trace::ProcessResult;
+
+use crate::trace_writer::TraceWriter;
 
 /// A stored trace entry with expiry tracking.
 struct TraceEntry {
@@ -11,17 +13,32 @@ struct TraceEntry {
 }
 
 /// In-memory store for completed event chain results, queryable by root `event_id`.
+///
+/// When a `TraceWriter` is attached, memory-miss lookups fall back to disk.
 pub struct TraceStore {
     entries: RwLock<HashMap<String, TraceEntry>>,
     ttl: Duration,
+    trace_writer: Option<Arc<TraceWriter>>,
 }
 
 impl TraceStore {
-    /// Create a new trace store with the given TTL for entries.
+    /// Create a new trace store with the given TTL for entries and no disk fallback.
+    #[cfg(test)]
     pub fn new(ttl: Duration) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
             ttl,
+            trace_writer: None,
+        }
+    }
+
+    /// Create a trace store backed by a `TraceWriter` for disk fallback on
+    /// memory misses.
+    pub fn with_trace_writer(ttl: Duration, trace_writer: Arc<TraceWriter>) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl,
+            trace_writer: Some(trace_writer),
         }
     }
 
@@ -40,25 +57,32 @@ impl TraceStore {
         );
     }
 
-    /// Retrieve a stored trace by root `event_id`, if it exists and hasn't expired.
+    /// Retrieve a stored trace by root `event_id`.
+    ///
+    /// Checks memory first.  On a miss, falls back to the attached
+    /// `TraceWriter` (if any) to load from disk.
     pub fn get(&self, event_id: &str) -> Option<ProcessResult> {
-        let entries = self.entries.read().expect("trace store lock poisoned");
-        entries.get(event_id).and_then(|entry| {
-            if Instant::now().duration_since(entry.stored_at) < self.ttl {
-                Some(entry.result.clone())
-            } else {
-                None
+        // Memory lookup
+        {
+            let entries = self.entries.read().expect("trace store lock poisoned");
+            if let Some(entry) = entries.get(event_id) {
+                if Instant::now().duration_since(entry.stored_at) < self.ttl {
+                    return Some(entry.result.clone());
+                }
             }
-        })
+        }
+
+        // Disk fallback
+        self.trace_writer.as_ref().and_then(|tw| tw.read(event_id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::BlockExecution;
     use foundry_core::event::{Event, EventType};
     use foundry_core::throttle::Throttle;
+    use foundry_core::trace::BlockExecution;
 
     fn sample_result() -> ProcessResult {
         let event = Event::new(
@@ -76,6 +100,10 @@ mod tests {
                 summary: "did stuff".to_string(),
                 emitted_event_ids: vec![],
                 duration_ms: 0,
+                raw_output: None,
+                exit_code: None,
+                trigger_payload: serde_json::json!({}),
+                emitted_payloads: vec![],
             }],
             total_duration_ms: 0,
         }

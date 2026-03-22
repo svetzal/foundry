@@ -60,6 +60,8 @@ impl TaskBlock for RouteProjectWorkflow {
                     events: vec![],
                     success: true,
                     summary: format!("{project}: skipped — validation status={status}"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             }
 
@@ -77,6 +79,8 @@ impl TaskBlock for RouteProjectWorkflow {
                     )],
                     success: true,
                     summary: format!("{project}: routing to iteration workflow"),
+                    raw_output: None,
+                    exit_code: None,
                 })
             } else if maintain {
                 tracing::info!(%project, "routing to maintenance workflow");
@@ -89,6 +93,8 @@ impl TaskBlock for RouteProjectWorkflow {
                     )],
                     success: true,
                     summary: format!("{project}: routing to maintenance workflow"),
+                    raw_output: None,
+                    exit_code: None,
                 })
             } else {
                 tracing::info!(%project, "no automation actions enabled");
@@ -96,6 +102,8 @@ impl TaskBlock for RouteProjectWorkflow {
                     events: vec![],
                     success: true,
                     summary: format!("{project}: no automation actions enabled"),
+                    raw_output: None,
+                    exit_code: None,
                 })
             }
         })

@@ -86,6 +86,8 @@ impl AuditReleaseTag {
                     events: vec![],
                     success: true,
                     summary: "Skipped: project not in registry".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             });
         };
@@ -116,6 +118,8 @@ impl AuditReleaseTag {
                 )],
                 success: true,
                 summary: format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }
@@ -295,7 +299,7 @@ async fn perform_tag_checkout_and_scan(
             payload_vulnerable,
             payload_dirty,
         ));
-    };
+    }; // vulnerabilities assigned above
 
     let vulnerable = !vulnerabilities.is_empty();
     // Use the first CVE ID from the scan result, or the payload CVE as fallback.
@@ -321,6 +325,8 @@ async fn perform_tag_checkout_and_scan(
         )],
         success: true,
         summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+        raw_output: None,
+        exit_code: None,
     })
 }
 
@@ -347,6 +353,8 @@ fn emit_payload_result(
         )],
         success: true,
         summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+        raw_output: None,
+        exit_code: None,
     }
 }
 
@@ -408,6 +416,8 @@ impl TaskBlock for AuditMainBranch {
                     events: vec![],
                     success: true,
                     summary: "Skipped: release tag not vulnerable".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             });
         }
@@ -478,6 +488,8 @@ impl TaskBlock for AuditMainBranch {
                 )],
                 success: true,
                 summary: format!("Main branch audited: {cve} dirty={dirty}"),
+                raw_output: None,
+                exit_code: None,
             })
         })
     }

@@ -46,6 +46,7 @@ impl TaskBlock for RemediateVulnerability {
         &[EventType::MainBranchAudited]
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -68,6 +69,8 @@ impl TaskBlock for RemediateVulnerability {
                     events: vec![],
                     success: true,
                     summary: "Skipped: main branch is clean".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 })
             });
         }
@@ -92,6 +95,8 @@ impl TaskBlock for RemediateVulnerability {
                     events: vec![],
                     success: false,
                     summary: format!("Project '{project}' not found in registry"),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -119,6 +124,14 @@ impl TaskBlock for RemediateVulnerability {
                     None,
                 )
                 .await;
+
+            let (raw_output, exit_code) = match &run_result {
+                Ok(r) => (
+                    Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+                    Some(r.exit_code),
+                ),
+                Err(_) => (None, None),
+            };
 
             let (success, hone_summary) = match run_result {
                 Ok(result) => {
@@ -156,6 +169,8 @@ impl TaskBlock for RemediateVulnerability {
                 } else {
                     format!("Remediation of {cve} failed: {hone_summary}")
                 },
+                raw_output,
+                exit_code,
             })
         })
     }

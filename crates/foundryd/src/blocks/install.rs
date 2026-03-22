@@ -85,6 +85,8 @@ impl TaskBlock for InstallLocally {
                     )],
                     success: true,
                     summary: "Skipped: project not found in registry".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -99,6 +101,8 @@ impl TaskBlock for InstallLocally {
                     )],
                     success: true,
                     summary: "Skipped: no install config defined".to_string(),
+                    raw_output: None,
+                    exit_code: None,
                 });
             };
 
@@ -121,6 +125,9 @@ impl TaskBlock for InstallLocally {
             };
 
             let success = cmd_result.success;
+            let raw_output =
+                Some(format!("{}\n{}", cmd_result.stdout, cmd_result.stderr).trim().to_string());
+            let exit_code = Some(cmd_result.exit_code);
             let details = if success {
                 cmd_result.stdout.lines().next().unwrap_or("ok").to_string()
             } else {
@@ -151,6 +158,8 @@ impl TaskBlock for InstallLocally {
                 } else {
                     format!("Install via {method_name} failed: {details}")
                 },
+                raw_output,
+                exit_code,
             })
         })
     }

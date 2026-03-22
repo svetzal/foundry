@@ -68,6 +68,10 @@ message TraceBlockExecution {
     string summary = 4;
     repeated string emitted_event_ids = 5;
     uint64 duration_ms = 7;
+    string raw_output = 8;
+    int32 exit_code = 9;
+    string trigger_payload_json = 10;
+    repeated string emitted_payload_jsons = 11;
 }
 
 // A single event in a trace chain.
