@@ -10,6 +10,7 @@ mod blocks;
 mod engine;
 mod event_writer;
 mod orchestrator;
+mod scanner;
 mod service;
 mod shell;
 #[allow(dead_code)]
