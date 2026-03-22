@@ -20,6 +20,16 @@ impl Registry {
         Ok(registry)
     }
 
+    /// Serialize the registry to a JSON file at the given path.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
     /// Return only the projects that are not marked as skipped.
     pub fn active_projects(&self) -> Vec<&ProjectEntry> {
         self.projects.iter().filter(|p| !p.skip.unwrap_or(false)).collect()
@@ -314,6 +324,34 @@ mod tests {
         assert_eq!(registry.version, 2);
         assert_eq!(registry.projects.len(), 1);
         assert_eq!(registry.projects[0].name, "my-project");
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let original: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+
+        original.save(&path).unwrap();
+        let loaded = Registry::load(&path).unwrap();
+
+        assert_eq!(loaded.version, original.version);
+        assert_eq!(loaded.projects.len(), original.projects.len());
+        assert_eq!(loaded.projects[0].name, original.projects[0].name);
+        assert_eq!(loaded.projects[0].stack, original.projects[0].stack);
+    }
+
+    #[test]
+    fn save_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("dir").join("registry.json");
+
+        let registry = Registry {
+            version: 2,
+            projects: vec![],
+        };
+        registry.save(&path).unwrap();
+        assert!(path.exists());
     }
 
     #[test]
