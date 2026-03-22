@@ -463,7 +463,7 @@ mod tests {
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies));
         engine.register(Box::new(crate::blocks::AuditReleaseTag::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::AuditMainBranch));
+        engine.register(Box::new(crate::blocks::AuditMainBranch::new(Arc::clone(&registry))));
         engine
             .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));

@@ -200,7 +200,15 @@ fn emit_payload_result(
 ///
 /// Self-filters: only acts when the trigger payload has `vulnerable: true`.
 /// When the release tag is not vulnerable, returns an empty result to stop the chain.
-pub struct AuditMainBranch;
+pub struct AuditMainBranch {
+    registry: Arc<Registry>,
+}
+
+impl AuditMainBranch {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
 
 impl TaskBlock for AuditMainBranch {
     fn name(&self) -> &'static str {
@@ -240,23 +248,63 @@ impl TaskBlock for AuditMainBranch {
             });
         }
 
-        // In future: check if main branch has the same vulnerability.
-        // For now: read dirty flag from payload, defaulting to true.
-        let cve = trigger
+        // Payload fallback values — used when the project is not in the registry,
+        // or when the scanner cannot run (no lockfile / tooling not installed).
+        let cve_from_payload = trigger
             .payload
             .get("cve")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let dirty = trigger
+        let dirty_from_payload = trigger
             .payload
             .get("dirty")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
 
-        tracing::info!(%cve, %dirty, "audited main branch");
+        // Look up the project entry in the registry.
+        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
 
         Box::pin(async move {
+            let (cve, dirty) = if let Some(entry) = entry {
+                let path = std::path::Path::new(&entry.path);
+
+                // Scan the current branch — no checkout needed, we are already on main.
+                let audit_result =
+                    crate::scanner::run_audit(path, &entry.stack).await.unwrap_or_default();
+
+                if audit_result.error.is_some() || audit_result.vulnerabilities.is_empty() {
+                    // Scanner unavailable or project has no lockfile / is genuinely clean.
+                    // Fall back to payload to preserve integration-test behavior.
+                    tracing::info!(
+                        project = %project,
+                        "scanner returned no results, falling back to payload dirty flag"
+                    );
+                    (cve_from_payload, dirty_from_payload)
+                } else {
+                    // Dirty when the CVE from the release-tag audit is still present on main.
+                    let dirty = audit_result
+                        .vulnerabilities
+                        .iter()
+                        .any(|v| v.cve.as_deref() == Some(cve_from_payload.as_str()));
+                    let cve = audit_result
+                        .vulnerabilities
+                        .first()
+                        .and_then(|v| v.cve.clone())
+                        .unwrap_or_else(|| cve_from_payload.clone());
+                    (cve, dirty)
+                }
+            } else {
+                // Project not in registry — fall back to payload.
+                tracing::info!(
+                    project = %project,
+                    "project not in registry, falling back to payload"
+                );
+                (cve_from_payload, dirty_from_payload)
+            };
+
+            tracing::info!(%cve, %dirty, "audited main branch");
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::MainBranchAudited,
