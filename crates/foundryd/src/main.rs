@@ -7,7 +7,9 @@ use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
+mod scanner;
 mod service;
+mod shell;
 mod trace_store;
 
 pub mod proto {
