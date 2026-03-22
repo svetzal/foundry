@@ -316,7 +316,7 @@ mod tests {
     fn vuln_engine() -> Engine {
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies));
-        engine.register(Box::new(crate::blocks::AuditReleaseTag));
+        engine.register(Box::new(crate::blocks::AuditReleaseTag::new()));
         engine.register(Box::new(crate::blocks::AuditMainBranch));
         engine.register(Box::new(crate::blocks::RemediateVulnerability));
         engine.register(Box::new(crate::blocks::CommitAndPush));
