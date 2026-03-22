@@ -1,0 +1,10 @@
+# Tarpaulin configuration for code coverage
+# https://github.com/xd009642/tarpaulin
+
+[report]
+# Output formats
+out-type = ["Html", "Lcov"]
+
+[run]
+# Timeout for test execution (in seconds)
+timeout = "300s"

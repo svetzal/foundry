@@ -1,0 +1,15 @@
+[book]
+title = "Foundry — Event-Driven Engineering Workflow Engine"
+authors = ["Stacey Vetzal"]
+description = "Composable task blocks connected by events with throttle-controlled propagation"
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true
+
+[build]
+build-dir = "book"
+create-missing = true

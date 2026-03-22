@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package foundry;
+
+// Throttle controls how far an event ripples through task blocks.
+enum Throttle {
+    THROTTLE_FULL = 0;       // All task blocks emit downstream events
+    THROTTLE_AUDIT_ONLY = 1; // Only observation blocks emit; mutation blocks suppress
+    THROTTLE_DRY_RUN = 2;    // Read-only; no side effects, no mutation events
+}
+
+// An event emitted into the system.
+message Event {
+    string id = 1;
+    string event_type = 2;
+    string project = 3;
+    string occurred_at = 4;  // ISO 8601
+    string payload_json = 5; // Event-type-specific payload as JSON
+    Throttle throttle = 6;
+}
+
+// Status of a running or completed workflow.
+message WorkflowStatus {
+    string workflow_id = 1;
+    string workflow_type = 2;
+    string project = 3;
+    string state = 4;         // pending, running, completed, failed
+    string started_at = 5;
+    string completed_at = 6;
+    repeated TaskBlockStatus task_blocks = 7;
+}
+
+message TaskBlockStatus {
+    string name = 1;
+    string state = 2;         // pending, running, completed, skipped, failed
+    string started_at = 3;
+    string completed_at = 4;
+    bool throttled = 5;       // true if emission was suppressed by throttle
+}
+
+// Request/response for emitting an event.
+message EmitRequest {
+    string event_type = 1;
+    string project = 2;
+    Throttle throttle = 3;
+    string payload_json = 4;  // Optional additional payload
+}
+
+message EmitResponse {
+    string event_id = 1;
+    string workflow_id = 2;   // Workflow spawned by this event, if any
+}
+
+// Request/response for querying status.
+message StatusRequest {
+    string workflow_id = 1;   // Specific workflow, or empty for all active
+}
+
+message StatusResponse {
+    repeated WorkflowStatus workflows = 1;
+}
+
+// A block execution record within a trace.
+message TraceBlockExecution {
+    string block_name = 1;
+    string trigger_event_id = 2;
+    bool success = 3;
+    string summary = 4;
+    repeated string emitted_event_ids = 5;
+}
+
+// A single event in a trace chain.
+message TraceEvent {
+    string event_id = 1;
+    string event_type = 2;
+    string project = 3;
+    string occurred_at = 4;
+    Throttle throttle = 5;
+}
+
+// Request to retrieve a completed event trace.
+message TraceRequest {
+    string event_id = 1;  // Root event ID to look up
+}
+
+// Response containing the full event chain and block executions.
+message TraceResponse {
+    bool found = 1;
+    repeated TraceEvent events = 2;
+    repeated TraceBlockExecution block_executions = 3;
+}
+
+// The Foundry service.
+service Foundry {
+    // Emit an event into the system. May trigger a workflow.
+    rpc Emit(EmitRequest) returns (EmitResponse);
+
+    // Get status of active workflows.
+    rpc Status(StatusRequest) returns (StatusResponse);
+
+    // Stream workflow events as they occur.
+    rpc Watch(StatusRequest) returns (stream WorkflowStatus);
+
+    // Retrieve the trace of a completed event chain.
+    rpc Trace(TraceRequest) returns (TraceResponse);
+}

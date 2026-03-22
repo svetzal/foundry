@@ -1,0 +1,26 @@
+# Rustfmt configuration for consistent code formatting
+# Run with: cargo fmt
+
+# Edition
+edition = "2024"
+
+# Maximum line width
+max_width = 100
+
+# Indentation
+tab_spaces = 4
+hard_tabs = false
+
+# Function formatting
+fn_params_layout = "Tall"
+fn_call_width = 80
+
+# Chains and expressions
+chain_width = 80
+use_small_heuristics = "Default"
+
+# Misc
+newline_style = "Unix"
+remove_nested_parens = true
+use_field_init_shorthand = true
+use_try_shorthand = true
