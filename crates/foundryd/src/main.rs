@@ -34,6 +34,11 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::CutRelease));
     engine.register(Box::new(blocks::WatchPipeline));
     engine.register(Box::new(blocks::InstallLocally));
+    // Maintenance workflow: ValidateProject fires first (to be added),
+    // then RouteProjectWorkflow routes to the correct sub-workflow.
+    engine.register(Box::new(blocks::RouteProjectWorkflow));
+    engine.register(Box::new(blocks::RunHoneIterate));
+    engine.register(Box::new(blocks::RunHoneMaintain));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));

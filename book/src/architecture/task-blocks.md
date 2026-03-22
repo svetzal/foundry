@@ -53,10 +53,36 @@ per event.
 > re-audit after a fix is pushed, confirming the vulnerability is resolved
 > before cutting a release.
 
-### Planned: Maintenance
+### Maintenance
+
+The maintenance workflow uses an explicit routing Observer (`Route Project
+Workflow`) to delineate which sub-workflow runs.  This keeps each downstream
+block focused on a single responsibility.
 
 | Block | Kind | Sinks On | Emits |
 |-------|------|----------|-------|
 | Validate Project | Observer | `maintenance_run_started` | `project_validation_completed` |
-| Run Hone Iterate | Mutator | `project_validation_completed` | `project_iterate_completed` |
-| Run Hone Maintain | Mutator | `project_iterate_completed` | `project_maintain_completed` |
+| Route Project Workflow | Observer | `project_validation_completed` | `iteration_requested` or `maintenance_requested` |
+| Run Hone Iterate | Mutator | `iteration_requested` | `project_iterate_completed`, optionally `maintenance_requested` |
+| Run Hone Maintain | Mutator | `maintenance_requested` | `project_maintain_completed` |
+
+#### Maintenance Workflow Chain
+
+```mermaid
+flowchart TD
+    A([maintenance_run_started]) --> B[[Validate Project]]
+    B --> C([project_validation_completed])
+    C --> D[[Route Project Workflow]]
+    D -->|iterate=true| E([iteration_requested])
+    D -->|iterate=false, maintain=true| F([maintenance_requested])
+    D -->|no actions| G([end — no automation])
+    E --> H[[Run Hone Iterate]]
+    H --> I([project_iterate_completed])
+    H -->|maintain=true| F
+    F --> J[[Run Hone Maintain]]
+    J --> K([project_maintain_completed])
+```
+
+The `actions.maintain` flag is forwarded inside the `iteration_requested`
+payload so that `Run Hone Iterate` can chain directly to `maintenance_requested`
+after a successful iteration without re-querying the project configuration.

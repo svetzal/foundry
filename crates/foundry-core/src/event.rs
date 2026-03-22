@@ -84,6 +84,10 @@ pub enum EventType {
     ProjectChangesCommitted,
     ProjectChangesPushed,
 
+    // Maintenance sub-workflow triggers
+    IterationRequested,
+    MaintenanceRequested,
+
     // Run lifecycle
     MaintenanceRunStarted,
     MaintenanceRunCompleted,
@@ -114,6 +118,8 @@ impl EventType {
             Self::ProjectMaintainCompleted => "project_maintain_completed",
             Self::ProjectChangesCommitted => "project_changes_committed",
             Self::ProjectChangesPushed => "project_changes_pushed",
+            Self::IterationRequested => "iteration_requested",
+            Self::MaintenanceRequested => "maintenance_requested",
             Self::MaintenanceRunStarted => "maintenance_run_started",
             Self::MaintenanceRunCompleted => "maintenance_run_completed",
             Self::ReleaseTagAudited => "release_tag_audited",
@@ -143,6 +149,8 @@ impl std::str::FromStr for EventType {
             "project_maintain_completed" => Ok(Self::ProjectMaintainCompleted),
             "project_changes_committed" => Ok(Self::ProjectChangesCommitted),
             "project_changes_pushed" => Ok(Self::ProjectChangesPushed),
+            "iteration_requested" => Ok(Self::IterationRequested),
+            "maintenance_requested" => Ok(Self::MaintenanceRequested),
             "maintenance_run_started" => Ok(Self::MaintenanceRunStarted),
             "maintenance_run_completed" => Ok(Self::MaintenanceRunCompleted),
             "release_tag_audited" => Ok(Self::ReleaseTagAudited),
@@ -167,6 +175,44 @@ impl std::fmt::Display for EventType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iteration_requested_as_str() {
+        assert_eq!(EventType::IterationRequested.as_str(), "iteration_requested");
+    }
+
+    #[test]
+    fn maintenance_requested_as_str() {
+        assert_eq!(EventType::MaintenanceRequested.as_str(), "maintenance_requested");
+    }
+
+    #[test]
+    fn iteration_requested_from_str() {
+        let parsed: EventType = "iteration_requested".parse().expect("should parse");
+        assert_eq!(parsed, EventType::IterationRequested);
+    }
+
+    #[test]
+    fn maintenance_requested_from_str() {
+        let parsed: EventType = "maintenance_requested".parse().expect("should parse");
+        assert_eq!(parsed, EventType::MaintenanceRequested);
+    }
+
+    #[test]
+    fn iteration_requested_serde_round_trip() {
+        let original = EventType::IterationRequested;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn maintenance_requested_serde_round_trip() {
+        let original = EventType::MaintenanceRequested;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
 
     #[test]
     fn event_id_is_deterministic() {

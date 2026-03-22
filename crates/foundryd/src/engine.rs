@@ -440,6 +440,148 @@ mod tests {
         );
     }
 
+    // -- Maintenance workflow integration tests --
+
+    /// Builds an engine with only the maintenance workflow blocks registered.
+    /// RunHoneMaintain is intentionally excluded from vuln_engine() — it is
+    /// maintenance-only and must not respond to vulnerability-workflow events.
+    fn maintenance_engine() -> Engine {
+        let mut engine = Engine::new();
+        engine.register(Box::new(crate::blocks::RouteProjectWorkflow));
+        engine.register(Box::new(crate::blocks::RunHoneIterate));
+        engine.register(Box::new(crate::blocks::RunHoneMaintain));
+        engine
+    }
+
+    #[tokio::test]
+    async fn maintenance_chain_with_iterate_and_maintain() {
+        let engine = maintenance_engine();
+
+        // Simulate what ValidateProject would emit: status=ok, both actions enabled.
+        let trigger = Event::new(
+            EventType::ProjectValidationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "status": "ok",
+                "actions": { "iterate": true, "maintain": true },
+            }),
+        );
+
+        let result = engine.process(trigger).await;
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+        // RouteProjectWorkflow emits IterationRequested (Observer, always emits).
+        // RunHoneIterate is a Mutator — emits ProjectIterateCompleted and
+        // MaintenanceRequested (maintain=true forwarded).
+        // RunHoneMaintain emits ProjectMaintainCompleted.
+        assert_eq!(
+            types,
+            [
+                "project_validation_completed",
+                "iteration_requested",
+                "project_iterate_completed",
+                "maintenance_requested",
+                "project_maintain_completed",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_chain_maintain_only() {
+        let engine = maintenance_engine();
+
+        // iterate=false, maintain=true — router goes directly to maintenance.
+        let trigger = Event::new(
+            EventType::ProjectValidationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "status": "ok",
+                "actions": { "iterate": false, "maintain": true },
+            }),
+        );
+
+        let result = engine.process(trigger).await;
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+        assert_eq!(
+            types,
+            [
+                "project_validation_completed",
+                "maintenance_requested",
+                "project_maintain_completed",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_chain_validation_failure_short_circuits() {
+        let engine = maintenance_engine();
+
+        // Validation failed — router emits nothing, chain stops.
+        let trigger = Event::new(
+            EventType::ProjectValidationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "status": "error",
+                "reason": "directory not found",
+                "actions": { "iterate": true, "maintain": true },
+            }),
+        );
+
+        let result = engine.process(trigger).await;
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+        // Only the trigger event — no routing, no hone calls.
+        assert_eq!(types, ["project_validation_completed"]);
+    }
+
+    #[tokio::test]
+    async fn maintenance_chain_no_actions_short_circuits() {
+        let engine = maintenance_engine();
+
+        // Validation passed but no actions enabled — router emits nothing.
+        let trigger = Event::new(
+            EventType::ProjectValidationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "status": "ok",
+                "actions": { "iterate": false, "maintain": false },
+            }),
+        );
+
+        let result = engine.process(trigger).await;
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+        assert_eq!(types, ["project_validation_completed"]);
+    }
+
+    #[tokio::test]
+    async fn maintenance_chain_dry_run_observer_emits_mutators_skipped() {
+        let engine = maintenance_engine();
+
+        // DryRun: RouteProjectWorkflow (Observer) emits IterationRequested,
+        // but RunHoneIterate (Mutator) is skipped — nothing further fires.
+        let trigger = Event::new(
+            EventType::ProjectValidationCompleted,
+            "my-project".to_string(),
+            Throttle::DryRun,
+            serde_json::json!({
+                "status": "ok",
+                "actions": { "iterate": true, "maintain": true },
+            }),
+        );
+
+        let result = engine.process(trigger).await;
+        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+        // Observer emits IterationRequested; mutators are skipped (DryRun).
+        assert_eq!(types, ["project_validation_completed", "iteration_requested"]);
+    }
+
     // -- Scan-triggered workflow integration tests --
 
     #[tokio::test]
