@@ -145,14 +145,18 @@ impl Foundry for FoundryService {
                     success: b.success,
                     summary: b.summary.clone(),
                     emitted_event_ids: b.emitted_event_ids.clone(),
+                    duration_ms: b.duration_ms,
                 })
                 .collect();
+
+            let total_duration_ms = result.total_duration_ms;
 
             tracing::info!("trace found");
             Ok(Response::new(TraceResponse {
                 found: true,
                 events,
                 block_executions,
+                total_duration_ms,
             }))
         } else {
             tracing::info!("trace not found");
@@ -160,6 +164,7 @@ impl Foundry for FoundryService {
                 found: false,
                 events: vec![],
                 block_executions: vec![],
+                total_duration_ms: 0,
             }))
         }
     }

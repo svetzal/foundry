@@ -67,6 +67,7 @@ message TraceBlockExecution {
     bool success = 3;
     string summary = 4;
     repeated string emitted_event_ids = 5;
+    uint64 duration_ms = 7;
 }
 
 // A single event in a trace chain.
@@ -88,6 +89,7 @@ message TraceResponse {
     bool found = 1;
     repeated TraceEvent events = 2;
     repeated TraceBlockExecution block_executions = 3;
+    uint64 total_duration_ms = 5;
 }
 
 // The Foundry service.
