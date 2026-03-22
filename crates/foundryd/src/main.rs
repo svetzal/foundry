@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 mod blocks;
 mod engine;
 mod event_writer;
-// mod orchestrator; -- will be added with W30 merge
+mod orchestrator;
 mod service;
 mod shell;
 #[allow(dead_code)]
