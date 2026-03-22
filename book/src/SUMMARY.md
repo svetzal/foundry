@@ -14,7 +14,9 @@
 
 - [Getting Started](guide/getting-started.md)
 - [Emitting Events](guide/emitting-events.md)
+- [The Project Registry](guide/registry.md)
 - [Vulnerability Remediation](guide/vulnerability-remediation.md)
+- [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Throttle Control](guide/throttle.md)
 - [Writing Task Blocks](guide/writing-task-blocks.md)
 

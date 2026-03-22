@@ -71,13 +71,48 @@ let mut engine = engine::Engine::new();
 engine.register(Box::new(blocks::MyBlock));
 ```
 
+## RetryPolicy
+
+Override `retry_policy()` to enable automatic retry of transient failures.
+The default is zero retries (execute exactly once).
+
+```rust
+use std::time::Duration;
+use foundry_core::task_block::RetryPolicy;
+
+fn retry_policy(&self) -> RetryPolicy {
+    RetryPolicy {
+        max_retries: 3,
+        backoff: Duration::from_secs(5),
+    }
+}
+```
+
+With `max_retries: N`, the engine tries the block up to `N + 1` times total
+(1 initial attempt plus up to N retries), sleeping `backoff` between each
+attempt. Both `Err` results and `TaskBlockResult { success: false, .. }` trigger
+a retry. The final attempt's outcome is what appears in the `BlockExecution`
+trace.
+
+Use retries for operations that may fail transiently (network calls, shell
+commands that occasionally time out). Do not use retries for operations that
+are expected to fail deterministically (e.g. self-filtering by payload).
+
 ## File Organization
 
 Place block implementations in `foundryd/src/blocks/`:
 
 ```text
 blocks/
-├── mod.rs      # pub use declarations
-├── greet.rs    # hello-world blocks
-└── audit.rs    # vulnerability audit blocks (future)
+├── mod.rs           # pub use declarations
+├── greet.rs         # hello-world blocks (ComposeGreeting, DeliverGreeting)
+├── validate.rs      # ValidateProject
+├── hone_iterate.rs  # RunHoneIterate
+├── hone_maintain.rs # RunHoneMaintain
+├── git_ops.rs       # CommitAndPush
+├── audit.rs         # AuditReleaseTag, AuditMainBranch
+├── release.rs       # CutRelease, WatchPipeline
+├── install.rs       # InstallLocally
+├── remediate.rs     # RemediateVulnerability
+└── scan.rs          # ScanDependencies
 ```
