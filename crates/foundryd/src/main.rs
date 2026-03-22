@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 mod blocks;
 mod engine;
+mod event_writer;
 mod service;
 mod shell;
 mod trace_store;
