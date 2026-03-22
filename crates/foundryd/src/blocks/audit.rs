@@ -68,23 +68,31 @@ impl AuditReleaseTag {
 
         tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
 
-        // TODO: Shell out to the appropriate scanner (cargo audit, npm audit, etc.)
-        //       using `entry.path` and `entry.stack`.
-        // Stub: report clean (no vulnerabilities found after push).
         Box::pin(async move {
+            let path = std::path::Path::new(&entry.path);
+            let audit_result =
+                crate::scanner::run_audit(path, &entry.stack).await.unwrap_or_default();
+
+            let vulnerable = !audit_result.vulnerabilities.is_empty();
+            let cve = audit_result
+                .vulnerabilities
+                .first()
+                .and_then(|v| v.cve.clone())
+                .unwrap_or_else(|| "none".to_string());
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::ReleaseTagAudited,
                     project,
                     throttle,
                     serde_json::json!({
-                        "cve": "none",
-                        "vulnerable": false,
+                        "cve": cve,
+                        "vulnerable": vulnerable,
                         "dirty": false,
                     }),
                 )],
                 success: true,
-                summary: format!("Post-push audit: {} (stub, no vulnerabilities)", entry.stack),
+                summary: format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
             })
         })
     }
