@@ -45,5 +45,8 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Async stream utilities
+async-stream = "0.3"
+
 # Testing
 tempfile = "3"

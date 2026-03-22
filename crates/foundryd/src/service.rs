@@ -1,6 +1,7 @@
+use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::broadcast;
 use tonic::{Request, Response, Status};
 
 use foundry_core::event::{Event, EventType};
@@ -9,20 +10,27 @@ use foundry_core::throttle::Throttle;
 use crate::engine::Engine;
 use crate::proto::{
     EmitRequest, EmitResponse, StatusRequest, StatusResponse, TraceBlockExecution, TraceEvent,
-    TraceRequest, TraceResponse, WorkflowStatus, foundry_server::Foundry,
+    TraceRequest, TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 
 pub struct FoundryService {
     engine: Arc<Engine>,
     trace_store: Arc<TraceStore>,
+    /// Sender held so new receivers can be created for each Watch subscriber.
+    event_tx: broadcast::Sender<Event>,
 }
 
 impl FoundryService {
-    pub fn new(engine: Arc<Engine>, trace_store: Arc<TraceStore>) -> Self {
+    pub fn new(
+        engine: Arc<Engine>,
+        trace_store: Arc<TraceStore>,
+        event_tx: broadcast::Sender<Event>,
+    ) -> Self {
         Self {
             engine,
             trace_store,
+            event_tx,
         }
     }
 }
@@ -96,18 +104,45 @@ impl Foundry for FoundryService {
         Ok(Response::new(response))
     }
 
-    type WatchStream = ReceiverStream<Result<WorkflowStatus, Status>>;
+    type WatchStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<WatchResponse, Status>> + Send>>;
 
     async fn watch(
         &self,
-        _request: Request<StatusRequest>,
+        request: Request<WatchRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
         let span = tracing::info_span!("watch");
         let _guard = span.enter();
 
-        tracing::info!("watch stream started");
-        let (_tx, rx) = tokio::sync::mpsc::channel(16);
-        Ok(Response::new(ReceiverStream::new(rx)))
+        let project_filter = request.into_inner().project;
+        let mut rx = self.event_tx.subscribe();
+
+        tracing::info!(project = %project_filter, "watch stream started");
+
+        let stream = async_stream::stream! {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if project_filter.is_empty() || event.project == project_filter {
+                            yield Ok(WatchResponse {
+                                event_id: event.id.clone(),
+                                event_type: event.event_type.to_string(),
+                                project: event.project.clone(),
+                                payload_json: event.payload.to_string(),
+                            });
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(missed = n, "watch subscriber lagged, skipping missed events");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn trace(

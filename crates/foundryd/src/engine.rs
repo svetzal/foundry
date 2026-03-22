@@ -1,3 +1,5 @@
+use tokio::sync::broadcast;
+
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::TaskBlock;
 
@@ -28,11 +30,22 @@ pub struct ProcessResult {
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
+    /// Optional broadcast channel for real-time event streaming to Watch clients.
+    event_tx: Option<broadcast::Sender<Event>>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self { blocks: vec![] }
+        Self {
+            blocks: vec![],
+            event_tx: None,
+        }
+    }
+
+    /// Attach a broadcast sender so events are pushed to Watch subscribers in real time.
+    pub fn with_event_broadcaster(mut self, tx: broadcast::Sender<Event>) -> Self {
+        self.event_tx = Some(tx);
+        self
     }
 
     /// Register a task block with the engine.
@@ -50,6 +63,11 @@ impl Engine {
             root_event_type = %event.event_type,
         );
         let _process_guard = process_span.enter();
+
+        // Broadcast the root event immediately so Watch clients see it in real time.
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event.clone()); // No receivers is normal — not an error.
+        }
 
         let mut all_events = vec![event.clone()];
         let mut block_executions = Vec::new();
@@ -100,6 +118,10 @@ impl Engine {
                         if block.should_emit(current.throttle) {
                             for emitted in result.events {
                                 emitted_ids.push(emitted.id.clone());
+                                // Broadcast each emitted event in real time.
+                                if let Some(tx) = &self.event_tx {
+                                    let _ = tx.send(emitted.clone()); // No receivers is normal.
+                                }
                                 all_events.push(emitted.clone());
                                 queue.push(emitted);
                             }

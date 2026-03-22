@@ -21,7 +21,9 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
-    let mut engine = engine::Engine::new();
+    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+
+    let mut engine = engine::Engine::new().with_event_broadcaster(event_tx.clone());
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
     engine.register(Box::new(blocks::ScanDependencies));
@@ -35,7 +37,7 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
-    let service = service::FoundryService::new(engine, trace_store);
+    let service = service::FoundryService::new(engine, trace_store, event_tx);
 
     let addr = "[::1]:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");

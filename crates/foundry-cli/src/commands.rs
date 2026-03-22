@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::proto::{
-    EmitRequest, StatusRequest, Throttle, TraceRequest, TraceResponse,
+    EmitRequest, StatusRequest, Throttle, TraceRequest, TraceResponse, WatchRequest,
     foundry_client::FoundryClient,
 };
 
@@ -65,25 +65,20 @@ pub async fn status(addr: &str, workflow_id: Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn watch(addr: &str, workflow_id: Option<String>) -> Result<()> {
+pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
     let mut client = FoundryClient::connect(addr.to_string()).await?;
 
-    let request = StatusRequest {
-        workflow_id: workflow_id.unwrap_or_default(),
+    let request = WatchRequest {
+        project: project.unwrap_or_default(),
     };
 
     let mut stream = client.watch(request).await?.into_inner();
 
-    while let Some(status) = stream.message().await? {
-        println!(
-            "{} [{}] {} — {}",
-            status.workflow_id, status.workflow_type, status.project, status.state
-        );
-        for tb in &status.task_blocks {
-            let throttled = if tb.throttled { " (throttled)" } else { "" };
-            println!("  {} — {}{}", tb.name, tb.state, throttled);
+    while let Some(event) = stream.message().await? {
+        println!("{} {} project={}", event.event_id, event.event_type, event.project);
+        if !event.payload_json.is_empty() && event.payload_json != "{}" {
+            println!("  payload: {}", event.payload_json);
         }
-        println!();
     }
 
     Ok(())

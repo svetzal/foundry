@@ -90,6 +90,19 @@ message TraceResponse {
     repeated TraceBlockExecution block_executions = 3;
 }
 
+// Request to subscribe to the live event stream.
+message WatchRequest {
+    string project = 1;  // Filter by project, or empty string for all projects
+}
+
+// A single event delivered over the watch stream.
+message WatchResponse {
+    string event_id = 1;
+    string event_type = 2;
+    string project = 3;
+    string payload_json = 4;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -98,8 +111,8 @@ service Foundry {
     // Get status of active workflows.
     rpc Status(StatusRequest) returns (StatusResponse);
 
-    // Stream workflow events as they occur.
-    rpc Watch(StatusRequest) returns (stream WorkflowStatus);
+    // Stream events in real-time as they occur during engine processing.
+    rpc Watch(WatchRequest) returns (stream WatchResponse);
 
     // Retrieve the trace of a completed event chain.
     rpc Trace(TraceRequest) returns (TraceResponse);
