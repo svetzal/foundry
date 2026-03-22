@@ -62,7 +62,7 @@ Every event has:
 - **event_type** — One of the `EventType` enum variants
 - **project** — Which project this event relates to
 - **occurred_at / recorded_at** — When it happened vs. when it was logged
-- **throttle** — Propagated through the chain to control downstream behavior
+- **throttle** — Propagated through the chain to control downstream behaviour
 - **payload** — Event-type-specific JSON data
 
 ## Payload Conventions

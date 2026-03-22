@@ -98,7 +98,7 @@ Use retries for operations that may fail transiently (network calls, shell
 commands that occasionally time out). Do not use retries for operations that
 are expected to fail deterministically (e.g. self-filtering by payload).
 
-## File Organization
+## File Organisation
 
 Place block implementations in `foundryd/src/blocks/`:
 

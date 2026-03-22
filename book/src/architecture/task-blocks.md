@@ -79,61 +79,55 @@ These blocks form the maintenance workflow triggered by `MaintenanceRunStarted`.
 
 ## Vulnerability Workflow Chain
 
-```text
-scan_requested (or vulnerability_detected)
-  → Scan Dependencies (Observer)
-    → vulnerability_detected
-      → Audit Release Tag (Observer)
-        → release_tag_audited
-          → Audit Main Branch (Observer)
-            → main_branch_audited
-              │
-              ├─ dirty=true
-              │   → Remediate Vulnerability (Mutator)
-              │     → remediation_completed
-              │       → Commit and Push (Mutator)
-              │         → project_changes_committed
-              │         → project_changes_pushed
-              │           → Audit Release Tag (post-push, Observer)
-              │             → release_tag_audited
-              │           → Install Locally (Mutator)
-              │             → local_install_completed
-              │
-              └─ dirty=false
-                  → Cut Release (Mutator)
-                    → auto_release_completed
-                      → Watch Pipeline (Mutator)
-                        → release_pipeline_completed
-                          → Install Locally (Mutator)
-                            → local_install_completed
+```mermaid
+flowchart TD
+    A[scan_requested] --> B([Scan Dependencies])
+    B --> C[vulnerability_detected]
+    C --> D([Audit Release Tag])
+    D --> E[release_tag_audited]
+    E --> F([Audit Main Branch])
+    F --> G[main_branch_audited]
+    G --> H{dirty?}
+    H -->|dirty=true| I([Remediate Vulnerability])
+    I --> J[remediation_completed]
+    J --> K([Commit and Push])
+    K --> L[project_changes_committed]
+    K --> M[project_changes_pushed]
+    M --> N([Audit Release Tag post-push])
+    N --> O[release_tag_audited]
+    M --> P([Install Locally])
+    P --> Q[local_install_completed]
+    H -->|dirty=false| R([Cut Release])
+    R --> S[auto_release_completed]
+    S --> T([Watch Pipeline])
+    T --> U[release_pipeline_completed]
+    U --> V([Install Locally])
+    V --> W[local_install_completed]
 ```
 
 ## Maintenance Workflow Chain
 
-```text
-maintenance_run_started
-  → Validate Project (Observer)
-    → project_validation_completed
-      │
-      ├─ actions.iterate=true
-      │   → Run Hone Iterate (Mutator)
-      │     → project_iterate_completed
-      │       → Run Hone Maintain (Mutator, if actions.maintain=true)
-      │         → project_maintain_completed
-      │           → Commit and Push (Mutator)
-      │             → project_changes_committed
-      │             → project_changes_pushed
-      │               → Audit Release Tag (Observer)
-      │                 → release_tag_audited
-      │
-      └─ actions.iterate=false, actions.maintain=true
-          → Run Hone Maintain (Mutator)
-            → project_maintain_completed
-              → Commit and Push (Mutator)
-                → project_changes_committed
-                → project_changes_pushed
-                  → Audit Release Tag (Observer)
-                    → release_tag_audited
+```mermaid
+flowchart TD
+    A[maintenance_run_started] --> B([Validate Project])
+    B --> C[project_validation_completed]
+    C --> D{iterate?}
+    D -->|actions.iterate=true| E([Run Hone Iterate])
+    E --> F[project_iterate_completed]
+    F --> G([Run Hone Maintain])
+    G --> H[project_maintain_completed]
+    H --> I([Commit and Push])
+    I --> J[project_changes_committed]
+    I --> K[project_changes_pushed]
+    K --> L([Audit Release Tag])
+    L --> M[release_tag_audited]
+    D -->|actions.iterate=false, actions.maintain=true| N([Run Hone Maintain])
+    N --> O[project_maintain_completed]
+    O --> P([Commit and Push])
+    P --> Q[project_changes_committed]
+    P --> R[project_changes_pushed]
+    R --> S([Audit Release Tag])
+    S --> T[release_tag_audited]
 ```
 
 ## RetryPolicy

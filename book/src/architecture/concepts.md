@@ -8,7 +8,7 @@ to the event log. Events carry:
 - **id** — deterministic hash of content (same input always produces same ID)
 - **event_type** — what happened (e.g., `vulnerability_detected`)
 - **project** — which project this relates to
-- **throttle** — propagated through the chain, controls downstream behavior
+- **throttle** — propagated through the chain, controls downstream behaviour
 - **payload** — event-type-specific data as JSON
 - **occurred_at** / **recorded_at** — timestamps
 
@@ -31,9 +31,9 @@ executes them.
 
 ### Observer vs Mutator
 
-The distinction matters for throttle behavior:
+The distinction matters for throttle behaviour:
 
-| Kind | Examples | Throttle behavior |
+| Kind | Examples | Throttle behaviour |
 |------|----------|-------------------|
 | Observer | Audit tag, audit main, validate project | Always executes, always emits |
 | Mutator | Cut release, install locally, commit+push | Execution and emission controlled by throttle |

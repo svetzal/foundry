@@ -1,6 +1,6 @@
 # Crate Structure
 
-Foundry is organized as a Cargo workspace with three crates:
+Foundry is organised as a Cargo workspace with three crates:
 
 ```text
 foundry/

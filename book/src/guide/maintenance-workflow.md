@@ -31,30 +31,27 @@ Each active project in the registry gets its own `maintenance_run_started`
 event. The blocks that follow are gated by the project's `actions` flags in the
 registry.
 
-```text
-maintenance_run_started
-  → Validate Project (Observer, always runs)
-    → project_validation_completed { status: "ok" | "error" | "skipped" }
-      │
-      ├─ actions.iterate = true
-      │   → Run Hone Iterate (Mutator)
-      │     → project_iterate_completed
-      │       → Run Hone Maintain (Mutator, if actions.maintain = true)
-      │         → project_maintain_completed
-      │           → Commit and Push (Mutator, if actions.push = true)
-      │             → project_changes_committed
-      │             → project_changes_pushed
-      │               → Audit Release Tag (Observer)
-      │                 → release_tag_audited
-      │
-      └─ actions.iterate = false, actions.maintain = true
-          → Run Hone Maintain (Mutator)
-            → project_maintain_completed
-              → Commit and Push (Mutator, if actions.push = true)
-                → project_changes_committed
-                → project_changes_pushed
-                  → Audit Release Tag (Observer)
-                    → release_tag_audited
+```mermaid
+flowchart TD
+    A[maintenance_run_started] --> B([Validate Project])
+    B --> C["project_validation_completed\n{ status: ok | error | skipped }"]
+    C --> D{iterate?}
+    D -->|"actions.iterate = true"| E([Run Hone Iterate])
+    E --> F[project_iterate_completed]
+    F --> G([Run Hone Maintain])
+    G --> H[project_maintain_completed]
+    H --> I([Commit and Push])
+    I --> J[project_changes_committed]
+    I --> K[project_changes_pushed]
+    K --> L([Audit Release Tag])
+    L --> M[release_tag_audited]
+    D -->|"actions.iterate = false, actions.maintain = true"| N([Run Hone Maintain])
+    N --> O[project_maintain_completed]
+    O --> P([Commit and Push])
+    P --> Q[project_changes_committed]
+    P --> R[project_changes_pushed]
+    R --> S([Audit Release Tag])
+    S --> T[release_tag_audited]
 ```
 
 ### Step 1: Validate Project
