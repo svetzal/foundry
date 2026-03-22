@@ -26,13 +26,13 @@ pub fn list(registry_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<12} {:<6} ACTIONS", "NAME", "STACK", "SKIP");
-    println!("{}", "-".repeat(70));
+    println!("{:<20} {:<14} {:<8} ACTIONS", "NAME", "STACK", "SKIP");
+    println!("{}", "-".repeat(80));
 
     for p in &registry.projects {
-        let skip = if p.skip.unwrap_or(false) { "yes" } else { "no" };
+        let skip = if p.skip.is_some() { "yes" } else { "no" };
         let actions = format_actions(&p.actions);
-        println!("{:<20} {:<12} {:<6} {}", p.name, p.stack, skip, actions);
+        println!("{:<20} {:<14} {:<8} {}", p.name, p.stack, skip, actions);
     }
 
     Ok(())
@@ -51,16 +51,16 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
     println!("Agent:     {}", project.agent);
     println!("Repo:      {}", project.repo);
     println!("Branch:    {}", project.branch);
-    println!(
-        "Skip:      {}",
-        if project.skip.unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
-    );
+    if let Some(ref reason) = project.skip {
+        println!("Skip:      {reason}");
+    } else {
+        println!("Skip:      no");
+    }
     println!("Actions:   {}", format_actions(&project.actions));
 
+    if let Some(ref notes) = project.notes {
+        println!("Notes:     {notes}");
+    }
     if let Some(ref install) = project.install {
         match install {
             InstallConfig::Command(cmd) => println!("Install:   command: {cmd}"),
@@ -93,6 +93,7 @@ pub fn add(
     release: bool,
     install_command: Option<&str>,
     install_brew: Option<&str>,
+    notes: Option<&str>,
     timeout_secs: Option<u64>,
 ) -> Result<()> {
     let mut registry = load_or_init(registry_path)?;
@@ -119,6 +120,7 @@ pub fn add(
         repo: repo.to_string(),
         branch: branch.to_string(),
         skip: None,
+        notes: notes.map(str::to_string),
         actions: ActionFlags {
             iterate,
             maintain,
@@ -159,7 +161,7 @@ pub fn edit(
     agent: Option<&str>,
     repo: Option<&str>,
     branch: Option<&str>,
-    skip: Option<bool>,
+    skip: Option<&str>,
     iterate: Option<bool>,
     maintain: Option<bool>,
     push: Option<bool>,
@@ -167,6 +169,7 @@ pub fn edit(
     release: Option<bool>,
     install_command: Option<&str>,
     install_brew: Option<&str>,
+    notes: Option<&str>,
     timeout_secs: Option<u64>,
 ) -> Result<()> {
     let mut registry = Registry::load(registry_path)?;
@@ -193,7 +196,11 @@ pub fn edit(
         project.branch = v.to_string();
     }
     if let Some(v) = skip {
-        project.skip = Some(v);
+        if v.is_empty() {
+            project.skip = None;
+        } else {
+            project.skip = Some(v.to_string());
+        }
     }
     if let Some(v) = iterate {
         project.actions.iterate = v;
@@ -215,6 +222,13 @@ pub fn edit(
     }
     if let Some(formula) = install_brew {
         project.install = Some(InstallConfig::Brew(formula.to_string()));
+    }
+    if let Some(v) = notes {
+        if v.is_empty() {
+            project.notes = None;
+        } else {
+            project.notes = Some(v.to_string());
+        }
     }
     if let Some(v) = timeout_secs {
         project.timeout_secs = Some(v);

@@ -1,7 +1,24 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize `skip` as either a string reason, a boolean (`true` → `"skipped"`), or null.
+fn deserialize_skip<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Bool(true)) => Ok(Some("skipped".to_string())),
+        None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => Ok(None),
+        Some(serde_json::Value::String(s)) if s.is_empty() => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "expected string, bool, or null for skip, got {other}"
+        ))),
+    }
+}
 
 /// The project registry — the source of truth for which projects exist and what automation applies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +49,7 @@ impl Registry {
 
     /// Return only the projects that are not marked as skipped.
     pub fn active_projects(&self) -> Vec<&ProjectEntry> {
-        self.projects.iter().filter(|p| !p.skip.unwrap_or(false)).collect()
+        self.projects.iter().filter(|p| p.skip.is_none()).collect()
     }
 }
 
@@ -51,13 +68,17 @@ pub struct ProjectEntry {
     pub repo: String,
     /// Default branch to operate on.
     pub branch: String,
-    /// When `true` (or `null`-absent-treated-as-false), this project is excluded from runs.
-    pub skip: Option<bool>,
+    /// When set, this project is excluded from runs. The string is the reason why.
+    /// Absent or `null` means not skipped. Accepts `true`/`false` for backwards compatibility.
+    #[serde(default, deserialize_with = "deserialize_skip")]
+    pub skip: Option<String>,
     /// Which automation actions are enabled for this project.
     #[serde(default)]
     pub actions: ActionFlags,
     /// Optional local installation configuration.
     pub install: Option<InstallConfig>,
+    /// Human-readable notes about the project.
+    pub notes: Option<String>,
     /// Per-project timeout in seconds for long-running commands (e.g. hone).
     /// Defaults to 1800 (30 minutes) when absent.
     pub timeout_secs: Option<u64>,
@@ -106,6 +127,7 @@ pub enum Stack {
     Python,
     TypeScript,
     Elixir,
+    Cpp,
 }
 
 /// How to install the project locally after automation completes.
@@ -125,6 +147,7 @@ impl std::fmt::Display for Stack {
             Self::Python => write!(f, "python"),
             Self::TypeScript => write!(f, "typescript"),
             Self::Elixir => write!(f, "elixir"),
+            Self::Cpp => write!(f, "cpp"),
         }
     }
 }
@@ -146,7 +169,6 @@ mod tests {
                 "agent": "claude",
                 "repo": "owner/my-project",
                 "branch": "main",
-                "skip": false,
                 "actions": {
                     "iterate": true,
                     "maintain": true,
@@ -154,6 +176,7 @@ mod tests {
                     "audit": true,
                     "release": false
                 },
+                "notes": "Test project",
                 "install": {
                     "command": "cargo install --path ."
                 }
@@ -174,7 +197,8 @@ mod tests {
         assert_eq!(project.agent, "claude");
         assert_eq!(project.repo, "owner/my-project");
         assert_eq!(project.branch, "main");
-        assert_eq!(project.skip, Some(false));
+        assert!(project.skip.is_none());
+        assert_eq!(project.notes.as_deref(), Some("Test project"));
 
         let actions = &project.actions;
         assert!(actions.iterate);
@@ -200,8 +224,7 @@ mod tests {
                         "stack": "rust",
                         "agent": "claude",
                         "repo": "owner/active",
-                        "branch": "main",
-                        "skip": false
+                        "branch": "main"
                     },
                     {
                         "name": "skipped",
@@ -210,7 +233,7 @@ mod tests {
                         "agent": "claude",
                         "repo": "owner/skipped",
                         "branch": "main",
-                        "skip": true
+                        "skip": "Quality gates not configured"
                     }
                 ]
             }"#,
@@ -249,7 +272,7 @@ mod tests {
     fn project_entry_with_all_optional_fields() {
         let registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
         let project = &registry.projects[0];
-        assert!(project.skip.is_some());
+        assert!(project.notes.is_some());
         assert!(project.install.is_some());
     }
 
@@ -361,6 +384,7 @@ mod tests {
             ("python", Stack::Python),
             ("typescript", Stack::TypeScript),
             ("elixir", Stack::Elixir),
+            ("cpp", Stack::Cpp),
         ] {
             let stack: Stack = serde_json::from_str(&format!(r#""{json}""#)).unwrap();
             assert_eq!(stack, expected);
