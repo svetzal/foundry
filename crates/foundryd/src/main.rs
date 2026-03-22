@@ -8,6 +8,8 @@ use tracing_subscriber::EnvFilter;
 mod blocks;
 mod engine;
 mod service;
+#[allow(dead_code)]
+mod summary;
 mod trace_store;
 
 pub mod proto {
