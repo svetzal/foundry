@@ -1,9 +1,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
 /// Commits staged changes and pushes to the remote.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
@@ -49,6 +50,13 @@ impl TaskBlock for CommitAndPush {
             EventType::ProjectIterateCompleted,
             EventType::ProjectMaintainCompleted,
         ]
+    }
+
+    fn retry_policy(&self) -> RetryPolicy {
+        RetryPolicy {
+            max_retries: 2,
+            backoff: Duration::from_secs(5),
+        }
     }
 
     fn execute(
@@ -201,7 +209,15 @@ mod tests {
     use foundry_core::event::EventType;
     use foundry_core::registry::{ProjectEntry, Registry};
     use foundry_core::throttle::Throttle;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    fn empty_registry() -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        })
+    }
 
     fn make_trigger(project: &str, cve: &str) -> Event {
         Event::new(
@@ -443,5 +459,13 @@ mod tests {
         assert!(!result.events.is_empty());
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("maintenance"), "expected 'maintenance' in '{msg}'");
+    }
+
+    #[test]
+    fn retry_policy_allows_retries() {
+        let block = CommitAndPush::new(empty_registry());
+        let policy = block.retry_policy();
+        assert_eq!(policy.max_retries, 2);
+        assert_eq!(policy.backoff, Duration::from_secs(5));
     }
 }

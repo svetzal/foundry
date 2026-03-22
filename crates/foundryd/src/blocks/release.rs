@@ -207,36 +207,27 @@ fn extract_version_tag(output: &str) -> Option<String> {
 /// Polls the GitHub Actions API via the `gh` CLI with exponential backoff
 /// (30 s initial, doubling up to 5 min cap, 30 min total timeout).
 ///
-/// Falls back to stub behaviour when no `repo` is available in the trigger
-/// payload — this preserves engine integration-test compatibility until the
-/// project registry is wired in.
+/// Looks up the GitHub repository slug (`owner/repo`) from the project registry.
+/// Falls back to stub behaviour when the project has no `repo` configured.
 pub struct WatchPipeline {
-    /// Optional GitHub repository slug (`owner/repo`).
-    /// When `Some`, real polling is performed; when `None`, stub behaviour is used.
-    repo: Option<String>,
+    registry: Arc<Registry>,
 }
 
 impl WatchPipeline {
-    /// Create a `WatchPipeline` that polls the given GitHub repository.
-    ///
-    /// Called from `main` once the project registry is wired in.
-    #[allow(dead_code)]
-    pub fn new(repo: impl Into<String>) -> Self {
-        Self {
-            repo: Some(repo.into()),
-        }
+    /// Create a `WatchPipeline` that resolves the repository from the registry.
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
     }
 
-    /// Create a `WatchPipeline` that uses stub behaviour (for tests or
-    /// when no repository is configured).
+    /// Create a `WatchPipeline` backed by an empty registry (for tests).
+    #[cfg(test)]
     pub fn stub() -> Self {
-        Self { repo: None }
-    }
-}
-
-impl Default for WatchPipeline {
-    fn default() -> Self {
-        Self::stub()
+        Self {
+            registry: Arc::new(Registry {
+                version: 2,
+                projects: vec![],
+            }),
+        }
     }
 }
 
@@ -260,7 +251,14 @@ impl TaskBlock for WatchPipeline {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let repo = self.repo.clone();
+
+        let repo = self
+            .registry
+            .projects
+            .iter()
+            .find(|p| p.name == project)
+            .map(|p| p.repo.clone())
+            .filter(|r| !r.is_empty());
 
         Box::pin(async move {
             let Some(repo) = repo else {
@@ -510,5 +508,57 @@ mod tests {
     #[test]
     fn extract_version_tag_ignores_non_semver() {
         assert_eq!(extract_version_tag("version v1.2 released"), None);
+    }
+
+    // --- WatchPipeline tests ---
+
+    #[tokio::test]
+    async fn watch_pipeline_stubs_when_project_not_in_registry() {
+        let block = WatchPipeline::stub();
+        let trigger = Event::new(
+            EventType::AutoReleaseCompleted,
+            "some-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "success": true }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
+        assert_eq!(result.events[0].payload["status"], "success");
+    }
+
+    #[tokio::test]
+    async fn watch_pipeline_stubs_when_project_has_empty_repo() {
+        use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
+
+        let registry = Arc::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: "my-project".to_string(),
+                path: String::new(),
+                stack: Stack::Rust,
+                agent: String::new(),
+                repo: String::new(), // empty — no GitHub repo configured
+                branch: "main".to_string(),
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+            }],
+        });
+        let block = WatchPipeline::new(registry);
+        let trigger = Event::new(
+            EventType::AutoReleaseCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "success": true }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
+        assert_eq!(result.events[0].payload["status"], "success");
     }
 }

@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{InstallConfig, Registry};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
 /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
@@ -40,6 +41,13 @@ impl TaskBlock for InstallLocally {
             EventType::ProjectChangesPushed,
             EventType::ReleasePipelineCompleted,
         ]
+    }
+
+    fn retry_policy(&self) -> RetryPolicy {
+        RetryPolicy {
+            max_retries: 1,
+            backoff: Duration::from_secs(10),
+        }
     }
 
     fn execute(
@@ -147,6 +155,14 @@ mod tests {
     use super::*;
     use foundry_core::registry::{ActionFlags, ProjectEntry};
     use foundry_core::throttle::Throttle;
+    use std::time::Duration;
+
+    fn empty_registry() -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        })
+    }
 
     fn registry_with_install(install: Option<InstallConfig>) -> Arc<Registry> {
         use foundry_core::registry::Stack;
@@ -227,5 +243,13 @@ mod tests {
         assert!(!result.success);
         assert!(!result.events[0].payload["success"].as_bool().unwrap());
         assert!(result.summary.contains("failed"));
+    }
+
+    #[test]
+    fn retry_policy_allows_one_retry() {
+        let block = InstallLocally::new(empty_registry());
+        let policy = block.retry_policy();
+        assert_eq!(policy.max_retries, 1);
+        assert_eq!(policy.backoff, Duration::from_secs(10));
     }
 }
