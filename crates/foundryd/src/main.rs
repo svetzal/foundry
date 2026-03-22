@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::CutRelease));
     engine.register(Box::new(blocks::WatchPipeline));
     engine.register(Box::new(blocks::InstallLocally));
+    engine.register(Box::new(blocks::RunHoneMaintain));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
