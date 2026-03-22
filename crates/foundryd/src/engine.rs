@@ -395,7 +395,7 @@ mod tests {
             .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::CommitAndPush));
         engine.register(Box::new(crate::blocks::CutRelease::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::WatchPipeline));
+        engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
         engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));
         engine
     }
