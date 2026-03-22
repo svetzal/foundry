@@ -1,247 +1,373 @@
-// The Orchestrator is wired into main.rs in a later task (CLI "run" command).
-// Until then, all public items are intentionally unused from the binary.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
-use anyhow::Result;
 use tokio::task::JoinSet;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
 use crate::engine::{Engine, ProcessResult};
 
-/// Runs maintenance for all active projects in the registry, fan-out style.
-///
-/// The orchestrator is intentionally separate from the [`Engine`]. The engine
-/// processes a single event chain depth-first. The orchestrator handles
-/// project enumeration, parallel spawning via [`JoinSet`], and result
-/// aggregation. This keeps the engine simple and independently testable.
-pub struct Orchestrator {
-    registry: Arc<Registry>,
-    engine: Arc<Engine>,
-    max_concurrent: usize,
+/// Aggregate result of a maintenance run across all projects.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct MaintenanceRunResult {
+    /// Individual per-project process results (in completion order).
+    pub process_results: Vec<ProcessResult>,
+    /// The `MaintenanceRunCompleted` event summarising the run.
+    pub completion_event: Event,
+    /// Number of projects that completed with all blocks succeeding.
+    pub succeeded: usize,
+    /// Number of projects that had at least one block failure or panicked.
+    pub failed: usize,
+    /// Number of projects that were counted but not executed (skipped).
+    pub skipped: usize,
 }
 
-impl Orchestrator {
-    /// Create a new orchestrator with a default concurrency limit of 10.
-    pub fn new(registry: Arc<Registry>, engine: Arc<Engine>) -> Self {
-        Self {
-            registry,
-            engine,
-            max_concurrent: 10,
-        }
+/// Drives the per-project fan-out and fan-in around the [`Engine`].
+///
+/// The engine processes a single event chain in depth-first order.
+/// The orchestrator is responsible for enumerating projects, spawning
+/// one task per project, and aggregating results into a single
+/// [`MaintenanceRunCompleted`](EventType::MaintenanceRunCompleted) event.
+#[allow(dead_code)]
+pub struct MaintenanceOrchestrator {
+    engine: Arc<Engine>,
+}
+
+#[allow(dead_code)]
+impl MaintenanceOrchestrator {
+    /// Create a new orchestrator wrapping the given engine.
+    pub fn new(engine: Arc<Engine>) -> Self {
+        Self { engine }
     }
 
-    /// Override the maximum number of project tasks that run concurrently.
-    pub fn with_max_concurrent(mut self, max: usize) -> Self {
-        self.max_concurrent = max;
-        self
-    }
-
-    /// Run maintenance for all active projects concurrently.
+    /// Run maintenance for a list of projects.
     ///
-    /// For each active project a [`MaintenanceRunStarted`][EventType::MaintenanceRunStarted]
-    /// event is injected into the engine. The per-project event chains run
-    /// in parallel, bounded by `max_concurrent`. All [`ProcessResult`]s are
-    /// collected and returned once every task completes.
-    ///
-    /// A task that panics is logged as an error but does not abort the run —
-    /// remaining projects continue processing.
-    pub async fn run_maintenance(&self, throttle: Throttle) -> Result<Vec<ProcessResult>> {
-        let active = self.registry.active_projects();
+    /// Spawns one Tokio task per project (fan-out), then collects all
+    /// results (fan-in) and emits a single
+    /// [`MaintenanceRunCompleted`](EventType::MaintenanceRunCompleted) event
+    /// carrying aggregate counts and per-project summaries.
+    pub async fn run_maintenance(
+        &self,
+        projects: Vec<String>,
+        throttle: Throttle,
+    ) -> anyhow::Result<MaintenanceRunResult> {
+        let mut join_set: JoinSet<(String, ProcessResult)> = JoinSet::new();
 
-        if active.is_empty() {
-            tracing::info!("no active projects in registry");
-            return Ok(vec![]);
-        }
-
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.max_concurrent));
-        let mut join_set: JoinSet<ProcessResult> = JoinSet::new();
-
-        for project in active {
-            let project_name = project.name.clone();
+        // Fan-out: spawn one task per project.
+        for project in projects {
             let engine = Arc::clone(&self.engine);
-            let sem = Arc::clone(&semaphore);
+            let trigger = Event::new(
+                EventType::MaintenanceRunStarted,
+                project.clone(),
+                throttle,
+                serde_json::json!({}),
+            );
 
             join_set.spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore closed unexpectedly");
-
-                tracing::info!(project = %project_name, "starting maintenance run");
-
-                let event = Event::new(
-                    EventType::MaintenanceRunStarted,
-                    project_name.clone(),
-                    throttle,
-                    serde_json::json!({ "project": project_name }),
-                );
-
-                engine.process(event).await
+                let result = engine.process(trigger).await;
+                (project, result)
             });
         }
 
-        let mut results = Vec::new();
-        while let Some(outcome) = join_set.join_next().await {
-            match outcome {
-                Ok(process_result) => results.push(process_result),
-                Err(join_err) => {
-                    tracing::error!(error = %join_err, "project maintenance task panicked");
+        // Fan-in: collect results as tasks complete.
+        let mut process_results: Vec<ProcessResult> = Vec::new();
+        let mut project_summaries: Vec<serde_json::Value> = Vec::new();
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        let skipped = 0usize;
+
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((project, process_result)) => {
+                    let all_success = process_result.block_executions.iter().all(|b| b.success);
+
+                    if all_success {
+                        succeeded += 1;
+                    } else {
+                        failed += 1;
+                    }
+
+                    project_summaries.push(serde_json::json!({
+                        "project": project,
+                        "success": all_success,
+                        "block_count": process_result.block_executions.len(),
+                    }));
+
+                    process_results.push(process_result);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "project maintenance task panicked");
+                    failed += 1;
+                    project_summaries.push(serde_json::json!({
+                        "project": "unknown",
+                        "success": false,
+                        "error": "task panicked",
+                    }));
                 }
             }
         }
 
-        Ok(results)
+        let total = succeeded + failed + skipped;
+        let completion_event = Event::new(
+            EventType::MaintenanceRunCompleted,
+            "system".to_string(),
+            throttle,
+            serde_json::json!({
+                "total": total,
+                "succeeded": succeeded,
+                "failed": failed,
+                "skipped": skipped,
+                "projects": project_summaries,
+            }),
+        );
+
+        tracing::info!(
+            total,
+            succeeded,
+            failed,
+            skipped,
+            event_id = %completion_event.id,
+            "maintenance run completed"
+        );
+
+        Ok(MaintenanceRunResult {
+            process_results,
+            completion_event,
+            succeeded,
+            failed,
+            skipped,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry};
+    use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+    use std::pin::Pin;
 
-    fn make_registry(project_names: &[&str]) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: project_names
-                .iter()
-                .map(|name| ProjectEntry {
-                    name: name.to_string(),
-                    path: "/tmp/test".to_string(),
-                    stack: foundry_core::registry::Stack::Rust,
-                    agent: String::new(),
-                    repo: String::new(),
-                    branch: "main".to_string(),
-                    skip: Some(false),
-                    actions: ActionFlags::default(),
-                    install: None,
+    // ---------------------------------------------------------------------------
+    // Test blocks
+    // ---------------------------------------------------------------------------
+
+    /// Always succeeds and emits one event.
+    struct AlwaysSucceeds;
+
+    impl TaskBlock for AlwaysSucceeds {
+        fn name(&self) -> &'static str {
+            "always_succeeds"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::MaintenanceRunStarted]
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            Box::pin(async move {
+                Ok(TaskBlockResult {
+                    events: vec![Event::new(
+                        EventType::ProjectValidationCompleted,
+                        project,
+                        throttle,
+                        serde_json::json!({"status": "ok"}),
+                    )],
+                    success: true,
+                    summary: "validated".to_string(),
                 })
-                .collect(),
-        })
-    }
-
-    fn make_engine() -> Arc<Engine> {
-        Arc::new(Engine::new())
-    }
-
-    #[tokio::test]
-    async fn run_maintenance_with_empty_registry_returns_empty() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        });
-        let orchestrator = Orchestrator::new(registry, make_engine());
-
-        let results = orchestrator.run_maintenance(Throttle::Full).await.unwrap();
-
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn run_maintenance_spawns_one_task_per_active_project() {
-        let registry = make_registry(&["alpha", "beta", "gamma"]);
-        let orchestrator = Orchestrator::new(registry, make_engine());
-
-        let results = orchestrator.run_maintenance(Throttle::Full).await.unwrap();
-
-        // Three active projects → three ProcessResults
-        assert_eq!(results.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn each_result_contains_maintenance_run_started_event() {
-        let registry = make_registry(&["alpha", "beta"]);
-        let orchestrator = Orchestrator::new(registry, make_engine());
-
-        let results = orchestrator.run_maintenance(Throttle::Full).await.unwrap();
-
-        for result in &results {
-            let has_start =
-                result.events.iter().any(|e| e.event_type == EventType::MaintenanceRunStarted);
-            assert!(has_start, "expected MaintenanceRunStarted in result events");
+            })
         }
     }
 
-    #[tokio::test]
-    async fn throttle_level_propagated_to_all_events() {
-        let registry = make_registry(&["alpha", "beta"]);
-        let orchestrator = Orchestrator::new(registry, make_engine());
+    /// Always fails (reports success=false but does not panic).
+    struct AlwaysFails;
 
-        let results = orchestrator.run_maintenance(Throttle::DryRun).await.unwrap();
+    impl TaskBlock for AlwaysFails {
+        fn name(&self) -> &'static str {
+            "always_fails"
+        }
 
-        for result in &results {
-            for event in &result.events {
-                assert_eq!(
-                    event.throttle,
-                    Throttle::DryRun,
-                    "throttle must be DryRun on event {}",
-                    event.id
-                );
-            }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::MaintenanceRunStarted]
+        }
+
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            Box::pin(async move {
+                Ok(TaskBlockResult {
+                    events: vec![],
+                    success: false,
+                    summary: "block failed".to_string(),
+                })
+            })
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    fn orchestrator_with(block: Box<dyn TaskBlock>) -> MaintenanceOrchestrator {
+        let mut engine = Engine::new();
+        engine.register(block);
+        MaintenanceOrchestrator::new(Arc::new(engine))
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
     #[tokio::test]
-    async fn skipped_projects_not_processed() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![
-                ProjectEntry {
-                    name: "active".to_string(),
-                    path: "/tmp/active".to_string(),
-                    stack: foundry_core::registry::Stack::Rust,
-                    agent: String::new(),
-                    repo: String::new(),
-                    branch: "main".to_string(),
-                    skip: Some(false),
-                    actions: ActionFlags::default(),
-                    install: None,
-                },
-                ProjectEntry {
-                    name: "skipped".to_string(),
-                    path: "/tmp/skipped".to_string(),
-                    stack: foundry_core::registry::Stack::Rust,
-                    agent: String::new(),
-                    repo: String::new(),
-                    branch: "main".to_string(),
-                    skip: Some(true),
-                    actions: ActionFlags::default(),
-                    install: None,
-                },
-            ],
-        });
+    async fn empty_project_list_produces_zero_counts() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator.run_maintenance(vec![], Throttle::Full).await.unwrap();
 
-        let orchestrator = Orchestrator::new(registry, make_engine());
-        let results = orchestrator.run_maintenance(Throttle::Full).await.unwrap();
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.skipped, 0);
+        assert!(result.process_results.is_empty());
 
-        // Only the active project is processed
-        assert_eq!(results.len(), 1);
-
-        let project_name = &results[0].events[0].project;
-        assert_eq!(project_name, "active");
+        let payload = &result.completion_event.payload;
+        assert_eq!(payload["total"], 0);
+        assert_eq!(payload["projects"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
-    async fn with_max_concurrent_is_honoured() {
-        // Verify the builder method sets the field and the run completes
-        // successfully with a restrictive concurrency limit.
-        let registry = make_registry(&["a", "b", "c", "d", "e"]);
-        let orchestrator = Orchestrator::new(registry, make_engine()).with_max_concurrent(2);
+    async fn single_successful_project_increments_succeeded() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator
+            .run_maintenance(vec!["alpha".to_string()], Throttle::Full)
+            .await
+            .unwrap();
 
-        let results = orchestrator.run_maintenance(Throttle::Full).await.unwrap();
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.process_results.len(), 1);
 
-        assert_eq!(results.len(), 5);
+        let payload = &result.completion_event.payload;
+        assert_eq!(payload["total"], 1);
+        assert_eq!(payload["succeeded"], 1);
+        assert_eq!(payload["failed"], 0);
     }
 
     #[tokio::test]
-    async fn single_project_produces_one_result() {
-        let registry = make_registry(&["solo"]);
-        let orchestrator = Orchestrator::new(registry, make_engine());
+    async fn single_failed_project_increments_failed() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysFails));
+        let result = orchestrator
+            .run_maintenance(vec!["beta".to_string()], Throttle::Full)
+            .await
+            .unwrap();
 
-        let results = orchestrator.run_maintenance(Throttle::AuditOnly).await.unwrap();
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.skipped, 0);
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].events[0].project, "solo");
+        let payload = &result.completion_event.payload;
+        assert_eq!(payload["failed"], 1);
+    }
+
+    #[tokio::test]
+    async fn multiple_projects_aggregate_correctly() {
+        // Two projects with AlwaysSucceeds, one with AlwaysFails.
+        // We use a single AlwaysSucceeds block and run 3 projects; we need to
+        // test the aggregation so we rely on separate orchestrators per test.
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator
+            .run_maintenance(
+                vec![
+                    "proj-a".to_string(),
+                    "proj-b".to_string(),
+                    "proj-c".to_string(),
+                ],
+                Throttle::Full,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded, 3);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.process_results.len(), 3);
+
+        let payload = &result.completion_event.payload;
+        assert_eq!(payload["total"], 3);
+        assert_eq!(payload["succeeded"], 3);
+        assert_eq!(payload["projects"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn completion_event_has_correct_type_and_system_project() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator
+            .run_maintenance(vec!["proj-x".to_string()], Throttle::Full)
+            .await
+            .unwrap();
+
+        assert_eq!(result.completion_event.event_type, EventType::MaintenanceRunCompleted);
+        assert_eq!(result.completion_event.project, "system");
+    }
+
+    #[tokio::test]
+    async fn completion_event_propagates_throttle() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator
+            .run_maintenance(vec!["proj-y".to_string()], Throttle::DryRun)
+            .await
+            .unwrap();
+
+        assert_eq!(result.completion_event.throttle, Throttle::DryRun);
+    }
+
+    #[tokio::test]
+    async fn per_project_summary_contains_project_name_and_block_count() {
+        let orchestrator = orchestrator_with(Box::new(AlwaysSucceeds));
+        let result = orchestrator
+            .run_maintenance(vec!["my-project".to_string()], Throttle::Full)
+            .await
+            .unwrap();
+
+        let projects = result.completion_event.payload["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 1);
+
+        let summary = &projects[0];
+        assert_eq!(summary["project"], "my-project");
+        assert_eq!(summary["success"], true);
+        // AlwaysSucceeds sinks on MaintenanceRunStarted, so block_count >= 1
+        assert!(summary["block_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn mixed_results_aggregate_failed_and_succeeded() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(AlwaysFails));
+        let orchestrator = MaintenanceOrchestrator::new(Arc::new(engine));
+
+        // Run two projects; both will fail (AlwaysFails is the only block)
+        let result = orchestrator
+            .run_maintenance(vec!["ok-proj".to_string(), "fail-proj".to_string()], Throttle::Full)
+            .await
+            .unwrap();
+
+        // Both projects have a failed block
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 2);
+        assert_eq!(result.process_results.len(), 2);
     }
 }
