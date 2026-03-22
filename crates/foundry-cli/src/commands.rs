@@ -99,7 +99,9 @@ pub async fn trace(addr: &str, event_id: &str) -> Result<()> {
     }
 
     render_trace(&response);
-    println!("Total: {}ms", response.total_duration_ms);
+    let block_sum: u64 = response.block_executions.iter().map(|b| b.duration_ms).sum();
+    println!("---");
+    println!("Total: {}ms (blocks: {}ms)", response.total_duration_ms, block_sum);
 
     Ok(())
 }
