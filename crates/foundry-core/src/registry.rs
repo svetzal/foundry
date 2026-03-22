@@ -48,6 +48,19 @@ pub struct ProjectEntry {
     pub actions: ActionFlags,
     /// Optional local installation configuration.
     pub install: Option<InstallConfig>,
+    /// Per-project timeout in seconds for long-running commands (e.g. hone).
+    /// Defaults to 1800 (30 minutes) when absent.
+    pub timeout_secs: Option<u64>,
+}
+
+/// Default timeout for long-running commands: 30 minutes.
+const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+
+impl ProjectEntry {
+    /// Returns the configured timeout or the default (30 minutes).
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS))
+    }
 }
 
 /// Flags controlling which automation actions run for a project.

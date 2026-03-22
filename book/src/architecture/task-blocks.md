@@ -125,6 +125,29 @@ flowchart TD
     J --> K([project_maintain_completed])
 ```
 
+## Gateway Pattern
+
+Every block that executes an external process (a shell command or an audit tool)
+receives its I/O capability through a *gateway trait* rather than calling the
+implementation module directly.  Two gateway traits live in `gateway.rs`:
+
+- **`ShellGateway`** — wraps `crate::shell::run` for arbitrary command execution.
+- **`ScannerGateway`** — wraps `crate::scanner::run_audit` for vulnerability scanning.
+
+Production blocks hold an `Arc<dyn ShellGateway>` (and/or `Arc<dyn ScannerGateway>`)
+which is initialised to the real implementation in `new()`.  A `#[cfg(test)]`
+constructor accepts a fake instead, enabling hermetic unit tests for every block.
+
+This separation means:
+- The happy path and every failure/edge-case branch can be tested without
+  spawning real processes.
+- `shell.rs` and `scanner.rs` stay untouched; the gateway is a thin adapter.
+- No `async_trait` macro is required — the return type uses an explicit
+  `Pin<Box<dyn Future + Send + '_>>` (the same pattern as `TaskBlock::execute`).
+
+See [Testing with Fakes](../guide/writing-task-blocks.md#testing-with-fakes) for
+usage examples.
+
 ## RetryPolicy
 
 Blocks can declare automatic retry behaviour by overriding `retry_policy()`:

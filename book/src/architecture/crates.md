@@ -55,6 +55,13 @@ the workflow engine.
 - `scanner.rs` — vulnerability scanner abstraction. Dispatches to the
   stack-appropriate tool (`cargo audit`, `npm audit`, `pip-audit`,
   `mix deps.audit`) and normalizes output into a `Vec<Vulnerability>`.
+- `gateway.rs` — I/O abstraction layer for task blocks. Defines `ShellGateway`
+  and `ScannerGateway` traits with `ProcessShellGateway` and
+  `ProcessScannerGateway` production implementations. Also provides
+  `FakeShellGateway` and `FakeScannerGateway` test doubles (available under
+  `#[cfg(test)]` only) that record invocations and return pre-configured
+  results, enabling hermetic unit testing of every block without spawning
+  real processes.
 - `summary.rs` — renders a `MaintenanceRunSummary` as a Markdown report
   (project table with success/failure/skipped, a failures section, and timing
   statistics).

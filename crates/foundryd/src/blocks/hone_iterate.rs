@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ShellGateway;
+
 /// Runs `hone iterate` for a validated project.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
@@ -22,11 +24,20 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// does NOT emit `MaintenanceRequested`.
 pub struct RunHoneIterate {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl RunHoneIterate {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
     }
 }
 
@@ -59,6 +70,7 @@ impl TaskBlock for RunHoneIterate {
             .unwrap_or(false);
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let shell = Arc::clone(&self.shell);
 
         tracing::info!(%project, %maintain, "running hone iterate");
 
@@ -91,14 +103,15 @@ impl TaskBlock for RunHoneIterate {
                 "invoking hone iterate"
             );
 
-            let run_result = crate::shell::run(
-                Path::new(project_path),
-                "hone",
-                &["iterate", agent, project_path, "--json"],
-                None,
-                None,
-            )
-            .await;
+            let run_result = shell
+                .run(
+                    Path::new(project_path),
+                    "hone",
+                    &["iterate", agent, project_path, "--json"],
+                    None,
+                    Some(entry.timeout()),
+                )
+                .await;
 
             let (success, hone_summary) = match run_result {
                 Ok(result) => {
@@ -162,6 +175,9 @@ mod tests {
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
     use super::RunHoneIterate;
 
     fn registry_with_project(name: &str, path: &str, agent: &str) -> Arc<Registry> {
@@ -177,6 +193,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install: None,
+                timeout_secs: None,
             }],
         })
     }
@@ -209,21 +226,6 @@ mod tests {
             projects: vec![],
         }));
         assert_eq!(block.kind(), BlockKind::Mutator);
-    }
-
-    #[tokio::test]
-    async fn emits_project_iterate_completed_on_success() {
-        // hone won't be available in CI, so success=false is acceptable.
-        // The important thing is that exactly one ProjectIterateCompleted event is emitted.
-        let registry = registry_with_project("my-project", "/tmp", "claude");
-        let block = RunHoneIterate::new(registry);
-        let trigger = iteration_event("my-project", false);
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.events.is_empty());
-        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
-        assert_eq!(result.events[0].project, "my-project");
     }
 
     #[test]
@@ -265,16 +267,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hone_failure_does_not_emit_maintenance_requested() {
-        // When hone is unavailable (success=false), MaintenanceRequested must NOT be emitted
-        // even when maintain=true.
-        let registry = registry_with_project("my-project", "/tmp", "claude");
-        let block = RunHoneIterate::new(registry);
+    async fn success_emits_project_iterate_completed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: r#"{"summary": "iterated"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = RunHoneIterate::with_shell(registry, shell);
+        let trigger = iteration_event("my-project", false);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].project, "my-project");
+    }
+
+    #[tokio::test]
+    async fn success_with_maintain_true_chains_maintenance_requested() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: r#"{"summary": "iterated"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = RunHoneIterate::with_shell(registry, shell);
         let trigger = iteration_event("my-project", true);
 
         let result = block.execute(&trigger).await.unwrap();
 
-        // hone is unavailable so success=false; no MaintenanceRequested should appear
+        assert!(result.success);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[1].event_type, EventType::MaintenanceRequested);
+    }
+
+    #[tokio::test]
+    async fn failure_does_not_emit_maintenance_requested() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::failure("hone failed");
+        let block = RunHoneIterate::with_shell(registry, shell);
+        let trigger = iteration_event("my-project", true);
+
+        let result = block.execute(&trigger).await.unwrap();
+
         assert!(!result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
@@ -282,8 +325,15 @@ mod tests {
 
     #[tokio::test]
     async fn missing_actions_field_treats_maintain_as_false() {
-        let registry = registry_with_project("my-project", "/tmp", "claude");
-        let block = RunHoneIterate::new(registry);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: r#"{"summary": "iterated"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = RunHoneIterate::with_shell(registry, shell);
         let trigger = Event::new(
             EventType::IterationRequested,
             "my-project".to_string(),

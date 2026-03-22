@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ShellGateway;
+
 /// Commits staged changes and pushes to the remote.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
@@ -27,11 +29,20 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 /// green without requiring a real repository on disk.
 pub struct CommitAndPush {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl CommitAndPush {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
     }
 }
 
@@ -89,6 +100,7 @@ impl TaskBlock for CommitAndPush {
             .to_string();
 
         let registry = Arc::clone(&self.registry);
+        let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             // Resolve the project path and push flag from the registry.
@@ -107,8 +119,7 @@ impl TaskBlock for CommitAndPush {
             tracing::info!(%project, "checking for changes to commit");
 
             // Self-filter: nothing to do if the working tree is clean.
-            let status =
-                crate::shell::run(path, "git", &["status", "--porcelain"], None, None).await?;
+            let status = shell.run(path, "git", &["status", "--porcelain"], None, None).await?;
             if status.stdout.trim().is_empty() {
                 tracing::info!(%project, "working tree clean, skipping commit");
                 return Ok(TaskBlockResult {
@@ -119,7 +130,7 @@ impl TaskBlock for CommitAndPush {
             }
 
             // Stage everything.
-            crate::shell::run(path, "git", &["add", "-A"], None, None).await?;
+            shell.run(path, "git", &["add", "-A"], None, None).await?;
 
             // Commit message varies by the event that triggered this block.
             let commit_msg = match event_type {
@@ -132,8 +143,7 @@ impl TaskBlock for CommitAndPush {
                 _ => format!("chore({project}): automated remediation"),
             };
 
-            let commit =
-                crate::shell::run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
+            let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
             if !commit.success {
                 return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
             }
@@ -153,7 +163,7 @@ impl TaskBlock for CommitAndPush {
             // Push if permitted.
             if push_enabled {
                 tracing::info!(%project, "pushing changes");
-                let push = crate::shell::run(path, "git", &["push"], None, None).await?;
+                let push = shell.run(path, "git", &["push"], None, None).await?;
                 if push.success {
                     events.push(Event::new(
                         EventType::ProjectChangesPushed,
@@ -205,12 +215,20 @@ fn stub_result(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::event::EventType;
-    use foundry_core::registry::{ProjectEntry, Registry};
-    use foundry_core::throttle::Throttle;
+    use std::sync::Arc;
     use std::time::Duration;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry};
+    use foundry_core::throttle::Throttle;
     use tempfile::TempDir;
+
+    use foundry_core::task_block::TaskBlock;
+
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
+    use super::CommitAndPush;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -241,22 +259,6 @@ mod tests {
         )
     }
 
-    async fn init_git_repo(dir: &std::path::Path) {
-        crate::shell::run(dir, "git", &["init"], None, None).await.unwrap();
-        crate::shell::run(dir, "git", &["config", "user.email", "test@example.com"], None, None)
-            .await
-            .unwrap();
-        crate::shell::run(dir, "git", &["config", "user.name", "Test"], None, None)
-            .await
-            .unwrap();
-        // Create an initial commit so HEAD exists
-        std::fs::write(dir.join("README.md"), "init").unwrap();
-        crate::shell::run(dir, "git", &["add", "-A"], None, None).await.unwrap();
-        crate::shell::run(dir, "git", &["commit", "-m", "init"], None, None)
-            .await
-            .unwrap();
-    }
-
     fn registry_for(name: &str, path: &str, push: bool) -> Arc<Registry> {
         Arc::new(Registry {
             version: 2,
@@ -268,7 +270,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: Some(false),
-                actions: foundry_core::registry::ActionFlags {
+                actions: ActionFlags {
                     push,
                     iterate: false,
                     maintain: false,
@@ -276,17 +278,58 @@ mod tests {
                     release: false,
                 },
                 install: None,
+                timeout_secs: None,
             }],
+        })
+    }
+
+    /// Fake sequence that simulates: status=dirty, add=ok, commit=ok, push=ok.
+    fn dirty_sequence() -> Arc<FakeShellGateway> {
+        FakeShellGateway::sequence(vec![
+            // git status --porcelain: non-empty output = dirty
+            CommandResult {
+                stdout: " M file.txt\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git add -A
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git commit
+            CommandResult {
+                stdout: "[main abc1234] committed\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git push
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ])
+    }
+
+    /// Fake sequence that simulates: status=clean (empty output).
+    fn clean_sequence() -> Arc<FakeShellGateway> {
+        FakeShellGateway::always(CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
         })
     }
 
     #[tokio::test]
     async fn unknown_project_emits_stub_events() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        });
-        let block = CommitAndPush::new(registry);
+        let block = CommitAndPush::new(empty_registry());
         let trigger = make_trigger("no-such-project", "CVE-2026-0001");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -294,17 +337,15 @@ mod tests {
         assert!(result.success);
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
-        // Stub marker present
         assert_eq!(result.events[0].payload["stub"], true);
     }
 
     #[tokio::test]
     async fn clean_tree_emits_no_events() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), true);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = clean_sequence();
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0002");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -316,38 +357,10 @@ mod tests {
 
     #[tokio::test]
     async fn dirty_tree_commits_and_pushes_when_enabled() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-
-        // Make a dirty change
-        std::fs::write(tmp.path().join("change.txt"), "some change").unwrap();
-
-        // Set up a local remote so push succeeds
-        let remote_tmp = TempDir::new().unwrap();
-        crate::shell::run(remote_tmp.path(), "git", &["init", "--bare"], None, None)
-            .await
-            .unwrap();
-        crate::shell::run(
-            tmp.path(),
-            "git",
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote_tmp.path().to_str().unwrap(),
-            ],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-        // Push initial branch to remote so subsequent push works
-        crate::shell::run(tmp.path(), "git", &["push", "-u", "origin", "HEAD"], None, None)
-            .await
-            .unwrap();
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), true);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = dirty_sequence();
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0003");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -359,32 +372,42 @@ mod tests {
 
     #[tokio::test]
     async fn dirty_tree_commits_but_skips_push_when_disabled() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-
-        std::fs::write(tmp.path().join("change.txt"), "some change").unwrap();
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
+        // Only three calls needed: status, add, commit (no push).
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " M file.txt\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "[main abc1234] committed\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0004");
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        // Only committed, no pushed
         assert_eq!(types, ["project_changes_committed"]);
     }
 
-    // --- New event-sink tests ---
-
     #[test]
     fn sinks_on_includes_all_three_event_types() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        });
-        let block = CommitAndPush::new(registry);
+        let block = CommitAndPush::new(empty_registry());
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::RemediationCompleted));
         assert!(sinks.contains(&EventType::ProjectIterateCompleted));
@@ -393,11 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn payload_changes_false_self_filters_immediately() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        });
-        let block = CommitAndPush::new(registry);
+        let block = CommitAndPush::new(empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterateCompleted, "proj");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -409,12 +428,30 @@ mod tests {
 
     #[tokio::test]
     async fn remediation_trigger_uses_remediation_commit_message() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-        std::fs::write(tmp.path().join("fix.txt"), "fix").unwrap();
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
+        // status=dirty, add, commit (no push)
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " M f\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "[main x] msg\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-1000");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -427,36 +464,68 @@ mod tests {
 
     #[tokio::test]
     async fn iterate_trigger_uses_iterate_commit_message() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-        std::fs::write(tmp.path().join("iter.txt"), "iter").unwrap();
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " M f\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "[main x] msg\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger_for(EventType::ProjectIterateCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(!result.events.is_empty());
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("iterate"), "expected 'iterate' in '{msg}'");
     }
 
     #[tokio::test]
     async fn maintain_trigger_uses_maintenance_commit_message() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path()).await;
-        std::fs::write(tmp.path().join("maint.txt"), "maint").unwrap();
-
-        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
-        let block = CommitAndPush::new(registry);
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " M f\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "[main x] msg\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
         let trigger = make_trigger_for(EventType::ProjectMaintainCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(!result.events.is_empty());
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("maintenance"), "expected 'maintenance' in '{msg}'");
     }
@@ -467,5 +536,40 @@ mod tests {
         let policy = block.retry_policy();
         assert_eq!(policy.max_retries, 2);
         assert_eq!(policy.backoff, Duration::from_secs(5));
+    }
+
+    // -- Real git repo tests for commit message variants --
+
+    async fn init_git_repo_real(dir: &std::path::Path) {
+        crate::shell::run(dir, "git", &["init"], None, None).await.unwrap();
+        crate::shell::run(dir, "git", &["config", "user.email", "test@example.com"], None, None)
+            .await
+            .unwrap();
+        crate::shell::run(dir, "git", &["config", "user.name", "Test"], None, None)
+            .await
+            .unwrap();
+        std::fs::write(dir.join("README.md"), "init").unwrap();
+        crate::shell::run(dir, "git", &["add", "-A"], None, None).await.unwrap();
+        crate::shell::run(dir, "git", &["commit", "-m", "init"], None, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn real_git_dirty_tree_commits_with_correct_message() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo_real(tmp.path()).await;
+        std::fs::write(tmp.path().join("change.txt"), "change").unwrap();
+
+        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger("my-project", "CVE-2026-9999");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let msg = result.events[0].payload["message"].as_str().unwrap();
+        assert!(msg.contains("remediation"), "expected 'remediation' in '{msg}'");
     }
 }

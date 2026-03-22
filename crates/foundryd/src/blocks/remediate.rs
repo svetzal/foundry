@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ShellGateway;
+
 /// Attempts to fix a vulnerability on the main branch.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
@@ -14,11 +16,20 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Invokes `hone maintain <agent> <path>` to fix the vulnerable dependency.
 pub struct RemediateVulnerability {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl RemediateVulnerability {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
     }
 }
 
@@ -70,6 +81,7 @@ impl TaskBlock for RemediateVulnerability {
 
         // Resolve project agent and path from registry.
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let shell = Arc::clone(&self.shell);
 
         tracing::info!(%cve, "remediating vulnerability");
 
@@ -98,14 +110,15 @@ impl TaskBlock for RemediateVulnerability {
                 "invoking hone maintain"
             );
 
-            let run_result = crate::shell::run(
-                Path::new(project_path),
-                "hone",
-                &["maintain", agent, project_path, "--json"],
-                None,
-                None,
-            )
-            .await;
+            let run_result = shell
+                .run(
+                    Path::new(project_path),
+                    "hone",
+                    &["maintain", agent, project_path, "--json"],
+                    None,
+                    None,
+                )
+                .await;
 
             let (success, hone_summary) = match run_result {
                 Ok(result) => {
@@ -150,12 +163,19 @@ impl TaskBlock for RemediateVulnerability {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::registry::{ActionFlags, ProjectEntry};
+    use std::sync::Arc;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
+    use super::RemediateVulnerability;
+
     fn registry_with_project(name: &str, path: &str, agent: &str) -> Arc<Registry> {
-        use foundry_core::registry::Stack;
         Arc::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
@@ -168,6 +188,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install: None,
+                timeout_secs: None,
             }],
         })
     }
@@ -219,17 +240,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_remediation_completed_when_project_found() {
-        // When hone is unavailable the block still emits RemediationCompleted
-        // (with success=false) so the event chain can continue.
-        let registry = registry_with_project("my-project", "/tmp", "claude");
-        let block = RemediateVulnerability::new(registry);
+    async fn emits_remediation_completed_on_hone_success() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: r#"{"summary": "fixed"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = RemediateVulnerability::with_shell(registry, shell);
         let trigger = dirty_trigger("my-project", "CVE-2026-9999");
 
         let result = block.execute(&trigger).await.unwrap();
-        // Exactly one event should be emitted regardless of hone availability.
+
+        assert!(result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
         assert_eq!(result.events[0].payload["cve"], "CVE-2026-9999");
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    #[tokio::test]
+    async fn emits_remediation_completed_on_hone_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let shell = FakeShellGateway::failure("hone exited with code 1");
+        let block = RemediateVulnerability::with_shell(registry, shell);
+        let trigger = dirty_trigger("my-project", "CVE-2026-1234");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // Block still emits the event even on failure (with success=false).
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        assert!(result.summary.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn records_shell_invocation_for_hone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_str().unwrap().to_string();
+        let registry = registry_with_project("my-project", &path, "claude");
+        let shell = FakeShellGateway::success();
+        let block = RemediateVulnerability::with_shell(
+            registry,
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+        let trigger = dirty_trigger("my-project", "CVE-2026-0001");
+
+        block.execute(&trigger).await.unwrap();
+
+        let invocations = shell.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].command, "hone");
+        assert!(invocations[0].args.contains(&"maintain".to_string()));
     }
 }

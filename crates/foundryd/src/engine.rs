@@ -478,6 +478,7 @@ mod tests {
                     release: false,
                 },
                 install: None,
+                timeout_secs: None,
             }],
         });
         let mut engine = Engine::new();
@@ -635,6 +636,7 @@ mod tests {
                     ..ActionFlags::default()
                 },
                 install: None,
+                timeout_secs: None,
             }],
         });
         let mut engine = Engine::new();

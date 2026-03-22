@@ -98,6 +98,106 @@ Use retries for operations that may fail transiently (network calls, shell
 commands that occasionally time out). Do not use retries for operations that
 are expected to fail deterministically (e.g. self-filtering by payload).
 
+## Gateway Pattern
+
+Task blocks that execute external processes (shell commands, audit tools) receive
+those capabilities through *gateway traits* rather than calling the implementation
+directly.  This isolates I/O at the block boundary and makes every block fully
+testable without spawning real processes.
+
+### The ShellGateway Trait
+
+```rust
+pub trait ShellGateway: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        working_dir: &'a Path,
+        command: &'a str,
+        args: &'a [&'a str],
+        env: Option<&'a [(String, String)]>,
+        timeout: Option<Duration>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<CommandResult>> + Send + 'a>>;
+}
+```
+
+In production, `ProcessShellGateway` delegates to `crate::shell::run`.  Blocks
+accept the gateway through their constructor:
+
+```rust
+pub struct MyBlock {
+    registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
+}
+
+impl MyBlock {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self {
+            registry,
+            shell: Arc::new(ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
+    }
+}
+```
+
+### Testing with Fakes
+
+`gateway::fakes` (available only under `#[cfg(test)]`) provides pre-built fakes:
+
+```rust
+use crate::gateway::fakes::{FakeShellGateway, FakeScannerGateway};
+use crate::shell::CommandResult;
+
+// Always return a successful, empty result.
+let shell = FakeShellGateway::success();
+
+// Always return a failure with the given stderr.
+let shell = FakeShellGateway::failure("not installed");
+
+// Return a fixed result every time.
+let shell = FakeShellGateway::always(CommandResult { ... });
+
+// Return results in sequence (last one repeats).
+let shell = FakeShellGateway::sequence(vec![first_result, second_result]);
+
+// Inspect recorded invocations after the fact.
+let invocations = shell.invocations();
+assert_eq!(invocations[0].command, "git");
+```
+
+For scanner-based blocks:
+
+```rust
+let scanner = FakeScannerGateway::clean();
+let scanner = FakeScannerGateway::with_vulnerabilities(vec![...]);
+let scanner = FakeScannerGateway::with_error("cargo audit not installed");
+```
+
+This pattern allows testing every code path — including failure modes and edge
+cases — without any real I/O:
+
+```rust
+#[tokio::test]
+async fn detached_head_recovery_succeeds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = make_registry(/* ... */);
+
+    // First call returns "HEAD" (detached); second call (checkout) succeeds.
+    let shell = FakeShellGateway::sequence(vec![
+        CommandResult { stdout: "HEAD\n".into(), exit_code: 0, success: true, .. },
+        CommandResult { stdout: String::new(), exit_code: 0, success: true, .. },
+    ]);
+    let block = ValidateProject::with_shell(registry, shell);
+
+    let result = block.execute(&trigger).await.unwrap();
+    assert_eq!(result.events[0].payload["status"], "ok");
+}
+```
+
 ## File Organisation
 
 Place block implementations in `foundryd/src/blocks/`:

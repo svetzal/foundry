@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ShellGateway;
+
 /// Validates a project before the maintenance run proceeds.
 ///
 /// Observer — always runs regardless of throttle.
@@ -23,11 +25,20 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// and an optional `reason` field.
 pub struct ValidateProject {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl ValidateProject {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
     }
 }
 
@@ -45,9 +56,11 @@ async fn check_git_branch(
     project: &str,
     path: &Path,
     expected_branch: &str,
+    shell: &dyn ShellGateway,
 ) -> anyhow::Result<BranchCheckOutcome> {
-    let result =
-        crate::shell::run(path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None).await?;
+    let result = shell
+        .run(path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
+        .await?;
 
     if result.exit_code != 0 {
         let reason = format!("git rev-parse failed: {}", result.stderr.trim());
@@ -59,8 +72,7 @@ async fn check_git_branch(
 
     if current_branch == "HEAD" {
         tracing::warn!(%project, %expected_branch, "detached HEAD detected, attempting recovery");
-        let checkout =
-            crate::shell::run(path, "git", &["checkout", expected_branch], None, None).await?;
+        let checkout = shell.run(path, "git", &["checkout", expected_branch], None, None).await?;
         if checkout.exit_code != 0 {
             let reason = format!("detached HEAD and checkout failed: {}", checkout.stderr.trim());
             return Ok(BranchCheckOutcome::Err(reason));
@@ -116,6 +128,7 @@ impl TaskBlock for ValidateProject {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let registry = Arc::clone(&self.registry);
+        let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             // Self-filter: only act on active (non-skipped) projects.
@@ -148,7 +161,7 @@ impl TaskBlock for ValidateProject {
 
             // 2. Check git branch (recovers from detached HEAD).
             if let BranchCheckOutcome::Err(reason) =
-                check_git_branch(&project, path, &expected_branch).await?
+                check_git_branch(&project, path, &expected_branch, shell.as_ref()).await?
             {
                 return Ok(error_result(&project, throttle, &reason));
             }
@@ -176,9 +189,15 @@ impl TaskBlock for ValidateProject {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::registry::ProjectEntry;
+    use std::sync::Arc;
+
+    use foundry_core::registry::{ProjectEntry, Registry};
     use foundry_core::throttle::Throttle;
+
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
+    use super::*;
 
     fn make_trigger(project: &str) -> Event {
         Event::new(
@@ -207,6 +226,7 @@ mod tests {
             skip: Some(false),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }
     }
 
@@ -221,7 +241,41 @@ mod tests {
             skip: Some(true),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }
+    }
+
+    fn ok_result(branch: &str) -> CommandResult {
+        CommandResult {
+            stdout: format!("{branch}\n"),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
+
+    fn init_git_repo(path: &std::path::Path) {
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(path)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()
+            .ok();
+        // Need at least one commit so HEAD resolves to a branch name.
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(path)
+            .output()
+            .expect("git commit");
     }
 
     // -- Metadata tests (no filesystem or git) --
@@ -280,73 +334,56 @@ mod tests {
         assert_eq!(result.events[0].payload["reason"], "directory not found");
     }
 
-    // -- Git branch tests --
+    // -- Git branch tests using FakeShellGateway --
 
     #[tokio::test]
-    async fn valid_project_on_correct_branch_emits_ok() {
-        // Use a real git repo (the workspace root) so we can test git calls.
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-
-        // Discover the current branch name to avoid hard-coding it.
-        let branch_output = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&repo_root)
-            .output()
-            .expect("git must be available");
-        let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
-
-        // If we're in detached HEAD this test cannot run meaningfully.
-        if current_branch == "HEAD" {
-            return;
-        }
-
+    async fn correct_branch_emits_ok_with_fake() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        // Write a gates file so has_gates=true can be tested too.
         let registry = make_registry(vec![ProjectEntry {
-            name: "workspace".to_string(),
-            path: repo_root.to_string_lossy().to_string(),
+            name: "my-project".to_string(),
+            path: path.to_string_lossy().to_string(),
             stack: foundry_core::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
-            branch: current_branch,
+            branch: "main".to_string(),
             skip: Some(false),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }]);
-        let block = ValidateProject::new(registry);
-        let trigger = make_trigger("workspace");
+
+        let shell = FakeShellGateway::always(ok_result("main"));
+        let block = ValidateProject::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
-        assert!(result.success, "expected success, got: {:?}", result.events[0].payload);
+        assert!(result.success, "expected success: {:?}", result.events[0].payload);
         assert_eq!(result.events[0].payload["status"], "ok");
     }
 
     #[tokio::test]
-    async fn wrong_branch_emits_error_status() {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-
-        // Use a branch name that almost certainly doesn't exist.
+    async fn wrong_branch_emits_error_with_fake() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
         let registry = make_registry(vec![ProjectEntry {
-            name: "workspace".to_string(),
-            path: repo_root.to_string_lossy().to_string(),
+            name: "my-project".to_string(),
+            path: path.to_string_lossy().to_string(),
             stack: foundry_core::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
-            branch: "branch-that-does-not-exist-xyzzy".to_string(),
+            branch: "main".to_string(),
             skip: Some(false),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }]);
-        let block = ValidateProject::new(registry);
-        let trigger = make_trigger("workspace");
+
+        // Fake reports we're on "feature-branch" but registry expects "main".
+        let shell = FakeShellGateway::always(ok_result("feature-branch"));
+        let block = ValidateProject::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
         assert!(!result.success);
@@ -355,31 +392,113 @@ mod tests {
         assert!(reason.contains("wrong branch"), "unexpected reason: {reason}");
     }
 
-    // -- .hone-gates.json tests (uses tempdir) --
+    #[tokio::test]
+    async fn detached_head_recovery_success() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        let registry = make_registry(vec![ProjectEntry {
+            name: "my-project".to_string(),
+            path: path.to_string_lossy().to_string(),
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
+            timeout_secs: None,
+        }]);
 
-    fn init_git_repo(path: &Path) {
-        std::process::Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(path)
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(path)
-            .output()
-            .ok();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(path)
-            .output()
-            .ok();
-        // Need at least one commit so HEAD resolves to a branch name.
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(path)
-            .output()
-            .expect("git commit");
+        // First call: rev-parse returns "HEAD" (detached).
+        // Second call: checkout succeeds (exit 0).
+        let shell = FakeShellGateway::sequence(vec![
+            ok_result("HEAD"),
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = ValidateProject::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.expect("should not error");
+        assert!(result.success, "expected ok after recovery: {:?}", result.events[0].payload);
+        assert_eq!(result.events[0].payload["status"], "ok");
     }
+
+    #[tokio::test]
+    async fn detached_head_recovery_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        let registry = make_registry(vec![ProjectEntry {
+            name: "my-project".to_string(),
+            path: path.to_string_lossy().to_string(),
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
+            timeout_secs: None,
+        }]);
+
+        // First: rev-parse returns "HEAD"; second: checkout fails.
+        let shell = FakeShellGateway::sequence(vec![
+            ok_result("HEAD"),
+            CommandResult {
+                stdout: String::new(),
+                stderr: "branch not found".to_string(),
+                exit_code: 1,
+                success: false,
+            },
+        ]);
+        let block = ValidateProject::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.expect("should not error");
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["status"], "error");
+        let reason = result.events[0].payload["reason"].as_str().unwrap();
+        assert!(reason.contains("detached HEAD and checkout failed"), "unexpected: {reason}");
+    }
+
+    #[tokio::test]
+    async fn git_rev_parse_failure_emits_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        let registry = make_registry(vec![ProjectEntry {
+            name: "my-project".to_string(),
+            path: path.to_string_lossy().to_string(),
+            stack: foundry_core::registry::Stack::Rust,
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: Some(false),
+            actions: foundry_core::registry::ActionFlags::default(),
+            install: None,
+            timeout_secs: None,
+        }]);
+
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: String::new(),
+            stderr: "not a git repo".to_string(),
+            exit_code: 128,
+            success: false,
+        });
+        let block = ValidateProject::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.expect("should not error");
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["status"], "error");
+        let reason = result.events[0].payload["reason"].as_str().unwrap();
+        assert!(reason.contains("git rev-parse failed"), "unexpected: {reason}");
+    }
+
+    // -- .hone-gates.json tests (uses tempdir) --
 
     #[tokio::test]
     async fn missing_gates_still_emits_ok() {
@@ -397,6 +516,7 @@ mod tests {
             skip: Some(false),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");
@@ -426,6 +546,7 @@ mod tests {
             skip: Some(false),
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");

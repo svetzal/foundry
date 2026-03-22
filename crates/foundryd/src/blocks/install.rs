@@ -7,6 +7,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{InstallConfig, Registry};
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ShellGateway;
+
 /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
@@ -19,11 +21,20 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 /// - absent — skips gracefully with `success=true`
 pub struct InstallLocally {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl InstallLocally {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
     }
 }
 
@@ -60,6 +71,7 @@ impl TaskBlock for InstallLocally {
 
         // Resolve install config and project path from registry.
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             let Some(entry) = entry else {
@@ -94,22 +106,16 @@ impl TaskBlock for InstallLocally {
                 InstallConfig::Command(cmd) => {
                     tracing::info!(project = %project, command = %cmd, "running install command");
                     let project_dir = Path::new(&entry.path);
-                    let result =
-                        crate::shell::run(project_dir, "sh", &["-c", cmd], None, None).await?;
+                    let result = shell.run(project_dir, "sh", &["-c", cmd], None, None).await?;
                     ("command", result)
                 }
                 InstallConfig::Brew(formula) => {
                     tracing::info!(project = %project, formula = %formula, "running brew upgrade");
                     // brew upgrade installs the formula if not already present and upgrades if it is.
                     // "already up-to-date" is treated as success by brew (exit 0).
-                    let result = crate::shell::run(
-                        Path::new("/"),
-                        "brew",
-                        &["upgrade", formula],
-                        None,
-                        None,
-                    )
-                    .await?;
+                    let result = shell
+                        .run(Path::new("/"), "brew", &["upgrade", formula], None, None)
+                        .await?;
                     ("brew", result)
                 }
             };
@@ -152,10 +158,18 @@ impl TaskBlock for InstallLocally {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::registry::{ActionFlags, ProjectEntry};
-    use foundry_core::throttle::Throttle;
+    use std::sync::Arc;
     use std::time::Duration;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, InstallConfig, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::TaskBlock;
+    use foundry_core::throttle::Throttle;
+
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
+    use super::InstallLocally;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -165,7 +179,6 @@ mod tests {
     }
 
     fn registry_with_install(install: Option<InstallConfig>) -> Arc<Registry> {
-        use foundry_core::registry::Stack;
         Arc::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
@@ -178,6 +191,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install,
+                timeout_secs: None,
             }],
         })
     }
@@ -193,10 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_when_project_not_in_registry() {
-        let block = InstallLocally::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
+        let block = InstallLocally::new(empty_registry());
         let trigger = make_trigger("unknown-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -220,29 +231,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_install_runs_shell_command() {
-        // Use `true` as the command — always succeeds, writes nothing.
-        let block = InstallLocally::new(registry_with_install(Some(InstallConfig::Command(
-            "true".to_string(),
-        ))));
+    async fn command_install_success() {
+        let registry =
+            registry_with_install(Some(InstallConfig::Command("make install".to_string())));
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "install ok\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = InstallLocally::with_shell(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
+
         assert!(result.success);
+        assert_eq!(result.events[0].event_type, EventType::LocalInstallCompleted);
+        assert_eq!(result.events[0].payload["method"], "command");
+        assert_eq!(result.events[0].payload["success"], true);
         assert!(result.summary.contains("command"));
     }
 
     #[tokio::test]
     async fn command_install_failure_emits_event_with_success_false() {
-        let block = InstallLocally::new(registry_with_install(Some(InstallConfig::Command(
-            "false".to_string(),
-        ))));
+        let registry =
+            registry_with_install(Some(InstallConfig::Command("make install".to_string())));
+        let shell = FakeShellGateway::failure("make: error\n");
+        let block = InstallLocally::with_shell(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
+
         assert!(!result.success);
-        assert!(!result.events[0].payload["success"].as_bool().unwrap());
+        assert_eq!(result.events[0].payload["success"], false);
         assert!(result.summary.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn brew_install_success() {
+        let registry = registry_with_install(Some(InstallConfig::Brew("mytool".to_string())));
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "==> Upgrading mytool\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = InstallLocally::with_shell(registry, shell);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["method"], "brew");
+        assert_eq!(result.events[0].payload["success"], true);
+        assert!(result.summary.contains("brew"));
     }
 
     #[test]

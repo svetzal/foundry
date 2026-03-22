@@ -5,6 +5,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use crate::gateway::ScannerGateway;
+
 /// Scans project dependencies for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
 ///
@@ -13,11 +15,20 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// then handle the remediation chain for each vulnerability independently.
 pub struct ScanDependencies {
     registry: Arc<Registry>,
+    scanner: Arc<dyn ScannerGateway>,
 }
 
 impl ScanDependencies {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_scanner(registry: Arc<Registry>, scanner: Arc<dyn ScannerGateway>) -> Self {
+        Self { registry, scanner }
     }
 }
 
@@ -43,6 +54,7 @@ impl TaskBlock for ScanDependencies {
         let throttle = trigger.throttle;
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
             let Some(entry) = entry else {
@@ -57,7 +69,7 @@ impl TaskBlock for ScanDependencies {
             let path = std::path::Path::new(&entry.path);
             tracing::info!(project = %project, stack = %entry.stack, "scanning dependencies");
 
-            let audit_result = crate::scanner::run_audit(path, &entry.stack).await?;
+            let audit_result = scanner.run_audit(path, &entry.stack).await?;
 
             if let Some(ref err) = audit_result.error {
                 tracing::warn!(project = %project, error = %err, "audit tool error");
@@ -112,10 +124,17 @@ impl TaskBlock for ScanDependencies {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
-    use foundry_core::task_block::TaskBlock;
+    use std::sync::Arc;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
+
+    use crate::gateway::fakes::FakeScannerGateway;
+    use crate::scanner::Vulnerability;
+
+    use super::ScanDependencies;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -137,6 +156,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install: None,
+                timeout_secs: None,
             }],
         })
     }
@@ -173,13 +193,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scans_known_project() {
-        // Scanner tool likely not installed in test env — should handle gracefully.
+    async fn clean_project_emits_no_events() {
         let registry = registry_with_project("my-project", "/tmp");
-        let block = ScanDependencies::new(registry);
+        let scanner = FakeScannerGateway::clean();
+        let block = ScanDependencies::with_scanner(registry, scanner);
         let trigger = scan_trigger("my-project");
+
         let result = block.execute(&trigger).await.unwrap();
-        // Either succeeds with no vulns, or succeeds with scanner error — both are ok.
+
         assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("no vulnerabilities found"));
+    }
+
+    #[tokio::test]
+    async fn vulnerabilities_emitted_correctly() {
+        let registry = registry_with_project("my-project", "/tmp");
+        let vulns = vec![Vulnerability {
+            cve: Some("CVE-2026-1234".to_string()),
+            severity: Some("high".to_string()),
+            package: "some-crate".to_string(),
+            version: Some("0.1.0".to_string()),
+        }];
+        let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
+        let block = ScanDependencies::with_scanner(registry, scanner);
+        let trigger = scan_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::VulnerabilityDetected);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+        assert_eq!(result.events[0].payload["package"], "some-crate");
+        assert_eq!(result.events[0].payload["severity"], "high");
+        assert!(result.summary.contains("CVE-2026-1234"));
+    }
+
+    #[tokio::test]
+    async fn multiple_vulnerabilities_emit_one_event_each() {
+        let registry = registry_with_project("my-project", "/tmp");
+        let vulns = vec![
+            Vulnerability {
+                cve: Some("CVE-2026-0001".to_string()),
+                severity: Some("high".to_string()),
+                package: "crate-a".to_string(),
+                version: None,
+            },
+            Vulnerability {
+                cve: Some("CVE-2026-0002".to_string()),
+                severity: Some("medium".to_string()),
+                package: "crate-b".to_string(),
+                version: None,
+            },
+        ];
+        let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
+        let block = ScanDependencies::with_scanner(registry, scanner);
+        let trigger = scan_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 2);
+        assert!(result.summary.contains("2 vulnerabilities"));
+    }
+
+    #[tokio::test]
+    async fn scanner_error_handled_gracefully() {
+        let registry = registry_with_project("my-project", "/tmp");
+        let scanner = FakeScannerGateway::with_error("cargo audit not installed");
+        let block = ScanDependencies::with_scanner(registry, scanner);
+        let trigger = scan_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // A scanner error is not a block failure — the scan is simply skipped.
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("Scan skipped"));
     }
 }

@@ -8,6 +8,8 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 
+use crate::gateway::ShellGateway;
+
 /// Tags a patch release when the main branch is clean (vulnerability already fixed).
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
@@ -18,15 +20,24 @@ use foundry_core::throttle::Throttle;
 /// (Claude Code convention for agentic automation).
 pub struct CutRelease {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl CutRelease {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
     }
 
     /// Generous timeout for Claude CLI — release tasks can take several minutes.
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
+
+    #[cfg(test)]
+    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
+    }
 }
 
 impl TaskBlock for CutRelease {
@@ -81,9 +92,11 @@ impl TaskBlock for CutRelease {
             .find(|p| p.name == project)
             .map(|p| p.path.clone());
 
+        let shell = Arc::clone(&self.shell);
+
         tracing::info!(%cve, "cutting patch release");
 
-        Box::pin(run_release(project, throttle, cve, project_path))
+        Box::pin(run_release(project, throttle, cve, project_path, shell))
     }
 }
 
@@ -92,6 +105,7 @@ async fn run_release(
     throttle: Throttle,
     cve: String,
     project_path: Option<String>,
+    shell: Arc<dyn ShellGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(path_str) = project_path else {
         tracing::warn!(project = %project, "project not found in registry, skipping release");
@@ -128,14 +142,15 @@ async fn run_release(
 
     tracing::info!(%project, %cve, "invoking claude CLI for release");
 
-    let run_result = crate::shell::run(
-        project_dir,
-        "claude",
-        &["--print", "--dangerously-skip-permissions", &prompt],
-        Some(&env),
-        Some(CutRelease::CLAUDE_TIMEOUT),
-    )
-    .await;
+    let run_result = shell
+        .run(
+            project_dir,
+            "claude",
+            &["--print", "--dangerously-skip-permissions", &prompt],
+            Some(&env),
+            Some(CutRelease::CLAUDE_TIMEOUT),
+        )
+        .await;
 
     let (cli_success, new_tag, cli_summary) = match run_result {
         Ok(r) if r.success => {
@@ -211,12 +226,16 @@ fn extract_version_tag(output: &str) -> Option<String> {
 /// Falls back to stub behaviour when the project has no `repo` configured.
 pub struct WatchPipeline {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl WatchPipeline {
     /// Create a `WatchPipeline` that resolves the repository from the registry.
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
     }
 
     /// Create a `WatchPipeline` backed by an empty registry (for tests).
@@ -227,6 +246,7 @@ impl WatchPipeline {
                 version: 2,
                 projects: vec![],
             }),
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
         }
     }
 }
@@ -260,6 +280,8 @@ impl TaskBlock for WatchPipeline {
             .map(|p| p.repo.clone())
             .filter(|r| !r.is_empty());
 
+        let shell = Arc::clone(&self.shell);
+
         Box::pin(async move {
             let Some(repo) = repo else {
                 // No repository configured — stub: assume success.
@@ -267,7 +289,7 @@ impl TaskBlock for WatchPipeline {
                 return Ok(stub_success(project, throttle));
             };
 
-            poll_pipeline(project, throttle, &repo).await
+            poll_pipeline(project, throttle, &repo, shell.as_ref()).await
         })
     }
 }
@@ -295,6 +317,7 @@ async fn poll_pipeline(
     project: String,
     throttle: foundry_core::throttle::Throttle,
     repo: &str,
+    shell: &dyn ShellGateway,
 ) -> anyhow::Result<TaskBlockResult> {
     use std::time::{Duration, Instant};
 
@@ -320,7 +343,7 @@ async fn poll_pipeline(
             });
         }
 
-        match query_latest_run(repo).await {
+        match query_latest_run(repo, shell).await {
             Ok(Some((status, conclusion))) => match status.as_str() {
                 "completed" => {
                     let success = conclusion == "success";
@@ -364,30 +387,34 @@ async fn poll_pipeline(
 ///
 /// Returns `Ok(Some((status, conclusion)))` on success, `Ok(None)` when no
 /// runs exist, and `Err` on CLI or JSON parse failure.
-async fn query_latest_run(repo: &str) -> anyhow::Result<Option<(String, String)>> {
-    use tokio::process::Command;
-
-    let output = Command::new("gh")
-        .args([
-            "run",
-            "list",
-            "--repo",
-            repo,
-            "--limit",
-            "1",
-            "--json",
-            "status,conclusion",
-        ])
-        .output()
+async fn query_latest_run(
+    repo: &str,
+    shell: &dyn ShellGateway,
+) -> anyhow::Result<Option<(String, String)>> {
+    let result = shell
+        .run(
+            Path::new("."),
+            "gh",
+            &[
+                "run",
+                "list",
+                "--repo",
+                repo,
+                "--limit",
+                "1",
+                "--json",
+                "status,conclusion",
+            ],
+            None,
+            None,
+        )
         .await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh run list failed: {stderr}");
+    if !result.success {
+        anyhow::bail!("gh run list failed: {}", result.stderr);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let runs: serde_json::Value = serde_json::from_str(&stdout)?;
+    let runs: serde_json::Value = serde_json::from_str(&result.stdout)?;
 
     let Some(run) = runs.as_array().and_then(|a| a.first()) else {
         return Ok(None);
@@ -401,6 +428,17 @@ async fn query_latest_run(repo: &str) -> anyhow::Result<Option<(String, String)>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::TaskBlock;
+    use foundry_core::throttle::Throttle;
+    use tempfile::TempDir;
+
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
     use super::*;
 
     fn empty_registry() -> Arc<Registry> {
@@ -411,9 +449,6 @@ mod tests {
     }
 
     fn registry_with_project(name: &str, path: &str, has_agents_md: bool) -> Arc<Registry> {
-        use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
-        use tempfile::TempDir;
-
         // Create a real temp dir when has_agents_md is requested.
         // The path parameter is ignored in that case so tests are hermetic.
         let project_path = if has_agents_md {
@@ -440,6 +475,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install: None,
+                timeout_secs: None,
             }],
         })
     }
@@ -494,6 +530,52 @@ mod tests {
         assert!(result.summary.contains("AGENTS.md not found"));
     }
 
+    #[tokio::test]
+    async fn successful_release_emits_auto_release_completed() {
+        let registry = registry_with_project("my-project", "/unused", true);
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "Release complete! Tagged as v1.2.3 and pushed.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = CutRelease::with_shell(registry, shell);
+        let trigger = Event::new(
+            EventType::MainBranchAudited,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-1234" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::AutoReleaseCompleted);
+        assert_eq!(result.events[0].payload["new_tag"], "v1.2.3");
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    #[tokio::test]
+    async fn release_failure_emits_auto_release_completed_with_success_false() {
+        let registry = registry_with_project("my-project", "/unused", true);
+        let shell = FakeShellGateway::failure("Claude CLI failed");
+        let block = CutRelease::with_shell(registry, shell);
+        let trigger = Event::new(
+            EventType::MainBranchAudited,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-1234" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::AutoReleaseCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+    }
+
     #[test]
     fn extract_version_tag_finds_semver() {
         let output = "Release complete! Tagged as v1.2.3 and pushed.";
@@ -531,8 +613,6 @@ mod tests {
 
     #[tokio::test]
     async fn watch_pipeline_stubs_when_project_has_empty_repo() {
-        use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
-
         let registry = Arc::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
@@ -545,6 +625,7 @@ mod tests {
                 skip: None,
                 actions: ActionFlags::default(),
                 install: None,
+                timeout_secs: None,
             }],
         });
         let block = WatchPipeline::new(registry);

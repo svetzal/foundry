@@ -5,6 +5,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use crate::gateway::{ScannerGateway, ShellGateway};
+
 /// Scans a release tag for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
 ///
@@ -15,6 +17,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 ///   emits nothing when the project is not in the registry.
 pub struct AuditReleaseTag {
     registry: Arc<Registry>,
+    shell: Arc<dyn ShellGateway>,
+    scanner: Arc<dyn ScannerGateway>,
 }
 
 impl AuditReleaseTag {
@@ -25,12 +29,31 @@ impl AuditReleaseTag {
                 version: 2,
                 projects: vec![],
             }),
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
         }
     }
 
     /// Create a new `AuditReleaseTag` block backed by the given registry.
     pub fn with_registry(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_gateways(
+        registry: Arc<Registry>,
+        shell: Arc<dyn ShellGateway>,
+        scanner: Arc<dyn ScannerGateway>,
+    ) -> Self {
+        Self {
+            registry,
+            shell,
+            scanner,
+        }
     }
 }
 
@@ -54,6 +77,7 @@ impl AuditReleaseTag {
         let throttle = trigger.throttle;
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let scanner = Arc::clone(&self.scanner);
 
         let Some(entry) = entry else {
             tracing::info!(%project, "project not in registry, skipping post-push audit");
@@ -70,8 +94,7 @@ impl AuditReleaseTag {
 
         Box::pin(async move {
             let path = std::path::Path::new(&entry.path);
-            let audit_result =
-                crate::scanner::run_audit(path, &entry.stack).await.unwrap_or_default();
+            let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
 
             let vulnerable = !audit_result.vulnerabilities.is_empty();
             let cve = audit_result
@@ -129,6 +152,8 @@ impl AuditReleaseTag {
 
         // Look up the project entry in the registry.
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let shell = Arc::clone(&self.shell);
+        let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
             let Some(entry) = entry else {
@@ -149,9 +174,9 @@ impl AuditReleaseTag {
             let path = std::path::PathBuf::from(&entry.path);
 
             // Save original branch so we can restore it after scanning.
-            let branch_result =
-                crate::shell::run(&path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
-                    .await;
+            let branch_result = shell
+                .run(&path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
+                .await;
 
             let original_branch = match branch_result {
                 Ok(r) => r.stdout.trim().to_string(),
@@ -181,6 +206,8 @@ impl AuditReleaseTag {
                 &payload_cve,
                 payload_vulnerable,
                 payload_dirty,
+                shell.as_ref(),
+                scanner.as_ref(),
             )
             .await
         })
@@ -231,32 +258,32 @@ async fn perform_tag_checkout_and_scan(
     payload_cve: &str,
     payload_vulnerable: bool,
     payload_dirty: Option<bool>,
+    shell: &dyn ShellGateway,
+    scanner: &dyn ScannerGateway,
 ) -> anyhow::Result<TaskBlockResult> {
     // Fetch tags from the remote (best-effort; don't abort on failure).
-    let _ = crate::shell::run(path, "git", &["fetch", "--tags"], None, None).await;
+    let _ = shell.run(path, "git", &["fetch", "--tags"], None, None).await;
 
     // Find the latest release tag by version-aware sort.
-    let tags_result =
-        crate::shell::run(path, "git", &["tag", "--sort=-v:refname"], None, None).await;
+    let tags_result = shell.run(path, "git", &["tag", "--sort=-v:refname"], None, None).await;
 
     let latest_tag =
         tags_result.ok().and_then(|r| r.stdout.lines().next().map(ToString::to_string));
 
     let vulnerabilities = if let Some(ref tag) = latest_tag {
         // Check out the release tag.
-        let _ = crate::shell::run(path, "git", &["checkout", tag], None, None).await;
+        let _ = shell.run(path, "git", &["checkout", tag], None, None).await;
 
         // Run the audit scanner.
-        let audit = crate::scanner::run_audit(path, stack).await;
+        let audit = scanner.run_audit(path, stack).await;
 
         // Three-layer cleanup: always restore original branch.
-        let cleanup1 =
-            crate::shell::run(path, "git", &["checkout", original_branch], None, None).await;
+        let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
         if cleanup1.is_err() {
-            let _ = crate::shell::run(path, "git", &["checkout", "-"], None, None).await;
+            let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
         }
         // Last-resort fallback.
-        let _ = crate::shell::run(path, "git", &["checkout", "HEAD"], None, None).await;
+        let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
 
         audit.unwrap_or_default().vulnerabilities
     } else {
@@ -330,11 +357,20 @@ fn emit_payload_result(
 /// When the release tag is not vulnerable, returns an empty result to stop the chain.
 pub struct AuditMainBranch {
     registry: Arc<Registry>,
+    scanner: Arc<dyn ScannerGateway>,
 }
 
 impl AuditMainBranch {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_scanner(registry: Arc<Registry>, scanner: Arc<dyn ScannerGateway>) -> Self {
+        Self { registry, scanner }
     }
 }
 
@@ -392,14 +428,14 @@ impl TaskBlock for AuditMainBranch {
 
         // Look up the project entry in the registry.
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
             let (cve, dirty) = if let Some(entry) = entry {
                 let path = std::path::Path::new(&entry.path);
 
                 // Scan the current branch — no checkout needed, we are already on main.
-                let audit_result =
-                    crate::scanner::run_audit(path, &entry.stack).await.unwrap_or_default();
+                let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
 
                 if audit_result.error.is_some() || audit_result.vulnerabilities.is_empty() {
                     // Scanner unavailable or project has no lockfile / is genuinely clean.
@@ -451,8 +487,13 @@ impl TaskBlock for AuditMainBranch {
 mod tests {
     use std::sync::Arc;
 
+    use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
     use foundry_core::throttle::Throttle;
+
+    use crate::gateway::fakes::{FakeScannerGateway, FakeShellGateway};
+    use crate::scanner::Vulnerability;
+    use crate::shell::CommandResult;
 
     use super::*;
 
@@ -471,7 +512,15 @@ mod tests {
             skip: None,
             actions: ActionFlags::default(),
             install: None,
+            timeout_secs: None,
         }
+    }
+
+    fn registry_with(entry: ProjectEntry) -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![entry],
+        })
     }
 
     // -- sinks_on --
@@ -484,7 +533,7 @@ mod tests {
         assert!(sinks.contains(&EventType::ProjectChangesPushed));
     }
 
-    // -- VulnerabilityDetected path --
+    // -- VulnerabilityDetected path: project not in registry --
 
     #[tokio::test]
     async fn vulnerability_detected_path_emits_release_tag_audited() {
@@ -515,6 +564,118 @@ mod tests {
         assert_eq!(result.events[0].payload["vulnerable"], false);
     }
 
+    // -- VulnerabilityDetected path: project in registry, no tags --
+
+    #[tokio::test]
+    async fn tag_scan_no_tags_falls_back_to_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry =
+            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+
+        // rev-parse returns "main"; fetch --tags succeeds; tag list is empty.
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // empty tag list
+        ]);
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = make_trigger(
+            EventType::VulnerabilityDetected,
+            serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        // Falls back to payload values
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+        assert_eq!(result.events[0].payload["vulnerable"], true);
+    }
+
+    // -- VulnerabilityDetected path: project in registry, with tags, vulnerabilities found --
+
+    #[tokio::test]
+    async fn tag_scan_with_vulnerabilities_emits_vulnerable_true() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry =
+            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+
+        // Sequence: rev-parse → fetch --tags → tag list → checkout → cleanup restore
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "v1.0.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout tag
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // restore branch
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout HEAD
+        ]);
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
+            cve: Some("CVE-2026-9999".to_string()),
+            severity: Some("high".to_string()),
+            package: "bad-crate".to_string(),
+            version: None,
+        }]);
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = make_trigger(
+            EventType::VulnerabilityDetected,
+            serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
+        assert_eq!(result.events[0].payload["vulnerable"], true);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-9999");
+    }
+
     // -- ProjectChangesPushed path --
 
     #[tokio::test]
@@ -530,22 +691,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_changes_pushed_known_project_emits_clean_audit() {
-        let registry = Arc::new(Registry {
-            version: 2,
-            projects: vec![make_project_entry("test-project", "/tmp/test-project")],
-        });
-        let block = AuditReleaseTag::with_registry(registry);
+    async fn project_changes_pushed_known_clean_project_emits_clean_audit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry =
+            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
+
         let trigger = make_trigger(
             EventType::ProjectChangesPushed,
             serde_json::json!({"cve": "CVE-2026-1234"}),
         );
         let result = block.execute(&trigger).await.unwrap();
+
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
         assert_eq!(emitted.payload["vulnerable"], false);
         assert_eq!(emitted.payload["dirty"], false);
+    }
+
+    // -- AuditMainBranch tests --
+
+    #[test]
+    fn main_branch_sinks_on_release_tag_audited() {
+        let block = AuditMainBranch::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert_eq!(block.sinks_on(), &[EventType::ReleaseTagAudited]);
+    }
+
+    #[tokio::test]
+    async fn main_branch_skips_when_not_vulnerable() {
+        let block = AuditMainBranch::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let trigger = make_trigger(
+            EventType::ReleaseTagAudited,
+            serde_json::json!({"vulnerable": false, "cve": "CVE-2026-1234"}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert!(result.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn main_branch_falls_back_to_payload_when_project_not_in_registry() {
+        let block = AuditMainBranch::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let trigger = make_trigger(
+            EventType::ReleaseTagAudited,
+            serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+        assert_eq!(result.events[0].payload["dirty"], true);
+    }
+
+    #[tokio::test]
+    async fn main_branch_scanner_finds_same_cve_marks_dirty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry =
+            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
+            cve: Some("CVE-2026-1234".to_string()),
+            severity: Some("high".to_string()),
+            package: "vulnerable-crate".to_string(),
+            version: None,
+        }]);
+        let block = AuditMainBranch::with_scanner(registry, scanner);
+
+        let trigger = make_trigger(
+            EventType::ReleaseTagAudited,
+            serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["dirty"], true);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+    }
+
+    #[tokio::test]
+    async fn main_branch_scanner_clean_falls_back_to_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry =
+            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditMainBranch::with_scanner(registry, scanner);
+
+        let trigger = make_trigger(
+            EventType::ReleaseTagAudited,
+            serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": false}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        // Scanner returned clean; falls back to payload dirty=false
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["dirty"], false);
     }
 }
