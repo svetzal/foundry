@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::DeliverGreeting));
     engine.register(Box::new(blocks::ScanDependencies));
     engine.register(Box::new(blocks::AuditReleaseTag::new(registry.clone())));
-    engine.register(Box::new(blocks::AuditMainBranch));
+    engine.register(Box::new(blocks::AuditMainBranch::new(registry.clone())));
     engine.register(Box::new(blocks::RemediateVulnerability::new(registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
