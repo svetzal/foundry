@@ -1,5 +1,5 @@
 use foundry_core::event::{Event, EventType};
-use foundry_core::task_block::TaskBlock;
+use foundry_core::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
 
 /// Record of a single block execution within a processing chain.
 #[derive(Debug, Clone)]
@@ -28,6 +28,45 @@ pub struct ProcessResult {
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
+}
+
+/// Execute a block with retry logic, sleeping `policy.backoff` between attempts.
+///
+/// Returns the final `anyhow::Result<TaskBlockResult>` after all retry attempts
+/// are exhausted or a successful result is obtained.
+async fn execute_with_retry(
+    block: &dyn TaskBlock,
+    trigger: &Event,
+    policy: RetryPolicy,
+) -> anyhow::Result<TaskBlockResult> {
+    let mut last_result: Option<anyhow::Result<TaskBlockResult>> = None;
+
+    for attempt in 0..=policy.max_retries {
+        if attempt > 0 {
+            tracing::info!(attempt, max_retries = policy.max_retries, "retrying block");
+            tokio::time::sleep(policy.backoff).await;
+        }
+
+        match block.execute(trigger).await {
+            Ok(result) if result.success => {
+                return Ok(result);
+            }
+            Ok(result) => {
+                tracing::warn!(
+                    attempt,
+                    summary = %result.summary,
+                    "block reported failure, will retry if attempts remain"
+                );
+                last_result = Some(Ok(result));
+            }
+            Err(err) => {
+                tracing::error!(attempt, error = %err, "block execute error");
+                last_result = Some(Err(err));
+            }
+        }
+    }
+
+    last_result.expect("loop always sets last_result")
 }
 
 impl Engine {
@@ -87,7 +126,7 @@ impl Engine {
                     continue;
                 }
 
-                match block.execute(&current).await {
+                match execute_with_retry(block, &current, block.retry_policy()).await {
                     Ok(result) => {
                         tracing::info!(
                             success = result.success,
@@ -477,5 +516,243 @@ mod tests {
                 "main_branch_audited",
             ]
         );
+    }
+
+    // -- Retry logic tests --
+
+    use foundry_core::task_block::RetryPolicy;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    /// A block that fails the first N calls then succeeds.
+    struct FailFirstN {
+        remaining_failures: Arc<AtomicU32>,
+        policy: RetryPolicy,
+    }
+
+    impl FailFirstN {
+        fn new(failures: u32, policy: RetryPolicy) -> Self {
+            Self {
+                remaining_failures: Arc::new(AtomicU32::new(failures)),
+                policy,
+            }
+        }
+    }
+
+    impl TaskBlock for FailFirstN {
+        fn name(&self) -> &'static str {
+            "FailFirstN"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::GreetRequested]
+        }
+
+        fn retry_policy(&self) -> RetryPolicy {
+            self.policy
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let remaining = self.remaining_failures.clone();
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            Box::pin(async move {
+                let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                    if v > 0 { Some(v - 1) } else { None }
+                });
+                if prev.is_ok() {
+                    Ok(TaskBlockResult {
+                        events: vec![],
+                        success: false,
+                        summary: "transient failure".to_string(),
+                    })
+                } else {
+                    Ok(TaskBlockResult {
+                        events: vec![Event::new(
+                            EventType::GreetingComposed,
+                            project,
+                            throttle,
+                            serde_json::json!({}),
+                        )],
+                        success: true,
+                        summary: "succeeded".to_string(),
+                    })
+                }
+            })
+        }
+    }
+
+    /// A block that always returns an Err from execute().
+    struct AlwaysErrors {
+        policy: RetryPolicy,
+        call_count: Arc<AtomicU32>,
+    }
+
+    impl TaskBlock for AlwaysErrors {
+        fn name(&self) -> &'static str {
+            "AlwaysErrors"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::GreetRequested]
+        }
+
+        fn retry_policy(&self) -> RetryPolicy {
+            self.policy
+        }
+
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let count = self.call_count.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow::anyhow!("system error"))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_policy_default_is_zero_retries() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 0);
+        assert_eq!(policy.backoff, Duration::from_secs(0));
+    }
+
+    #[tokio::test]
+    async fn block_succeeds_first_try_no_retry_needed() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(FailFirstN::new(
+            0,
+            RetryPolicy {
+                max_retries: 3,
+                backoff: Duration::from_millis(0),
+            },
+        )));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(result.block_executions.len(), 1);
+        assert!(result.block_executions[0].success);
+        assert_eq!(result.block_executions[0].summary, "succeeded");
+    }
+
+    #[tokio::test]
+    async fn block_succeeds_on_retry_after_transient_failure() {
+        let mut engine = Engine::new();
+        // Fails twice then succeeds; policy allows 3 retries — should recover.
+        engine.register(Box::new(FailFirstN::new(
+            2,
+            RetryPolicy {
+                max_retries: 3,
+                backoff: Duration::from_millis(0),
+            },
+        )));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(result.block_executions.len(), 1);
+        assert!(result.block_executions[0].success);
+        // The recovered execution emits an event.
+        assert_eq!(result.block_executions[0].emitted_event_ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn block_exhausts_retries_records_final_failure() {
+        let mut engine = Engine::new();
+        // Fails 5 times but policy only allows 2 retries (3 total attempts).
+        engine.register(Box::new(FailFirstN::new(
+            5,
+            RetryPolicy {
+                max_retries: 2,
+                backoff: Duration::from_millis(0),
+            },
+        )));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(result.block_executions.len(), 1);
+        assert!(!result.block_executions[0].success);
+        assert_eq!(result.block_executions[0].summary, "transient failure");
+    }
+
+    #[tokio::test]
+    async fn block_with_no_retry_policy_fails_immediately() {
+        let mut engine = Engine::new();
+        // 1 failure, but default policy = 0 retries → fails on the only attempt.
+        engine.register(Box::new(FailFirstN::new(1, RetryPolicy::default())));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(result.block_executions.len(), 1);
+        assert!(!result.block_executions[0].success);
+    }
+
+    #[tokio::test]
+    async fn err_result_retried_and_exhausted_records_failure() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let block = AlwaysErrors {
+            policy: RetryPolicy {
+                max_retries: 2,
+                backoff: Duration::from_millis(0),
+            },
+            call_count: call_count.clone(),
+        };
+
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        // 1 initial attempt + 2 retries = 3 total calls.
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
+        assert_eq!(result.block_executions.len(), 1);
+        assert!(!result.block_executions[0].success);
+        assert!(result.block_executions[0].summary.contains("error:"));
     }
 }

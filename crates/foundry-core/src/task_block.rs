@@ -1,8 +1,30 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use crate::event::{Event, EventType};
 use crate::throttle::Throttle;
+
+/// Retry policy for a task block.
+///
+/// Controls how many times the engine will retry a failed execution and how
+/// long to wait between attempts.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    /// Maximum number of retries (0 = no retries, execute once only).
+    pub max_retries: u32,
+    /// Delay between retry attempts.
+    pub backoff: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            backoff: Duration::from_secs(0),
+        }
+    }
+}
 
 /// The result of executing a task block.
 #[derive(Debug)]
@@ -49,6 +71,14 @@ pub trait TaskBlock: Send + Sync {
         &self,
         trigger: &Event,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>;
+
+    /// The retry policy for this block.
+    ///
+    /// Defaults to no retries (execute once). Override to enable automatic
+    /// retry of transient failures.
+    fn retry_policy(&self) -> RetryPolicy {
+        RetryPolicy::default()
+    }
 
     /// Whether this block should emit its output events given the current throttle.
     fn should_emit(&self, throttle: Throttle) -> bool {
