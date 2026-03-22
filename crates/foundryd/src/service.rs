@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use tonic::{Request, Response, Status};
+use tracing::Instrument;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::throttle::Throttle;
@@ -10,13 +11,16 @@ use foundry_core::throttle::Throttle;
 use crate::engine::Engine;
 use crate::proto::{
     EmitRequest, EmitResponse, StatusRequest, StatusResponse, TraceBlockExecution, TraceEvent,
-    TraceRequest, TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
+    TraceRequest, TraceResponse, WatchRequest, WatchResponse, WorkflowStatus,
+    foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
+use crate::workflow_tracker::{ActiveWorkflow, WorkflowGuard, WorkflowTracker};
 
 pub struct FoundryService {
     engine: Arc<Engine>,
     trace_store: Arc<TraceStore>,
+    workflow_tracker: Arc<WorkflowTracker>,
     /// Sender held so new receivers can be created for each Watch subscriber.
     event_tx: broadcast::Sender<Event>,
 }
@@ -26,10 +30,12 @@ impl FoundryService {
         engine: Arc<Engine>,
         trace_store: Arc<TraceStore>,
         event_tx: broadcast::Sender<Event>,
+        workflow_tracker: Arc<WorkflowTracker>,
     ) -> Self {
         Self {
             engine,
             trace_store,
+            workflow_tracker,
             event_tx,
         }
     }
@@ -63,26 +69,51 @@ impl Foundry for FoundryService {
         let event = Event::new(event_type, req.project, throttle, payload);
         let event_id = event.id.clone();
 
-        let span = tracing::info_span!(
-            "emit",
+        tracing::info!(
             event_id = %event_id,
             event_type = %event.event_type,
             project = %event.project,
             throttle = %event.throttle,
-        );
-        let _guard = span.enter();
-
-        tracing::info!("processing event");
-
-        let result = self.engine.process(event).await;
-
-        tracing::info!(
-            total_events = result.events.len(),
-            blocks_executed = result.block_executions.len(),
-            "event chain complete"
+            "event accepted, spawning background processing"
         );
 
-        self.trace_store.insert(event_id.clone(), result);
+        // Register as active before spawning so status is immediately visible.
+        self.workflow_tracker.insert(ActiveWorkflow {
+            event_id: event_id.clone(),
+            event_type: event.event_type.to_string(),
+            project: event.project.clone(),
+            started_at: chrono::Utc::now(),
+        });
+
+        let engine = Arc::clone(&self.engine);
+        let trace_store = Arc::clone(&self.trace_store);
+        let tracker = Arc::clone(&self.workflow_tracker);
+
+        let span = tracing::info_span!(
+            "process",
+            event_id = %event_id,
+            event_type = %event.event_type,
+            project = %event.project,
+        );
+
+        let bg_event_id = event_id.clone();
+        tokio::spawn(
+            async move {
+                // Guard ensures removal from tracker even on panic.
+                let _guard = WorkflowGuard::new(tracker, bg_event_id.clone());
+
+                let result = engine.process(event).await;
+
+                tracing::info!(
+                    total_events = result.events.len(),
+                    blocks_executed = result.block_executions.len(),
+                    "event chain complete"
+                );
+
+                trace_store.insert(bg_event_id, result);
+            }
+            .instrument(span),
+        );
 
         let response = EmitResponse {
             event_id,
@@ -94,14 +125,28 @@ impl Foundry for FoundryService {
 
     async fn status(
         &self,
-        _request: Request<StatusRequest>,
+        request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
-        let span = tracing::info_span!("status");
-        let _guard = span.enter();
+        let req = request.into_inner();
+        let filter_id = req.workflow_id;
 
-        tracing::info!("status request");
-        let response = StatusResponse { workflows: vec![] };
-        Ok(Response::new(response))
+        let active = self.workflow_tracker.list();
+
+        let workflows = active
+            .into_iter()
+            .filter(|w| filter_id.is_empty() || w.event_id == filter_id)
+            .map(|w| WorkflowStatus {
+                workflow_id: w.event_id,
+                workflow_type: w.event_type,
+                project: w.project,
+                state: "running".to_string(),
+                started_at: w.started_at.to_rfc3339(),
+                completed_at: String::new(),
+                task_blocks: vec![],
+            })
+            .collect();
+
+        Ok(Response::new(StatusResponse { workflows }))
     }
 
     type WatchStream =

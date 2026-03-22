@@ -13,7 +13,7 @@ The `foundry` CLI communicates with a running `foundryd` daemon over gRPC.
 Emit an event into the system. May trigger a workflow chain.
 
 ```bash
-foundry emit <event_type> --project <project> [--throttle <level>] [--payload <json>]
+foundry emit <event_type> --project <project> [--throttle <level>] [--payload <json>] [--wait]
 ```
 
 | Argument | Required | Description |
@@ -22,24 +22,48 @@ foundry emit <event_type> --project <project> [--throttle <level>] [--payload <j
 | `--project` | Yes | Target project |
 | `--throttle` | No | `full`, `audit_only`, or `dry_run` (default: `full`) |
 | `--payload` | No | JSON string with event-specific data |
+| `--wait` | No | Block until processing completes, then display the trace |
 
-**Output:**
+By default, `emit` returns immediately after the daemon accepts the event.
+Use `--wait` to block until the full event chain finishes and then display
+the trace output (equivalent to running `foundry trace` after completion).
+
+**Output (default):**
 
 ```text
 Event emitted: evt_47fcb603e1b18c8435b8cc3b
-Workflow started: wf_abc123  (if a workflow was triggered)
+```
+
+**Output (with `--wait`):**
+
+```text
+Event emitted: evt_47fcb603e1b18c8435b8cc3b
+Waiting for processing to complete...
+greet_requested (evt_47fcb603e1b18c8435b8cc3b) project=hello
+  → Compose Greeting (1ms): ok — composed greeting for Stacey
+    greeting_composed (evt_a1b2c3d4e5f6) project=hello
+      → Deliver Greeting (0ms): ok — delivered greeting: Hello, Stacey!
+---
+Total: 2ms (blocks: 1ms)
 ```
 
 ## `foundry status`
 
-Show status of active workflows.
+Show status of active workflows. Queries the daemon for workflows currently
+being processed in the background.
 
 ```bash
 foundry status [workflow_id]
 ```
 
 Without an argument, shows all active workflows. With a workflow ID, shows
-details for that specific workflow including task block states.
+details for that specific workflow.
+
+**Output example:**
+
+```text
+evt_47fcb603e1b18c8435b8cc3b [iteration_requested] foundry — running
+```
 
 ## `foundry watch`
 

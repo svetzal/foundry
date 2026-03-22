@@ -6,8 +6,10 @@ The Foundry service is defined in `proto/foundry.proto`.
 
 ### `Emit(EmitRequest) → EmitResponse`
 
-Fire an event into the system. The engine processes the event synchronously
-and returns after the entire chain completes.
+Fire an event into the system. The engine spawns processing as a background
+task and returns the event ID immediately. Use `Trace` to check for
+completion, `Status` to see in-flight workflows, or `Watch` for real-time
+event streaming.
 
 **Request:**
 

@@ -38,6 +38,10 @@ enum Commands {
         /// Additional payload as JSON
         #[arg(long)]
         payload: Option<String>,
+
+        /// Wait for processing to complete, then show the trace
+        #[arg(long)]
+        wait: bool,
     },
 
     /// Show status of active workflows
@@ -81,7 +85,8 @@ async fn main() -> Result<()> {
             project,
             throttle,
             payload,
-        } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload).await,
+            wait,
+        } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
         Commands::Watch { project } => commands::watch(&cli.addr, project).await,
         Commands::Trace { event_id } => commands::trace(&cli.addr, &event_id).await,

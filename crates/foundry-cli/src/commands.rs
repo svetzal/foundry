@@ -21,6 +21,7 @@ pub async fn emit(
     project: &str,
     throttle: &str,
     payload: Option<String>,
+    wait: bool,
 ) -> Result<()> {
     let mut client = FoundryClient::connect(addr.to_string()).await?;
 
@@ -34,8 +35,24 @@ pub async fn emit(
     let response = client.emit(request).await?.into_inner();
 
     println!("Event emitted: {}", response.event_id);
-    if !response.workflow_id.is_empty() {
-        println!("Workflow started: {}", response.workflow_id);
+
+    if wait {
+        println!("Waiting for processing to complete...");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let trace_req = TraceRequest {
+                event_id: response.event_id.clone(),
+            };
+            let trace_resp = client.trace(trace_req).await?.into_inner();
+            if trace_resp.found {
+                render_trace(&trace_resp);
+                let block_sum: u64 =
+                    trace_resp.block_executions.iter().map(|b| b.duration_ms).sum();
+                println!("---");
+                println!("Total: {}ms (blocks: {}ms)", trace_resp.total_duration_ms, block_sum);
+                break;
+            }
+        }
     }
 
     Ok(())

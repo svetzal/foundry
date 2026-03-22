@@ -17,6 +17,7 @@ mod shell;
 #[allow(dead_code)]
 mod summary;
 mod trace_store;
+mod workflow_tracker;
 
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
@@ -80,7 +81,8 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::new(Duration::from_secs(3600)));
-    let service = service::FoundryService::new(engine, trace_store, event_tx);
+    let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
+    let service = service::FoundryService::new(engine, trace_store, event_tx, workflow_tracker);
 
     let addr = "[::1]:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");
