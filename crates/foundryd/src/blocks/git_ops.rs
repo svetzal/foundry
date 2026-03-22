@@ -9,11 +9,17 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
 ///
 /// Real behaviour:
+/// - Self-filters when the trigger payload explicitly sets `"changes": false`.
 /// - Checks `git status --porcelain`; self-filters when the tree is clean.
 /// - Runs `git add -A` then `git commit`.
 /// - Runs `git push` only when `registry.actions.push` is `true`.
 /// - Emits [`EventType::ProjectChangesCommitted`] after a successful commit.
 /// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
+///
+/// Commit message varies by trigger event type:
+/// - [`EventType::ProjectIterateCompleted`] → `chore(<project>): automated iterate`
+/// - [`EventType::ProjectMaintainCompleted`] → `chore(<project>): automated maintenance`
+/// - All other triggers → `chore(<project>): automated remediation`
 ///
 /// Fallback: when the project is not found in the registry, stub events are
 /// emitted so that integration tests that use synthetic project names remain
@@ -38,7 +44,11 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn sinks_on(&self) -> &[EventType] {
-        &[EventType::RemediationCompleted]
+        &[
+            EventType::RemediationCompleted,
+            EventType::ProjectIterateCompleted,
+            EventType::ProjectMaintainCompleted,
+        ]
     }
 
     fn execute(
@@ -48,6 +58,20 @@ impl TaskBlock for CommitAndPush {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+        let event_type = trigger.event_type.clone();
+
+        // Self-filter: when the payload explicitly signals no changes were made, skip early.
+        let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
+        if changes_flag == Some(false) {
+            tracing::info!(%project, "payload indicates no changes, skipping commit");
+            return Box::pin(async {
+                Ok(TaskBlockResult {
+                    events: vec![],
+                    success: true,
+                    summary: "No changes to commit".to_string(),
+                })
+            });
+        }
 
         let cve = trigger
             .payload
@@ -72,7 +96,7 @@ impl TaskBlock for CommitAndPush {
             let path = std::path::Path::new(&entry.path);
             let push_enabled = entry.actions.push;
 
-            tracing::info!(%project, %cve, "checking for changes to commit");
+            tracing::info!(%project, "checking for changes to commit");
 
             // Self-filter: nothing to do if the working tree is clean.
             let status =
@@ -89,15 +113,24 @@ impl TaskBlock for CommitAndPush {
             // Stage everything.
             crate::shell::run(path, "git", &["add", "-A"], None, None).await?;
 
-            // Commit.
-            let commit_msg = format!("chore: automated maintenance by foundry [{cve}]");
+            // Commit message varies by the event that triggered this block.
+            let commit_msg = match event_type {
+                EventType::ProjectIterateCompleted => {
+                    format!("chore({project}): automated iterate")
+                }
+                EventType::ProjectMaintainCompleted => {
+                    format!("chore({project}): automated maintenance")
+                }
+                _ => format!("chore({project}): automated remediation"),
+            };
+
             let commit =
                 crate::shell::run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
             if !commit.success {
                 return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
             }
 
-            tracing::info!(%project, %cve, "committed changes");
+            tracing::info!(%project, "committed changes");
 
             let mut events = vec![Event::new(
                 EventType::ProjectChangesCommitted,
@@ -129,7 +162,7 @@ impl TaskBlock for CommitAndPush {
 
             Ok(TaskBlockResult {
                 success: true,
-                summary: format!("Committed changes for {cve}"),
+                summary: "Committed and pushed changes".to_string(),
                 events,
             })
         })
@@ -166,7 +199,7 @@ fn stub_result(
 mod tests {
     use super::*;
     use foundry_core::event::EventType;
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry};
+    use foundry_core::registry::{ProjectEntry, Registry};
     use foundry_core::throttle::Throttle;
     use tempfile::TempDir;
 
@@ -176,6 +209,19 @@ mod tests {
             project.to_string(),
             Throttle::Full,
             serde_json::json!({ "cve": cve }),
+        )
+    }
+
+    fn make_trigger_for(event_type: EventType, project: &str) -> Event {
+        Event::new(event_type, project.to_string(), Throttle::Full, serde_json::json!({}))
+    }
+
+    fn make_trigger_no_changes(event_type: EventType, project: &str) -> Event {
+        Event::new(
+            event_type,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({ "changes": false }),
         )
     }
 
@@ -312,5 +358,90 @@ mod tests {
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         // Only committed, no pushed
         assert_eq!(types, ["project_changes_committed"]);
+    }
+
+    // --- New event-sink tests ---
+
+    #[test]
+    fn sinks_on_includes_all_three_event_types() {
+        let registry = Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        });
+        let block = CommitAndPush::new(registry);
+        let sinks = block.sinks_on();
+        assert!(sinks.contains(&EventType::RemediationCompleted));
+        assert!(sinks.contains(&EventType::ProjectIterateCompleted));
+        assert!(sinks.contains(&EventType::ProjectMaintainCompleted));
+    }
+
+    #[tokio::test]
+    async fn payload_changes_false_self_filters_immediately() {
+        let registry = Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        });
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger_no_changes(EventType::ProjectIterateCompleted, "proj");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert_eq!(result.summary, "No changes to commit");
+    }
+
+    #[tokio::test]
+    async fn remediation_trigger_uses_remediation_commit_message() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path()).await;
+        std::fs::write(tmp.path().join("fix.txt"), "fix").unwrap();
+
+        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger("my-project", "CVE-2026-1000");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(!result.events.is_empty());
+        let msg = result.events[0].payload["message"].as_str().unwrap();
+        assert!(msg.contains("remediation"), "expected 'remediation' in '{msg}'");
+    }
+
+    #[tokio::test]
+    async fn iterate_trigger_uses_iterate_commit_message() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path()).await;
+        std::fs::write(tmp.path().join("iter.txt"), "iter").unwrap();
+
+        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger_for(EventType::ProjectIterateCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(!result.events.is_empty());
+        let msg = result.events[0].payload["message"].as_str().unwrap();
+        assert!(msg.contains("iterate"), "expected 'iterate' in '{msg}'");
+    }
+
+    #[tokio::test]
+    async fn maintain_trigger_uses_maintenance_commit_message() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path()).await;
+        std::fs::write(tmp.path().join("maint.txt"), "maint").unwrap();
+
+        let registry = registry_for("my-project", tmp.path().to_str().unwrap(), false);
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger_for(EventType::ProjectMaintainCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(!result.events.is_empty());
+        let msg = result.events[0].payload["message"].as_str().unwrap();
+        assert!(msg.contains("maintenance"), "expected 'maintenance' in '{msg}'");
     }
 }
