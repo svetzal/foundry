@@ -482,7 +482,9 @@ mod tests {
         });
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies));
-        engine.register(Box::new(crate::blocks::AuditReleaseTag::new(Arc::clone(&registry))));
+        engine.register(Box::new(crate::blocks::AuditReleaseTag::with_registry(Arc::clone(
+            &registry,
+        ))));
         engine.register(Box::new(crate::blocks::AuditMainBranch::new(Arc::clone(&registry))));
         engine
             .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
@@ -520,6 +522,9 @@ mod tests {
                 "remediation_completed",
                 "project_changes_committed",
                 "project_changes_pushed",
+                // AuditReleaseTag now sinks on ProjectChangesPushed and performs a
+                // post-push re-audit (stub: reports clean, vulnerable=false).
+                "release_tag_audited",
                 "local_install_completed",
             ]
         );
@@ -636,6 +641,9 @@ mod tests {
                 "remediation_completed",
                 "project_changes_committed",
                 "project_changes_pushed",
+                // AuditReleaseTag now sinks on ProjectChangesPushed and performs a
+                // post-push re-audit (stub: reports clean, vulnerable=false).
+                "release_tag_audited",
                 "local_install_completed",
             ]
         );

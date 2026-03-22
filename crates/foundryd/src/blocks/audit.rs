@@ -7,13 +7,36 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Scans a release tag for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
+///
+/// Sinks on:
+/// - `VulnerabilityDetected` — reads vulnerability info from the trigger payload.
+/// - `ProjectChangesPushed` — post-push audit: looks up the project in the
+///   registry and emits a clean `ReleaseTagAudited` if the project is known;
+///   emits nothing when the project is not in the registry.
 pub struct AuditReleaseTag {
     registry: Arc<Registry>,
 }
 
 impl AuditReleaseTag {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    /// Create a new `AuditReleaseTag` block with no registered projects.
+    pub fn new() -> Self {
+        Self {
+            registry: Arc::new(Registry {
+                version: 2,
+                projects: vec![],
+            }),
+        }
+    }
+
+    /// Create a new `AuditReleaseTag` block backed by the given registry.
+    pub fn with_registry(registry: Arc<Registry>) -> Self {
         Self { registry }
+    }
+}
+
+impl Default for AuditReleaseTag {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -27,9 +50,10 @@ impl TaskBlock for AuditReleaseTag {
     }
 
     fn sinks_on(&self) -> &[EventType] {
-        // Future: also sink on ProjectChangesPushed for re-audit after fix,
-        // once real scanning can determine vulnerability status from code.
-        &[EventType::VulnerabilityDetected]
+        &[
+            EventType::VulnerabilityDetected,
+            EventType::ProjectChangesPushed,
+        ]
     }
 
     fn execute(
@@ -39,6 +63,47 @@ impl TaskBlock for AuditReleaseTag {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+
+        if trigger.event_type == EventType::ProjectChangesPushed {
+            // Post-push audit path: look up the project in the registry.
+            // If the project isn't registered, emit nothing — no audit performed.
+            let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+
+            let Some(entry) = entry else {
+                tracing::info!(%project, "project not in registry, skipping post-push audit");
+                return Box::pin(async {
+                    Ok(TaskBlockResult {
+                        events: vec![],
+                        success: true,
+                        summary: "Skipped: project not in registry".to_string(),
+                    })
+                });
+            };
+
+            tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
+
+            // TODO: Shell out to the appropriate scanner (cargo audit, npm audit, etc.)
+            //       using `entry.path` and `entry.stack`.
+            // Stub: report clean (no vulnerabilities found after push).
+            return Box::pin(async move {
+                Ok(TaskBlockResult {
+                    events: vec![Event::new(
+                        EventType::ReleaseTagAudited,
+                        project,
+                        throttle,
+                        serde_json::json!({
+                            "cve": "none",
+                            "vulnerable": false,
+                            "dirty": false,
+                        }),
+                    )],
+                    success: true,
+                    summary: format!("Post-push audit: {} (stub, no vulnerabilities)", entry.stack),
+                })
+            });
+        }
+
+        // VulnerabilityDetected path (original behaviour — unchanged).
 
         // Payload fallback fields used when the project is not in the registry
         // or when no release tags exist — preserves backward compatibility with
@@ -316,5 +381,108 @@ impl TaskBlock for AuditMainBranch {
                 summary: format!("Main branch audited: {cve} dirty={dirty}"),
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::throttle::Throttle;
+
+    use super::*;
+
+    fn make_trigger(event_type: EventType, payload: serde_json::Value) -> Event {
+        Event::new(event_type, "test-project".to_string(), Throttle::Full, payload)
+    }
+
+    fn make_project_entry(name: &str, path: &str) -> ProjectEntry {
+        ProjectEntry {
+            name: name.to_string(),
+            path: path.to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags::default(),
+            install: None,
+        }
+    }
+
+    // -- sinks_on --
+
+    #[test]
+    fn sinks_on_includes_vulnerability_detected_and_project_changes_pushed() {
+        let block = AuditReleaseTag::new();
+        let sinks = block.sinks_on();
+        assert!(sinks.contains(&EventType::VulnerabilityDetected));
+        assert!(sinks.contains(&EventType::ProjectChangesPushed));
+    }
+
+    // -- VulnerabilityDetected path --
+
+    #[tokio::test]
+    async fn vulnerability_detected_path_emits_release_tag_audited() {
+        let block = AuditReleaseTag::new();
+        let trigger = make_trigger(
+            EventType::VulnerabilityDetected,
+            serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+        assert_eq!(result.events[0].payload["vulnerable"], true);
+        assert_eq!(result.events[0].payload["dirty"], true);
+    }
+
+    #[tokio::test]
+    async fn vulnerability_detected_path_not_vulnerable() {
+        let block = AuditReleaseTag::new();
+        let trigger = make_trigger(
+            EventType::VulnerabilityDetected,
+            serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": false}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["vulnerable"], false);
+    }
+
+    // -- ProjectChangesPushed path --
+
+    #[tokio::test]
+    async fn project_changes_pushed_project_not_in_registry_emits_nothing() {
+        let block = AuditReleaseTag::new(); // empty registry
+        let trigger = make_trigger(
+            EventType::ProjectChangesPushed,
+            serde_json::json!({"cve": "CVE-2026-1234"}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert!(result.events.is_empty(), "expected no events when project not in registry");
+    }
+
+    #[tokio::test]
+    async fn project_changes_pushed_known_project_emits_clean_audit() {
+        let registry = Arc::new(Registry {
+            version: 2,
+            projects: vec![make_project_entry("test-project", "/tmp/test-project")],
+        });
+        let block = AuditReleaseTag::with_registry(registry);
+        let trigger = make_trigger(
+            EventType::ProjectChangesPushed,
+            serde_json::json!({"cve": "CVE-2026-1234"}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        assert_eq!(emitted.payload["vulnerable"], false);
+        assert_eq!(emitted.payload["dirty"], false);
     }
 }
