@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use foundry_core::registry::Registry;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
@@ -21,35 +20,6 @@ mod trace_store;
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
     tonic::include_proto!("foundry");
-}
-
-/// Load the project registry from the well-known default location, falling
-/// back to an empty registry if the file is absent or unreadable.
-fn load_registry() -> Arc<Registry> {
-    let default_path = dirs_path();
-    match Registry::load(&default_path) {
-        Ok(r) => {
-            tracing::info!(path = %default_path.display(), projects = r.projects.len(), "loaded registry");
-            Arc::new(r)
-        }
-        Err(err) => {
-            tracing::warn!(path = %default_path.display(), error = %err, "registry not found, using empty registry");
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            })
-        }
-    }
-}
-
-fn dirs_path() -> std::path::PathBuf {
-    // Honour FOUNDRY_REGISTRY env var for testing and custom deployments.
-    if let Ok(val) = std::env::var("FOUNDRY_REGISTRY") {
-        return std::path::PathBuf::from(val);
-    }
-    // Default: ~/Work/Operations/Automation/maintenance/registry.json
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join("Work/Operations/Automation/maintenance/registry.json")
 }
 
 #[tokio::main]
@@ -96,6 +66,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline::stub()));
+    engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
 
     let engine = Arc::new(engine);

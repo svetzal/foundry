@@ -18,6 +18,8 @@ pub struct BlockExecution {
     pub summary: String,
     /// Event IDs emitted by this block (empty if suppressed or failed).
     pub emitted_event_ids: Vec<String>,
+    /// Wall-clock milliseconds spent executing this block (including retries).
+    pub duration_ms: u64,
 }
 
 /// The full result of processing an event chain.
@@ -27,6 +29,8 @@ pub struct ProcessResult {
     pub events: Vec<Event>,
     /// Record of each block execution in order.
     pub block_executions: Vec<BlockExecution>,
+    /// Wall-clock milliseconds for the entire `process()` call.
+    pub total_duration_ms: u64,
 }
 
 /// The workflow engine routes events to task blocks and manages propagation.
@@ -96,9 +100,92 @@ impl Engine {
         self.blocks.push(block);
     }
 
+    /// Execute one block against a triggering event, persist any emitted events,
+    /// and return the [`BlockExecution`] record.  Mutates `all_events` and
+    /// `queue` in place so downstream events continue to be processed.
+    async fn run_block(
+        &self,
+        block: &dyn TaskBlock,
+        current: &Event,
+        all_events: &mut Vec<Event>,
+        queue: &mut Vec<Event>,
+    ) -> BlockExecution {
+        let block_start = std::time::Instant::now();
+
+        if !block.should_execute(current.throttle) {
+            tracing::info!("skipped (throttle)");
+            return BlockExecution {
+                block_name: block.name().to_string(),
+                trigger_event_id: current.id.clone(),
+                success: true,
+                summary: "skipped (throttle)".to_string(),
+                emitted_event_ids: vec![],
+                duration_ms: u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+            };
+        }
+
+        match execute_with_retry(block, current, block.retry_policy()).await {
+            Ok(result) => {
+                let duration_ms =
+                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                tracing::info!(
+                    success = result.success,
+                    summary = %result.summary,
+                    emitted = result.events.len(),
+                    "completed"
+                );
+                let mut emitted_ids = Vec::new();
+                if block.should_emit(current.throttle) {
+                    for emitted in result.events {
+                        if let Some(writer) = &self.event_writer {
+                            if let Err(e) = writer.write(&emitted) {
+                                tracing::warn!(
+                                    error = %e,
+                                    event_id = %emitted.id,
+                                    "failed to write emitted event to JSONL"
+                                );
+                            }
+                        }
+                        emitted_ids.push(emitted.id.clone());
+                        all_events.push(emitted.clone());
+                        queue.push(emitted);
+                    }
+                } else {
+                    tracing::info!(
+                        suppressed = result.events.len(),
+                        "emission suppressed by throttle"
+                    );
+                }
+                BlockExecution {
+                    block_name: block.name().to_string(),
+                    trigger_event_id: current.id.clone(),
+                    success: result.success,
+                    summary: result.summary,
+                    emitted_event_ids: emitted_ids,
+                    duration_ms,
+                }
+            }
+            Err(err) => {
+                let duration_ms =
+                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                tracing::error!(error = %err, "failed");
+                BlockExecution {
+                    block_name: block.name().to_string(),
+                    trigger_event_id: current.id.clone(),
+                    success: false,
+                    summary: format!("error: {err}"),
+                    emitted_event_ids: vec![],
+                    duration_ms,
+                }
+            }
+        }
+    }
+
     /// Process an event: find matching task blocks, execute them, and propagate
     /// any emitted events through the chain.
     pub async fn process(&self, event: Event) -> ProcessResult {
+        let process_start = std::time::Instant::now();
+
         let process_span = tracing::info_span!(
             "process",
             root_event_id = %event.id,
@@ -135,78 +222,18 @@ impl Engine {
                     throttle = %current.throttle,
                 );
                 let _block_guard = block_span.enter();
-
                 tracing::info!("executing");
 
-                if !block.should_execute(current.throttle) {
-                    tracing::info!("skipped (throttle)");
-                    block_executions.push(BlockExecution {
-                        block_name: block.name().to_string(),
-                        trigger_event_id: current.id.clone(),
-                        success: true,
-                        summary: "skipped (throttle)".to_string(),
-                        emitted_event_ids: vec![],
-                    });
-                    continue;
-                }
-
-                match execute_with_retry(block, &current, block.retry_policy()).await {
-                    Ok(result) => {
-                        tracing::info!(
-                            success = result.success,
-                            summary = %result.summary,
-                            emitted = result.events.len(),
-                            "completed"
-                        );
-
-                        let mut emitted_ids = Vec::new();
-                        if block.should_emit(current.throttle) {
-                            for emitted in result.events {
-                                if let Some(writer) = &self.event_writer {
-                                    if let Err(e) = writer.write(&emitted) {
-                                        tracing::warn!(
-                                            error = %e,
-                                            event_id = %emitted.id,
-                                            "failed to write emitted event to JSONL"
-                                        );
-                                    }
-                                }
-                                emitted_ids.push(emitted.id.clone());
-                                all_events.push(emitted.clone());
-                                queue.push(emitted);
-                            }
-                        } else {
-                            tracing::info!(
-                                suppressed = result.events.len(),
-                                "emission suppressed by throttle"
-                            );
-                        }
-
-                        block_executions.push(BlockExecution {
-                            block_name: block.name().to_string(),
-                            trigger_event_id: current.id.clone(),
-                            success: result.success,
-                            summary: result.summary,
-                            emitted_event_ids: emitted_ids,
-                        });
-                    }
-                    Err(err) => {
-                        tracing::error!(error = %err, "failed");
-                        block_executions.push(BlockExecution {
-                            block_name: block.name().to_string(),
-                            trigger_event_id: current.id.clone(),
-                            success: false,
-                            summary: format!("error: {err}"),
-                            emitted_event_ids: vec![],
-                        });
-                    }
-                }
+                let execution = self.run_block(block, &current, &mut all_events, &mut queue).await;
+                block_executions.push(execution);
             }
         }
 
         ProcessResult {
             events: all_events,
             block_executions,
+            total_duration_ms: u64::try_from(process_start.elapsed().as_millis())
+                .unwrap_or(u64::MAX),
         }
     }
 
