@@ -1,0 +1,24 @@
+{
+  "gates": [
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "required": true
+    },
+    {
+      "name": "lint",
+      "command": "cargo clippy --workspace -- -D warnings",
+      "required": true
+    },
+    {
+      "name": "test",
+      "command": "cargo test --workspace",
+      "required": true
+    },
+    {
+      "name": "deny",
+      "command": "cargo deny check",
+      "required": false
+    }
+  ]
+}

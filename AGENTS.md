@@ -49,6 +49,7 @@ cargo test --workspace
 - Both `foundryd` and `foundry-cli` compile the proto in their `build.rs`
 - Structured logging via `tracing` with `info_span!` for request correlation
 - No external observability dependencies — tracing spans only
+- All tasks must include tests and all relevant documentation updates
 
 ## Documentation
 

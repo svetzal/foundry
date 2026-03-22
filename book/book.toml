@@ -9,7 +9,13 @@ src = "src"
 default-theme = "light"
 preferred-dark-theme = "navy"
 no-section-label = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [build]
 build-dir = "book"
 create-missing = true
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
