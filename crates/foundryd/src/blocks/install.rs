@@ -87,6 +87,7 @@ impl TaskBlock for InstallLocally {
                     summary: "Skipped: project not found in registry".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             };
 
@@ -103,6 +104,7 @@ impl TaskBlock for InstallLocally {
                     summary: "Skipped: no install config defined".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             };
 
@@ -160,6 +162,7 @@ impl TaskBlock for InstallLocally {
                 },
                 raw_output,
                 exit_code,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -198,6 +201,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags::default(),
                 install,
                 timeout_secs: None,

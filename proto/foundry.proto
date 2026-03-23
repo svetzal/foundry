@@ -72,6 +72,7 @@ message TraceBlockExecution {
     int32 exit_code = 9;
     string trigger_payload_json = 10;
     repeated string emitted_payload_jsons = 11;
+    repeated string audit_artifacts = 12;
 }
 
 // A single event in a trace chain.

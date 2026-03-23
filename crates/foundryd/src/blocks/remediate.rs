@@ -71,6 +71,7 @@ impl TaskBlock for RemediateVulnerability {
                     summary: "Skipped: main branch is clean".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             });
         }
@@ -97,6 +98,7 @@ impl TaskBlock for RemediateVulnerability {
                     summary: format!("Project '{project}' not found in registry"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             };
 
@@ -107,10 +109,15 @@ impl TaskBlock for RemediateVulnerability {
             };
             let project_path = &entry.path;
 
+            let audit_dir = super::hone_common::audit_dir(&project);
+            let audit_dir_str = audit_dir.display().to_string();
+            let snapshot_time = std::time::SystemTime::now();
+
             tracing::info!(
                 project = %project,
                 agent = agent,
                 path = %project_path,
+                audit_dir = %audit_dir_str,
                 %cve,
                 "invoking hone maintain"
             );
@@ -119,7 +126,14 @@ impl TaskBlock for RemediateVulnerability {
                 .run(
                     Path::new(project_path),
                     "hone",
-                    &["maintain", agent, project_path, "--json"],
+                    &[
+                        "maintain",
+                        agent,
+                        project_path,
+                        "--json",
+                        "--audit-dir",
+                        &audit_dir_str,
+                    ],
                     None,
                     None,
                 )
@@ -171,6 +185,10 @@ impl TaskBlock for RemediateVulnerability {
                 },
                 raw_output,
                 exit_code,
+                audit_artifacts: super::hone_common::collect_new_artifacts(
+                    &audit_dir,
+                    snapshot_time,
+                ),
             })
         })
     }
@@ -201,6 +219,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags::default(),
                 install: None,
                 timeout_secs: None,

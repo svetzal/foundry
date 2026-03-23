@@ -76,6 +76,7 @@ impl TaskBlock for CutRelease {
                     summary: "Skipped: main branch is dirty".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             });
         }
@@ -117,6 +118,7 @@ async fn run_release(
             summary: format!("Project '{project}' not found in registry"),
             raw_output: None,
             exit_code: None,
+            audit_artifacts: vec![],
         });
     };
 
@@ -135,6 +137,7 @@ async fn run_release(
             ),
             raw_output: None,
             exit_code: None,
+            audit_artifacts: vec![],
         });
     }
 
@@ -213,6 +216,7 @@ async fn run_release(
         summary: cli_summary,
         raw_output,
         exit_code,
+        audit_artifacts: vec![],
     })
 }
 
@@ -323,6 +327,7 @@ fn stub_success(project: String, throttle: foundry_core::throttle::Throttle) -> 
         summary: "Release pipeline completed successfully".to_string(),
         raw_output: None,
         exit_code: None,
+        audit_artifacts: vec![],
     }
 }
 
@@ -360,6 +365,7 @@ async fn poll_pipeline(
                 summary: "Pipeline watch timed out after 30 minutes".to_string(),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             });
         }
 
@@ -382,6 +388,7 @@ async fn poll_pipeline(
                         summary: format!("Release pipeline completed: {conclusion}"),
                         raw_output: None,
                         exit_code: None,
+                        audit_artifacts: vec![],
                     });
                 }
                 s @ ("in_progress" | "queued" | "waiting") => {
@@ -495,6 +502,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags::default(),
                 install: None,
                 timeout_secs: None,
@@ -645,6 +653,7 @@ mod tests {
                 repo: String::new(), // empty — no GitHub repo configured
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags::default(),
                 install: None,
                 timeout_secs: None,

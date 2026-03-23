@@ -244,6 +244,7 @@ impl Foundry for FoundryService {
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
+                    audit_artifacts: b.audit_artifacts.clone(),
                 })
                 .collect();
 

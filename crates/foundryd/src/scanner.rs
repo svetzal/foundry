@@ -33,6 +33,14 @@ pub struct AuditResult {
 /// When the audit tool is not installed or returns a non-vulnerability failure,
 /// the error is captured in [`AuditResult::error`] and `Ok` is returned.
 pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
+    if *stack == Stack::Cpp {
+        tracing::info!("no standard audit tool for C++ projects");
+        return Ok(AuditResult {
+            vulnerabilities: vec![],
+            error: None,
+        });
+    }
+
     let (command, args) = audit_command(stack);
 
     let result = match crate::shell::run(path, command, &args, None, None).await {
@@ -68,6 +76,7 @@ fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
         Stack::TypeScript => ("npm", vec!["audit", "--json"]),
         Stack::Python => ("pip-audit", vec!["--format=json"]),
         Stack::Elixir => ("mix", vec!["deps.audit", "--format=json"]),
+        Stack::Cpp => unreachable!("C++ early-returns before audit_command"),
     }
 }
 
@@ -84,6 +93,7 @@ fn parse_audit_output(stack: &Stack, output: &str) -> AuditResult {
         Stack::Rust => parse_cargo_audit(output),
         Stack::TypeScript => parse_npm_audit(output),
         Stack::Python | Stack::Elixir => parse_generic_audit(output),
+        Stack::Cpp => unreachable!("C++ early-returns before parse_audit_output"),
     }
 }
 

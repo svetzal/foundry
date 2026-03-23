@@ -88,6 +88,7 @@ impl AuditReleaseTag {
                     summary: "Skipped: project not in registry".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             });
         };
@@ -120,6 +121,7 @@ impl AuditReleaseTag {
                 summary: format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -327,6 +329,7 @@ async fn perform_tag_checkout_and_scan(
         summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         raw_output: None,
         exit_code: None,
+        audit_artifacts: vec![],
     })
 }
 
@@ -355,6 +358,7 @@ fn emit_payload_result(
         summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         raw_output: None,
         exit_code: None,
+        audit_artifacts: vec![],
     }
 }
 
@@ -418,6 +422,7 @@ impl TaskBlock for AuditMainBranch {
                     summary: "Skipped: release tag not vulnerable".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             });
         }
@@ -490,6 +495,7 @@ impl TaskBlock for AuditMainBranch {
                 summary: format!("Main branch audited: {cve} dirty={dirty}"),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -522,6 +528,7 @@ mod tests {
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
+            notes: None,
             actions: ActionFlags::default(),
             install: None,
             timeout_secs: None,

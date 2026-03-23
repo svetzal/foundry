@@ -65,6 +65,7 @@ impl TaskBlock for ScanDependencies {
                     summary: format!("Project '{project}' not found in registry"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             };
 
@@ -81,6 +82,7 @@ impl TaskBlock for ScanDependencies {
                     summary: format!("Scan skipped: {err}"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             }
 
@@ -92,6 +94,7 @@ impl TaskBlock for ScanDependencies {
                     summary: format!("{project}: no vulnerabilities found"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             }
 
@@ -125,6 +128,7 @@ impl TaskBlock for ScanDependencies {
                 summary: format!("{project}: {count} vulnerabilities found ({})", cves.join(", ")),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -162,6 +166,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags::default(),
                 install: None,
                 timeout_secs: None,

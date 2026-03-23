@@ -1,3 +1,28 @@
+use std::path::{Path, PathBuf};
+
+/// Return the centralized audit directory for a project: `~/.foundry/audits/{project}/`.
+pub(crate) fn audit_dir(project: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let base =
+        std::env::var("FOUNDRY_AUDITS_DIR").unwrap_or_else(|_| format!("{home}/.foundry/audits"));
+    PathBuf::from(base).join(project)
+}
+
+/// List files in a directory that were created or modified after `since`.
+/// Returns absolute paths sorted by name.
+pub(crate) fn collect_new_artifacts(dir: &Path, since: std::time::SystemTime) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut paths: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|t| t >= since))
+        .map(|e| e.path().display().to_string())
+        .collect();
+    paths.sort();
+    paths
+}
+
 /// Extract a human-readable summary from hone's JSON output.
 /// Falls back gracefully when the output is not valid JSON or lacks the expected field.
 pub(crate) fn parse_hone_summary(stdout: &str, success: bool) -> String {

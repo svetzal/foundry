@@ -36,6 +36,9 @@ pub struct BlockExecution {
     pub trigger_payload: serde_json::Value,
     /// The payloads of events emitted by this block.
     pub emitted_payloads: Vec<serde_json::Value>,
+    /// Paths to audit artifacts produced by this block.
+    #[serde(default)]
+    pub audit_artifacts: Vec<String>,
 }
 
 /// The full result of processing an event chain.

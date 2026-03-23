@@ -182,6 +182,13 @@ fn print_event_tree(
                         println!("{indent}      {line}");
                     }
                 }
+                // Show audit artifacts
+                if !block.audit_artifacts.is_empty() {
+                    println!("{indent}    artifacts:");
+                    for path in &block.audit_artifacts {
+                        println!("{indent}      {path}");
+                    }
+                }
             }
 
             // Recurse into emitted events

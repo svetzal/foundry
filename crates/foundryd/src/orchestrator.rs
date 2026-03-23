@@ -228,6 +228,7 @@ mod tests {
                     summary: format!("maintenance started for {project}"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             })
         }
@@ -291,6 +292,7 @@ mod tests {
                     summary: format!("counted for {project}"),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             })
         }
@@ -356,6 +358,7 @@ mod tests {
                         summary: "latched".to_string(),
                         raw_output: None,
                         exit_code: None,
+                        audit_artifacts: vec![],
                     })
                 })
             }

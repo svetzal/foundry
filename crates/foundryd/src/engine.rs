@@ -109,6 +109,7 @@ impl Engine {
                 exit_code: None,
                 trigger_payload: current.payload.clone(),
                 emitted_payloads: vec![],
+                audit_artifacts: vec![],
             };
         }
 
@@ -124,6 +125,7 @@ impl Engine {
                 );
                 let raw_output = result.raw_output.clone();
                 let exit_code = result.exit_code;
+                let audit_artifacts = result.audit_artifacts;
                 let trigger_payload = current.payload.clone();
                 let mut emitted_ids = Vec::new();
                 let mut emitted_payloads = Vec::new();
@@ -164,6 +166,7 @@ impl Engine {
                     exit_code,
                     trigger_payload,
                     emitted_payloads,
+                    audit_artifacts,
                 }
             }
             Err(err) => {
@@ -181,6 +184,7 @@ impl Engine {
                     exit_code: None,
                     trigger_payload: current.payload.clone(),
                     emitted_payloads: vec![],
+                    audit_artifacts: vec![],
                 }
             }
         }
@@ -295,6 +299,7 @@ mod tests {
                     summary: "composed greeting".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             })
         }
@@ -334,6 +339,7 @@ mod tests {
                     summary: "delivered greeting".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             })
         }
@@ -464,6 +470,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags {
                     iterate: false,
                     maintain: false,
@@ -624,6 +631,7 @@ mod tests {
                 repo: String::new(),
                 branch: "main".to_string(),
                 skip: None,
+                notes: None,
                 actions: ActionFlags {
                     iterate: true,
                     maintain: true,
@@ -867,6 +875,7 @@ mod tests {
                         summary: "transient failure".to_string(),
                         raw_output: None,
                         exit_code: None,
+                        audit_artifacts: vec![],
                     })
                 } else {
                     Ok(TaskBlockResult {
@@ -880,6 +889,7 @@ mod tests {
                         summary: "succeeded".to_string(),
                         raw_output: None,
                         exit_code: None,
+                        audit_artifacts: vec![],
                     })
                 }
             })

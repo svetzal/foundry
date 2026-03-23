@@ -39,6 +39,8 @@ pub struct TaskBlockResult {
     pub raw_output: Option<String>,
     /// Exit code from any shell command run by this block.
     pub exit_code: Option<i32>,
+    /// Paths to audit artifacts produced by this block (e.g., hone audit logs).
+    pub audit_artifacts: Vec<String>,
 }
 
 /// Whether a task block performs mutations or only observes.

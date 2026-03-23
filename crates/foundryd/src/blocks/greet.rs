@@ -44,6 +44,7 @@ impl TaskBlock for ComposeGreeting {
                 summary: format!("Composed: {greeting}"),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -94,6 +95,7 @@ impl TaskBlock for DeliverGreeting {
                 summary: format!("Delivered: {greeting}"),
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }

@@ -165,6 +165,10 @@ enum RegistryCommands {
         #[arg(long)]
         install_brew: Option<String>,
 
+        /// Human-readable notes about the project
+        #[arg(long)]
+        notes: Option<String>,
+
         /// Command timeout in seconds
         #[arg(long)]
         timeout_secs: Option<u64>,
@@ -201,9 +205,9 @@ enum RegistryCommands {
         #[arg(long)]
         branch: Option<String>,
 
-        /// Set skip flag
+        /// Set skip reason (empty string to clear)
         #[arg(long)]
-        skip: Option<bool>,
+        skip: Option<String>,
 
         /// Set iterate action
         #[arg(long)]
@@ -232,6 +236,10 @@ enum RegistryCommands {
         /// Set install brew formula
         #[arg(long)]
         install_brew: Option<String>,
+
+        /// Set notes
+        #[arg(long)]
+        notes: Option<String>,
 
         /// Set timeout in seconds
         #[arg(long)]
@@ -290,6 +298,7 @@ async fn main() -> Result<()> {
                     release,
                     install_command,
                     install_brew,
+                    notes,
                     timeout_secs,
                 } => registry_commands::add(
                     &path,
@@ -306,6 +315,7 @@ async fn main() -> Result<()> {
                     release,
                     install_command.as_deref(),
                     install_brew.as_deref(),
+                    notes.as_deref(),
                     timeout_secs,
                 ),
                 RegistryCommands::Remove { name } => registry_commands::remove(&path, &name),
@@ -324,6 +334,7 @@ async fn main() -> Result<()> {
                     release,
                     install_command,
                     install_brew,
+                    notes,
                     timeout_secs,
                 } => registry_commands::edit(
                     &path,
@@ -333,7 +344,7 @@ async fn main() -> Result<()> {
                     agent.as_deref(),
                     repo.as_deref(),
                     branch.as_deref(),
-                    skip,
+                    skip.as_deref(),
                     iterate,
                     maintain,
                     push,
@@ -341,6 +352,7 @@ async fn main() -> Result<()> {
                     release,
                     install_command.as_deref(),
                     install_brew.as_deref(),
+                    notes.as_deref(),
                     timeout_secs,
                 ),
             }

@@ -90,6 +90,7 @@ impl TaskBlock for CommitAndPush {
                     summary: "No changes to commit".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 })
             });
         }
@@ -130,6 +131,7 @@ impl TaskBlock for CommitAndPush {
                     summary: "No changes to commit".to_string(),
                     raw_output: None,
                     exit_code: None,
+                    audit_artifacts: vec![],
                 });
             }
 
@@ -188,6 +190,7 @@ impl TaskBlock for CommitAndPush {
                 events,
                 raw_output: None,
                 exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -218,6 +221,7 @@ fn stub_result(
         summary: format!("Committed and pushed fix for {cve} (stub)"),
         raw_output: None,
         exit_code: None,
+        audit_artifacts: vec![],
     }
 }
 
@@ -277,7 +281,8 @@ mod tests {
                 agent: String::new(),
                 repo: String::new(),
                 branch: "main".to_string(),
-                skip: Some(false),
+                skip: None,
+                notes: None,
                 actions: ActionFlags {
                     push,
                     iterate: false,
