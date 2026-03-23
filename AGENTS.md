@@ -19,6 +19,12 @@ cargo build --workspace
 Install both binaries to `~/.cargo/bin/`:
 
 ```bash
+./install.sh
+```
+
+Or individually:
+
+```bash
 cargo install --path crates/foundryd
 cargo install --path crates/foundry-cli
 ```
@@ -51,6 +57,21 @@ cargo test --workspace
 - No external observability dependencies — tracing spans only
 - All tasks must include tests and all relevant documentation updates
 
+## CI / Release
+
+- **CI** runs on push/PR to `main`: fmt, clippy, test (`.github/workflows/ci.yml`)
+- **Release** runs on tag push (`v*`): builds macOS arm64, macOS x86_64, and Linux x86_64 binaries, creates a GitHub release with tarballs and checksums (`.github/workflows/release.yml`)
+
+To cut a release:
+
+```bash
+# Update version in Cargo.toml [workspace.package], update CHANGELOG.md
+git tag v0.X.0
+git push origin main --tags
+```
+
+The repo is private — no Homebrew tap distribution.
+
 ## Documentation
 
 mdBook documentation lives in `book/`. Build with:
@@ -58,3 +79,19 @@ mdBook documentation lives in `book/`. Build with:
 ```bash
 mdbook build book/
 ```
+
+## Key Directories
+
+- `~/.foundry/registry.json` — project registry (managed via `foundry registry` commands)
+- `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
+- `~/.foundry/audits/{project}/` — centralized hone audit logs
+- `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
+| `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
+| `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
+| `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized hone audit logs |
