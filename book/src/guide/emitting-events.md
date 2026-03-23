@@ -68,5 +68,28 @@ greet_requested (evt_47fcb603e1b18c8435b8cc3b) project=hello
         greeting_delivered (evt_f6e5d4c3b2a1) project=hello
 ```
 
-Traces are kept in memory for 1 hour. After that, queries return an empty
-result.
+Pass `--verbose` to also show trigger payloads, emitted payloads, raw shell
+output, and paths to any audit artefacts produced.
+
+## Persistent Trace Storage
+
+Every completed event chain is written to disk under
+`~/.foundry/traces/YYYY-MM-DD/{event_id}.json` (overridable via
+`FOUNDRY_TRACES_DIR`). Traces persist indefinitely across daemon restarts —
+there is no expiry TTL on disk.
+
+To browse past traces, use `foundry history`:
+
+```bash
+# Show the last 7 days
+foundry history
+
+# Show a specific date
+foundry history 2026-03-22
+
+# Filter by project
+foundry history --project my-tool
+```
+
+You can retrieve the full trace for any on-disk event with `foundry trace`,
+even if the daemon has been restarted since the event was processed.

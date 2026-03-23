@@ -19,14 +19,20 @@ This produces two binaries:
 
 ## Install Locally
 
-Install both binaries to `~/.cargo/bin/` for immediate use:
+Install both binaries to `~/.cargo/bin/` using the convenience script:
+
+```bash
+./install.sh
+```
+
+Or install each crate individually:
 
 ```bash
 cargo install --path crates/foundryd
 cargo install --path crates/foundry-cli
 ```
 
-Re-run these commands after making changes to pick up the latest version.
+Re-run after making changes to pick up the latest version.
 
 ## Start the Daemon
 

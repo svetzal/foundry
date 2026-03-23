@@ -63,9 +63,11 @@ warning and continues with an empty registry (no projects will be processed).
 | `agent` | Yes | string | AI agent name passed to `hone` commands (e.g. `"claude"`) |
 | `repo` | Yes | string | GitHub repository slug (`owner/repo`) used by `Watch Pipeline` |
 | `branch` | Yes | string | Default branch (e.g. `"main"`) — validation checks out this branch |
-| `skip` | No | bool | Set to `true` to exclude this project from all runs; default `false` |
+| `skip` | No | string or null | Absent or `null` means not skipped; a non-empty string value is the skip reason. Accepts `true` (treated as `"skipped"`) and `false`/`null` for backwards compatibility |
 | `actions` | No | object | Which automation steps are enabled; all default to `false` |
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
+| `notes` | No | string | Human-readable notes about the project (informational only) |
+| `timeout_secs` | No | number | Timeout in seconds for long-running commands such as `hone`. Defaults to `1800` (30 minutes) when absent |
 
 ### Stack values
 
@@ -78,6 +80,7 @@ stack-specific commands.
 | `"typescript"` | `npm audit --json` | Exit code 1 = vulnerabilities found (not a tool failure) |
 | `"python"` | `pip-audit --format=json` | Requires `pip-audit` to be installed |
 | `"elixir"` | `mix deps.audit --format=json` | — |
+| `"cpp"` | — | Placeholder for C++ projects; audit tooling not yet wired |
 
 ### ActionFlags
 
@@ -132,7 +135,7 @@ values (no actions enabled, no install step, not skipped):
 
 ## Excluding a Project Temporarily
 
-Set `"skip": true` to pause automation without removing the entry:
+Set `skip` to a string reason to pause automation without removing the entry:
 
 ```json
 {
@@ -142,13 +145,60 @@ Set `"skip": true` to pause automation without removing the entry:
   "agent": "claude",
   "repo": "alice/on-hold",
   "branch": "main",
-  "skip": true
+  "skip": "Waiting for CI to stabilise"
 }
 ```
+
+The value of `skip` is the human-readable reason displayed in `foundry registry show`.
+Absent, `null`, `false`, or an empty string all mean "not skipped".
+For backwards compatibility, `true` is treated as the reason string `"skipped"`.
 
 The `Validate Project` block silently acknowledges skipped projects (emits
 `project_validation_completed` with `status: "skipped"`) so the engine trace
 remains complete.
+
+## Managing the Registry with the CLI
+
+Rather than editing `registry.json` by hand, use the `foundry registry`
+subcommands. All commands respect `FOUNDRY_REGISTRY_PATH` for non-default
+locations.
+
+```bash
+# Create an empty registry
+foundry registry init
+
+# List all projects
+foundry registry list
+
+# Inspect one project
+foundry registry show my-tool
+
+# Add a new project
+foundry registry add \
+  --name my-tool \
+  --path /Users/alice/projects/my-tool \
+  --stack rust \
+  --agent claude \
+  --repo alice/my-tool \
+  --iterate --maintain --push \
+  --install-command "cargo install --path ." \
+  --notes "Main CLI toolchain"
+
+# Edit an existing project
+foundry registry edit my-tool --timeout-secs 3600
+
+# Skip a project temporarily
+foundry registry edit my-tool --skip "Waiting for CI to stabilise"
+
+# Clear a skip (resume automation)
+foundry registry edit my-tool --skip ""
+
+# Remove a project
+foundry registry remove my-tool
+```
+
+See [CLI Commands — foundry registry](../reference/cli.md#foundry-registry) for the
+full option reference.
 
 ## Multiple Projects
 

@@ -43,9 +43,25 @@ Query active workflow states.
 |-------|------|-------------|
 | `workflows` | repeated WorkflowStatus | Active workflow states |
 
-### `Watch(StatusRequest) → stream WorkflowStatus`
+### `Watch(WatchRequest) → stream WatchResponse`
 
-Server-side streaming of workflow status updates.
+Server-side streaming of live events as they are processed by the engine.
+Optionally filtered by project name.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name to filter by; empty string for all projects |
+
+**Response (stream):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event_id` | string | Event identifier |
+| `event_type` | string | Event type name |
+| `project` | string | Target project |
+| `payload_json` | string | Event payload as JSON |
 
 ### `Trace(TraceRequest) → TraceResponse`
 
@@ -66,8 +82,9 @@ during processing and a record of each block execution.
 | `events` | repeated TraceEvent | All events in the chain |
 | `block_executions` | repeated TraceBlockExecution | Record of each block execution |
 
-Traces are stored in memory with a 1-hour TTL. Queries for expired or
-unknown event IDs return `found: false` with empty lists.
+Completed traces are persisted to disk under `~/.foundry/traces/YYYY-MM-DD/`
+and survive daemon restarts. The `Trace` RPC checks the in-memory store first
+(for recently completed chains) and falls back to disk for older traces.
 
 ## Messages
 
@@ -112,6 +129,12 @@ unknown event IDs return `found: false` with empty lists.
 | `success` | bool | Whether the block succeeded |
 | `summary` | string | Human-readable summary of the result |
 | `emitted_event_ids` | repeated string | IDs of events emitted by this block |
+| `duration_ms` | uint64 | Wall-clock milliseconds for this block execution (including retries) |
+| `raw_output` | string | Combined stdout+stderr from any shell command run by this block |
+| `exit_code` | int32 | Exit code from any shell command run by this block |
+| `trigger_payload_json` | string | JSON payload of the event that triggered this block |
+| `emitted_payload_jsons` | repeated string | JSON payloads of events emitted by this block |
+| `audit_artifacts` | repeated string | Paths to audit artefact files produced by this block |
 
 ### `Throttle` (enum)
 

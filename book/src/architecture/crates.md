@@ -21,6 +21,9 @@ Shared types used by both the daemon and CLI:
 - `throttle.rs` — `Throttle` enum (`Full`, `AuditOnly`, `DryRun`)
 - `task_block.rs` — `TaskBlock` trait, `BlockKind`, `TaskBlockResult`, `RetryPolicy`
 - `registry.rs` — `Registry`, `ProjectEntry`, `ActionFlags`, `Stack`, `InstallConfig`
+- `trace.rs` — `TraceIndex`, `BlockExecution`, `ProcessResult` — the structured
+  types used to persist and display execution traces. Moved here from `foundryd`
+  so the CLI can deserialise on-disk traces without depending on the daemon crate.
 
 This crate has no async runtime dependency. It defines the vocabulary
 that the rest of the system speaks.
@@ -48,7 +51,17 @@ the workflow engine.
   Crash-safe: each write opens, flushes, and closes the file. A `Mutex`
   serializes concurrent writes.
 - `trace_store.rs` — in-memory store of recent `ProcessResult` chains, keyed by
-  root event ID. Traces expire after a configurable TTL (default 1 hour).
+  root event ID. Used for fast `Trace` RPC lookups of workflows still in
+  progress or recently completed.
+- `trace_writer.rs` — persists completed `ProcessResult` objects to disk as
+  pretty-printed JSON files under `~/.foundry/traces/YYYY-MM-DD/{event_id}.json`.
+  Traces written here survive daemon restarts indefinitely and are read by
+  `foundry history` and `foundry trace` when the in-memory store has no match.
+- `workflow_tracker.rs` — tracks workflows that are currently being processed
+  by background tasks. Thread-safe via `RwLock`. Each `Emit` RPC inserts an
+  `ActiveWorkflow` entry on start; a RAII `WorkflowGuard` removes it on
+  completion or panic. The `Status` RPC reads this tracker to show live
+  in-flight workflows.
 - `shell.rs` — async shell runner used by block implementations. Runs an
   external command with configurable timeout (default 5 min), captures stdout
   and stderr, and returns a `CommandResult`.
@@ -84,9 +97,13 @@ the workflow engine.
 The CLI controller. Connects to `foundryd` over gRPC.
 
 - `main.rs` — `clap`-based argument parsing; subcommands: `emit`, `status`,
-  `watch`, `trace`, `run`
+  `watch`, `trace`, `run`, `history`, `registry`
 - `commands.rs` — async implementations of each subcommand via `tonic` gRPC
-  client
+  client; also contains the `history` command which reads on-disk traces
+  directly from `~/.foundry/traces/` without a daemon connection
+- `registry_commands.rs` — pure I/O implementations of the `registry`
+  subcommands (`init`, `list`, `show`, `add`, `remove`, `edit`); reads and
+  writes `~/.foundry/registry.json` using `foundry_core::registry` types
 
 ## proto/foundry.proto
 

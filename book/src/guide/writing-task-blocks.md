@@ -49,6 +49,9 @@ impl TaskBlock for MyBlock {
                 ],
                 success: true,
                 summary: "Did the thing".to_string(),
+                raw_output: None,
+                exit_code: None,
+                audit_artifacts: vec![],
             })
         })
     }
@@ -61,6 +64,23 @@ impl TaskBlock for MyBlock {
 - **Clone what you need**: extract data from `trigger` before the `async move` block
 - **Return events**: the engine handles routing them to downstream blocks
 - **Observer vs Mutator**: choose based on whether your block has side effects
+
+## TaskBlockResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `events` | `Vec<Event>` | Events to emit downstream (subject to throttle) |
+| `success` | `bool` | Whether the block's work succeeded |
+| `summary` | `String` | Human-readable one-line summary shown in traces |
+| `raw_output` | `Option<String>` | Combined stdout+stderr from any shell command — shown in `foundry trace --verbose` |
+| `exit_code` | `Option<i32>` | Exit code from any shell command — useful for observability |
+| `audit_artifacts` | `Vec<String>` | Paths to files produced by this block (e.g. hone audit logs). Listed under `artifacts:` in verbose trace output |
+
+Blocks that do not run external processes should set `raw_output: None`,
+`exit_code: None`, and `audit_artifacts: vec![]`. Blocks that shell out should
+populate `raw_output` with the combined output and `exit_code` with the process
+exit code so that traces provide full observability without needing to reproduce
+the command.
 
 ## Registering
 
