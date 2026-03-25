@@ -14,7 +14,6 @@ mod orchestrator;
 mod scanner;
 mod service;
 mod shell;
-#[allow(dead_code)]
 mod summary;
 mod trace_store;
 mod trace_writer;
@@ -64,6 +63,11 @@ async fn main() -> Result<()> {
     });
     let trace_writer = Arc::new(trace_writer::TraceWriter::new(&traces_dir));
 
+    let audits_dir = env::var("FOUNDRY_AUDITS_DIR").unwrap_or_else(|_| {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/.foundry/audits")
+    });
+
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
     let mut engine = engine::Engine::new()
@@ -85,6 +89,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RouteProjectWorkflow));
     engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::RunHoneMaintain::new(registry.clone())));
+    engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
