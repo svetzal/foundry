@@ -184,7 +184,11 @@ impl TaskBlock for ValidateProject {
                     EventType::ProjectValidationCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({"status": "ok", "has_gates": has_gates}),
+                    serde_json::json!({
+                        "status": "ok",
+                        "has_gates": has_gates,
+                        "actions": entry.actions,
+                    }),
                 )],
                 success: true,
                 summary: format!("Project {project} validated"),
@@ -351,7 +355,6 @@ mod tests {
     async fn correct_branch_emits_ok_with_fake() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path();
-        // Write a gates file so has_gates=true can be tested too.
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
@@ -361,7 +364,13 @@ mod tests {
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_core::registry::ActionFlags {
+                iterate: true,
+                maintain: true,
+                push: false,
+                audit: true,
+                release: false,
+            },
             install: None,
             timeout_secs: None,
         }]);
@@ -373,6 +382,12 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should not error");
         assert!(result.success, "expected success: {:?}", result.events[0].payload);
         assert_eq!(result.events[0].payload["status"], "ok");
+        let actions = &result.events[0].payload["actions"];
+        assert_eq!(actions["iterate"], true);
+        assert_eq!(actions["maintain"], true);
+        assert_eq!(actions["push"], false);
+        assert_eq!(actions["audit"], true);
+        assert_eq!(actions["release"], false);
     }
 
     #[tokio::test]
@@ -542,6 +557,10 @@ mod tests {
         assert!(result.success, "expected success: {:?}", result.events[0].payload);
         assert_eq!(result.events[0].payload["status"], "ok");
         assert_eq!(result.events[0].payload["has_gates"], false);
+        // Default ActionFlags — all false.
+        let actions = &result.events[0].payload["actions"];
+        assert_eq!(actions["iterate"], false);
+        assert_eq!(actions["maintain"], false);
     }
 
     #[tokio::test]
@@ -572,5 +591,9 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should not error");
         assert!(result.success);
         assert_eq!(result.events[0].payload["has_gates"], true);
+        // Default ActionFlags — all false.
+        let actions = &result.events[0].payload["actions"];
+        assert_eq!(actions["iterate"], false);
+        assert_eq!(actions["maintain"], false);
     }
 }
