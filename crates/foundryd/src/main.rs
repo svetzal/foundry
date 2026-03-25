@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     let mut engine = engine::Engine::new()
         .with_event_writer(event_writer)
         .with_event_broadcaster(event_tx.clone());
+    engine.register(Box::new(orchestrator::FanOutMaintenance::new(registry.clone())));
     engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
     engine.register(Box::new(blocks::DeliverGreeting));
