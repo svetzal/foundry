@@ -1,4 +1,5 @@
 mod audit;
+mod generate_summary;
 mod git_ops;
 mod greet;
 mod hone_common;
@@ -12,6 +13,7 @@ mod scan;
 mod validate;
 
 pub use audit::{AuditMainBranch, AuditReleaseTag};
+pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use hone_iterate::RunHoneIterate;
