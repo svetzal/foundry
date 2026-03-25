@@ -225,10 +225,14 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     println!("Event: {}", response.event_id);
     println!();
 
-    // Stream progress events until the stream ends.
+    // Stream progress events until the maintenance run completes.
     while let Some(event) = stream.message().await? {
         let status = extract_status(&event.payload_json);
         println!("[{}] {} {}", event.project, event.event_type, status);
+
+        if event.event_type == "maintenance_run_completed" {
+            break;
+        }
     }
 
     Ok(())

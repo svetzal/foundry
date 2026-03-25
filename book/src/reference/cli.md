@@ -114,6 +114,11 @@ foundry run [--project <project>] [--throttle <level>]
 maintenance workflow chain: validate → iterate (if enabled) → maintain (if
 enabled) → commit and push → post-push audit.
 
+The command streams progress events in real time and **exits automatically**
+when the daemon broadcasts a `maintenance_run_completed` event at the end of
+the processing chain. This differs from `foundry watch`, which streams
+indefinitely.
+
 When `--project` is omitted, the project name sent to the daemon is `"system"`,
 which causes all active (non-skipped) projects to be processed.
 
@@ -122,9 +127,13 @@ which causes all active (non-skipped) projects to be processed.
 ```text
 Triggered maintenance run for my-tool
 Event: evt_47fcb603e1b18c8435b8cc3b
+
+[my-tool] maintenance_run_started
+[my-tool] project_validation_completed (ok)
+[my-tool] maintenance_run_completed (ok)
 ```
 
-Use `foundry watch` or `foundry trace <event_id>` to follow the resulting chain.
+Use `foundry trace <event_id>` to inspect the full trace after the run completes.
 
 ## `foundry trace`
 
