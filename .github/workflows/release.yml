@@ -28,8 +28,9 @@ jobs:
             archive: foundry-linux-x64.tar.gz
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.94.0"
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
