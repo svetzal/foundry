@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-03-26
+
+### Added
+
+- Open-source release under MIT license (svetzal/foundry)
+- GitHub Pages documentation site via mdBook
+- Homebrew tap distribution (`brew tap svetzal/tap && brew install foundry`)
+- Summary module for automated maintenance reports
+- Orchestrator for automated maintenance workflows
+- Exit condition for `foundry watch` stream
+
+### Changed
+
+- Repository transferred from Mojility org to svetzal personal account
+- Registry action flags forwarded in validation payload
+- CI pipeline now installs `protoc` for proto compilation
+
 ## [0.2.0] - 2026-03-22
 
 ### Added
