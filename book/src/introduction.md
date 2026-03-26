@@ -12,7 +12,7 @@ workflow.
 
 ## Why Foundry?
 
-Mojility's nightly maintenance automation grew into a linear pipeline of
+Nightly maintenance automation grew into a linear pipeline of
 shell scripts: iterate projects, audit for vulnerabilities, cut releases,
 install locally. Each step waited for all previous steps to complete.
 Projects couldn't run in parallel. An audit couldn't start until every

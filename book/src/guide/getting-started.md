@@ -8,7 +8,7 @@
 ## Build
 
 ```bash
-cd ~/Work/Projects/Mojility/foundry
+cd path/to/foundry
 cargo build --release
 ```
 

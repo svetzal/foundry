@@ -29,7 +29,7 @@ maintenance to release management.
 
 ## Scope
 
-Foundry automates engineering workflows for Mojility's project portfolio:
+Foundry automates engineering workflows for a registered project portfolio:
 
 - Vulnerability detection and remediation
 - Dependency maintenance (iterate, maintain, commit, push)
@@ -44,6 +44,6 @@ share Foundry's event type crate.
 
 ## Non-Goals
 
-- General-purpose workflow engine (this serves Mojility's engineering needs)
+- General-purpose workflow engine (this serves specific engineering needs)
 - CI/CD replacement (Foundry orchestrates local work and observes pipelines)
 - Real-time monitoring dashboard (use Grafana, ops-visualizer, or similar)
