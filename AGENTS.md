@@ -70,7 +70,14 @@ git tag v0.X.0
 git push origin main --tags
 ```
 
-The repo is private — no Homebrew tap distribution.
+The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
+
+Install via Homebrew:
+
+```bash
+brew tap svetzal/tap
+brew install foundry
+```
 
 ## Documentation
 

@@ -19,10 +19,13 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            archive: foundry-darwin-arm64.tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
+            archive: foundry-darwin-x64.tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            archive: foundry-linux-x64.tar.gz
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,26 +35,20 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-apple-darwin' && matrix.os == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin
-
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package binaries
+      - name: Package archive
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/foundryd dist/
-          cp target/${{ matrix.target }}/release/foundry dist/
-          cd dist
-          tar czf foundry-${{ matrix.target }}.tar.gz foundryd foundry
-          shasum -a 256 foundry-${{ matrix.target }}.tar.gz > foundry-${{ matrix.target }}.tar.gz.sha256
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.archive }} foundryd foundry
+          cd ../../..
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: foundry-${{ matrix.target }}
-          path: dist/foundry-${{ matrix.target }}.tar.gz*
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
 
   release:
     name: Create Release
@@ -60,7 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
@@ -73,3 +71,106 @@ jobs:
             --title "${{ github.ref_name }}" \
             --generate-notes \
             artifacts/*
+
+  homebrew:
+    name: Update Homebrew Tap
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          echo "darwin_arm64=$(sha256sum artifacts/foundry-darwin-arm64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_x64=$(sha256sum artifacts/foundry-darwin-x64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha256sum artifacts/foundry-linux-x64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Homebrew formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA_ARM64="${{ steps.sha.outputs.darwin_arm64 }}"
+          SHA_X64="${{ steps.sha.outputs.darwin_x64 }}"
+          SHA_LINUX="${{ steps.sha.outputs.linux_x64 }}"
+          GH_BASE="https://github.com/svetzal/foundry/releases/download/v${VERSION}"
+
+          cat > foundry.rb <<'FORMULA'
+          # typed: false
+          # frozen_string_literal: true
+
+          class Foundry < Formula
+            desc "Event-driven workflow engine for engineering automation"
+            homepage "https://github.com/svetzal/foundry"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "GH_BASE_PLACEHOLDER/foundry-darwin-arm64.tar.gz"
+                sha256 "SHA_ARM64_PLACEHOLDER"
+
+                def install
+                  bin.install "foundry"
+                  bin.install "foundryd"
+                end
+              end
+
+              on_intel do
+                url "GH_BASE_PLACEHOLDER/foundry-darwin-x64.tar.gz"
+                sha256 "SHA_X64_PLACEHOLDER"
+
+                def install
+                  bin.install "foundry"
+                  bin.install "foundryd"
+                end
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "GH_BASE_PLACEHOLDER/foundry-linux-x64.tar.gz"
+                sha256 "SHA_LINUX_PLACEHOLDER"
+
+                def install
+                  bin.install "foundry"
+                  bin.install "foundryd"
+                end
+              end
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/foundry --version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc indentation
+          sed -i 's/^          //' foundry.rb
+
+          # Substitute placeholders
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" foundry.rb
+          sed -i "s|GH_BASE_PLACEHOLDER|${GH_BASE}|g" foundry.rb
+          sed -i "s|SHA_ARM64_PLACEHOLDER|${SHA_ARM64}|g" foundry.rb
+          sed -i "s|SHA_X64_PLACEHOLDER|${SHA_X64}|g" foundry.rb
+          sed -i "s|SHA_LINUX_PLACEHOLDER|${SHA_LINUX}|g" foundry.rb
+
+      - name: Push to Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/svetzal/homebrew-tap.git" homebrew-tap
+          cp foundry.rb homebrew-tap/Formula/foundry.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/foundry.rb
+          git commit -m "Update foundry to ${{ steps.version.outputs.version }}"
+          git push
