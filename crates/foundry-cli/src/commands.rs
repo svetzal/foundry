@@ -203,11 +203,18 @@ fn print_event_tree(
 
 pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<()> {
     let project_name = project.unwrap_or_else(|| "system".to_string());
+    let is_system_run = project_name == "system";
 
     // Subscribe to the watch stream before emitting so we don't miss events.
+    // For system-level runs, watch all projects so per-project progress events
+    // are visible. For single-project runs, filter to that project only.
     let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
     let watch_request = WatchRequest {
-        project: project_name.clone(),
+        project: if is_system_run {
+            String::new()
+        } else {
+            project_name.clone()
+        },
     };
     let mut stream = watch_client.watch(watch_request).await?.into_inner();
 
@@ -230,12 +237,36 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         let status = extract_status(&event.payload_json);
         println!("[{}] {} {}", event.project, event.event_type, status);
 
-        if event.event_type == "maintenance_run_completed" {
+        if is_run_complete(&event.event_type, &event.payload_json, is_system_run) {
             break;
         }
     }
 
     Ok(())
+}
+
+/// Determine whether a watch stream event signals that the run is complete.
+///
+/// For single-project runs, any `maintenance_run_completed` event is terminal.
+///
+/// For system-level runs, the fan-out orchestrator emits an early
+/// `maintenance_run_completed` (with `project_count` in payload) before
+/// per-project chains execute. The true terminal signal is the service-level
+/// broadcast (with `root_event_id` in payload) emitted after all processing
+/// finishes.
+fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) -> bool {
+    if event_type != "maintenance_run_completed" {
+        return false;
+    }
+    if !is_system_run {
+        return true;
+    }
+    // System run: only exit on the service-level completion (has root_event_id).
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
+        v.get("root_event_id").is_some()
+    } else {
+        false
+    }
 }
 
 /// Resolve the traces directory from env or default.
@@ -362,4 +393,74 @@ fn extract_status(payload_json: &str) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- is_run_complete tests --
+
+    #[test]
+    fn non_completion_event_is_not_terminal() {
+        assert!(!is_run_complete("project_validation_completed", "{}", false));
+        assert!(!is_run_complete("project_validation_completed", "{}", true));
+        assert!(!is_run_complete("maintenance_run_started", "{}", false));
+        assert!(!is_run_complete("maintenance_run_started", "{}", true));
+    }
+
+    #[test]
+    fn single_project_run_exits_on_any_completion() {
+        // Service-level completion (has root_event_id)
+        let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
+        assert!(is_run_complete("maintenance_run_completed", service_payload, false));
+
+        // Fan-out completion (has project_count) — still terminal for single-project
+        let fanout_payload = r#"{"project_count":3,"skipped_count":0,"projects":["a","b","c"]}"#;
+        assert!(is_run_complete("maintenance_run_completed", fanout_payload, false));
+
+        // Empty payload — still terminal for single-project
+        assert!(is_run_complete("maintenance_run_completed", "{}", false));
+    }
+
+    #[test]
+    fn system_run_ignores_fanout_completion() {
+        let fanout_payload = r#"{"project_count":3,"skipped_count":0,"projects":["a","b","c"]}"#;
+        assert!(!is_run_complete("maintenance_run_completed", fanout_payload, true));
+    }
+
+    #[test]
+    fn system_run_exits_on_service_completion() {
+        let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
+        assert!(is_run_complete("maintenance_run_completed", service_payload, true));
+    }
+
+    #[test]
+    fn system_run_does_not_exit_on_empty_payload() {
+        assert!(!is_run_complete("maintenance_run_completed", "{}", true));
+        assert!(!is_run_complete("maintenance_run_completed", "", true));
+    }
+
+    // -- extract_status tests --
+
+    #[test]
+    fn extract_status_success() {
+        assert_eq!(extract_status(r#"{"success":true}"#), "(ok)");
+    }
+
+    #[test]
+    fn extract_status_failure() {
+        assert_eq!(extract_status(r#"{"success":false}"#), "(FAILED)");
+    }
+
+    #[test]
+    fn extract_status_string() {
+        assert_eq!(extract_status(r#"{"status":"skipped"}"#), "(skipped)");
+    }
+
+    #[test]
+    fn extract_status_empty() {
+        assert_eq!(extract_status("{}"), String::new());
+        assert_eq!(extract_status(""), String::new());
+    }
 }
