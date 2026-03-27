@@ -195,6 +195,22 @@ impl TaskBlock for CommitAndPush {
 
             let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
             if !commit.success {
+                // "nothing to commit" is not an error — can happen when both
+                // iterate and maintain trigger CommitAndPush and the first one
+                // already committed everything, or when git add -A stages
+                // content identical to HEAD.
+                let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
+                if combined.contains("nothing to commit") || combined.contains("no changes added") {
+                    tracing::info!(%project, "git commit found nothing to commit");
+                    return Ok(TaskBlockResult {
+                        events: vec![],
+                        success: true,
+                        summary: "No changes to commit".to_string(),
+                        raw_output: None,
+                        exit_code: None,
+                        audit_artifacts: vec![],
+                    });
+                }
                 return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
             }
 
@@ -585,6 +601,41 @@ mod tests {
         assert!(result.success);
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("maintenance"), "expected 'maintenance' in '{msg}'");
+    }
+
+    #[tokio::test]
+    async fn commit_nothing_to_commit_is_success_not_error() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        // status=dirty (something shows up), add=ok, commit fails with "nothing to commit"
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " m .claude/worktrees/agent-abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "On branch main\nnothing to commit, working tree clean\n".to_string(),
+                stderr: String::new(),
+                exit_code: 1,
+                success: false,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
+        let trigger = make_trigger_for(EventType::ProjectIterateCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "should be success, not error");
+        assert!(result.events.is_empty());
+        assert_eq!(result.summary, "No changes to commit");
     }
 
     #[test]
