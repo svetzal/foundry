@@ -51,7 +51,8 @@ impl TaskBlock for ComposeGreeting {
 }
 
 /// Delivers a composed greeting (simulates a side effect).
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 pub struct DeliverGreeting;
 
 impl TaskBlock for DeliverGreeting {
@@ -98,5 +99,19 @@ impl TaskBlock for DeliverGreeting {
                 audit_artifacts: vec![],
             })
         })
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let greeting = trigger
+            .payload
+            .get("greeting")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no greeting)");
+        vec![Event::new(
+            EventType::GreetingDelivered,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({ "delivered": true, "greeting": greeting, "dry_run": true }),
+        )]
     }
 }

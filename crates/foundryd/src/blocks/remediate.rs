@@ -9,7 +9,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use crate::gateway::ShellGateway;
 
 /// Attempts to fix a vulnerability on the main branch.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Self-filters: only acts when `dirty=true` in the trigger payload.
 ///
@@ -44,6 +45,36 @@ impl TaskBlock for RemediateVulnerability {
 
     fn sinks_on(&self) -> &[EventType] {
         &[EventType::MainBranchAudited]
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        // Respect the self-filter: only remediate when dirty.
+        let dirty = trigger
+            .payload
+            .get("dirty")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !dirty {
+            return vec![];
+        }
+
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        vec![Event::new(
+            EventType::RemediationCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({
+                "cve": cve,
+                "success": true,
+                "dry_run": true,
+            }),
+        )]
     }
 
     #[allow(clippy::too_many_lines)]

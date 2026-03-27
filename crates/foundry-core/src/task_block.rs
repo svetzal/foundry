@@ -86,7 +86,12 @@ pub trait TaskBlock: Send + Sync {
         RetryPolicy::default()
     }
 
-    /// Whether this block should emit its output events given the current throttle.
+    /// Whether this block's emitted events should be delivered to downstream
+    /// subscribers (i.e., added to the processing queue).
+    ///
+    /// Events are **always** persisted to JSONL and broadcast to Watch clients
+    /// regardless of this flag — they are facts. This method only controls
+    /// whether they propagate through the event chain to trigger further blocks.
     fn should_emit(&self, throttle: Throttle) -> bool {
         match self.kind() {
             BlockKind::Observer => true,
@@ -100,5 +105,18 @@ pub trait TaskBlock: Send + Sync {
             BlockKind::Observer => true,
             BlockKind::Mutator => throttle.allows_side_effects(),
         }
+    }
+
+    /// Events this block would emit on success, used for dry-run simulation.
+    ///
+    /// When the engine runs in `DryRun` mode, Mutator blocks are not executed.
+    /// Instead, the engine calls this method to obtain synthetic success events
+    /// with `dry_run: true` in the payload. These events are persisted,
+    /// broadcast, and delivered so the full chain shape is visible.
+    ///
+    /// Default: empty (block contributes no events in dry-run).
+    /// Override for Mutator blocks that need to propagate the chain.
+    fn dry_run_events(&self, _trigger: &Event) -> Vec<Event> {
+        vec![]
     }
 }

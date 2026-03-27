@@ -9,7 +9,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use crate::gateway::ShellGateway;
 
 /// Runs `hone maintain` for a project.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Sinks on `MaintenanceRequested` only.  The routing decision (direct
 /// maintain-only path via `RouteProjectWorkflow`, or post-iterate chain via
@@ -45,6 +46,21 @@ impl TaskBlock for RunHoneMaintain {
 
     fn sinks_on(&self) -> &[EventType] {
         &[EventType::MaintenanceRequested]
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        vec![Event::new(
+            EventType::ProjectMaintainCompleted,
+            project.clone(),
+            throttle,
+            serde_json::json!({
+                "project": project,
+                "success": true,
+                "dry_run": true,
+            }),
+        )]
     }
 
     #[allow(clippy::too_many_lines)]

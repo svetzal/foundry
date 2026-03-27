@@ -9,7 +9,8 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 use crate::gateway::ShellGateway;
 
 /// Commits staged changes and pushes to the remote.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Real behaviour:
 /// - Self-filters when the trigger payload explicitly sets `"changes": false`.
@@ -68,6 +69,49 @@ impl TaskBlock for CommitAndPush {
             max_retries: 2,
             backoff: Duration::from_secs(5),
         }
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        // Respect the self-filter: no events when payload says no changes.
+        let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
+        if changes_flag == Some(false) {
+            return vec![];
+        }
+
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let mut events = vec![Event::new(
+            EventType::ProjectChangesCommitted,
+            project.clone(),
+            throttle,
+            serde_json::json!({ "cve": cve, "dry_run": true }),
+        )];
+
+        // Simulate push if the project has push enabled, or if unknown (stub path).
+        let push_enabled = self
+            .registry
+            .projects
+            .iter()
+            .find(|p| p.name == project)
+            .is_none_or(|e| e.actions.push);
+
+        if push_enabled {
+            events.push(Event::new(
+                EventType::ProjectChangesPushed,
+                project,
+                throttle,
+                serde_json::json!({ "cve": cve, "dry_run": true }),
+            ));
+        }
+
+        events
     }
 
     fn execute(

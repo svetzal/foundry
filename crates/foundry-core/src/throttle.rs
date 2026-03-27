@@ -3,16 +3,32 @@ use serde::{Deserialize, Serialize};
 /// Controls how far an event ripples through task blocks.
 ///
 /// The throttle is set at invocation time and propagated through the event
-/// chain. Task blocks check the throttle before emitting downstream events.
+/// chain. Events are **always** persisted and broadcast (they are facts).
+/// The throttle controls execution and downstream delivery.
+///
+/// # Behavior matrix
+///
+/// | Level | Mutator executes | Mutator events delivered | Chain |
+/// |------------|------------------|-------------------------|------------------------------|
+/// | `Full` | Yes (real) | Yes | Completes normally |
+/// | `AuditOnly`| Yes (real) | No (logged only) | Stops at mutation boundary |
+/// | `DryRun` | No (simulated) | Yes (with `dry_run` flag) | Completes (full shape shown) |
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Throttle {
-    /// All task blocks emit downstream events. Default for automated runs.
+    /// All blocks execute and emit; all events are delivered to downstream
+    /// subscribers. Default for automated runs.
     #[default]
     Full,
-    /// Observation blocks emit normally. Mutation blocks suppress output events.
+    /// All blocks execute (including Mutators). Observer events are delivered
+    /// normally. Mutator events are persisted and broadcast but **not**
+    /// delivered to downstream subscribers — the chain stops at the mutation
+    /// boundary.
     AuditOnly,
-    /// All blocks run read-only. No side effects, no mutation events emitted.
+    /// Observer blocks execute normally. Mutator blocks simulate success via
+    /// `dry_run_events()` — they are not actually executed. All events
+    /// (including simulated ones) are delivered, so the full chain shape is
+    /// visible. Simulated events carry `dry_run: true` in their payload.
     DryRun,
 }
 

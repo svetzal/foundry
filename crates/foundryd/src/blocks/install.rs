@@ -10,7 +10,8 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 use crate::gateway::ShellGateway;
 
 /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Terminal block: this is the end of both the dirty and clean vulnerability
 /// remediation paths.
@@ -59,6 +60,15 @@ impl TaskBlock for InstallLocally {
             max_retries: 1,
             backoff: Duration::from_secs(10),
         }
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        vec![Event::new(
+            EventType::LocalInstallCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({ "success": true, "dry_run": true }),
+        )]
     }
 
     fn execute(

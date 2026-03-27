@@ -11,7 +11,8 @@ use foundry_core::throttle::Throttle;
 use crate::gateway::ShellGateway;
 
 /// Tags a patch release when the main branch is clean (vulnerability already fixed).
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Self-filters: only acts when `dirty=false` in the trigger payload.
 ///
@@ -51,6 +52,37 @@ impl TaskBlock for CutRelease {
 
     fn sinks_on(&self) -> &[EventType] {
         &[EventType::MainBranchAudited]
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        // Respect the self-filter: skip when dirty.
+        let dirty = trigger
+            .payload
+            .get("dirty")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        if dirty {
+            return vec![];
+        }
+
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        vec![Event::new(
+            EventType::AutoReleaseCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({
+                "cve": cve,
+                "release": "patch",
+                "success": true,
+                "dry_run": true,
+            }),
+        )]
     }
 
     fn execute(
@@ -237,7 +269,8 @@ fn extract_version_tag(output: &str) -> Option<String> {
 }
 
 /// Watches the CI pipeline after a release tag is pushed.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Polls the GitHub Actions API via the `gh` CLI with exponential backoff
 /// (30 s initial, doubling up to 5 min cap, 30 min total timeout).
@@ -282,6 +315,15 @@ impl TaskBlock for WatchPipeline {
 
     fn sinks_on(&self) -> &[EventType] {
         &[EventType::AutoReleaseCompleted]
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        vec![Event::new(
+            EventType::ReleasePipelineCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({ "status": "success", "dry_run": true }),
+        )]
     }
 
     fn execute(

@@ -9,7 +9,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use crate::gateway::ShellGateway;
 
 /// Runs `hone iterate` for a validated project.
-/// Mutator — suppressed at `audit_only`, skipped at `dry_run`.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
 ///
 /// Sinks on `IterationRequested` (emitted by `RouteProjectWorkflow` after
 /// successful validation when `actions.iterate=true`).  No action-flag
@@ -52,6 +53,40 @@ impl TaskBlock for RunHoneIterate {
 
     fn sinks_on(&self) -> &[EventType] {
         &[EventType::IterationRequested]
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+
+        let maintain = trigger
+            .payload
+            .get("actions")
+            .and_then(|a| a.get("maintain"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        let mut events = vec![Event::new(
+            EventType::ProjectIterateCompleted,
+            project.clone(),
+            throttle,
+            serde_json::json!({
+                "project": project,
+                "success": true,
+                "dry_run": true,
+            }),
+        )];
+
+        if maintain {
+            events.push(Event::new(
+                EventType::MaintenanceRequested,
+                project.clone(),
+                throttle,
+                serde_json::json!({ "project": project, "dry_run": true }),
+            ));
+        }
+
+        events
     }
 
     #[allow(clippy::too_many_lines)]

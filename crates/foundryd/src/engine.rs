@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_core::throttle::Throttle;
 pub use foundry_core::trace::{BlockExecution, ProcessResult};
 
 use crate::event_writer::EventWriter;
@@ -87,6 +88,7 @@ impl Engine {
     /// Execute one block against a triggering event, persist any emitted events,
     /// and return the [`BlockExecution`] record.  Mutates `all_events` and
     /// `queue` in place so downstream events continue to be processed.
+    #[allow(clippy::too_many_lines)]
     async fn run_block(
         &self,
         block: &dyn TaskBlock,
@@ -96,6 +98,53 @@ impl Engine {
     ) -> BlockExecution {
         let block_start = std::time::Instant::now();
 
+        // DRY-RUN PRETEND-SUCCESS: Mutator blocks under DryRun are not executed.
+        // Instead, we generate synthetic success events via dry_run_events().
+        if !block.should_execute(current.throttle)
+            && current.throttle == Throttle::DryRun
+            && block.kind() == BlockKind::Mutator
+        {
+            let simulated_events = block.dry_run_events(current);
+            tracing::info!(simulated = simulated_events.len(), "dry-run: simulating success");
+            let mut emitted_ids = Vec::new();
+            let mut emitted_payloads = Vec::new();
+            for emitted in simulated_events {
+                // Persist simulated events — they are facts (with dry_run marker).
+                if let Some(writer) = &self.event_writer {
+                    if let Err(e) = writer.write(&emitted) {
+                        tracing::warn!(
+                            error = %e,
+                            event_id = %emitted.id,
+                            "failed to write simulated event to JSONL"
+                        );
+                    }
+                }
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(emitted.clone());
+                }
+                emitted_ids.push(emitted.id.clone());
+                emitted_payloads.push(emitted.payload.clone());
+                all_events.push(emitted.clone());
+                // Deliver simulated events so the chain continues.
+                queue.push(emitted);
+            }
+            return BlockExecution {
+                block_name: block.name().to_string(),
+                trigger_event_id: current.id.clone(),
+                success: true,
+                summary: "dry-run (simulated)".to_string(),
+                emitted_event_ids: emitted_ids,
+                duration_ms: u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                raw_output: None,
+                exit_code: None,
+                trigger_payload: current.payload.clone(),
+                emitted_payloads,
+                audit_artifacts: vec![],
+            };
+        }
+
+        // Non-DryRun skip (should not normally happen given current throttle
+        // semantics, but kept as a safety net).
         if !block.should_execute(current.throttle) {
             tracing::info!("skipped (throttle)");
             return BlockExecution {
@@ -127,33 +176,37 @@ impl Engine {
                 let exit_code = result.exit_code;
                 let audit_artifacts = result.audit_artifacts;
                 let trigger_payload = current.payload.clone();
+                let deliver = block.should_emit(current.throttle);
                 let mut emitted_ids = Vec::new();
                 let mut emitted_payloads = Vec::new();
-                if block.should_emit(current.throttle) {
-                    for emitted in result.events {
-                        if let Some(writer) = &self.event_writer {
-                            if let Err(e) = writer.write(&emitted) {
-                                tracing::warn!(
-                                    error = %e,
-                                    event_id = %emitted.id,
-                                    "failed to write emitted event to JSONL"
-                                );
-                            }
+                for emitted in result.events {
+                    // ALWAYS persist — events are facts.
+                    if let Some(writer) = &self.event_writer {
+                        if let Err(e) = writer.write(&emitted) {
+                            tracing::warn!(
+                                error = %e,
+                                event_id = %emitted.id,
+                                "failed to write emitted event to JSONL"
+                            );
                         }
-                        // Broadcast each emitted event in real time to Watch subscribers.
-                        if let Some(tx) = &self.event_tx {
-                            let _ = tx.send(emitted.clone()); // No receivers is normal.
-                        }
-                        emitted_ids.push(emitted.id.clone());
-                        emitted_payloads.push(emitted.payload.clone());
-                        all_events.push(emitted.clone());
-                        queue.push(emitted);
                     }
-                } else {
-                    tracing::info!(
-                        suppressed = result.events.len(),
-                        "emission suppressed by throttle"
-                    );
+                    // ALWAYS broadcast to Watch subscribers.
+                    if let Some(tx) = &self.event_tx {
+                        let _ = tx.send(emitted.clone());
+                    }
+                    emitted_ids.push(emitted.id.clone());
+                    emitted_payloads.push(emitted.payload.clone());
+                    all_events.push(emitted.clone());
+
+                    // THROTTLE GATE: only deliver to downstream blocks if allowed.
+                    if deliver {
+                        queue.push(emitted);
+                    } else {
+                        tracing::info!(
+                            event_type = %emitted.event_type,
+                            "event logged but delivery throttled"
+                        );
+                    }
                 }
                 BlockExecution {
                     block_name: block.name().to_string(),
@@ -261,7 +314,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::task_block::{BlockKind, TaskBlockResult};
+    use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_core::throttle::Throttle;
     use std::pin::Pin;
 
@@ -343,6 +396,15 @@ mod tests {
                 })
             })
         }
+
+        fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+            vec![Event::new(
+                EventType::GreetingDelivered,
+                trigger.project.clone(),
+                trigger.throttle,
+                serde_json::json!({"delivered": true, "dry_run": true}),
+            )]
+        }
     }
 
     #[tokio::test]
@@ -367,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audit_only_suppresses_mutator_emission() {
+    async fn audit_only_logs_mutator_events_but_does_not_deliver() {
         let mut engine = Engine::new();
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
@@ -382,12 +444,16 @@ mod tests {
         let result = engine.process(trigger).await;
 
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        // Observer emits greeting_composed, but Mutator's greeting_delivered is suppressed
-        assert_eq!(types, ["greet_requested", "greeting_composed"]);
+        // Mutator executes and its event is logged (in all_events), but not delivered
+        // to downstream blocks. The chain stops at the mutation boundary.
+        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        // The mutator's execution is recorded as successful (it ran for real).
+        assert_eq!(result.block_executions.len(), 2);
+        assert!(result.block_executions.iter().all(|b| b.success));
     }
 
     #[tokio::test]
-    async fn dry_run_skips_mutator_execution() {
+    async fn dry_run_simulates_mutator_success() {
         let mut engine = Engine::new();
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
@@ -402,10 +468,20 @@ mod tests {
         let result = engine.process(trigger).await;
 
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        // Observer emits, Mutator is skipped entirely (not even executed)
-        assert_eq!(types, ["greet_requested", "greeting_composed"]);
-        // Mutator was skipped, so its execution is recorded as skipped
-        assert!(result.block_executions.iter().any(|b| b.summary == "skipped (throttle)"));
+        // Full chain completes: Observer emits, Mutator simulates success via dry_run_events.
+        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        // Mutator's execution is recorded as simulated.
+        let mutator_exec =
+            result.block_executions.iter().find(|b| b.block_name == "Test Mutator").unwrap();
+        assert!(mutator_exec.success);
+        assert_eq!(mutator_exec.summary, "dry-run (simulated)");
+        // The emitted event carries dry_run: true in its payload.
+        let delivered = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::GreetingDelivered)
+            .unwrap();
+        assert_eq!(delivered.payload["dry_run"], true);
     }
 
     // -- Vulnerability remediation integration tests --
@@ -586,7 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vuln_dry_run_only_observers_emit() {
+    async fn vuln_dry_run_full_chain_with_simulated_events() {
         let engine = vuln_engine();
 
         let trigger = Event::new(
@@ -603,15 +679,30 @@ mod tests {
         let result = engine.process(trigger).await;
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-        // Only observers emit under dry_run: audit blocks run, mutators are skipped
+        // Full chain completes with simulated mutator events (dirty path).
+        // Observers execute for real; Mutators simulate success.
         assert_eq!(
             types,
             [
                 "vulnerability_detected",
                 "release_tag_audited",
                 "main_branch_audited",
+                "remediation_completed",     // simulated
+                "project_changes_committed", // simulated
+                "project_changes_pushed",    // simulated
+                // AuditReleaseTag sinks on ProjectChangesPushed (Observer, runs for real)
+                "release_tag_audited",
+                "local_install_completed", // simulated
             ]
         );
+
+        // All simulated events carry dry_run: true.
+        let remediation = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::RemediationCompleted)
+            .unwrap();
+        assert_eq!(remediation.payload["dry_run"], true);
     }
 
     // -- Maintenance workflow integration tests --
@@ -753,11 +844,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintenance_chain_dry_run_observer_emits_mutators_skipped() {
+    async fn maintenance_chain_dry_run_full_chain_simulated() {
         let engine = maintenance_engine();
 
         // DryRun: RouteProjectWorkflow (Observer) emits IterationRequested,
-        // but RunHoneIterate (Mutator) is skipped — nothing further fires.
+        // RunHoneIterate (Mutator) simulates success, chain continues.
         let trigger = Event::new(
             EventType::ProjectValidationCompleted,
             "my-project".to_string(),
@@ -771,8 +862,25 @@ mod tests {
         let result = engine.process(trigger).await;
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-        // Observer emits IterationRequested; mutators are skipped (DryRun).
-        assert_eq!(types, ["project_validation_completed", "iteration_requested"]);
+        // Full chain completes with simulated mutator events.
+        assert_eq!(
+            types,
+            [
+                "project_validation_completed",
+                "iteration_requested",
+                "project_iterate_completed",  // simulated
+                "maintenance_requested",      // simulated (because maintain=true)
+                "project_maintain_completed", // simulated
+            ]
+        );
+
+        // Simulated events carry dry_run: true.
+        let iterate = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ProjectIterateCompleted)
+            .unwrap();
+        assert_eq!(iterate.payload["dry_run"], true);
     }
 
     // -- Scan-triggered workflow integration tests --
