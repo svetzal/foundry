@@ -368,6 +368,38 @@ mod tests {
     }
 
     #[test]
+    fn charter_check_completed_serde_round_trip() {
+        let original = EventType::CharterCheckCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn assessment_completed_serde_round_trip() {
+        let original = EventType::AssessmentCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn triage_completed_serde_round_trip() {
+        let original = EventType::TriageCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn plan_completed_serde_round_trip() {
+        let original = EventType::PlanCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
     fn event_id_is_deterministic() {
         let payload = serde_json::json!({"severity": "high"});
         let event_type = EventType::VulnerabilityDetected;
