@@ -237,7 +237,7 @@ mod tests {
 
         let mut project_names: Vec<&str> =
             project_events.iter().map(|e| e.project.as_str()).collect();
-        project_names.sort();
+        project_names.sort_unstable();
         assert_eq!(project_names, vec!["alpha", "beta", "gamma"]);
     }
 

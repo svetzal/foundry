@@ -29,6 +29,8 @@ impl TaskBlock for ResolveGates {
         BlockKind::Observer
     }
 
+    // TODO(Phase 3): Change to sink on CharterCheckCompleted once CheckCharter block exists.
+    // Currently sinks on IterationRequested directly; Phase 3 inserts CheckCharter before ResolveGates.
     fn sinks_on(&self) -> &[EventType] {
         &[
             EventType::IterationRequested,

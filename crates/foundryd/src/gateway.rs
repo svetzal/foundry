@@ -176,7 +176,7 @@ pub mod fakes {
         ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
             let inv = ShellInvocation {
                 command: command.to_string(),
-                args: args.iter().map(|s| s.to_string()).collect(),
+                args: args.iter().map(ToString::to_string).collect(),
                 working_dir: working_dir.display().to_string(),
             };
             self.invocations.lock().unwrap().push(inv);
@@ -229,7 +229,7 @@ pub mod fakes {
         ) -> Pin<Box<dyn std::future::Future<Output = Result<AuditResult>> + Send + 'a>> {
             let result = match &self.result {
                 Ok(r) => Ok(r.clone()),
-                Err(msg) => Err(anyhow::anyhow!("{}", msg)),
+                Err(msg) => Err(anyhow::anyhow!("{msg}")),
             };
             Box::pin(async move { result })
         }

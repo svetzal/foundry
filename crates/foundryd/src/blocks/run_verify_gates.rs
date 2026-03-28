@@ -23,7 +23,7 @@ impl RunVerifyGates {
     }
 
     #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
         Self { registry, shell }
     }
 }
@@ -41,6 +41,7 @@ impl TaskBlock for RunVerifyGates {
         &[EventType::ExecutionCompleted]
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -83,19 +84,24 @@ impl TaskBlock for RunVerifyGates {
             if gates.is_empty() {
                 tracing::info!(project = %project, "no gates defined, verification passes");
 
+                let mut event_payload = serde_json::json!({
+                    "project": project,
+                    "workflow": workflow,
+                    "all_passed": true,
+                    "required_passed": true,
+                    "retry_count": retry_count,
+                    "results": [],
+                });
+                if let Some(actions) = payload.get("actions") {
+                    event_payload["actions"] = actions.clone();
+                }
+
                 return Ok(TaskBlockResult {
                     events: vec![Event::new(
                         EventType::GateVerificationCompleted,
                         project.clone(),
                         throttle,
-                        serde_json::json!({
-                            "project": project,
-                            "workflow": workflow,
-                            "all_passed": true,
-                            "required_passed": true,
-                            "retry_count": retry_count,
-                            "results": [],
-                        }),
+                        event_payload,
                     )],
                     success: true,
                     summary: format!("{project}: no gates defined, verification passes"),
@@ -133,19 +139,24 @@ impl TaskBlock for RunVerifyGates {
                 "gate verification completed"
             );
 
+            let mut event_payload = serde_json::json!({
+                "project": project,
+                "workflow": workflow,
+                "all_passed": run_result.all_passed,
+                "required_passed": run_result.required_passed,
+                "retry_count": retry_count,
+                "results": results_json,
+            });
+            if let Some(actions) = payload.get("actions") {
+                event_payload["actions"] = actions.clone();
+            }
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::GateVerificationCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({
-                        "project": project,
-                        "workflow": workflow,
-                        "all_passed": run_result.all_passed,
-                        "required_passed": run_result.required_passed,
-                        "retry_count": retry_count,
-                        "results": results_json,
-                    }),
+                    event_payload,
                 )],
                 success,
                 summary: if success {
@@ -243,7 +254,7 @@ mod tests {
 
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunVerifyGates::with_shell(registry, shell);
+        let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 0, "iterate");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -266,7 +277,7 @@ mod tests {
 
         let shell = FakeShellGateway::failure("test failed");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunVerifyGates::with_shell(registry, shell);
+        let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 1, "iterate");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -287,7 +298,7 @@ mod tests {
 
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunVerifyGates::with_shell(registry, shell);
+        let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 2, "iterate");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -302,7 +313,7 @@ mod tests {
 
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunVerifyGates::with_shell(registry, shell);
+        let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 0, "iterate");
 
         let result = block.execute(&trigger).await.unwrap();

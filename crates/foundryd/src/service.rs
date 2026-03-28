@@ -342,8 +342,7 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Err(_)) => break,
-                Err(_) => break, // timeout
+                Ok(Err(_)) | Err(_) => break,
             }
         }
 
@@ -371,14 +370,9 @@ mod tests {
 
         // Drain all events — none should be MaintenanceRunCompleted.
         let mut saw_completed = false;
-        loop {
-            match rx.try_recv() {
-                Ok(event) => {
-                    if event.event_type == EventType::MaintenanceRunCompleted {
-                        saw_completed = true;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(event) = rx.try_recv() {
+            if event.event_type == EventType::MaintenanceRunCompleted {
+                saw_completed = true;
             }
         }
 

@@ -28,6 +28,7 @@ impl TaskBlock for RouteGateResult {
         &[EventType::GateVerificationCompleted]
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -60,16 +61,20 @@ impl TaskBlock for RouteGateResult {
 
             if required_passed {
                 tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
+                let mut event_payload = serde_json::json!({
+                    "project": project,
+                    "success": true,
+                    "summary": "all required gates passed",
+                });
+                if let Some(actions) = payload.get("actions") {
+                    event_payload["actions"] = actions.clone();
+                }
                 return Ok(TaskBlockResult {
                     events: vec![Event::new(
                         completion_event_type,
                         project.clone(),
                         throttle,
-                        serde_json::json!({
-                            "project": project,
-                            "success": true,
-                            "summary": "all required gates passed",
-                        }),
+                        event_payload,
                     )],
                     success: true,
                     summary: format!("{project}: all required gates passed"),
@@ -89,17 +94,22 @@ impl TaskBlock for RouteGateResult {
                     "gates failed, requesting retry"
                 );
 
+                let mut event_payload = serde_json::json!({
+                    "project": project,
+                    "workflow": workflow,
+                    "retry_count": retry_count + 1,
+                    "failure_context": failure_context,
+                });
+                if let Some(actions) = payload.get("actions") {
+                    event_payload["actions"] = actions.clone();
+                }
+
                 return Ok(TaskBlockResult {
                     events: vec![Event::new(
                         EventType::RetryRequested,
                         project.clone(),
                         throttle,
-                        serde_json::json!({
-                            "project": project,
-                            "workflow": workflow,
-                            "retry_count": retry_count + 1,
-                            "failure_context": failure_context,
-                        }),
+                        event_payload,
                     )],
                     success: false,
                     summary: format!(
@@ -119,16 +129,21 @@ impl TaskBlock for RouteGateResult {
                 "gates failed, retries exhausted"
             );
 
+            let mut event_payload = serde_json::json!({
+                "project": project,
+                "success": false,
+                "summary": format!("gates failed after {retry_count} retries"),
+            });
+            if let Some(actions) = payload.get("actions") {
+                event_payload["actions"] = actions.clone();
+            }
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     completion_event_type,
                     project.clone(),
                     throttle,
-                    serde_json::json!({
-                        "project": project,
-                        "success": false,
-                        "summary": format!("gates failed after {retry_count} retries"),
-                    }),
+                    event_payload,
                 )],
                 success: false,
                 summary: format!("{project}: gates failed after {retry_count} retries"),
@@ -198,7 +213,7 @@ mod tests {
                         "passed": required_passed,
                         "required": true,
                         "output": if required_passed { "" } else { "formatting error" },
-                        "exit_code": if required_passed { 0 } else { 1 },
+                        "exit_code": i32::from(!required_passed),
                     }
                 ],
             }),

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -55,13 +53,13 @@ pub async fn run_gates(
     })
 }
 
-/// Keep at most the last `n` lines from `text`.
+/// Keep at most the last `n` lines from `text`, trimming leading/trailing whitespace.
 fn tail_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= n {
         text.trim().to_string()
     } else {
-        lines[lines.len() - n..].join("\n")
+        lines[lines.len() - n..].join("\n").trim().to_string()
     }
 }
 
@@ -191,6 +189,32 @@ mod tests {
 
         assert!(result.results[0].output.contains("test output line"));
         assert!(result.results[0].output.contains("stderr line"));
+    }
+
+    #[test]
+    fn tail_lines_over_limit_truncates() {
+        let input: String = (0..201).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let result = tail_lines(&input, 200);
+        assert_eq!(result.lines().count(), 200);
+        // Should keep the last 200 lines (lines 1..=200)
+        assert!(result.starts_with("line 1"));
+        assert!(result.ends_with("line 200"));
+    }
+
+    #[test]
+    fn tail_lines_at_limit_unchanged() {
+        let input: String = (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let result = tail_lines(&input, 200);
+        assert_eq!(result.lines().count(), 200);
+        assert!(result.starts_with("line 0"));
+        assert!(result.ends_with("line 199"));
+    }
+
+    #[test]
+    fn tail_lines_trims_whitespace() {
+        let input = "\n  hello\nworld  \n";
+        let result = tail_lines(input, 200);
+        assert_eq!(result, "hello\nworld");
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ impl RunPreflightGates {
     }
 
     #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
         Self { registry, shell }
     }
 }
@@ -172,7 +172,7 @@ impl TaskBlock for RunPreflightGates {
                 event_payload["actions"] = actions.clone();
             }
 
-            let success = run_result.all_passed;
+            let success = run_result.required_passed;
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(
@@ -253,7 +253,7 @@ mod tests {
         })
     }
 
-    fn gates_resolved_event(project: &str, workflow: &str, gates: serde_json::Value) -> Event {
+    fn gates_resolved_event(project: &str, workflow: &str, gates: &serde_json::Value) -> Event {
         Event::new(
             EventType::GatesResolved,
             project.to_string(),
@@ -299,11 +299,11 @@ mod tests {
             version: 2,
             projects: vec![],
         });
-        let block = RunPreflightGates::with_shell(registry, shell.clone());
+        let block = RunPreflightGates::with_shell(shell.clone(), registry);
         let trigger = gates_resolved_event(
             "my-project",
             "maintain",
-            serde_json::json!([{"name": "fmt", "command": "cargo fmt", "required": true}]),
+            &serde_json::json!([{"name": "fmt", "command": "cargo fmt", "required": true}]),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -321,11 +321,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunPreflightGates::with_shell(registry, shell.clone());
+        let block = RunPreflightGates::with_shell(shell.clone(), registry);
         let trigger = gates_resolved_event(
             "my-project",
             "iterate",
-            serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
+            &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -342,16 +342,52 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shell = FakeShellGateway::failure("check failed");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = RunPreflightGates::with_shell(registry, shell);
+        let block = RunPreflightGates::with_shell(shell, registry);
         let trigger = gates_resolved_event(
             "my-project",
             "iterate",
-            serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
+            &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
         );
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(!result.success);
+        assert_eq!(result.events[0].payload["all_passed"], false);
+    }
+
+    #[tokio::test]
+    async fn optional_gate_failure_still_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::sequence(vec![
+            crate::shell::CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            crate::shell::CommandResult {
+                stdout: String::new(),
+                stderr: "optional lint warning".to_string(),
+                exit_code: 1,
+                success: false,
+            },
+        ]);
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunPreflightGates::with_shell(shell, registry);
+        let trigger = gates_resolved_event(
+            "my-project",
+            "iterate",
+            &serde_json::json!([
+                {"name": "fmt", "command": "cargo fmt --check", "required": true},
+                {"name": "lint-optional", "command": "cargo clippy", "required": false}
+            ]),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // Optional gate failure should NOT block success
+        assert!(result.success, "optional gate failure should not block success");
+        assert_eq!(result.events[0].payload["required_passed"], true);
         assert_eq!(result.events[0].payload["all_passed"], false);
     }
 
@@ -362,8 +398,8 @@ mod tests {
             version: 2,
             projects: vec![],
         });
-        let block = RunPreflightGates::with_shell(registry, shell);
-        let trigger = gates_resolved_event("my-project", "iterate", serde_json::json!([]));
+        let block = RunPreflightGates::with_shell(shell, registry);
+        let trigger = gates_resolved_event("my-project", "iterate", &serde_json::json!([]));
 
         let result = block.execute(&trigger).await.unwrap();
 
