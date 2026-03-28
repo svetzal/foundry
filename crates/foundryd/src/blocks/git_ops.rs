@@ -47,6 +47,120 @@ impl CommitAndPush {
     }
 }
 
+impl CommitAndPush {
+    async fn commit_and_push(
+        registry: Arc<Registry>,
+        shell: Arc<dyn ShellGateway>,
+        project: String,
+        throttle: foundry_core::throttle::Throttle,
+        event_type: EventType,
+        cve: String,
+    ) -> anyhow::Result<TaskBlockResult> {
+        // Resolve the project path and push flag from the registry.
+        let Some(entry) = registry.projects.iter().find(|p| p.name == project) else {
+            // Project not in registry — emit stub events for test compatibility.
+            tracing::warn!(
+                project = %project,
+                "project not found in registry, using stub commit-and-push"
+            );
+            return Ok(stub_result(&project, throttle, &cve));
+        };
+
+        let path = std::path::Path::new(&entry.path);
+        let push_enabled = entry.actions.push;
+
+        tracing::info!(%project, "checking for changes to commit");
+
+        // Self-filter: nothing to do if the working tree is clean.
+        let status = shell.run(path, "git", &["status", "--porcelain"], None, None).await?;
+        if status.stdout.trim().is_empty() {
+            tracing::info!(%project, "working tree clean, skipping commit");
+            return Ok(TaskBlockResult {
+                events: vec![],
+                success: true,
+                summary: "No changes to commit".to_string(),
+                raw_output: None,
+                exit_code: None,
+                audit_artifacts: vec![],
+            });
+        }
+
+        // Stage everything.
+        shell.run(path, "git", &["add", "-A"], None, None).await?;
+
+        // Commit message varies by the event that triggered this block.
+        let commit_msg = match event_type {
+            EventType::ProjectIterateCompleted => {
+                format!("chore({project}): automated iterate")
+            }
+            EventType::ProjectMaintainCompleted => {
+                format!("chore({project}): automated maintenance")
+            }
+            _ => format!("chore({project}): automated remediation"),
+        };
+
+        let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
+        if !commit.success {
+            // "nothing to commit" is not an error — can happen when both
+            // iterate and maintain trigger CommitAndPush and the first one
+            // already committed everything, or when git add -A stages
+            // content identical to HEAD.
+            let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
+            if combined.contains("nothing to commit") || combined.contains("no changes added") {
+                tracing::info!(%project, "git commit found nothing to commit");
+                return Ok(TaskBlockResult {
+                    events: vec![],
+                    success: true,
+                    summary: "No changes to commit".to_string(),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                });
+            }
+            return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
+        }
+
+        tracing::info!(%project, "committed changes");
+
+        let mut events = vec![Event::new(
+            EventType::ProjectChangesCommitted,
+            project.clone(),
+            throttle,
+            serde_json::json!({
+                "cve": cve,
+                "message": commit_msg,
+            }),
+        )];
+
+        // Push if permitted.
+        if push_enabled {
+            tracing::info!(%project, "pushing changes");
+            let push = shell.run(path, "git", &["push"], None, None).await?;
+            if push.success {
+                events.push(Event::new(
+                    EventType::ProjectChangesPushed,
+                    project.clone(),
+                    throttle,
+                    serde_json::json!({ "cve": cve }),
+                ));
+            } else {
+                tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
+            }
+        } else {
+            tracing::info!(%project, "push disabled in registry, skipping");
+        }
+
+        Ok(TaskBlockResult {
+            success: true,
+            summary: "Committed and pushed changes".to_string(),
+            events,
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        })
+    }
+}
+
 impl TaskBlock for CommitAndPush {
     fn name(&self) -> &'static str {
         "Commit and Push"
@@ -149,110 +263,7 @@ impl TaskBlock for CommitAndPush {
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
-        Box::pin(async move {
-            // Resolve the project path and push flag from the registry.
-            let Some(entry) = registry.projects.iter().find(|p| p.name == project) else {
-                // Project not in registry — emit stub events for test compatibility.
-                tracing::warn!(
-                    project = %project,
-                    "project not found in registry, using stub commit-and-push"
-                );
-                return Ok(stub_result(&project, throttle, &cve));
-            };
-
-            let path = std::path::Path::new(&entry.path);
-            let push_enabled = entry.actions.push;
-
-            tracing::info!(%project, "checking for changes to commit");
-
-            // Self-filter: nothing to do if the working tree is clean.
-            let status = shell.run(path, "git", &["status", "--porcelain"], None, None).await?;
-            if status.stdout.trim().is_empty() {
-                tracing::info!(%project, "working tree clean, skipping commit");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "No changes to commit".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
-            }
-
-            // Stage everything.
-            shell.run(path, "git", &["add", "-A"], None, None).await?;
-
-            // Commit message varies by the event that triggered this block.
-            let commit_msg = match event_type {
-                EventType::ProjectIterateCompleted => {
-                    format!("chore({project}): automated iterate")
-                }
-                EventType::ProjectMaintainCompleted => {
-                    format!("chore({project}): automated maintenance")
-                }
-                _ => format!("chore({project}): automated remediation"),
-            };
-
-            let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
-            if !commit.success {
-                // "nothing to commit" is not an error — can happen when both
-                // iterate and maintain trigger CommitAndPush and the first one
-                // already committed everything, or when git add -A stages
-                // content identical to HEAD.
-                let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
-                if combined.contains("nothing to commit") || combined.contains("no changes added") {
-                    tracing::info!(%project, "git commit found nothing to commit");
-                    return Ok(TaskBlockResult {
-                        events: vec![],
-                        success: true,
-                        summary: "No changes to commit".to_string(),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
-                    });
-                }
-                return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
-            }
-
-            tracing::info!(%project, "committed changes");
-
-            let mut events = vec![Event::new(
-                EventType::ProjectChangesCommitted,
-                project.clone(),
-                throttle,
-                serde_json::json!({
-                    "cve": cve,
-                    "message": commit_msg,
-                }),
-            )];
-
-            // Push if permitted.
-            if push_enabled {
-                tracing::info!(%project, "pushing changes");
-                let push = shell.run(path, "git", &["push"], None, None).await?;
-                if push.success {
-                    events.push(Event::new(
-                        EventType::ProjectChangesPushed,
-                        project.clone(),
-                        throttle,
-                        serde_json::json!({ "cve": cve }),
-                    ));
-                } else {
-                    tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
-                }
-            } else {
-                tracing::info!(%project, "push disabled in registry, skipping");
-            }
-
-            Ok(TaskBlockResult {
-                success: true,
-                summary: "Committed and pushed changes".to_string(),
-                events,
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
-        })
+        Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
     }
 }
 
