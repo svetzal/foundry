@@ -82,6 +82,16 @@ enum Commands {
         throttle: String,
     },
 
+    /// Validate project gate health without running iterate/maintain
+    Validate {
+        /// Project names to validate (omit for --all)
+        projects: Vec<String>,
+
+        /// Validate all projects in registry
+        #[arg(long)]
+        all: bool,
+    },
+
     /// Show trace history from disk
     History {
         /// Date to show (YYYY-MM-DD); omit for recent 7 days
@@ -258,6 +268,7 @@ fn registry_path() -> PathBuf {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -275,6 +286,9 @@ async fn main() -> Result<()> {
             commands::trace(&cli.addr, &event_id, verbose).await
         }
         Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
+        Commands::Validate { projects, all } => {
+            commands::validate(&cli.addr, projects, all, &registry_path()).await
+        }
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
         }

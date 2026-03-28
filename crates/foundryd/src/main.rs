@@ -98,6 +98,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RunPreflightGates::new(shell.clone(), registry.clone())));
     engine.register(Box::new(blocks::RunVerifyGates::new(shell, registry.clone())));
     engine.register(Box::new(blocks::RouteGateResult));
+    engine.register(Box::new(blocks::RouteValidationResult));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 
     let engine = Arc::new(engine);

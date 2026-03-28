@@ -88,6 +88,10 @@ pub enum EventType {
     IterationRequested,
     MaintenanceRequested,
 
+    // Validation workflow
+    ValidationRequested,
+    ValidationCompleted,
+
     // Run lifecycle
     MaintenanceRunStarted,
     MaintenanceRunCompleted,
@@ -127,6 +131,8 @@ impl EventType {
             Self::ProjectChangesPushed => "project_changes_pushed",
             Self::IterationRequested => "iteration_requested",
             Self::MaintenanceRequested => "maintenance_requested",
+            Self::ValidationRequested => "validation_requested",
+            Self::ValidationCompleted => "validation_completed",
             Self::MaintenanceRunStarted => "maintenance_run_started",
             Self::MaintenanceRunCompleted => "maintenance_run_completed",
             Self::ReleaseTagAudited => "release_tag_audited",
@@ -163,6 +169,8 @@ impl std::str::FromStr for EventType {
             "project_changes_pushed" => Ok(Self::ProjectChangesPushed),
             "iteration_requested" => Ok(Self::IterationRequested),
             "maintenance_requested" => Ok(Self::MaintenanceRequested),
+            "validation_requested" => Ok(Self::ValidationRequested),
+            "validation_completed" => Ok(Self::ValidationCompleted),
             "maintenance_run_started" => Ok(Self::MaintenanceRunStarted),
             "maintenance_run_completed" => Ok(Self::MaintenanceRunCompleted),
             "release_tag_audited" => Ok(Self::ReleaseTagAudited),
@@ -246,6 +254,8 @@ mod tests {
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
             (EventType::IterationRequested, "iteration_requested"),
             (EventType::MaintenanceRequested, "maintenance_requested"),
+            (EventType::ValidationRequested, "validation_requested"),
+            (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceRunStarted, "maintenance_run_started"),
             (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
@@ -305,6 +315,34 @@ mod tests {
         let json = serde_json::to_string(&original).expect("should serialize");
         let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn validation_requested_serde_round_trip() {
+        let original = EventType::ValidationRequested;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn validation_completed_serde_round_trip() {
+        let original = EventType::ValidationCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn validation_requested_from_str() {
+        let parsed: EventType = "validation_requested".parse().expect("should parse");
+        assert_eq!(parsed, EventType::ValidationRequested);
+    }
+
+    #[test]
+    fn validation_completed_from_str() {
+        let parsed: EventType = "validation_completed".parse().expect("should parse");
+        assert_eq!(parsed, EventType::ValidationCompleted);
     }
 
     #[test]

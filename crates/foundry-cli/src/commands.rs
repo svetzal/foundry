@@ -375,6 +375,119 @@ pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub async fn validate(
+    addr: &str,
+    projects: Vec<String>,
+    all: bool,
+    registry_path: &Path,
+) -> Result<()> {
+    // Resolve which projects to validate
+    let project_names = if all {
+        let registry = foundry_core::registry::Registry::load(registry_path)?;
+        registry.active_projects().iter().map(|p| p.name.clone()).collect::<Vec<_>>()
+    } else if projects.is_empty() {
+        anyhow::bail!("specify one or more project names, or use --all");
+    } else {
+        projects
+    };
+
+    if project_names.is_empty() {
+        println!("No active projects in registry.");
+        return Ok(());
+    }
+
+    let mut any_failed = false;
+
+    for project_name in &project_names {
+        // Subscribe to the watch stream before emitting so we don't miss events.
+        let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+        let watch_request = WatchRequest {
+            project: project_name.clone(),
+        };
+        let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+        // Emit ValidationRequested
+        let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+        let request = EmitRequest {
+            event_type: "validation_requested".to_string(),
+            project: project_name.clone(),
+            throttle: 0, // Full — the workflow is read-only by design
+            payload_json: String::new(),
+        };
+
+        let response = emit_client.emit(request).await?.into_inner();
+        println!("Validating {project_name}...");
+
+        // Stream events until we see ValidationCompleted for this project
+        while let Some(event) = stream.message().await? {
+            if event.event_type == "validation_completed" {
+                print_validation_result(project_name, &event.payload_json);
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
+                    if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                        any_failed = true;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Also show the trace for full visibility
+        let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
+        // Small delay to let trace finalize
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let trace_resp = trace_client
+            .trace(TraceRequest {
+                event_id: response.event_id.clone(),
+            })
+            .await?
+            .into_inner();
+        if trace_resp.found {
+            render_trace(&trace_resp, false);
+            println!("---");
+        }
+        println!();
+    }
+
+    if any_failed {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Print per-gate pass/fail results for a validation.
+fn print_validation_result(project: &str, payload_json: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) else {
+        println!("  {project}: could not parse result");
+        return;
+    };
+
+    let success = v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let status = if success { "PASS" } else { "FAIL" };
+    println!("  {project}: {status}");
+
+    if let Some(results) = v.get("results").and_then(serde_json::Value::as_array) {
+        for gate in results {
+            let name = gate.get("name").and_then(serde_json::Value::as_str).unwrap_or("unknown");
+            let passed = gate.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let required =
+                gate.get("required").and_then(serde_json::Value::as_bool).unwrap_or(true);
+            let marker = if passed { "ok" } else { "FAILED" };
+            let req = if required { "required" } else { "optional" };
+            print!("    {name}: {marker} ({req})");
+            if !passed {
+                if let Some(output) = gate.get("output").and_then(serde_json::Value::as_str) {
+                    if !output.is_empty() {
+                        let snippet: String = output.chars().take(200).collect();
+                        print!(" — {snippet}");
+                    }
+                }
+            }
+            println!();
+        }
+    }
+}
+
 /// Extract a compact status hint from the event payload JSON.
 fn extract_status(payload_json: &str) -> String {
     if payload_json.is_empty() || payload_json == "{}" {

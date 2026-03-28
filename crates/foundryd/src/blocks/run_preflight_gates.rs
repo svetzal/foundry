@@ -63,9 +63,9 @@ impl TaskBlock for RunPreflightGates {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            // Maintain workflows skip preflight
-            if workflow != "iterate" {
-                tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate workflow");
+            // Maintain workflows skip preflight; iterate and validate run gates
+            if workflow != "iterate" && workflow != "validate" {
+                tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate/validate workflow");
 
                 let mut event_payload = serde_json::json!({
                     "project": project,
@@ -334,6 +334,28 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::PreflightCompleted);
         assert_eq!(result.events[0].payload["all_passed"], true);
+        assert!(!shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn runs_gates_for_validate_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunPreflightGates::with_shell(shell.clone(), registry);
+        let trigger = gates_resolved_event(
+            "my-project",
+            "validate",
+            &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::PreflightCompleted);
+        assert_eq!(result.events[0].payload["all_passed"], true);
+        assert_eq!(result.events[0].payload["workflow"], "validate");
         assert!(!shell.invocations().is_empty());
     }
 

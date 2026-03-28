@@ -35,6 +35,7 @@ impl TaskBlock for ResolveGates {
         &[
             EventType::IterationRequested,
             EventType::MaintenanceRequested,
+            EventType::ValidationRequested,
         ]
     }
 
@@ -54,6 +55,7 @@ impl TaskBlock for ResolveGates {
             let workflow = match event_type {
                 EventType::IterationRequested => "iterate",
                 EventType::MaintenanceRequested => "maintain",
+                EventType::ValidationRequested => "validate",
                 _ => "unknown",
             };
 
@@ -165,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_iteration_and_maintenance_requested() {
+    fn sinks_on_iteration_maintenance_and_validation_requested() {
         let block = ResolveGates::new(Arc::new(Registry {
             version: 2,
             projects: vec![],
@@ -173,6 +175,7 @@ mod tests {
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::IterationRequested));
         assert!(sinks.contains(&EventType::MaintenanceRequested));
+        assert!(sinks.contains(&EventType::ValidationRequested));
     }
 
     #[tokio::test]
@@ -243,6 +246,35 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validation_requested_resolves_gates_with_validate_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        let trigger = Event::new(
+            EventType::ValidationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        assert_eq!(result.events[0].payload["workflow"], "validate");
+        let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0]["name"], "fmt");
     }
 
     #[tokio::test]
