@@ -162,7 +162,7 @@ impl AgentGateway for ClaudeAgentGateway {
             ];
 
             if let Some(ref agent_file) = request.agent_file {
-                args.push("--agent-file".to_string());
+                args.push("--agent".to_string());
                 args.push(agent_file.display().to_string());
             }
 
