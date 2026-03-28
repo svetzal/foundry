@@ -1,0 +1,266 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
+use foundry_core::event::{Event, EventType};
+use foundry_core::registry::Registry;
+use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+
+/// Reads `.hone-gates.json` from the project directory and emits `GatesResolved`
+/// with the gate definitions and workflow type.
+///
+/// Observer — sinks on `IterationRequested` and `MaintenanceRequested`.
+/// Determines the workflow type (`iterate` or `maintain`) from the trigger event.
+pub struct ResolveGates {
+    registry: Arc<Registry>,
+}
+
+impl ResolveGates {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl TaskBlock for ResolveGates {
+    fn name(&self) -> &'static str {
+        "Resolve Gates"
+    }
+
+    fn kind(&self) -> BlockKind {
+        BlockKind::Observer
+    }
+
+    fn sinks_on(&self) -> &[EventType] {
+        &[
+            EventType::IterationRequested,
+            EventType::MaintenanceRequested,
+        ]
+    }
+
+    fn execute(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let event_type = trigger.event_type.clone();
+        let payload = trigger.payload.clone();
+
+        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+
+        Box::pin(async move {
+            let workflow = match event_type {
+                EventType::IterationRequested => "iterate",
+                EventType::MaintenanceRequested => "maintain",
+                _ => "unknown",
+            };
+
+            let Some(entry) = entry else {
+                tracing::warn!(project = %project, "project not found in registry, cannot resolve gates");
+                return Ok(TaskBlockResult {
+                    events: vec![],
+                    success: false,
+                    summary: format!("Project '{project}' not found in registry"),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                });
+            };
+
+            let project_path = std::path::Path::new(&entry.path);
+            let gates = crate::gate_file::read_gates(project_path)?;
+
+            let gates_json: Vec<serde_json::Value> = gates
+                .iter()
+                .map(|g| {
+                    let mut val = serde_json::json!({
+                        "name": g.name,
+                        "command": g.command,
+                        "required": g.required,
+                    });
+                    if let Some(timeout) = g.timeout {
+                        val["timeout_secs"] = serde_json::json!(timeout.as_secs());
+                    }
+                    val
+                })
+                .collect();
+
+            tracing::info!(
+                project = %project,
+                workflow = workflow,
+                gate_count = gates.len(),
+                "gates resolved"
+            );
+
+            // Forward the original trigger payload fields (e.g., actions.maintain)
+            let mut event_payload = serde_json::json!({
+                "project": project,
+                "workflow": workflow,
+                "gates": gates_json,
+            });
+            // Merge forwarded fields from trigger payload
+            if let Some(actions) = payload.get("actions") {
+                event_payload["actions"] = actions.clone();
+            }
+
+            Ok(TaskBlockResult {
+                events: vec![Event::new(
+                    EventType::GatesResolved,
+                    project.clone(),
+                    throttle,
+                    event_payload,
+                )],
+                success: true,
+                summary: format!(
+                    "{project}: resolved {} gates for {workflow} workflow",
+                    gates.len()
+                ),
+                raw_output: None,
+                exit_code: None,
+                audit_artifacts: vec![],
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::throttle::Throttle;
+
+    use super::ResolveGates;
+
+    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: name.to_string(),
+                path: path.to_string(),
+                stack: Stack::Rust,
+                agent: "claude".to_string(),
+                repo: String::new(),
+                branch: "main".to_string(),
+                skip: None,
+                notes: None,
+                actions: ActionFlags::default(),
+                install: None,
+                timeout_secs: None,
+            }],
+        })
+    }
+
+    #[test]
+    fn kind_is_observer() {
+        let block = ResolveGates::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        assert_eq!(block.kind(), BlockKind::Observer);
+    }
+
+    #[test]
+    fn sinks_on_iteration_and_maintenance_requested() {
+        let block = ResolveGates::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let sinks = block.sinks_on();
+        assert!(sinks.contains(&EventType::IterationRequested));
+        assert!(sinks.contains(&EventType::MaintenanceRequested));
+    }
+
+    #[tokio::test]
+    async fn resolves_gates_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        let trigger = Event::new(
+            EventType::IterationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0]["name"], "fmt");
+        assert_eq!(result.events[0].payload["workflow"], "iterate");
+    }
+
+    #[tokio::test]
+    async fn missing_gates_file_emits_empty_gates() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        let trigger = Event::new(
+            EventType::MaintenanceRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
+        assert!(gates.is_empty());
+        assert_eq!(result.events[0].payload["workflow"], "maintain");
+    }
+
+    #[tokio::test]
+    async fn project_not_in_registry_returns_failure() {
+        let block = ResolveGates::new(Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let trigger = Event::new(
+            EventType::IterationRequested,
+            "unknown".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "unknown"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forwards_actions_from_trigger_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hone-gates.json"), r#"{"gates":[]}"#).unwrap();
+
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        let trigger = Event::new(
+            EventType::IterationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project", "actions": {"maintain": true}}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let actions = result.events[0].payload.get("actions").unwrap();
+        assert_eq!(actions["maintain"], true);
+    }
+}

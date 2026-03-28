@@ -9,6 +9,8 @@ use tracing_subscriber::EnvFilter;
 mod blocks;
 mod engine;
 mod event_writer;
+mod gate_file;
+mod gate_runner;
 mod gateway;
 mod orchestrator;
 mod scanner;
@@ -90,6 +92,12 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RouteProjectWorkflow));
     engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
     engine.register(Box::new(blocks::RunHoneMaintain::new(registry.clone())));
+    // Native gate orchestration blocks
+    let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
+    engine.register(Box::new(blocks::ResolveGates::new(registry.clone())));
+    engine.register(Box::new(blocks::RunPreflightGates::new(shell.clone(), registry.clone())));
+    engine.register(Box::new(blocks::RunVerifyGates::new(shell, registry.clone())));
+    engine.register(Box::new(blocks::RouteGateResult));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 
     let engine = Arc::new(engine);
