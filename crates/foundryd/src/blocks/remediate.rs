@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::ShellGateway;
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
 
 /// Attempts to fix a vulnerability on the main branch.
 /// Mutator — events logged but not delivered at `audit_only`;
@@ -14,23 +14,16 @@ use crate::gateway::ShellGateway;
 ///
 /// Self-filters: only acts when `dirty=true` in the trigger payload.
 ///
-/// Invokes `hone maintain <agent> <path>` to fix the vulnerable dependency.
+/// Uses `AgentGateway` with `Coding` capability and `Full` access to fix
+/// the vulnerable dependency.
 pub struct RemediateVulnerability {
     registry: Arc<Registry>,
-    shell: Arc<dyn ShellGateway>,
+    agent: Arc<dyn AgentGateway>,
 }
 
 impl RemediateVulnerability {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self {
-            registry,
-            shell: Arc::new(crate::gateway::ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
-        Self { registry, shell }
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+        Self { registry, agent }
     }
 }
 
@@ -116,7 +109,7 @@ impl TaskBlock for RemediateVulnerability {
 
         // Resolve project agent and path from registry.
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
-        let shell = Arc::clone(&self.shell);
+        let agent = Arc::clone(&self.agent);
 
         tracing::info!(%cve, "remediating vulnerability");
 
@@ -133,68 +126,57 @@ impl TaskBlock for RemediateVulnerability {
                 });
             };
 
-            let agent = if entry.agent.is_empty() {
-                "claude"
-            } else {
-                &entry.agent
-            };
-            let project_path = &entry.path;
+            let project_path = PathBuf::from(&entry.path);
 
-            let audit_dir = super::hone_common::audit_dir(&project);
-            let audit_dir_str = audit_dir.display().to_string();
-            let snapshot_time = std::time::SystemTime::now();
+            let prompt = format!(
+                "You are remediating vulnerability {cve} in project '{project}'. \
+                 Update the affected dependencies to patched versions, \
+                 fix any breaking changes caused by the updates, \
+                 and ensure the project builds and passes its quality gates."
+            );
+
+            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+
+            let request = AgentRequest {
+                prompt,
+                working_dir: project_path,
+                access: AgentAccess::Full,
+                capability: AgentCapability::Coding,
+                agent_file,
+                timeout: entry.timeout(),
+            };
 
             tracing::info!(
                 project = %project,
-                agent = agent,
-                path = %project_path,
-                audit_dir = %audit_dir_str,
                 %cve,
-                "invoking hone maintain"
+                "invoking agent for remediation"
             );
 
-            let run_result = shell
-                .run(
-                    Path::new(project_path),
-                    "hone",
-                    &[
-                        "maintain",
-                        agent,
-                        project_path,
-                        "--json",
-                        "--audit-dir",
-                        &audit_dir_str,
-                    ],
-                    None,
-                    None,
-                )
-                .await;
+            let response = agent.invoke(&request).await;
 
-            let (raw_output, exit_code) = match &run_result {
-                Ok(r) => (
-                    Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
-                    Some(r.exit_code),
-                ),
-                Err(_) => (None, None),
-            };
-
-            let (success, hone_summary) = match run_result {
-                Ok(result) => {
-                    let s = result.success;
-                    let summary = super::hone_common::parse_hone_summary(&result.stdout, s);
-                    (s, summary)
+            let (raw_output, exit_code, success, summary) = match response {
+                Ok(r) => {
+                    let s = r.success;
+                    let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+                    let summary = if s {
+                        "remediation completed".to_string()
+                    } else {
+                        let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                        format!("remediation failed: {first_line}")
+                    };
+                    (Some(out), Some(r.exit_code), s, summary)
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "hone not available or failed to spawn");
-                    (false, format!("hone unavailable: {err}"))
+                    tracing::warn!(error = %err, "agent not available or failed to spawn");
+                    (None, None, false, format!("agent unavailable: {err}"))
                 }
             };
 
             tracing::info!(
                 project = %project,
                 success = success,
-                summary = %hone_summary,
-                "hone maintain completed"
+                summary = %summary,
+                "remediation completed"
             );
 
             Ok(TaskBlockResult {
@@ -205,21 +187,18 @@ impl TaskBlock for RemediateVulnerability {
                     serde_json::json!({
                         "cve": cve,
                         "success": success,
-                        "summary": hone_summary,
+                        "summary": summary,
                     }),
                 )],
                 success,
                 summary: if success {
-                    format!("Remediated {cve}: {hone_summary}")
+                    format!("Remediated {cve}: {summary}")
                 } else {
-                    format!("Remediation of {cve} failed: {hone_summary}")
+                    format!("Remediation of {cve} failed: {summary}")
                 },
                 raw_output,
                 exit_code,
-                audit_artifacts: super::hone_common::collect_new_artifacts(
-                    &audit_dir,
-                    snapshot_time,
-                ),
+                audit_artifacts: vec![],
             })
         })
     }
@@ -234,8 +213,8 @@ mod tests {
     use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
-    use crate::gateway::fakes::FakeShellGateway;
-    use crate::shell::CommandResult;
+    use crate::gateway::AgentCapability;
+    use crate::gateway::fakes::FakeAgentGateway;
 
     use super::RemediateVulnerability;
 
@@ -278,10 +257,14 @@ mod tests {
 
     #[tokio::test]
     async fn skips_when_main_branch_is_clean() {
-        let block = RemediateVulnerability::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(
+            agent,
+            Arc::new(Registry {
+                version: 2,
+                projects: vec![],
+            }),
+        );
         let trigger = clean_trigger("any-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -292,10 +275,14 @@ mod tests {
 
     #[tokio::test]
     async fn fails_when_project_not_in_registry() {
-        let block = RemediateVulnerability::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(
+            agent,
+            Arc::new(Registry {
+                version: 2,
+                projects: vec![],
+            }),
+        );
         let trigger = dirty_trigger("unknown-project", "CVE-2026-1234");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -305,16 +292,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_remediation_completed_on_hone_success() {
+    async fn emits_remediation_completed_on_agent_success() {
         let dir = tempfile::tempdir().expect("tempdir");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: r#"{"summary": "fixed"}"#.to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
-        let block = RemediateVulnerability::with_shell(registry, shell);
+        let agent = FakeAgentGateway::success_with("Fixed dependency");
+        let block = RemediateVulnerability::new(agent, registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-9999");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -327,11 +309,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_remediation_completed_on_hone_failure() {
+    async fn emits_remediation_completed_on_agent_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
-        let shell = FakeShellGateway::failure("hone exited with code 1");
-        let block = RemediateVulnerability::with_shell(registry, shell);
+        let agent = FakeAgentGateway::failure("agent exited with code 1");
+        let block = RemediateVulnerability::new(agent, registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-1234");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -345,22 +327,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_shell_invocation_for_hone() {
+    async fn records_agent_invocation() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().to_str().unwrap().to_string();
-        let registry = registry_with_project("my-project", &path, "claude");
-        let shell = FakeShellGateway::success();
-        let block = RemediateVulnerability::with_shell(
-            registry,
-            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
-        );
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(agent.clone(), registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-0001");
 
         block.execute(&trigger).await.unwrap();
 
-        let invocations = shell.invocations();
+        let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].command, "hone");
-        assert!(invocations[0].args.contains(&"maintain".to_string()));
+        assert!(invocations[0].prompt.contains("CVE-2026-0001"));
+        assert_eq!(invocations[0].capability, AgentCapability::Coding);
     }
 }

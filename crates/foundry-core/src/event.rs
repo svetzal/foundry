@@ -105,6 +105,7 @@ pub enum EventType {
     ExecutionCompleted,
     GateVerificationCompleted,
     RetryRequested,
+    SummarizeCompleted,
 
     // Hello-world workflow (validates engine mechanics)
     GreetRequested,
@@ -141,6 +142,7 @@ impl EventType {
             Self::ExecutionCompleted => "execution_completed",
             Self::GateVerificationCompleted => "gate_verification_completed",
             Self::RetryRequested => "retry_requested",
+            Self::SummarizeCompleted => "summarize_completed",
             Self::GreetRequested => "greet_requested",
             Self::GreetingComposed => "greeting_composed",
             Self::GreetingDelivered => "greeting_delivered",
@@ -179,6 +181,7 @@ impl std::str::FromStr for EventType {
             "execution_completed" => Ok(Self::ExecutionCompleted),
             "gate_verification_completed" => Ok(Self::GateVerificationCompleted),
             "retry_requested" => Ok(Self::RetryRequested),
+            "summarize_completed" => Ok(Self::SummarizeCompleted),
             "greet_requested" => Ok(Self::GreetRequested),
             "greeting_composed" => Ok(Self::GreetingComposed),
             "greeting_delivered" => Ok(Self::GreetingDelivered),
@@ -264,6 +267,7 @@ mod tests {
             (EventType::ExecutionCompleted, "execution_completed"),
             (EventType::GateVerificationCompleted, "gate_verification_completed"),
             (EventType::RetryRequested, "retry_requested"),
+            (EventType::SummarizeCompleted, "summarize_completed"),
             (EventType::GreetRequested, "greet_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),

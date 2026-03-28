@@ -1,4 +1,5 @@
 mod audit;
+mod execute_maintain;
 mod generate_summary;
 mod git_ops;
 mod greet;
@@ -9,28 +10,38 @@ mod install;
 mod release;
 mod remediate;
 mod resolve_gates;
+mod retry_execution;
 mod route_gate_result;
 mod route_project;
 mod route_validation_result;
 mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;
+mod summarize_result;
 mod validate;
 
 pub use audit::{AuditMainBranch, AuditReleaseTag};
+pub use execute_maintain::ExecuteMaintain;
 pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use hone_iterate::RunHoneIterate;
+// RunHoneMaintain is unregistered (Phase 2) but kept for Phase 4 cleanup.
+#[allow(unused_imports)]
 pub use hone_maintain::RunHoneMaintain;
 pub use install::InstallLocally;
 pub use release::{CutRelease, WatchPipeline};
 pub use remediate::RemediateVulnerability;
 pub use resolve_gates::ResolveGates;
+pub use retry_execution::RetryExecution;
 pub use route_gate_result::RouteGateResult;
 pub use route_project::RouteProjectWorkflow;
 pub use route_validation_result::RouteValidationResult;
 pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
+pub use summarize_result::SummarizeResult;
 pub use validate::ValidateProject;
+
+#[cfg(test)]
+mod maintain_chain_test;

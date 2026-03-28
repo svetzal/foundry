@@ -82,7 +82,11 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::ScanDependencies::new(registry.clone())));
     engine.register(Box::new(blocks::AuditReleaseTag::with_registry(registry.clone())));
     engine.register(Box::new(blocks::AuditMainBranch::new(registry.clone())));
-    engine.register(Box::new(blocks::RemediateVulnerability::new(registry.clone())));
+    // Agent gateway for blocks that invoke Claude CLI
+    let shell_for_agent: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
+    let agent: Arc<dyn gateway::AgentGateway> =
+        Arc::new(gateway::ClaudeAgentGateway::new(shell_for_agent));
+    engine.register(Box::new(blocks::RemediateVulnerability::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline::new(registry.clone())));
@@ -91,7 +95,7 @@ async fn main() -> Result<()> {
     // correct sub-workflow via IterationRequested or MaintenanceRequested.
     engine.register(Box::new(blocks::RouteProjectWorkflow));
     engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
-    engine.register(Box::new(blocks::RunHoneMaintain::new(registry.clone())));
+    // RunHoneMaintain removed — replaced by native maintain chain (Phase 2)
     // Native gate orchestration blocks
     let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
     engine.register(Box::new(blocks::ResolveGates::new(registry.clone())));
@@ -99,6 +103,10 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RunVerifyGates::new(shell, registry.clone())));
     engine.register(Box::new(blocks::RouteGateResult));
     engine.register(Box::new(blocks::RouteValidationResult));
+    // Native maintain workflow blocks (Phase 2)
+    engine.register(Box::new(blocks::ExecuteMaintain::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::RetryExecution::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::SummarizeResult::new(agent, registry.clone())));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 
     let engine = Arc::new(engine);

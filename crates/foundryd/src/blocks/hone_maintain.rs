@@ -16,12 +16,15 @@ use crate::gateway::ShellGateway;
 /// maintain-only path via `RouteProjectWorkflow`, or post-iterate chain via
 /// `RunHoneIterate`) has already been made before this event was emitted.
 /// This block simply runs `hone maintain` and emits `ProjectMaintainCompleted`.
+// Kept for Phase 4 cleanup — unregistered from engine in Phase 2.
+#[allow(dead_code)]
 pub struct RunHoneMaintain {
     registry: Arc<Registry>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl RunHoneMaintain {
+    #[allow(dead_code)]
     pub fn new(registry: Arc<Registry>) -> Self {
         Self {
             registry,

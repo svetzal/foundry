@@ -564,8 +564,12 @@ mod tests {
             &registry,
         ))));
         engine.register(Box::new(crate::blocks::AuditMainBranch::new(Arc::clone(&registry))));
-        engine
-            .register(Box::new(crate::blocks::RemediateVulnerability::new(Arc::clone(&registry))));
+        let agent: Arc<dyn crate::gateway::AgentGateway> =
+            crate::gateway::fakes::FakeAgentGateway::success();
+        engine.register(Box::new(crate::blocks::RemediateVulnerability::new(
+            agent,
+            Arc::clone(&registry),
+        )));
         engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::CutRelease::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
