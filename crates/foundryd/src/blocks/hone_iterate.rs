@@ -23,11 +23,13 @@ use crate::gateway::ShellGateway;
 ///
 /// On hone failure, emits `ProjectIterateCompleted` with `success: false` but
 /// does NOT emit `MaintenanceRequested`.
+#[allow(dead_code)]
 pub struct RunHoneIterate {
     registry: Arc<Registry>,
     shell: Arc<dyn ShellGateway>,
 }
 
+#[allow(dead_code)]
 impl RunHoneIterate {
     pub fn new(registry: Arc<Registry>) -> Self {
         Self {

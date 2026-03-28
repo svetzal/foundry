@@ -8,8 +8,9 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Reads `.hone-gates.json` from the project directory and emits `GatesResolved`
 /// with the gate definitions and workflow type.
 ///
-/// Observer — sinks on `IterationRequested` and `MaintenanceRequested`.
-/// Determines the workflow type (`iterate` or `maintain`) from the trigger event.
+/// Observer — sinks on `CharterCheckCompleted`, `MaintenanceRequested`, and `ValidationRequested`.
+/// For iterate workflow: triggered by `CharterCheckCompleted` (checks `passed=true`).
+/// For maintain/validate workflows: triggered directly by request events.
 pub struct ResolveGates {
     registry: Arc<Registry>,
 }
@@ -29,11 +30,9 @@ impl TaskBlock for ResolveGates {
         BlockKind::Observer
     }
 
-    // TODO(Phase 3): Change to sink on CharterCheckCompleted once CheckCharter block exists.
-    // Currently sinks on IterationRequested directly; Phase 3 inserts CheckCharter before ResolveGates.
     fn sinks_on(&self) -> &[EventType] {
         &[
-            EventType::IterationRequested,
+            EventType::CharterCheckCompleted,
             EventType::MaintenanceRequested,
             EventType::ValidationRequested,
         ]
@@ -52,8 +51,25 @@ impl TaskBlock for ResolveGates {
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
 
         Box::pin(async move {
+            // CharterCheckCompleted: only proceed if charter passed
+            if event_type == EventType::CharterCheckCompleted {
+                let passed =
+                    payload.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if !passed {
+                    tracing::info!(project = %project, "charter check failed, skipping gate resolution");
+                    return Ok(TaskBlockResult {
+                        events: vec![],
+                        success: true,
+                        summary: format!("{project}: charter check failed, no gates to resolve"),
+                        raw_output: None,
+                        exit_code: None,
+                        audit_artifacts: vec![],
+                    });
+                }
+            }
+
             let workflow = match event_type {
-                EventType::IterationRequested => "iterate",
+                EventType::CharterCheckCompleted => "iterate",
                 EventType::MaintenanceRequested => "maintain",
                 EventType::ValidationRequested => "validate",
                 _ => "unknown",
@@ -167,19 +183,20 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_iteration_maintenance_and_validation_requested() {
+    fn sinks_on_charter_check_maintenance_and_validation() {
         let block = ResolveGates::new(Arc::new(Registry {
             version: 2,
             projects: vec![],
         }));
         let sinks = block.sinks_on();
-        assert!(sinks.contains(&EventType::IterationRequested));
+        assert!(sinks.contains(&EventType::CharterCheckCompleted));
         assert!(sinks.contains(&EventType::MaintenanceRequested));
         assert!(sinks.contains(&EventType::ValidationRequested));
+        assert!(!sinks.contains(&EventType::IterationRequested));
     }
 
     #[tokio::test]
-    async fn resolves_gates_from_file() {
+    async fn resolves_gates_from_file_on_charter_check_completed() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".hone-gates.json"),
@@ -190,10 +207,10 @@ mod tests {
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ResolveGates::new(registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::CharterCheckCompleted,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "my-project"}),
+            serde_json::json!({"project": "my-project", "passed": true}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -205,6 +222,30 @@ mod tests {
         assert_eq!(gates.len(), 1);
         assert_eq!(gates[0]["name"], "fmt");
         assert_eq!(result.events[0].payload["workflow"], "iterate");
+    }
+
+    #[tokio::test]
+    async fn charter_check_failed_returns_empty_events() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        let trigger = Event::new(
+            EventType::CharterCheckCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project", "passed": false}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.events.is_empty());
     }
 
     #[tokio::test]
@@ -236,10 +277,10 @@ mod tests {
             projects: vec![],
         }));
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::CharterCheckCompleted,
             "unknown".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "unknown"}),
+            serde_json::json!({"project": "unknown", "passed": true}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -285,10 +326,10 @@ mod tests {
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ResolveGates::new(registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::CharterCheckCompleted,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "my-project", "actions": {"maintain": true}}),
+            serde_json::json!({"project": "my-project", "passed": true, "actions": {"maintain": true}}),
         );
 
         let result = block.execute(&trigger).await.unwrap();

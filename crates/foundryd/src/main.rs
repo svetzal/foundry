@@ -7,6 +7,7 @@ use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
 mod blocks;
+mod charter;
 mod engine;
 mod event_writer;
 mod gate_file;
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
     // correct sub-workflow via IterationRequested or MaintenanceRequested.
     engine.register(Box::new(blocks::RouteProjectWorkflow));
-    engine.register(Box::new(blocks::RunHoneIterate::new(registry.clone())));
+    // RunHoneIterate removed — replaced by native iterate chain (Phase 3)
     // RunHoneMaintain removed — replaced by native maintain chain (Phase 2)
     // Native gate orchestration blocks
     let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
@@ -106,7 +107,13 @@ async fn main() -> Result<()> {
     // Native maintain workflow blocks (Phase 2)
     engine.register(Box::new(blocks::ExecuteMaintain::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::RetryExecution::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(blocks::SummarizeResult::new(agent, registry.clone())));
+    engine.register(Box::new(blocks::SummarizeResult::new(agent.clone(), registry.clone())));
+    // Native iterate workflow blocks (Phase 3)
+    engine.register(Box::new(blocks::CheckCharter::new(registry.clone())));
+    engine.register(Box::new(blocks::AssessProject::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::TriageAssessment::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::CreatePlan::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::ExecutePlan::new(agent, registry.clone())));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 
     let engine = Arc::new(engine);

@@ -1,5 +1,9 @@
+mod assess_project;
 mod audit;
+mod check_charter;
+mod create_plan;
 mod execute_maintain;
+mod execute_plan;
 mod generate_summary;
 mod git_ops;
 mod greet;
@@ -18,13 +22,20 @@ mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;
 mod summarize_result;
+mod triage_assessment;
 mod validate;
 
+pub use assess_project::AssessProject;
 pub use audit::{AuditMainBranch, AuditReleaseTag};
+pub use check_charter::CheckCharter;
+pub use create_plan::CreatePlan;
 pub use execute_maintain::ExecuteMaintain;
+pub use execute_plan::ExecutePlan;
 pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
+// RunHoneIterate is unregistered (Phase 3) but kept for Phase 4 cleanup.
+#[allow(unused_imports)]
 pub use hone_iterate::RunHoneIterate;
 // RunHoneMaintain is unregistered (Phase 2) but kept for Phase 4 cleanup.
 #[allow(unused_imports)]
@@ -41,7 +52,10 @@ pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
 pub use summarize_result::SummarizeResult;
+pub use triage_assessment::TriageAssessment;
 pub use validate::ValidateProject;
 
+#[cfg(test)]
+mod iterate_chain_test;
 #[cfg(test)]
 mod maintain_chain_test;

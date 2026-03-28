@@ -69,13 +69,34 @@ impl TaskBlock for RouteGateResult {
                 if let Some(actions) = payload.get("actions") {
                     event_payload["actions"] = actions.clone();
                 }
+
+                let mut events = vec![Event::new(
+                    completion_event_type,
+                    project.clone(),
+                    throttle,
+                    event_payload,
+                )];
+
+                // Chain to maintenance if actions.maintain=true and this is an iterate workflow
+                if workflow == "iterate" {
+                    let maintain = payload
+                        .get("actions")
+                        .and_then(|a| a.get("maintain"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if maintain {
+                        tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
+                        events.push(Event::new(
+                            EventType::MaintenanceRequested,
+                            project.clone(),
+                            throttle,
+                            serde_json::json!({ "project": project }),
+                        ));
+                    }
+                }
+
                 return Ok(TaskBlockResult {
-                    events: vec![Event::new(
-                        completion_event_type,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
+                    events,
                     success: true,
                     summary: format!("{project}: all required gates passed"),
                     raw_output: None,
@@ -300,6 +321,63 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
         assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn iterate_success_with_maintain_true_chains_maintenance() {
+        let trigger = Event::new(
+            EventType::GateVerificationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "required_passed": true,
+                "all_passed": true,
+                "retry_count": 0,
+                "workflow": "iterate",
+                "actions": {"maintain": true},
+                "results": [],
+            }),
+        );
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[1].event_type, EventType::MaintenanceRequested);
+    }
+
+    #[tokio::test]
+    async fn iterate_success_without_maintain_does_not_chain() {
+        let trigger = verification_event("my-project", true, 0, "iterate");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+    }
+
+    #[tokio::test]
+    async fn maintain_success_does_not_chain_maintenance() {
+        let trigger = Event::new(
+            EventType::GateVerificationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "required_passed": true,
+                "all_passed": true,
+                "retry_count": 0,
+                "workflow": "maintain",
+                "actions": {"maintain": true},
+                "results": [],
+            }),
+        );
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
     }
 
     #[tokio::test]
