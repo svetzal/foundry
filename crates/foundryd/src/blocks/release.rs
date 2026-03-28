@@ -605,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn successful_release_emits_auto_release_completed() {
         let registry = registry_with_project("my-project", "/unused", true);
-        let agent = FakeAgentGateway::success("Release complete! Tagged as v1.2.3 and pushed.");
+        let agent = FakeAgentGateway::success_with("Release complete! Tagged as v1.2.3 and pushed.");
         let block = CutRelease::with_agent(registry, agent.clone());
         let trigger = Event::new(
             EventType::MainBranchAudited,
@@ -633,7 +633,7 @@ mod tests {
     #[tokio::test]
     async fn release_failure_emits_auto_release_completed_with_success_false() {
         let registry = registry_with_project("my-project", "/unused", true);
-        let agent = FakeAgentGateway::failure("Claude CLI failed", 1);
+        let agent = FakeAgentGateway::failure("Claude CLI failed");
         let block = CutRelease::with_agent(registry, agent);
         let trigger = Event::new(
             EventType::MainBranchAudited,
