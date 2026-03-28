@@ -1,5 +1,14 @@
+// Phase 3 iterate blocks — not yet registered in the engine (item 2 handles wiring).
+#[allow(dead_code)]
+mod assess_project;
 mod audit;
+#[allow(dead_code)]
+mod check_charter;
+#[allow(dead_code)]
+mod create_plan;
 mod execute_maintain;
+#[allow(dead_code)]
+mod execute_plan;
 mod generate_summary;
 mod git_ops;
 mod greet;
@@ -18,10 +27,21 @@ mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;
 mod summarize_result;
+#[allow(dead_code)]
+mod triage_assessment;
 mod validate;
 
+// Phase 3 iterate blocks — unregistered until item 2 wires them into the engine.
+#[allow(unused_imports)]
+pub use assess_project::AssessProject;
 pub use audit::{AuditMainBranch, AuditReleaseTag};
+#[allow(unused_imports)]
+pub use check_charter::CheckCharter;
+#[allow(unused_imports)]
+pub use create_plan::CreatePlan;
 pub use execute_maintain::ExecuteMaintain;
+#[allow(unused_imports)]
+pub use execute_plan::ExecutePlan;
 pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
@@ -41,6 +61,8 @@ pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
 pub use summarize_result::SummarizeResult;
+#[allow(unused_imports)]
+pub use triage_assessment::TriageAssessment;
 pub use validate::ValidateProject;
 
 #[cfg(test)]

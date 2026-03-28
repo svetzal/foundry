@@ -7,6 +7,7 @@ use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
 mod blocks;
+pub mod charter;
 mod engine;
 mod event_writer;
 mod gate_file;

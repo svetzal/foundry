@@ -107,6 +107,12 @@ pub enum EventType {
     RetryRequested,
     SummarizeCompleted,
 
+    // Native iterate workflow (Phase 3)
+    CharterCheckCompleted,
+    AssessmentCompleted,
+    TriageCompleted,
+    PlanCompleted,
+
     // Hello-world workflow (validates engine mechanics)
     GreetRequested,
     GreetingComposed,
@@ -143,6 +149,10 @@ impl EventType {
             Self::GateVerificationCompleted => "gate_verification_completed",
             Self::RetryRequested => "retry_requested",
             Self::SummarizeCompleted => "summarize_completed",
+            Self::CharterCheckCompleted => "charter_check_completed",
+            Self::AssessmentCompleted => "assessment_completed",
+            Self::TriageCompleted => "triage_completed",
+            Self::PlanCompleted => "plan_completed",
             Self::GreetRequested => "greet_requested",
             Self::GreetingComposed => "greeting_composed",
             Self::GreetingDelivered => "greeting_delivered",
@@ -182,6 +192,10 @@ impl std::str::FromStr for EventType {
             "gate_verification_completed" => Ok(Self::GateVerificationCompleted),
             "retry_requested" => Ok(Self::RetryRequested),
             "summarize_completed" => Ok(Self::SummarizeCompleted),
+            "charter_check_completed" => Ok(Self::CharterCheckCompleted),
+            "assessment_completed" => Ok(Self::AssessmentCompleted),
+            "triage_completed" => Ok(Self::TriageCompleted),
+            "plan_completed" => Ok(Self::PlanCompleted),
             "greet_requested" => Ok(Self::GreetRequested),
             "greeting_composed" => Ok(Self::GreetingComposed),
             "greeting_delivered" => Ok(Self::GreetingDelivered),
@@ -268,6 +282,10 @@ mod tests {
             (EventType::GateVerificationCompleted, "gate_verification_completed"),
             (EventType::RetryRequested, "retry_requested"),
             (EventType::SummarizeCompleted, "summarize_completed"),
+            (EventType::CharterCheckCompleted, "charter_check_completed"),
+            (EventType::AssessmentCompleted, "assessment_completed"),
+            (EventType::TriageCompleted, "triage_completed"),
+            (EventType::PlanCompleted, "plan_completed"),
             (EventType::GreetRequested, "greet_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -347,6 +365,38 @@ mod tests {
     fn validation_completed_from_str() {
         let parsed: EventType = "validation_completed".parse().expect("should parse");
         assert_eq!(parsed, EventType::ValidationCompleted);
+    }
+
+    #[test]
+    fn charter_check_completed_serde_round_trip() {
+        let original = EventType::CharterCheckCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn assessment_completed_serde_round_trip() {
+        let original = EventType::AssessmentCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn triage_completed_serde_round_trip() {
+        let original = EventType::TriageCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn plan_completed_serde_round_trip() {
+        let original = EventType::PlanCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
     }
 
     #[test]
