@@ -135,6 +135,49 @@ Event: evt_47fcb603e1b18c8435b8cc3b
 
 Use `foundry trace <event_id>` to inspect the full trace after the run completes.
 
+## `foundry validate`
+
+Validate quality gates for one or more projects without running iterate or
+maintain workflows. This is a read-only operation — no code changes are made.
+
+```bash
+foundry validate <project>...
+foundry validate --all
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `project` | Yes (unless `--all`) | One or more project names (positional) |
+| `--all` | No | Validate all active projects in the registry |
+
+For each project, emits a `validation_requested` event which triggers:
+`Resolve Gates` → `Run Preflight Gates` → `Route Validation Result` →
+`validation_completed`. No Mutator blocks are involved, so throttle level
+is irrelevant.
+
+**Output example:**
+
+```text
+Validating mojentic-ts...
+  mojentic-ts: PASS
+    lint: ok (required)
+    format: ok (required)
+    test: ok (required)
+    build: ok (required)
+    security: ok (optional)
+validation_requested (evt_007572156d627d7b1211d76f) project=mojentic-ts
+  → Resolve Gates (0ms): ok — mojentic-ts: resolved 5 gates for validate workflow
+    gates_resolved (evt_92531a666649d6464e569dc2) project=mojentic-ts
+      → Run Preflight Gates (6931ms): ok — mojentic-ts: preflight gates passed
+        preflight_completed (evt_08b0f626599a23ee8c648a8c) project=mojentic-ts
+          → Route Validation Result (3ms): ok — mojentic-ts: validation passed
+            validation_completed (evt_e60a246dfa9072414890fa24) project=mojentic-ts
+---
+```
+
+Exits with code 0 if all projects pass, non-zero if any required gate fails.
+Optional gate failures are reported but do not affect the exit code.
+
 ## `foundry trace`
 
 View the trace of a completed event chain.

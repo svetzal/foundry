@@ -80,6 +80,31 @@ The `actions.maintain` flag is forwarded inside the `iteration_requested`
 payload so that `Run Hone Iterate` can chain directly to `maintenance_requested`
 after a successful iteration without re-querying the project configuration.
 
+### Gate Orchestration
+
+These blocks provide native gate resolution, execution, and routing without
+delegating to hone. They coexist alongside the hone blocks during migration.
+
+| Block | Kind | Sinks On | Emits | Self-filters |
+|-------|------|----------|-------|--------------|
+| Resolve Gates | Observer | `iteration_requested`, `maintenance_requested`, `validation_requested` | `gates_resolved` | — |
+| Run Preflight Gates | Observer | `gates_resolved` | `preflight_completed` | Skips `maintain` workflow |
+| Run Verify Gates | Observer | `execution_completed` | `gate_verification_completed` | — |
+| Route Gate Result | Observer | `gate_verification_completed` | `project_iterate_completed` / `project_maintain_completed` / `retry_requested` | Routes based on pass/fail and retry count |
+| Route Validation Result | Observer | `preflight_completed` | `validation_completed` | Only handles `validate` workflow |
+
+### Validation Workflow
+
+A dedicated read-only workflow for checking project gate health. No Mutator
+blocks are involved — validation never modifies code.
+
+```text
+validation_requested
+  → Resolve Gates → gates_resolved
+    → Run Preflight Gates → preflight_completed
+      → Route Validation Result → validation_completed
+```
+
 ## Vulnerability Workflow Chain
 
 ```mermaid

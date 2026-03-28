@@ -166,6 +166,77 @@ present directly in the payload.
 | `iteration_requested` | `{ project }` | Triggers the iterate sub-workflow for a validated project |
 | `maintenance_requested` | `{ project }` | Triggers the maintain sub-workflow for a validated project |
 
+## Gate Orchestration
+
+| Type | Description |
+|------|-------------|
+| `gates_resolved` | Gate definitions loaded from `.hone-gates.json` |
+| `preflight_completed` | Gates passed/failed on unmodified codebase |
+| `execution_completed` | Code changes applied (emitted by future execution blocks) |
+| `gate_verification_completed` | Gates passed/failed after execution |
+| `retry_requested` | Gate failure triggers bounded retry |
+
+**`gates_resolved` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+| `workflow` | string | `"iterate"`, `"maintain"`, or `"validate"` |
+| `gates` | array | Gate definitions (name, command, required, timeout_secs) |
+| `actions` | object (optional) | Forwarded actions from the trigger event |
+
+**`preflight_completed` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+| `workflow` | string | Workflow that triggered the preflight |
+| `all_passed` | bool | Whether every gate passed |
+| `required_passed` | bool | Whether all required gates passed |
+| `results` | array | Per-gate results (name, passed, required, output, exit_code) |
+
+**`gate_verification_completed` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+| `workflow` | string | Originating workflow |
+| `all_passed` | bool | Whether every gate passed |
+| `required_passed` | bool | Whether all required gates passed |
+| `retry_count` | number | Current retry count (0 on first attempt) |
+| `results` | array | Per-gate results |
+
+**`retry_requested` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+| `workflow` | string | Originating workflow |
+| `retry_count` | number | Incremented retry count |
+| `failure_context` | string | Gate output from the failed verification |
+| `actions` | object (optional) | Forwarded actions |
+
+## Validation
+
+| Type | Description |
+|------|-------------|
+| `validation_requested` | Request to validate a project's gate health |
+| `validation_completed` | Terminal event with per-gate pass/fail results |
+
+**`validation_requested` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+
+**`validation_completed` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Project name |
+| `success` | bool | Whether all required gates passed |
+| `results` | array | Per-gate results (name, passed, required, output snippet) |
+
 ## Maintenance Run Lifecycle
 
 | Type | Description |
