@@ -8,7 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 
-use crate::gateway::ShellGateway;
+use crate::gateway::{
+    AgentAccess, AgentCapability, AgentGateway, AgentRequest, ClaudeAgentGateway, ShellGateway,
+};
 
 /// Tags a patch release when the main branch is clean (vulnerability already fixed).
 /// Mutator — events logged but not delivered at `audit_only`;
@@ -21,14 +23,15 @@ use crate::gateway::ShellGateway;
 /// (Claude Code convention for agentic automation).
 pub struct CutRelease {
     registry: Arc<Registry>,
-    shell: Arc<dyn ShellGateway>,
+    agent: Arc<dyn AgentGateway>,
 }
 
 impl CutRelease {
     pub fn new(registry: Arc<Registry>) -> Self {
+        let shell = Arc::new(crate::gateway::ProcessShellGateway);
         Self {
             registry,
-            shell: Arc::new(crate::gateway::ProcessShellGateway),
+            agent: Arc::new(ClaudeAgentGateway::new(shell)),
         }
     }
 
@@ -36,8 +39,8 @@ impl CutRelease {
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
 
     #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
-        Self { registry, shell }
+    fn with_agent(registry: Arc<Registry>, agent: Arc<dyn AgentGateway>) -> Self {
+        Self { registry, agent }
     }
 }
 
@@ -127,11 +130,11 @@ impl TaskBlock for CutRelease {
             .find(|p| p.name == project)
             .map(|p| p.path.clone());
 
-        let shell = Arc::clone(&self.shell);
+        let agent = Arc::clone(&self.agent);
 
         tracing::info!(%cve, "cutting patch release");
 
-        Box::pin(run_release(project, throttle, cve, project_path, shell))
+        Box::pin(run_release(project, throttle, cve, project_path, agent))
     }
 }
 
@@ -140,7 +143,7 @@ async fn run_release(
     throttle: Throttle,
     cve: String,
     project_path: Option<String>,
-    shell: Arc<dyn ShellGateway>,
+    agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(path_str) = project_path else {
         tracing::warn!(project = %project, "project not found in registry, skipping release");
@@ -178,20 +181,18 @@ async fn run_release(
          Create a changelog entry, bump the patch version, tag the release, and push."
     );
 
-    // CLAUDECODE="" prevents Claude from detecting a nested session and erroring out.
-    let env = vec![("CLAUDECODE".to_string(), String::new())];
-
     tracing::info!(%project, %cve, "invoking claude CLI for release");
 
-    let run_result = shell
-        .run(
-            project_dir,
-            "claude",
-            &["--print", "--dangerously-skip-permissions", &prompt],
-            Some(&env),
-            Some(CutRelease::CLAUDE_TIMEOUT),
-        )
-        .await;
+    let request = AgentRequest {
+        prompt,
+        working_dir: project_dir.to_path_buf(),
+        access: AgentAccess::Full,
+        capability: AgentCapability::Coding,
+        agent_file: None,
+        timeout: CutRelease::CLAUDE_TIMEOUT,
+    };
+
+    let run_result = agent.invoke(&request).await;
 
     let (raw_output, exit_code) = match &run_result {
         Ok(r) => (
@@ -507,8 +508,7 @@ mod tests {
     use foundry_core::throttle::Throttle;
     use tempfile::TempDir;
 
-    use crate::gateway::fakes::FakeShellGateway;
-    use crate::shell::CommandResult;
+    use crate::gateway::fakes::FakeAgentGateway;
 
     use super::*;
 
@@ -605,13 +605,8 @@ mod tests {
     #[tokio::test]
     async fn successful_release_emits_auto_release_completed() {
         let registry = registry_with_project("my-project", "/unused", true);
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: "Release complete! Tagged as v1.2.3 and pushed.".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
-        let block = CutRelease::with_shell(registry, shell);
+        let agent = FakeAgentGateway::success("Release complete! Tagged as v1.2.3 and pushed.");
+        let block = CutRelease::with_agent(registry, agent.clone());
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "my-project".to_string(),
@@ -626,13 +621,20 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::AutoReleaseCompleted);
         assert_eq!(result.events[0].payload["new_tag"], "v1.2.3");
         assert_eq!(result.events[0].payload["success"], true);
+
+        // Verify the agent was invoked with expected capability and access.
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].access, AgentAccess::Full);
+        assert!(invocations[0].prompt.contains("CVE-2026-1234"));
     }
 
     #[tokio::test]
     async fn release_failure_emits_auto_release_completed_with_success_false() {
         let registry = registry_with_project("my-project", "/unused", true);
-        let shell = FakeShellGateway::failure("Claude CLI failed");
-        let block = CutRelease::with_shell(registry, shell);
+        let agent = FakeAgentGateway::failure("Claude CLI failed", 1);
+        let block = CutRelease::with_agent(registry, agent);
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "my-project".to_string(),
