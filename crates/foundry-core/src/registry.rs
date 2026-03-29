@@ -79,7 +79,7 @@ pub struct ProjectEntry {
     pub install: Option<InstallConfig>,
     /// Human-readable notes about the project.
     pub notes: Option<String>,
-    /// Per-project timeout in seconds for long-running commands (e.g. hone).
+    /// Per-project timeout in seconds for long-running commands.
     /// Defaults to 1800 (30 minutes) when absent.
     pub timeout_secs: Option<u64>,
 }

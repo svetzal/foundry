@@ -19,7 +19,7 @@ the triggering event. This means the throttle decision is made once (at
 invocation) and respected throughout the chain.
 
 ```text
-foundry emit vulnerability_detected --project hone-cli --throttle audit_only
+foundry emit vulnerability_detected --project my-tool --throttle audit_only
 
   vulnerability_detected (throttle: audit_only)
     → Audit Main Branch (Observer) → executes, emits main_branch_audited

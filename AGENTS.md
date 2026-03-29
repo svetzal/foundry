@@ -91,7 +91,7 @@ mdbook build book/
 
 - `~/.foundry/registry.json` — project registry (managed via `foundry registry` commands)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
-- `~/.foundry/audits/{project}/` — centralized hone audit logs
+- `~/.foundry/audits/{project}/` — centralized audit logs
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
 ## Environment Variables
@@ -101,4 +101,4 @@ mdbook build book/
 | `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
-| `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized hone audit logs |
+| `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |

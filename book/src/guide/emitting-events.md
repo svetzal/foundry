@@ -27,7 +27,7 @@ foundry emit greet_requested --project hello --payload '{"name": "Stacey"}'
 
 # Audit only — observe without mutating
 foundry emit vulnerability_detected \
-  --project hone-cli \
+  --project my-tool \
   --throttle audit_only \
   --payload '{"cve": "CVE-2026-1234", "severity": "high"}'
 

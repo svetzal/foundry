@@ -1,12 +1,12 @@
 # Maintenance Workflow
 
-The maintenance workflow runs `hone iterate` and `hone maintain` against each
-registered project, committing and pushing any changes they produce.  It is
+The maintenance workflow runs iterate and maintain automation against each
+registered project, committing and pushing any changes they produce. It is
 designed to be triggered nightly via launchd or manually via `foundry emit`.
 
 ## How It Works
 
-Each project goes through its own independent chain.  The chain is driven
+Each project goes through its own independent chain. The chain is driven
 entirely by events — no mutable state is shared between projects.
 
 ### Per-Project Chain
@@ -19,11 +19,24 @@ flowchart TD
     D -->|iterate=true| E([iteration_requested])
     D -->|iterate=false, maintain=true| F([maintenance_requested])
     D -->|no actions enabled| G([end])
-    E --> H[[Run Hone Iterate]]
-    H --> I([project_iterate_completed])
-    H -->|actions.maintain=true| F
-    F --> J[[Run Hone Maintain]]
-    J --> K([project_maintain_completed])
+    E --> H[[Resolve Gates]]
+    H --> I[[Run Preflight Gates]]
+    I --> J[[Check Charter]]
+    J --> K[[Assess Project]]
+    K --> L[[Triage Assessment]]
+    L --> M[[Create Plan]]
+    M --> N[[Execute Plan]]
+    N --> O[[Run Verify Gates]]
+    O --> P[[Route Gate Result]]
+    P -->|pass| Q([project_iterate_completed])
+    P -->|fail, retries left| R[[Retry Execution]]
+    Q -->|maintain=true| F
+    F --> S[[Resolve Gates]]
+    S --> T[[Execute Maintain]]
+    T --> U[[Run Verify Gates]]
+    U --> V[[Route Gate Result]]
+    V -->|pass| W([project_maintain_completed])
+    V -->|fail, retries left| X[[Retry Execution]]
 ```
 
 ### Routing Logic
@@ -39,8 +52,8 @@ flowchart TD
 | both false | nothing — no automation enabled |
 
 When `iterate = true`, the `actions.maintain` flag is forwarded inside the
-`iteration_requested` payload.  After a successful iteration, `Run Hone
-Iterate` emits `maintenance_requested` automatically when that flag is `true`,
+`iteration_requested` payload. After a successful iteration, the gate routing
+emits `maintenance_requested` automatically when that flag is `true`,
 so the maintain sub-workflow starts without an extra routing step.
 
 ## Triggering a Maintenance Run
@@ -52,7 +65,7 @@ foundry emit project_validation_completed my-project \
   --payload '{"status":"ok","actions":{"iterate":true,"maintain":true}}'
 ```
 
-To trigger the full nightly cycle (once `ValidateProject` is implemented):
+To trigger the full nightly cycle:
 
 ```bash
 foundry emit maintenance_run_started my-project
@@ -63,8 +76,8 @@ foundry emit maintenance_run_started my-project
 | Throttle | Effect |
 |----------|--------|
 | `full` | All blocks execute and emit events |
-| `audit_only` | Observers (`Route Project Workflow`) emit; mutators (`Run Hone Iterate`, `Run Hone Maintain`) suppress output |
+| `audit_only` | Observers emit; mutators suppress output |
 | `dry_run` | Observers emit; mutators are skipped entirely |
 
 Under `dry_run`, only `iteration_requested` or `maintenance_requested` are
-emitted (by the Observer router).  Neither hone command executes.
+emitted (by the Observer router). No execution blocks run.

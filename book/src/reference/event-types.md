@@ -105,8 +105,8 @@ Every event carries these common fields:
 | Type | Description |
 |------|-------------|
 | `project_validation_completed` | Pre-flight checks for a maintenance run |
-| `project_iterate_completed` | `hone iterate` finished |
-| `project_maintain_completed` | `hone maintain` finished |
+| `project_iterate_completed` | Iterate workflow finished |
+| `project_maintain_completed` | Maintain workflow finished |
 | `project_changes_committed` | Git commit created |
 | `project_changes_pushed` | Changes pushed to remote |
 
@@ -120,25 +120,23 @@ Every event carries these common fields:
 
 **`project_iterate_completed` payload**
 
-The payload is the parsed JSON output of `hone iterate --json`. When `hone`
-output is not valid JSON, the raw text is captured instead:
-
 | Field | Type | Description |
 |-------|------|-------------|
-| `raw` | string | Raw stdout from `hone iterate` (when not valid JSON) |
-| `exit_code` | number | Process exit code (when not valid JSON) |
-
-When `hone iterate` returns valid JSON, all fields from that JSON object are
-present directly in the payload.
+| `project` | string | Project name |
+| `workflow` | string | `"iterate"` |
+| `success` | bool | Whether the iterate workflow succeeded |
+| `summary` | string | Human-readable summary of the result |
+| `changes` | bool (optional) | Whether code changes were made |
 
 **`project_maintain_completed` payload**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `agent` | string | Agent name passed to `hone maintain` |
-| `path` | string | Project path |
-| `audit_dir` | string | Audit directory (may be empty) |
-| `success` | bool | Whether the step succeeded |
+| `project` | string | Project name |
+| `workflow` | string | `"maintain"` |
+| `success` | bool | Whether the maintain workflow succeeded |
+| `summary` | string | Human-readable summary of the result |
+| `changes` | bool (optional) | Whether code changes were made |
 
 **`project_changes_committed` payload**
 
