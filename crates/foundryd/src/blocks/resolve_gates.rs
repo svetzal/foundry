@@ -5,11 +5,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-/// Reads `.hone-gates.json` from the project directory and emits `GatesResolved`
+/// Reads `.hone-gates.json` from the project directory and emits `GateResolutionCompleted`
 /// with the gate definitions and workflow type.
 ///
 /// Observer — sinks on `CharterCheckCompleted`, `MaintenanceRequested`, and `ValidationRequested`.
-/// For iterate workflow: triggered by `CharterCheckCompleted` (checks `passed=true`).
+/// For iterate workflow: triggered by `CharterCheckCompleted` (checks `success=true`).
 /// For maintain/validate workflows: triggered directly by request events.
 pub struct ResolveGates {
     registry: Arc<Registry>,
@@ -43,9 +43,9 @@ impl TaskBlock for ResolveGates {
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
             if event_type == EventType::CharterCheckCompleted {
-                let passed =
-                    payload.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if !passed {
+                let success =
+                    payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if !success {
                     tracing::info!(project = %project, "charter check failed, skipping gate resolution");
                     return Ok(TaskBlockResult {
                         events: vec![],
@@ -115,7 +115,7 @@ impl TaskBlock for ResolveGates {
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(
-                    EventType::GatesResolved,
+                    EventType::GateResolutionCompleted,
                     project.clone(),
                     throttle,
                     event_payload,
@@ -200,14 +200,14 @@ mod tests {
             EventType::CharterCheckCompleted,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "my-project", "passed": true}),
+            serde_json::json!({"project": "my-project", "success": true}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        assert_eq!(result.events[0].event_type, EventType::GateResolutionCompleted);
         let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
         assert_eq!(gates.len(), 1);
         assert_eq!(gates[0]["name"], "fmt");
@@ -229,7 +229,7 @@ mod tests {
             EventType::CharterCheckCompleted,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "my-project", "passed": false}),
+            serde_json::json!({"project": "my-project", "success": false}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -254,7 +254,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        assert_eq!(result.events[0].event_type, EventType::GateResolutionCompleted);
         let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
         assert!(gates.is_empty());
         assert_eq!(result.events[0].payload["workflow"], "maintain");
@@ -270,7 +270,7 @@ mod tests {
             EventType::CharterCheckCompleted,
             "unknown".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "unknown", "passed": true}),
+            serde_json::json!({"project": "unknown", "success": true}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -301,7 +301,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::GatesResolved);
+        assert_eq!(result.events[0].event_type, EventType::GateResolutionCompleted);
         assert_eq!(result.events[0].payload["workflow"], "validate");
         let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
         assert_eq!(gates.len(), 1);
@@ -319,7 +319,7 @@ mod tests {
             EventType::CharterCheckCompleted,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"project": "my-project", "passed": true, "actions": {"maintain": true}}),
+            serde_json::json!({"project": "my-project", "success": true, "actions": {"maintain": true}}),
         );
 
         let result = block.execute(&trigger).await.unwrap();

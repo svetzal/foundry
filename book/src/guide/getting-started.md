@@ -50,7 +50,7 @@ INFO foundryd::engine: registered task block block="Audit Main Branch" sinks=[Re
 INFO foundryd::engine: registered task block block="Remediate Vulnerability" sinks=[MainBranchAudited]
 INFO foundryd::engine: registered task block block="Commit and Push" sinks=[RemediationCompleted]
 INFO foundryd::engine: registered task block block="Cut Release" sinks=[MainBranchAudited]
-INFO foundryd::engine: registered task block block="Watch Pipeline" sinks=[AutoReleaseCompleted]
+INFO foundryd::engine: registered task block block="Watch Pipeline" sinks=[ReleaseCompleted]
 INFO foundryd::engine: registered task block block="Install Locally" sinks=[ProjectChangesPushed, ReleasePipelineCompleted]
 INFO foundryd: foundryd listening on [::1]:50051
 ```

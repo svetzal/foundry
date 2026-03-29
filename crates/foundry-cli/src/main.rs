@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod gates_commands;
+mod init_commands;
 mod registry_commands;
 
 pub mod proto {
@@ -101,6 +102,25 @@ enum Commands {
         /// Filter by project name
         #[arg(long)]
         project: Option<String>,
+    },
+
+    /// Run a single iteration cycle on a project
+    Iterate {
+        /// Project name from registry
+        project: String,
+    },
+
+    /// Scout a project for intent drift (bug candidates)
+    Scout {
+        /// Project name from registry
+        project: String,
+    },
+
+    /// Install the Foundry skill for Claude agents
+    Init {
+        /// Install globally (~/.claude/skills/) instead of locally (.claude/skills/)
+        #[arg(long)]
+        global: bool,
     },
 
     /// Show or derive quality gates for a project
@@ -304,9 +324,12 @@ async fn main() -> Result<()> {
         Commands::Validate { projects, all } => {
             commands::validate(&cli.addr, projects, all, &registry_path()).await
         }
+        Commands::Iterate { project } => commands::iterate(&cli.addr, &project).await,
+        Commands::Scout { project } => commands::scout(&cli.addr, &project).await,
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
         }
+        Commands::Init { global } => init_commands::run(global),
         Commands::Gates { project, dir, init } => {
             let project_dir = gates_commands::resolve_project_dir(
                 project.as_deref(),

@@ -94,7 +94,7 @@ the event type, event ID, project, and payload (when non-empty).
 maintenance_run_started evt_abc project=my-tool
 project_validation_completed evt_def project=my-tool
   payload: {"status":"ok","has_gates":true}
-project_iterate_completed evt_ghi project=my-tool
+project_iteration_completed evt_ghi project=my-tool
 ```
 
 ## `foundry run`
@@ -167,7 +167,7 @@ Validating mojentic-ts...
     security: ok (optional)
 validation_requested (evt_007572156d627d7b1211d76f) project=mojentic-ts
   → Resolve Gates (0ms): ok — mojentic-ts: resolved 5 gates for validate workflow
-    gates_resolved (evt_92531a666649d6464e569dc2) project=mojentic-ts
+    gate_resolution_completed (evt_92531a666649d6464e569dc2) project=mojentic-ts
       → Run Preflight Gates (6931ms): ok — mojentic-ts: preflight gates passed
         preflight_completed (evt_08b0f626599a23ee8c648a8c) project=mojentic-ts
           → Route Validation Result (3ms): ok — mojentic-ts: validation passed

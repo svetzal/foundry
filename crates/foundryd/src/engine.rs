@@ -636,7 +636,7 @@ mod tests {
                 "vulnerability_detected",
                 "release_tag_audited",
                 "main_branch_audited",
-                "auto_release_completed",
+                "release_completed",
                 "release_pipeline_completed",
                 "local_install_completed",
             ]

@@ -25,8 +25,8 @@ roadmap for completing all task blocks and workflows is in
 | Event | Emitter | Purpose |
 |-------|---------|---------|
 | `project_validation_completed` | ValidateProject | Pre-flight check (dir, branch, gates) |
-| `project_iterate_completed` | RouteGateResult | One structural improvement attempted |
-| `project_maintain_completed` | RouteGateResult | Dependencies updated, gates verified |
+| `project_iteration_completed` | RouteGateResult | One structural improvement attempted |
+| `project_maintenance_completed` | RouteGateResult | Dependencies updated, gates verified |
 | `project_changes_committed` | CommitAndPush | Git commit created |
 | `project_changes_pushed` | CommitAndPush | Pushed to remote |
 
@@ -36,8 +36,8 @@ roadmap for completing all task blocks and workflows is in
 |-------|---------|---------|
 | `release_tag_audited` | AuditReleaseTag | Latest tag scanned for vulnerabilities |
 | `main_branch_audited` | AuditMainBranch | Main branch checked for same vulnerability |
-| `auto_release_triggered` | Audit chain | Intent to cut a patch release |
-| `auto_release_completed` | CutRelease | Tag pushed |
+| `release_requested` | Audit chain | Intent to cut a patch release |
+| `release_completed` | CutRelease | Tag pushed |
 
 ### Vulnerability Remediation
 

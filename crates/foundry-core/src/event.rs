@@ -72,15 +72,15 @@ pub enum EventType {
     MainBranchAudited,
     RemediationStarted,
     RemediationCompleted,
-    AutoReleaseTriggered,
-    AutoReleaseCompleted,
+    ReleaseRequested,
+    ReleaseCompleted,
     ReleasePipelineCompleted,
     LocalInstallCompleted,
 
     // Project lifecycle (used across workflows)
     ProjectValidationCompleted,
-    ProjectIterateCompleted,
-    ProjectMaintainCompleted,
+    ProjectIterationCompleted,
+    ProjectMaintenanceCompleted,
     ProjectChangesCommitted,
     ProjectChangesPushed,
 
@@ -100,7 +100,7 @@ pub enum EventType {
     ReleaseTagAudited,
 
     // Native gate orchestration workflow
-    GatesResolved,
+    GateResolutionCompleted,
     PreflightCompleted,
     ExecutionCompleted,
     GateVerificationCompleted,
@@ -112,6 +112,10 @@ pub enum EventType {
     AssessmentCompleted,
     TriageCompleted,
     PlanCompleted,
+
+    // Drift scout workflow
+    DriftAssessmentRequested,
+    DriftAssessmentCompleted,
 
     // Hello-world workflow (validates engine mechanics)
     GreetRequested,
@@ -127,13 +131,13 @@ impl EventType {
             Self::MainBranchAudited => "main_branch_audited",
             Self::RemediationStarted => "remediation_started",
             Self::RemediationCompleted => "remediation_completed",
-            Self::AutoReleaseTriggered => "auto_release_triggered",
-            Self::AutoReleaseCompleted => "auto_release_completed",
+            Self::ReleaseRequested => "release_requested",
+            Self::ReleaseCompleted => "release_completed",
             Self::ReleasePipelineCompleted => "release_pipeline_completed",
             Self::LocalInstallCompleted => "local_install_completed",
             Self::ProjectValidationCompleted => "project_validation_completed",
-            Self::ProjectIterateCompleted => "project_iterate_completed",
-            Self::ProjectMaintainCompleted => "project_maintain_completed",
+            Self::ProjectIterationCompleted => "project_iteration_completed",
+            Self::ProjectMaintenanceCompleted => "project_maintenance_completed",
             Self::ProjectChangesCommitted => "project_changes_committed",
             Self::ProjectChangesPushed => "project_changes_pushed",
             Self::IterationRequested => "iteration_requested",
@@ -143,7 +147,7 @@ impl EventType {
             Self::MaintenanceRunStarted => "maintenance_run_started",
             Self::MaintenanceRunCompleted => "maintenance_run_completed",
             Self::ReleaseTagAudited => "release_tag_audited",
-            Self::GatesResolved => "gates_resolved",
+            Self::GateResolutionCompleted => "gate_resolution_completed",
             Self::PreflightCompleted => "preflight_completed",
             Self::ExecutionCompleted => "execution_completed",
             Self::GateVerificationCompleted => "gate_verification_completed",
@@ -153,6 +157,8 @@ impl EventType {
             Self::AssessmentCompleted => "assessment_completed",
             Self::TriageCompleted => "triage_completed",
             Self::PlanCompleted => "plan_completed",
+            Self::DriftAssessmentRequested => "drift_assessment_requested",
+            Self::DriftAssessmentCompleted => "drift_assessment_completed",
             Self::GreetRequested => "greet_requested",
             Self::GreetingComposed => "greeting_composed",
             Self::GreetingDelivered => "greeting_delivered",
@@ -170,13 +176,13 @@ impl std::str::FromStr for EventType {
             "main_branch_audited" => Ok(Self::MainBranchAudited),
             "remediation_started" => Ok(Self::RemediationStarted),
             "remediation_completed" => Ok(Self::RemediationCompleted),
-            "auto_release_triggered" => Ok(Self::AutoReleaseTriggered),
-            "auto_release_completed" => Ok(Self::AutoReleaseCompleted),
+            "release_requested" => Ok(Self::ReleaseRequested),
+            "release_completed" => Ok(Self::ReleaseCompleted),
             "release_pipeline_completed" => Ok(Self::ReleasePipelineCompleted),
             "local_install_completed" => Ok(Self::LocalInstallCompleted),
             "project_validation_completed" => Ok(Self::ProjectValidationCompleted),
-            "project_iterate_completed" => Ok(Self::ProjectIterateCompleted),
-            "project_maintain_completed" => Ok(Self::ProjectMaintainCompleted),
+            "project_iteration_completed" => Ok(Self::ProjectIterationCompleted),
+            "project_maintenance_completed" => Ok(Self::ProjectMaintenanceCompleted),
             "project_changes_committed" => Ok(Self::ProjectChangesCommitted),
             "project_changes_pushed" => Ok(Self::ProjectChangesPushed),
             "iteration_requested" => Ok(Self::IterationRequested),
@@ -186,7 +192,7 @@ impl std::str::FromStr for EventType {
             "maintenance_run_started" => Ok(Self::MaintenanceRunStarted),
             "maintenance_run_completed" => Ok(Self::MaintenanceRunCompleted),
             "release_tag_audited" => Ok(Self::ReleaseTagAudited),
-            "gates_resolved" => Ok(Self::GatesResolved),
+            "gate_resolution_completed" => Ok(Self::GateResolutionCompleted),
             "preflight_completed" => Ok(Self::PreflightCompleted),
             "execution_completed" => Ok(Self::ExecutionCompleted),
             "gate_verification_completed" => Ok(Self::GateVerificationCompleted),
@@ -196,6 +202,8 @@ impl std::str::FromStr for EventType {
             "assessment_completed" => Ok(Self::AssessmentCompleted),
             "triage_completed" => Ok(Self::TriageCompleted),
             "plan_completed" => Ok(Self::PlanCompleted),
+            "drift_assessment_requested" => Ok(Self::DriftAssessmentRequested),
+            "drift_assessment_completed" => Ok(Self::DriftAssessmentCompleted),
             "greet_requested" => Ok(Self::GreetRequested),
             "greeting_composed" => Ok(Self::GreetingComposed),
             "greeting_delivered" => Ok(Self::GreetingDelivered),
@@ -260,13 +268,13 @@ mod tests {
             (EventType::MainBranchAudited, "main_branch_audited"),
             (EventType::RemediationStarted, "remediation_started"),
             (EventType::RemediationCompleted, "remediation_completed"),
-            (EventType::AutoReleaseTriggered, "auto_release_triggered"),
-            (EventType::AutoReleaseCompleted, "auto_release_completed"),
+            (EventType::ReleaseRequested, "release_requested"),
+            (EventType::ReleaseCompleted, "release_completed"),
             (EventType::ReleasePipelineCompleted, "release_pipeline_completed"),
             (EventType::LocalInstallCompleted, "local_install_completed"),
             (EventType::ProjectValidationCompleted, "project_validation_completed"),
-            (EventType::ProjectIterateCompleted, "project_iterate_completed"),
-            (EventType::ProjectMaintainCompleted, "project_maintain_completed"),
+            (EventType::ProjectIterationCompleted, "project_iteration_completed"),
+            (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),
             (EventType::ProjectChangesCommitted, "project_changes_committed"),
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
             (EventType::IterationRequested, "iteration_requested"),
@@ -276,7 +284,7 @@ mod tests {
             (EventType::MaintenanceRunStarted, "maintenance_run_started"),
             (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
-            (EventType::GatesResolved, "gates_resolved"),
+            (EventType::GateResolutionCompleted, "gate_resolution_completed"),
             (EventType::PreflightCompleted, "preflight_completed"),
             (EventType::ExecutionCompleted, "execution_completed"),
             (EventType::GateVerificationCompleted, "gate_verification_completed"),
@@ -286,6 +294,8 @@ mod tests {
             (EventType::AssessmentCompleted, "assessment_completed"),
             (EventType::TriageCompleted, "triage_completed"),
             (EventType::PlanCompleted, "plan_completed"),
+            (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
+            (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::GreetRequested, "greet_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -397,6 +407,34 @@ mod tests {
         let json = serde_json::to_string(&original).expect("should serialize");
         let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn drift_assessment_requested_serde_round_trip() {
+        let original = EventType::DriftAssessmentRequested;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn drift_assessment_completed_serde_round_trip() {
+        let original = EventType::DriftAssessmentCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn drift_assessment_requested_from_str() {
+        let parsed: EventType = "drift_assessment_requested".parse().expect("should parse");
+        assert_eq!(parsed, EventType::DriftAssessmentRequested);
+    }
+
+    #[test]
+    fn drift_assessment_completed_from_str() {
+        let parsed: EventType = "drift_assessment_completed".parse().expect("should parse");
+        assert_eq!(parsed, EventType::DriftAssessmentCompleted);
     }
 
     #[test]

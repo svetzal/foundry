@@ -56,9 +56,9 @@ post-push re-audit, confirming the fix is clean before anything downstream acts.
 | Audit Release Tag | Observer | `vulnerability_detected`, `project_changes_pushed` | `release_tag_audited` | Skips post-push when project not in registry |
 | Audit Main Branch | Observer | `release_tag_audited` | `main_branch_audited` | Skips when `vulnerable=false` |
 | Remediate Vulnerability | Mutator | `main_branch_audited` | `remediation_completed` | Only when `dirty=true` |
-| Commit and Push | Mutator | `remediation_completed`, `project_iterate_completed`, `project_maintain_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean or `changes=false` |
-| Cut Release | Mutator | `main_branch_audited` | `auto_release_completed` | Only when `dirty=false` |
-| Watch Pipeline | Mutator | `auto_release_completed` | `release_pipeline_completed` | — |
+| Commit and Push | Mutator | `remediation_completed`, `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean or `changes=false` |
+| Cut Release | Mutator | `main_branch_audited` | `release_completed` | Only when `dirty=false` |
+| Watch Pipeline | Mutator | `release_completed` | `release_pipeline_completed` | — |
 | Install Locally | Mutator | `project_changes_pushed`, `release_pipeline_completed` | `local_install_completed` | — |
 
 ### Maintenance
@@ -71,7 +71,7 @@ block focused on a single responsibility.
 |-------|------|----------|-------|--------------|
 | Validate Project | Observer | `maintenance_run_started` | `project_validation_completed` | Skips projects not in active registry |
 | Route Project Workflow | Observer | `project_validation_completed` | `iteration_requested` or `maintenance_requested` | Stops when `status != "ok"` or no actions enabled |
-| Commit and Push | Mutator | `project_iterate_completed`, `project_maintain_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean |
+| Commit and Push | Mutator | `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean |
 | Audit Release Tag | Observer | `project_changes_pushed` | `release_tag_audited` | Skips when project not in registry |
 
 The `actions.maintain` flag is forwarded inside the `iteration_requested`
@@ -85,10 +85,10 @@ iterate, maintain, and validation workflows.
 
 | Block | Kind | Sinks On | Emits | Self-filters |
 |-------|------|----------|-------|--------------|
-| Resolve Gates | Observer | `iteration_requested`, `maintenance_requested`, `validation_requested` | `gates_resolved` | — |
-| Run Preflight Gates | Observer | `gates_resolved` | `preflight_completed` | Skips `maintain` workflow |
+| Resolve Gates | Observer | `iteration_requested`, `maintenance_requested`, `validation_requested` | `gate_resolution_completed` | — |
+| Run Preflight Gates | Observer | `gate_resolution_completed` | `preflight_completed` | Skips `maintain` workflow |
 | Run Verify Gates | Observer | `execution_completed` | `gate_verification_completed` | — |
-| Route Gate Result | Observer | `gate_verification_completed` | `project_iterate_completed` / `project_maintain_completed` / `retry_requested` | Routes based on pass/fail and retry count |
+| Route Gate Result | Observer | `gate_verification_completed` | `project_iteration_completed` / `project_maintenance_completed` / `retry_requested` | Routes based on pass/fail and retry count |
 | Route Validation Result | Observer | `preflight_completed` | `validation_completed` | Only handles `validate` workflow |
 
 ### Iterate Workflow
@@ -108,9 +108,9 @@ orchestration lifecycle.
 
 | Block | Kind | Sinks On | Emits | Self-filters |
 |-------|------|----------|-------|--------------|
-| Execute Maintain | Mutator | `gates_resolved` | `execution_completed` | Only handles `maintain` workflow |
+| Execute Maintain | Mutator | `gate_resolution_completed` | `execution_completed` | Only handles `maintain` workflow |
 | Retry Execution | Mutator | `retry_requested` | `execution_completed` | — |
-| Summarize Result | Observer | `project_iterate_completed`, `project_maintain_completed` | `generate_summary` | — |
+| Summarize Result | Observer | `project_iteration_completed`, `project_maintenance_completed` | `generate_summary` | — |
 
 ### Validation Workflow
 
@@ -119,7 +119,7 @@ blocks are involved — validation never modifies code.
 
 ```text
 validation_requested
-  → Resolve Gates → gates_resolved
+  → Resolve Gates → gate_resolution_completed
     → Run Preflight Gates → preflight_completed
       → Route Validation Result → validation_completed
 ```
@@ -145,7 +145,7 @@ flowchart TD
     M --> P([Install Locally])
     P --> Q[local_install_completed]
     H -->|dirty=false| R([Cut Release])
-    R --> S[auto_release_completed]
+    R --> S[release_completed]
     S --> T([Watch Pipeline])
     T --> U[release_pipeline_completed]
     U --> V([Install Locally])
@@ -171,14 +171,14 @@ flowchart TD
     M --> N[[Execute Plan]]
     N --> O[[Run Verify Gates]]
     O --> P[[Route Gate Result]]
-    P -->|pass| Q([project_iterate_completed])
+    P -->|pass| Q([project_iteration_completed])
     P -->|fail, retries left| R[[Retry Execution]]
     Q -->|maintain=true| F
     F --> S[[Resolve Gates]]
     S --> T[[Execute Maintain]]
     T --> U[[Run Verify Gates]]
     U --> V[[Route Gate Result]]
-    V -->|pass| W([project_maintain_completed])
+    V -->|pass| W([project_maintenance_completed])
     V -->|fail, retries left| X[[Retry Execution]]
 ```
 

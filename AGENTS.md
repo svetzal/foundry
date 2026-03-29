@@ -47,6 +47,25 @@ cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
 
+## Event Naming Conventions
+
+All event types follow a disciplined taxonomy with four suffix categories:
+
+| Category | Suffix | Meaning | Examples |
+|----------|--------|---------|----------|
+| Command | `*Requested` | Intent — someone or something wants action taken | `IterationRequested`, `MaintenanceRequested`, `ReleaseRequested` |
+| Lifecycle start | `*Started` | A multi-step operation began | `RemediationStarted`, `MaintenanceRunStarted` |
+| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `PreflightCompleted`, `GateResolutionCompleted`, `ProjectIterationCompleted` |
+| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed` |
+
+Rules:
+
+- **Commands are always `*Requested`** — never `*Triggered` or other verbs for intent events.
+- **`*Completed` is the default** for lifecycle endpoints. Use a specific past participle only when it adds domain meaning (e.g., `VulnerabilityDetected` says more than `ScanCompleted`).
+- **`*Started`/`*Completed` must pair** — if you add a `*Started`, there must be a corresponding `*Completed`.
+- **Noun form for compound prefixes** — use `ProjectIterationCompleted` (noun), not `ProjectIterateCompleted` (verb).
+- **Payload boolean results use `success`** — not `passed`, `ok`, or other variants. The one exception is the `passed` field on individual gate results (where "passed" is domain-specific to gates).
+
 ## Key Conventions
 
 - Edition 2024, Rust 1.85+, `unsafe_code` is denied

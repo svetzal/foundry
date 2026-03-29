@@ -269,6 +269,177 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
     }
 }
 
+pub async fn iterate(addr: &str, project: &str) -> Result<()> {
+    // Subscribe to the watch stream before emitting so we don't miss events.
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let watch_request = WatchRequest {
+        project: project.to_string(),
+    };
+    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+    // Emit IterationRequested
+    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let request = EmitRequest {
+        event_type: "iteration_requested".to_string(),
+        project: project.to_string(),
+        throttle: 0, // Full
+        payload_json: serde_json::json!({
+            "project": project,
+            "actions": { "maintain": false },
+        })
+        .to_string(),
+    };
+
+    let response = emit_client.emit(request).await?.into_inner();
+    println!("Iterating {project}...");
+    println!("Event: {}", response.event_id);
+    println!();
+
+    // Stream progress events until the iteration completes
+    while let Some(event) = stream.message().await? {
+        let status = extract_status(&event.payload_json);
+        println!("[{}] {} {}", event.project, event.event_type, status);
+
+        if event.event_type == "project_iteration_completed" {
+            break;
+        }
+    }
+
+    // Show the trace for full visibility
+    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let trace_resp = trace_client
+        .trace(TraceRequest {
+            event_id: response.event_id.clone(),
+        })
+        .await?
+        .into_inner();
+    if trace_resp.found {
+        render_trace(&trace_resp, false);
+        println!("---");
+    }
+
+    Ok(())
+}
+
+pub async fn scout(addr: &str, project: &str) -> Result<()> {
+    // Subscribe to the watch stream before emitting so we don't miss events.
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let watch_request = WatchRequest {
+        project: project.to_string(),
+    };
+    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+    // Emit DriftAssessmentRequested
+    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let request = EmitRequest {
+        event_type: "drift_assessment_requested".to_string(),
+        project: project.to_string(),
+        throttle: 0, // Full
+        payload_json: String::new(),
+    };
+
+    let response = emit_client.emit(request).await?.into_inner();
+    println!("Scouting {project} for intent drift...");
+    println!("Event: {}", response.event_id);
+    println!();
+
+    // Stream events until we see DriftAssessmentCompleted
+    while let Some(event) = stream.message().await? {
+        if event.event_type == "drift_assessment_completed" {
+            print_scout_result(project, &event.payload_json);
+            break;
+        }
+    }
+
+    // Show the trace for full visibility
+    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let trace_resp = trace_client
+        .trace(TraceRequest {
+            event_id: response.event_id.clone(),
+        })
+        .await?
+        .into_inner();
+    if trace_resp.found {
+        render_trace(&trace_resp, false);
+        println!("---");
+    }
+
+    Ok(())
+}
+
+/// Print drift scout results in a human-readable format.
+fn print_scout_result(project: &str, payload_json: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) else {
+        println!("  {project}: could not parse result");
+        return;
+    };
+
+    let candidate_count = v.get("candidate_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let high_value_count =
+        v.get("high_value_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+
+    println!("{project}: {candidate_count} candidates found, {high_value_count} high-value");
+    println!();
+
+    if let Some(err) = v.get("parse_error").and_then(serde_json::Value::as_str) {
+        println!("  Parse error: {err}");
+        return;
+    }
+
+    if let Some(candidates) = v.get("candidates").and_then(serde_json::Value::as_array) {
+        for candidate in candidates {
+            let rank = candidate.get("rank").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let summary = candidate
+                .get("summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(no summary)");
+            let divergence = candidate
+                .get("divergence_type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let high_value = candidate
+                .get("high_value")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let confidence = candidate
+                .get("confidence")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let next_step = candidate
+                .get("suggested_next_step")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+
+            let marker = if high_value { " ***" } else { "" };
+            println!("  #{rank} [{divergence}] {summary}{marker}");
+
+            // Impact line
+            if let Some(impact) = candidate.get("impact") {
+                let severity =
+                    impact.get("severity").and_then(serde_json::Value::as_str).unwrap_or("?");
+                let frequency =
+                    impact.get("frequency").and_then(serde_json::Value::as_str).unwrap_or("?");
+                let risk_type =
+                    impact.get("risk_type").and_then(serde_json::Value::as_str).unwrap_or("?");
+                println!("     severity={severity} frequency={frequency} risk={risk_type}");
+            }
+
+            println!("     confidence={confidence} next={next_step}");
+
+            // Explanation
+            if let Some(explanation) =
+                candidate.get("explanation").and_then(serde_json::Value::as_str)
+            {
+                println!("     {explanation}");
+            }
+
+            println!();
+        }
+    }
+}
+
 /// Resolve the traces directory from env or default.
 fn traces_dir() -> PathBuf {
     if let Ok(p) = env::var("FOUNDRY_TRACES_DIR") {

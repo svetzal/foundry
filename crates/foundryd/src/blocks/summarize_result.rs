@@ -10,7 +10,7 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
 
 /// Generates a commit headline and summary after a successful workflow.
 ///
-/// Observer — sinks on `ProjectIterateCompleted` and `ProjectMaintainCompleted`
+/// Observer — sinks on `ProjectIterationCompleted` and `ProjectMaintenanceCompleted`
 /// (filters for `success=true` only).
 /// Uses `AgentGateway` with `Quick` capability and `ReadOnly` access.
 /// Emits `SummarizeCompleted` with headline and summary.
@@ -29,7 +29,7 @@ impl TaskBlock for SummarizeResult {
     task_block_meta! {
         name: "Summarize Result",
         kind: Observer,
-        sinks_on: [ProjectIterateCompleted, ProjectMaintainCompleted],
+        sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     }
 
     #[allow(clippy::too_many_lines)]
@@ -255,8 +255,8 @@ mod tests {
             }),
         );
         let sinks = block.sinks_on();
-        assert!(sinks.contains(&EventType::ProjectIterateCompleted));
-        assert!(sinks.contains(&EventType::ProjectMaintainCompleted));
+        assert!(sinks.contains(&EventType::ProjectIterationCompleted));
+        assert!(sinks.contains(&EventType::ProjectMaintenanceCompleted));
     }
 
     #[tokio::test]
@@ -264,7 +264,7 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let registry = registry_with_project("my-project", "/tmp/test");
         let block = SummarizeResult::new(agent.clone(), registry);
-        let trigger = failed_completion("my-project", EventType::ProjectMaintainCompleted);
+        let trigger = failed_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -281,7 +281,7 @@ mod tests {
         );
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent.clone(), registry);
-        let trigger = success_completion("my-project", EventType::ProjectMaintainCompleted);
+        let trigger = success_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -304,7 +304,7 @@ mod tests {
             FakeAgentGateway::success_with("HEADLINE: Fix linting\nSUMMARY: Fixed lint issues.");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent, registry);
-        let trigger = success_completion("my-project", EventType::ProjectIterateCompleted);
+        let trigger = success_completion("my-project", EventType::ProjectIterationCompleted);
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -319,7 +319,7 @@ mod tests {
         let agent = FakeAgentGateway::failure("agent error");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent, registry);
-        let trigger = success_completion("my-project", EventType::ProjectMaintainCompleted);
+        let trigger = success_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
         let result = block.execute(&trigger).await.unwrap();
 

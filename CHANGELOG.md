@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-03-29
+
+### Added
+
+- `foundry init` command — installs the bundled Foundry skill for Claude agents
+- `foundry init --global` — installs to `~/.claude/skills/foundry/` instead of local `.claude/skills/foundry/`
+- Skill files embedded in the binary via `include_str!()`, updated on every release
+- Event naming convention documentation in AGENTS.md
+
+### Changed
+
+- `AutoReleaseTriggered` renamed to `ReleaseRequested` (commands use `*Requested` suffix)
+- `AutoReleaseCompleted` renamed to `ReleaseCompleted`
+- `GatesResolved` renamed to `GateResolutionCompleted` (lifecycle endpoints use `*Completed` suffix)
+- `ProjectIterateCompleted` renamed to `ProjectIterationCompleted` (noun form for compound prefixes)
+- `ProjectMaintainCompleted` renamed to `ProjectMaintenanceCompleted` (noun form for compound prefixes)
+- `CharterCheckCompleted` payload field `passed` renamed to `success` for consistency
+
 ## [0.3.0] - 2026-03-26
 
 ### Added

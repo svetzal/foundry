@@ -80,11 +80,11 @@ Every event carries these common fields:
 
 | Type | Description |
 |------|-------------|
-| `auto_release_triggered` | Decision made to cut a patch release |
-| `auto_release_completed` | Release tag created and pushed |
+| `release_requested` | Decision made to cut a patch release |
+| `release_completed` | Release tag created and pushed |
 | `release_pipeline_completed` | GitHub Actions build/publish workflow finished |
 
-**`auto_release_completed` payload**
+**`release_completed` payload**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -105,8 +105,8 @@ Every event carries these common fields:
 | Type | Description |
 |------|-------------|
 | `project_validation_completed` | Pre-flight checks for a maintenance run |
-| `project_iterate_completed` | Iterate workflow finished |
-| `project_maintain_completed` | Maintain workflow finished |
+| `project_iteration_completed` | Iterate workflow finished |
+| `project_maintenance_completed` | Maintain workflow finished |
 | `project_changes_committed` | Git commit created |
 | `project_changes_pushed` | Changes pushed to remote |
 
@@ -118,7 +118,7 @@ Every event carries these common fields:
 | `reason` | string (optional) | Human-readable explanation when status is not `"ok"` |
 | `has_gates` | bool (optional) | Whether `.hone-gates.json` is present (only on `"ok"`) |
 
-**`project_iterate_completed` payload**
+**`project_iteration_completed` payload**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -128,7 +128,7 @@ Every event carries these common fields:
 | `summary` | string | Human-readable summary of the result |
 | `changes` | bool (optional) | Whether code changes were made |
 
-**`project_maintain_completed` payload**
+**`project_maintenance_completed` payload**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -168,13 +168,13 @@ Every event carries these common fields:
 
 | Type | Description |
 |------|-------------|
-| `gates_resolved` | Gate definitions loaded from `.hone-gates.json` |
+| `gate_resolution_completed` | Gate definitions loaded from `.hone-gates.json` |
 | `preflight_completed` | Gates passed/failed on unmodified codebase |
 | `execution_completed` | Code changes applied (emitted by future execution blocks) |
 | `gate_verification_completed` | Gates passed/failed after execution |
 | `retry_requested` | Gate failure triggers bounded retry |
 
-**`gates_resolved` payload**
+**`gate_resolution_completed` payload**
 
 | Field | Type | Description |
 |-------|------|-------------|

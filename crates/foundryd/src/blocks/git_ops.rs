@@ -22,8 +22,8 @@ task_block_new! {
     /// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
     ///
     /// Commit message varies by trigger event type:
-    /// - [`EventType::ProjectIterateCompleted`] → `chore(<project>): automated iterate`
-    /// - [`EventType::ProjectMaintainCompleted`] → `chore(<project>): automated maintenance`
+    /// - [`EventType::ProjectIterationCompleted`] → `chore(<project>): automated iterate`
+    /// - [`EventType::ProjectMaintenanceCompleted`] → `chore(<project>): automated maintenance`
     /// - All other triggers → `chore(<project>): automated remediation`
     ///
     /// Fallback: when the project is not found in the registry, stub events are
@@ -77,10 +77,10 @@ impl CommitAndPush {
 
         // Commit message varies by the event that triggered this block.
         let commit_msg = match event_type {
-            EventType::ProjectIterateCompleted => {
+            EventType::ProjectIterationCompleted => {
                 format!("chore({project}): automated iterate")
             }
-            EventType::ProjectMaintainCompleted => {
+            EventType::ProjectMaintenanceCompleted => {
                 format!("chore({project}): automated maintenance")
             }
             _ => format!("chore({project}): automated remediation"),
@@ -152,7 +152,7 @@ impl TaskBlock for CommitAndPush {
     task_block_meta! {
         name: "Commit and Push",
         kind: Mutator,
-        sinks_on: [RemediationCompleted, ProjectIterateCompleted, ProjectMaintainCompleted],
+        sinks_on: [RemediationCompleted, ProjectIterationCompleted, ProjectMaintenanceCompleted],
     }
 
     fn retry_policy(&self) -> RetryPolicy {
@@ -471,14 +471,14 @@ mod tests {
         let block = CommitAndPush::new(empty_registry());
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::RemediationCompleted));
-        assert!(sinks.contains(&EventType::ProjectIterateCompleted));
-        assert!(sinks.contains(&EventType::ProjectMaintainCompleted));
+        assert!(sinks.contains(&EventType::ProjectIterationCompleted));
+        assert!(sinks.contains(&EventType::ProjectMaintenanceCompleted));
     }
 
     #[tokio::test]
     async fn payload_changes_false_self_filters_immediately() {
         let block = CommitAndPush::new(empty_registry());
-        let trigger = make_trigger_no_changes(EventType::ProjectIterateCompleted, "proj");
+        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -548,7 +548,7 @@ mod tests {
             },
         ]);
         let block = CommitAndPush::with_shell(registry, shell);
-        let trigger = make_trigger_for(EventType::ProjectIterateCompleted, "my-project");
+        let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -582,7 +582,7 @@ mod tests {
             },
         ]);
         let block = CommitAndPush::with_shell(registry, shell);
-        let trigger = make_trigger_for(EventType::ProjectMaintainCompleted, "my-project");
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -617,7 +617,7 @@ mod tests {
             },
         ]);
         let block = CommitAndPush::with_shell(registry, shell);
-        let trigger = make_trigger_for(EventType::ProjectIterateCompleted, "my-project");
+        let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 

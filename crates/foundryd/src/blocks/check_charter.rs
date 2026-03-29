@@ -8,8 +8,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Validates that a project has intent documentation before the iterate workflow proceeds.
 ///
 /// Observer — sinks on `IterationRequested`.
-/// Emits `CharterCheckCompleted` with `passed: true/false`.
-/// If the charter check fails, the chain stops (`ResolveGates` checks for `passed=true`).
+/// Emits `CharterCheckCompleted` with `success: true/false`.
+/// If the charter check fails, the chain stops (`ResolveGates` checks for `success=true`).
 pub struct CheckCharter {
     registry: Arc<Registry>,
 }
@@ -63,7 +63,7 @@ impl TaskBlock for CheckCharter {
 
             let mut event_payload = serde_json::json!({
                 "project": project,
-                "passed": result.passed,
+                "success": result.passed,
                 "sources": result.sources,
                 "guidance": result.guidance,
             });
@@ -160,7 +160,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::CharterCheckCompleted);
-        assert_eq!(result.events[0].payload["passed"], true);
+        assert_eq!(result.events[0].payload["success"], true);
     }
 
     #[tokio::test]
@@ -181,7 +181,7 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::CharterCheckCompleted);
-        assert_eq!(result.events[0].payload["passed"], false);
+        assert_eq!(result.events[0].payload["success"], false);
     }
 
     #[tokio::test]

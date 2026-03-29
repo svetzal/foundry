@@ -28,14 +28,14 @@ flowchart TD
     M --> N[[Execute Plan]]
     N --> O[[Run Verify Gates]]
     O --> P[[Route Gate Result]]
-    P -->|pass| Q([project_iterate_completed])
+    P -->|pass| Q([project_iteration_completed])
     P -->|fail, retries left| R[[Retry Execution]]
     Q -->|maintain=true| F
     F --> S[[Resolve Gates]]
     S --> T[[Execute Maintain]]
     T --> U[[Run Verify Gates]]
     U --> V[[Route Gate Result]]
-    V -->|pass| W([project_maintain_completed])
+    V -->|pass| W([project_maintenance_completed])
     V -->|fail, retries left| X[[Retry Execution]]
 ```
 

@@ -20,13 +20,13 @@ These blocks appear in multiple formations:
 
 | Block | Kind | Sinks On | Emits |
 |-------|------|----------|-------|
-| Resolve Gates | Observer | `charter_check_completed`, `maintenance_requested`, `validation_requested` | `gates_resolved` |
-| Run Preflight Gates | Observer | `gates_resolved` | `preflight_completed` |
+| Resolve Gates | Observer | `charter_check_completed`, `maintenance_requested`, `validation_requested` | `gate_resolution_completed` |
+| Run Preflight Gates | Observer | `gate_resolution_completed` | `preflight_completed` |
 | Run Verify Gates | Observer | `execution_completed` | `gate_verification_completed` |
-| Route Gate Result | Observer | `gate_verification_completed` | `project_iterate_completed` / `project_maintain_completed` / `retry_requested` |
+| Route Gate Result | Observer | `gate_verification_completed` | `project_iteration_completed` / `project_maintenance_completed` / `retry_requested` |
 | Retry Execution | Mutator | `retry_requested` | `execution_completed` |
-| Summarize Result | Observer | `project_iterate_completed`, `project_maintain_completed` | `summarize_completed` |
-| Commit and Push | Mutator | `remediation_completed`, `project_iterate_completed`, `project_maintain_completed` | `project_changes_committed`, `project_changes_pushed` |
+| Summarize Result | Observer | `project_iteration_completed`, `project_maintenance_completed` | `summarize_completed` |
+| Commit and Push | Mutator | `remediation_completed`, `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` |
 
 ### Iteration Blocks
 
@@ -42,7 +42,7 @@ These blocks appear in multiple formations:
 
 | Block | Kind | Sinks On | Emits |
 |-------|------|----------|-------|
-| Execute Maintain | Mutator | `gates_resolved` | `execution_completed` |
+| Execute Maintain | Mutator | `gate_resolution_completed` | `execution_completed` |
 
 ### Vulnerability Blocks
 
@@ -52,8 +52,8 @@ These blocks appear in multiple formations:
 | Audit Release Tag | Observer | `vulnerability_detected`, `project_changes_pushed` | `release_tag_audited` |
 | Audit Main Branch | Observer | `release_tag_audited` | `main_branch_audited` |
 | Remediate Vulnerability | Mutator | `main_branch_audited` | `remediation_completed` |
-| Cut Release | Mutator | `main_branch_audited` | `auto_release_completed` |
-| Watch Pipeline | Mutator | `auto_release_completed` | `release_pipeline_completed` |
+| Cut Release | Mutator | `main_branch_audited` | `release_completed` |
+| Watch Pipeline | Mutator | `release_completed` | `release_pipeline_completed` |
 | Install Locally | Mutator | `project_changes_pushed`, `release_pipeline_completed` | `local_install_completed` |
 
 ### Orchestration Blocks
@@ -105,7 +105,7 @@ flowchart TD
     G --> H[[Execute Plan]]
     H --> I[[Run Verify Gates]]
     I --> J[[Route Gate Result]]
-    J -->|pass| K([project_iterate_completed])
+    J -->|pass| K([project_iteration_completed])
     J -->|fail, retries left| L[[Retry Execution]]
     L --> I
     K --> M[[Summarize Result]]
@@ -127,7 +127,7 @@ flowchart TD
     C -->|skipped| D[[Execute Maintain]]
     D --> E[[Run Verify Gates]]
     E --> F[[Route Gate Result]]
-    F -->|pass| G([project_maintain_completed])
+    F -->|pass| G([project_maintenance_completed])
     F -->|fail, retries left| H[[Retry Execution]]
     H --> E
     G --> I[[Summarize Result]]
@@ -194,7 +194,7 @@ self-filter on payload, you can trigger these directly.
 
 Emit `iteration_requested` with `actions.maintain=false`. The iterate
 formation runs, and on success `Route Gate Result` emits
-`project_iterate_completed` without chaining to `maintenance_requested`.
+`project_iteration_completed` without chaining to `maintenance_requested`.
 
 ```bash
 foundry emit iteration_requested my-project \

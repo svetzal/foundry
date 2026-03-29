@@ -23,7 +23,7 @@ foundry emit vulnerability_detected --project my-tool --throttle audit_only
 
   vulnerability_detected (throttle: audit_only)
     → Audit Main Branch (Observer) → executes, emits main_branch_audited
-      → Cut Release (Mutator) → executes, but SUPPRESSES auto_release_completed
+      → Cut Release (Mutator) → executes, but SUPPRESSES release_completed
         (chain stops here — no further propagation)
 ```
 

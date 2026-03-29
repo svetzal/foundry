@@ -1,0 +1,20 @@
+{
+  "skill_name": "foundry",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just set up foundryd and registered a project called 'billing-api'. I want to check if its quality gates pass without making any changes. How do I do that?",
+      "expected_output": "Should recommend `foundry validate billing-api` and explain the output format (per-gate pass/fail, exit code 1 on failure). Should NOT suggest iterate or run."
+    },
+    {
+      "id": 2,
+      "prompt": "My last foundry run finished overnight. I want to see what happened — which projects succeeded, which failed, and why. Where do I look?",
+      "expected_output": "Should explain multiple approaches: `foundry history` for recent traces, the audit report at ~/.foundry/audits/runs/YYYY-MM-DD/summary.md for the overview, and `foundry trace <event_id> --verbose` for drilling into specific failures."
+    },
+    {
+      "id": 3,
+      "prompt": "I want foundry to do an AI-assisted quality improvement on my 'checkout-service' project but I'm nervous about it pushing changes. Can I preview what it would do first?",
+      "expected_output": "Should explain the dry_run throttle: `foundry emit iteration_requested --project checkout-service --throttle dry_run` or the general approach of using throttle levels. Should also mention that push is controlled by the registry flag and can be disabled with `foundry registry edit checkout-service --no-push`."
+    }
+  ]
+}

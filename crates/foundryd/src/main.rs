@@ -111,6 +111,8 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::AssessProject::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::TriageAssessment::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CreatePlan::new(agent.clone(), registry.clone())));
+    // Drift scout workflow
+    engine.register(Box::new(blocks::ScoutDrift::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::ExecutePlan::new(agent, registry.clone())));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
 

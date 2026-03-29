@@ -1,8 +1,8 @@
 //! Integration tests for the full native maintain workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: MaintenanceRequested -> GatesResolved -> ExecutionCompleted
-//!   -> GateVerificationCompleted -> ProjectMaintainCompleted -> SummarizeCompleted
+//! - Happy path: MaintenanceRequested -> GateResolutionCompleted -> ExecutionCompleted
+//!   -> GateVerificationCompleted -> ProjectMaintenanceCompleted -> SummarizeCompleted
 //! - Retry path: gate failure triggers RetryRequested -> RetryExecution -> loop
 
 use std::sync::Arc;
@@ -89,24 +89,24 @@ async fn happy_path_maintain_chain() {
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Expected chain:
-    // MaintenanceRequested -> GatesResolved -> PreflightCompleted (skipped for maintain)
-    //   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectMaintainCompleted
+    // MaintenanceRequested -> GateResolutionCompleted -> PreflightCompleted (skipped for maintain)
+    //   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectMaintenanceCompleted
     //   -> SummarizeCompleted
     assert!(
         event_types.contains(&"maintenance_requested"),
         "chain should start with maintenance_requested"
     );
-    assert!(event_types.contains(&"gates_resolved"), "should resolve gates");
+    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
     assert!(event_types.contains(&"execution_completed"), "should complete execution");
     assert!(event_types.contains(&"gate_verification_completed"), "should verify gates");
-    assert!(event_types.contains(&"project_maintain_completed"), "should emit completion");
+    assert!(event_types.contains(&"project_maintenance_completed"), "should emit completion");
     assert!(event_types.contains(&"summarize_completed"), "should summarize result");
 
     // Verify the completion event has success=true
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectMaintainCompleted)
+        .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
@@ -188,7 +188,7 @@ async fn retry_loop_on_gate_failure_then_success() {
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectMaintainCompleted)
+        .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
@@ -230,7 +230,7 @@ async fn retries_exhausted_emits_failure() {
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectMaintainCompleted)
+        .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], false);
 
@@ -253,13 +253,13 @@ async fn no_gates_file_still_completes() {
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should still complete successfully (empty gates = all pass)
-    assert!(event_types.contains(&"project_maintain_completed"));
+    assert!(event_types.contains(&"project_maintenance_completed"));
     assert!(event_types.contains(&"summarize_completed"));
 
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectMaintainCompleted)
+        .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 }

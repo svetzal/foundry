@@ -11,7 +11,7 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
 /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
 /// and resolves quality gate failures.
 ///
-/// Mutator — sinks on `GatesResolved` (workflow = "maintain" only).
+/// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
 /// Uses `AgentGateway` with `Coding` capability and `Full` access.
 /// Emits `ExecutionCompleted` with success status and details.
 pub struct ExecuteMaintain {
@@ -43,7 +43,7 @@ impl TaskBlock for ExecuteMaintain {
     task_block_meta! {
         name: "Execute Maintain",
         kind: Mutator,
-        sinks_on: [GatesResolved],
+        sinks_on: [GateResolutionCompleted],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
@@ -230,9 +230,9 @@ mod tests {
         })
     }
 
-    fn gates_resolved_maintain(project: &str) -> Event {
+    fn gate_resolution_maintain(project: &str) -> Event {
         Event::new(
-            EventType::GatesResolved,
+            EventType::GateResolutionCompleted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({
@@ -245,9 +245,9 @@ mod tests {
         )
     }
 
-    fn gates_resolved_iterate(project: &str) -> Event {
+    fn gate_resolution_iterate(project: &str) -> Event {
         Event::new(
-            EventType::GatesResolved,
+            EventType::GateResolutionCompleted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_gates_resolved() {
+    fn sinks_on_gate_resolution_completed() {
         let agent = FakeAgentGateway::success();
         let block = ExecuteMaintain::new(
             agent,
@@ -281,7 +281,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        assert_eq!(block.sinks_on(), &[EventType::GatesResolved]);
+        assert_eq!(block.sinks_on(), &[EventType::GateResolutionCompleted]);
     }
 
     #[tokio::test]
@@ -289,7 +289,7 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let registry = registry_with_project("my-project", "/tmp/test");
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gates_resolved_iterate("my-project");
+        let trigger = gate_resolution_iterate("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -305,7 +305,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with("Dependencies updated");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gates_resolved_maintain("my-project");
+        let trigger = gate_resolution_maintain("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -328,7 +328,7 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gates_resolved_maintain("my-project");
+        let trigger = gate_resolution_maintain("my-project");
 
         block.execute(&trigger).await.unwrap();
 
@@ -347,7 +347,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gates_resolved_maintain("unknown-project");
+        let trigger = gate_resolution_maintain("unknown-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -362,7 +362,7 @@ mod tests {
         let agent = FakeAgentGateway::failure("something went wrong");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = gates_resolved_maintain("my-project");
+        let trigger = gate_resolution_maintain("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -379,7 +379,7 @@ mod tests {
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecuteMaintain::new(agent, registry);
         let trigger = Event::new(
-            EventType::GatesResolved,
+            EventType::GateResolutionCompleted,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({
@@ -406,7 +406,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gates_resolved_maintain("my-project");
+        let trigger = gate_resolution_maintain("my-project");
 
         let events = block.dry_run_events(&trigger);
 
@@ -425,7 +425,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gates_resolved_iterate("my-project");
+        let trigger = gate_resolution_iterate("my-project");
 
         let events = block.dry_run_events(&trigger);
 

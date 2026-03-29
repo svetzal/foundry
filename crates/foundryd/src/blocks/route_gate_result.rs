@@ -8,8 +8,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Observer — sinks on `GateVerificationCompleted`.
 ///
 /// Routing logic:
-/// - All required gates passed → emit `ProjectIterateCompleted` or
-///   `ProjectMaintainCompleted` with `success: true`
+/// - All required gates passed → emit `ProjectIterationCompleted` or
+///   `ProjectMaintenanceCompleted` with `success: true`
 /// - Failed and `retry_count < 3` → emit `RetryRequested` with incremented
 ///   `retry_count` and failure context
 /// - Failed and retries exhausted → emit completion event with `success: false`
@@ -48,9 +48,9 @@ impl TaskBlock for RouteGateResult {
                 .to_string();
 
             let completion_event_type = if workflow == "maintain" {
-                EventType::ProjectMaintainCompleted
+                EventType::ProjectMaintenanceCompleted
             } else {
-                EventType::ProjectIterateCompleted
+                EventType::ProjectIterationCompleted
             };
 
             if required_passed {
@@ -254,7 +254,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert_eq!(result.events[0].payload["success"], true);
     }
 
@@ -277,7 +277,7 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert_eq!(result.events[0].payload["success"], false);
     }
 
@@ -290,7 +290,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
         assert_eq!(result.events[0].payload["success"], true);
     }
 
@@ -313,7 +313,7 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
         assert_eq!(result.events[0].payload["success"], false);
     }
 
@@ -337,7 +337,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 2);
-        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert_eq!(result.events[1].event_type, EventType::MaintenanceRequested);
     }
 
@@ -348,7 +348,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectIterateCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
     }
 
     #[tokio::test]
@@ -371,7 +371,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ProjectMaintainCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
     }
 
     #[tokio::test]

@@ -70,7 +70,7 @@ impl TaskBlock for CutRelease {
             .to_string();
 
         vec![Event::new(
-            EventType::AutoReleaseCompleted,
+            EventType::ReleaseCompleted,
             trigger.project.clone(),
             trigger.throttle,
             serde_json::json!({
@@ -229,7 +229,7 @@ async fn run_release(
 
     Ok(TaskBlockResult {
         events: vec![Event::new(
-            EventType::AutoReleaseCompleted,
+            EventType::ReleaseCompleted,
             project,
             throttle,
             serde_json::json!({
@@ -303,7 +303,7 @@ impl TaskBlock for WatchPipeline {
     task_block_meta! {
         name: "Watch Pipeline",
         kind: Mutator,
-        sinks_on: [AutoReleaseCompleted],
+        sinks_on: [ReleaseCompleted],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_release_emits_auto_release_completed() {
+    async fn successful_release_emits_release_completed() {
         let registry = registry_with_project("my-project", "/unused", true);
         let agent =
             FakeAgentGateway::success_with("Release complete! Tagged as v1.2.3 and pushed.");
@@ -607,7 +607,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::AutoReleaseCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
         assert_eq!(result.events[0].payload["new_tag"], "v1.2.3");
         assert_eq!(result.events[0].payload["success"], true);
 
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_failure_emits_auto_release_completed_with_success_false() {
+    async fn release_failure_emits_release_completed_with_success_false() {
         let registry = registry_with_project("my-project", "/unused", true);
         let agent = FakeAgentGateway::failure("Claude CLI failed");
         let block = CutRelease::with_agent(registry, agent);
@@ -635,7 +635,7 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::AutoReleaseCompleted);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
         assert_eq!(result.events[0].payload["success"], false);
     }
 
@@ -661,7 +661,7 @@ mod tests {
     async fn watch_pipeline_stubs_when_project_not_in_registry() {
         let block = WatchPipeline::stub();
         let trigger = Event::new(
-            EventType::AutoReleaseCompleted,
+            EventType::ReleaseCompleted,
             "some-project".to_string(),
             Throttle::Full,
             serde_json::json!({ "success": true }),
@@ -694,7 +694,7 @@ mod tests {
         });
         let block = WatchPipeline::new(registry);
         let trigger = Event::new(
-            EventType::AutoReleaseCompleted,
+            EventType::ReleaseCompleted,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({ "success": true }),

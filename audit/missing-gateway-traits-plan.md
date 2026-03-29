@@ -509,11 +509,11 @@ The existing `emits_remediation_completed_when_project_found` test (which runs `
 
 **New tests**:
 - `successful_iterate_emits_completed_with_success_true`: Fake shell returns success → verify event.
-- `successful_iterate_with_maintain_emits_both_events`: Fake shell returns success + maintain=true → verify both `ProjectIterateCompleted` and `MaintenanceRequested` events.
-- `failed_iterate_with_maintain_does_not_chain`: Fake shell returns failure + maintain=true → verify only `ProjectIterateCompleted` (no `MaintenanceRequested`).
+- `successful_iterate_with_maintain_emits_both_events`: Fake shell returns success + maintain=true → verify both `ProjectIterationCompleted` and `MaintenanceRequested` events.
+- `failed_iterate_with_maintain_does_not_chain`: Fake shell returns failure + maintain=true → verify only `ProjectIterationCompleted` (no `MaintenanceRequested`).
 - `timeout_forwarded_to_shell`: Use the fake's invocation recorder to verify the timeout from `entry.timeout()` is passed through.
 
-The existing `emits_project_iterate_completed_on_success` test (which tries to run real `hone`) is replaced.
+The existing `emits_project_iteration_completed_on_success` test (which tries to run real `hone`) is replaced.
 
 **Update `main.rs`**: Pass shell gateway.
 
@@ -531,7 +531,7 @@ The existing `emits_project_iterate_completed_on_success` test (which tries to r
 - `successful_maintain_emits_completed`: Fake shell success → verify event.
 - `failed_maintain_emits_completed_with_failure`: Fake shell failure → verify `success=false`.
 
-The existing `emits_project_maintain_completed_on_success` test (which tries to run real `hone`) is replaced.
+The existing `emits_project_maintenance_completed_on_success` test (which tries to run real `hone`) is replaced.
 
 **Update `main.rs`**: Pass shell gateway.
 

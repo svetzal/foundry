@@ -10,7 +10,7 @@ gates — with automatic retries on failure.
 ```mermaid
 flowchart TD
     A([iteration_requested]) --> B[[Resolve Gates]]
-    B --> C([gates_resolved])
+    B --> C([gate_resolution_completed])
     C --> D[[Run Preflight Gates]]
     D --> E([preflight_completed])
     E --> F[[Check Charter]]
@@ -26,10 +26,10 @@ flowchart TD
     O --> P[[Run Verify Gates]]
     P --> Q([gate_verification_completed])
     Q --> R[[Route Gate Result]]
-    R -->|pass| S([project_iterate_completed])
+    R -->|pass| S([project_iteration_completed])
     R -->|fail, retries left| T[[Retry Execution]]
     T --> O
-    R -->|fail, retries exhausted| U([project_iterate_completed — failure])
+    R -->|fail, retries exhausted| U([project_iteration_completed — failure])
     S -->|maintain=true| V([maintenance_requested])
 ```
 
@@ -107,9 +107,9 @@ The `retry_count` from the payload tracks which attempt this is.
 
 | Condition | Action |
 |-----------|--------|
-| All required gates pass | Emit `project_iterate_completed` (success) |
+| All required gates pass | Emit `project_iteration_completed` (success) |
 | Required gates fail, retry count < 3 | Emit `retry_requested` with failure context |
-| Required gates fail, retry count ≥ 3 | Emit `project_iterate_completed` (failure) |
+| Required gates fail, retry count ≥ 3 | Emit `project_iteration_completed` (failure) |
 
 When retrying, `Retry Execution` receives the failure context (which gates
 failed and their output) and invokes a coding agent to fix only the issues

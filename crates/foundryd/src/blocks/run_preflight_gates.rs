@@ -11,7 +11,7 @@ use crate::gateway::ShellGateway;
 
 /// Runs preflight quality gates before the main execution phase.
 ///
-/// Observer — sinks on `GatesResolved`.
+/// Observer — sinks on `GateResolutionCompleted`.
 /// Only runs gates when `workflow == "iterate"`; maintenance workflows skip
 /// preflight and immediately emit `PreflightCompleted` with `all_passed: true`.
 pub struct RunPreflightGates {
@@ -34,7 +34,7 @@ impl TaskBlock for RunPreflightGates {
     task_block_meta! {
         name: "Run Preflight Gates",
         kind: Observer,
-        sinks_on: [GatesResolved],
+        sinks_on: [GateResolutionCompleted],
     }
 
     #[allow(clippy::too_many_lines)]
@@ -189,7 +189,7 @@ impl TaskBlock for RunPreflightGates {
     }
 }
 
-/// Parse gate definitions from a `GatesResolved` event payload.
+/// Parse gate definitions from a `GateResolutionCompleted` event payload.
 fn parse_gates_from_payload(payload: &serde_json::Value) -> Vec<GateDefinition> {
     let Some(gates_array) = payload.get("gates").and_then(serde_json::Value::as_array) else {
         return vec![];
@@ -247,9 +247,13 @@ mod tests {
         })
     }
 
-    fn gates_resolved_event(project: &str, workflow: &str, gates: &serde_json::Value) -> Event {
+    fn gate_resolution_completed_event(
+        project: &str,
+        workflow: &str,
+        gates: &serde_json::Value,
+    ) -> Event {
         Event::new(
-            EventType::GatesResolved,
+            EventType::GateResolutionCompleted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({
@@ -274,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_gates_resolved() {
+    fn sinks_on_gate_resolution_completed() {
         let shell = FakeShellGateway::success();
         let block = RunPreflightGates::new(
             shell,
@@ -283,7 +287,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        assert_eq!(block.sinks_on(), &[EventType::GatesResolved]);
+        assert_eq!(block.sinks_on(), &[EventType::GateResolutionCompleted]);
     }
 
     #[tokio::test]
@@ -294,7 +298,7 @@ mod tests {
             projects: vec![],
         });
         let block = RunPreflightGates::with_shell(shell.clone(), registry);
-        let trigger = gates_resolved_event(
+        let trigger = gate_resolution_completed_event(
             "my-project",
             "maintain",
             &serde_json::json!([{"name": "fmt", "command": "cargo fmt", "required": true}]),
@@ -316,7 +320,7 @@ mod tests {
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunPreflightGates::with_shell(shell.clone(), registry);
-        let trigger = gates_resolved_event(
+        let trigger = gate_resolution_completed_event(
             "my-project",
             "iterate",
             &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
@@ -337,7 +341,7 @@ mod tests {
         let shell = FakeShellGateway::success();
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunPreflightGates::with_shell(shell.clone(), registry);
-        let trigger = gates_resolved_event(
+        let trigger = gate_resolution_completed_event(
             "my-project",
             "validate",
             &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
@@ -359,7 +363,7 @@ mod tests {
         let shell = FakeShellGateway::failure("check failed");
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunPreflightGates::with_shell(shell, registry);
-        let trigger = gates_resolved_event(
+        let trigger = gate_resolution_completed_event(
             "my-project",
             "iterate",
             &serde_json::json!([{"name": "fmt", "command": "cargo fmt --check", "required": true}]),
@@ -390,7 +394,7 @@ mod tests {
         ]);
         let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunPreflightGates::with_shell(shell, registry);
-        let trigger = gates_resolved_event(
+        let trigger = gate_resolution_completed_event(
             "my-project",
             "iterate",
             &serde_json::json!([
@@ -415,7 +419,8 @@ mod tests {
             projects: vec![],
         });
         let block = RunPreflightGates::with_shell(shell, registry);
-        let trigger = gates_resolved_event("my-project", "iterate", &serde_json::json!([]));
+        let trigger =
+            gate_resolution_completed_event("my-project", "iterate", &serde_json::json!([]));
 
         let result = block.execute(&trigger).await.unwrap();
 

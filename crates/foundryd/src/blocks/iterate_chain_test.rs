@@ -1,9 +1,9 @@
 //! Integration tests for the full native iterate workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: IterationRequested -> CharterCheckCompleted -> GatesResolved
+//! - Happy path: IterationRequested -> CharterCheckCompleted -> GateResolutionCompleted
 //!   -> PreflightCompleted -> AssessmentCompleted -> TriageCompleted -> PlanCompleted
-//!   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectIterateCompleted
+//!   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectIterationCompleted
 //!   -> SummarizeCompleted
 //! - Charter failure stops chain
 //! - Preflight failure stops chain
@@ -65,7 +65,7 @@ fn iterate_engine(
     engine.register(Box::new(super::CheckCharter::new(registry.clone())));
     // ResolveGates (sinks on CharterCheckCompleted, MaintenanceRequested, ValidationRequested)
     engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    // RunPreflightGates (sinks on GatesResolved)
+    // RunPreflightGates (sinks on GateResolutionCompleted)
     engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
     // AssessProject (sinks on PreflightCompleted, iterate+passed only)
     engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
@@ -81,7 +81,7 @@ fn iterate_engine(
     engine.register(Box::new(super::RouteGateResult));
     // RetryExecution (sinks on RetryRequested)
     engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
-    // SummarizeResult (sinks on ProjectIterateCompleted/ProjectMaintainCompleted, success only)
+    // SummarizeResult (sinks on ProjectIterationCompleted/ProjectMaintenanceCompleted, success only)
     engine.register(Box::new(super::SummarizeResult::new(agent, registry)));
 
     engine
@@ -159,7 +159,7 @@ async fn happy_path_iterate_chain() {
         "chain should start with iteration_requested"
     );
     assert!(event_types.contains(&"charter_check_completed"), "should check charter");
-    assert!(event_types.contains(&"gates_resolved"), "should resolve gates");
+    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
     assert!(event_types.contains(&"preflight_completed"), "should complete preflight");
     assert!(event_types.contains(&"assessment_completed"), "should complete assessment");
     assert!(event_types.contains(&"triage_completed"), "should complete triage");
@@ -167,7 +167,7 @@ async fn happy_path_iterate_chain() {
     assert!(event_types.contains(&"execution_completed"), "should complete execution");
     assert!(event_types.contains(&"gate_verification_completed"), "should verify gates");
     assert!(
-        event_types.contains(&"project_iterate_completed"),
+        event_types.contains(&"project_iteration_completed"),
         "should emit iterate completion"
     );
     assert!(event_types.contains(&"summarize_completed"), "should summarize result");
@@ -176,7 +176,7 @@ async fn happy_path_iterate_chain() {
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectIterateCompleted)
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
@@ -213,11 +213,11 @@ async fn charter_failure_stops_chain() {
         .iter()
         .find(|e| e.event_type == EventType::CharterCheckCompleted)
         .unwrap();
-    assert_eq!(charter_event.payload["passed"], false);
+    assert_eq!(charter_event.payload["success"], false);
 
     // Chain should stop — no downstream events
     assert!(
-        !event_types.contains(&"gates_resolved"),
+        !event_types.contains(&"gate_resolution_completed"),
         "should NOT resolve gates after charter failure"
     );
     assert!(
@@ -225,7 +225,7 @@ async fn charter_failure_stops_chain() {
         "should NOT assess after charter failure"
     );
     assert!(
-        !event_types.contains(&"project_iterate_completed"),
+        !event_types.contains(&"project_iteration_completed"),
         "should NOT complete iterate"
     );
 }
@@ -251,7 +251,7 @@ async fn preflight_failure_stops_chain() {
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     assert!(event_types.contains(&"charter_check_completed"), "should check charter");
-    assert!(event_types.contains(&"gates_resolved"), "should resolve gates");
+    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
     assert!(event_types.contains(&"preflight_completed"), "should complete preflight");
 
     // Preflight should have all_passed=false
@@ -268,7 +268,7 @@ async fn preflight_failure_stops_chain() {
         "should NOT assess after preflight failure"
     );
     assert!(
-        !event_types.contains(&"project_iterate_completed"),
+        !event_types.contains(&"project_iteration_completed"),
         "should NOT complete iterate"
     );
 }
@@ -333,7 +333,7 @@ async fn triage_rejection_stops_chain() {
         "should NOT execute after triage rejection"
     );
     assert!(
-        !event_types.contains(&"project_iterate_completed"),
+        !event_types.contains(&"project_iteration_completed"),
         "should NOT complete iterate"
     );
 }
@@ -459,7 +459,7 @@ async fn gate_verification_retry_loop() {
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectIterateCompleted)
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
@@ -524,7 +524,7 @@ async fn iterate_with_maintain_chaining() {
             exit_code: 0,
             success: true,
         },
-        // ExecuteMaintain (from chained MaintenanceRequested -> GatesResolved -> ExecuteMaintain)
+        // ExecuteMaintain (from chained MaintenanceRequested -> GateResolutionCompleted -> ExecuteMaintain)
         AgentResponse {
             stdout: "Dependencies updated".to_string(),
             stderr: String::new(),
@@ -561,11 +561,11 @@ async fn iterate_with_maintain_chaining() {
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Verify iterate completed successfully
-    assert!(event_types.contains(&"project_iterate_completed"), "should complete iterate");
+    assert!(event_types.contains(&"project_iteration_completed"), "should complete iterate");
     let completion = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectIterateCompleted)
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
@@ -577,7 +577,7 @@ async fn iterate_with_maintain_chaining() {
 
     // Verify the maintain chain also ran
     assert!(
-        event_types.contains(&"project_maintain_completed"),
+        event_types.contains(&"project_maintenance_completed"),
         "should complete the chained maintain workflow"
     );
 }

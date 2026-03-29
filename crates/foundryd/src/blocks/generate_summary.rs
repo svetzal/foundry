@@ -89,7 +89,7 @@ fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoRelea
     result
         .events
         .iter()
-        .filter(|e| e.event_type == EventType::AutoReleaseCompleted)
+        .filter(|e| e.event_type == EventType::ReleaseCompleted)
         .map(|e| {
             let new_tag =
                 e.payload.get("new_tag").and_then(|v| v.as_str()).map(ToString::to_string);
@@ -347,7 +347,7 @@ mod tests {
             serde_json::json!({"tag": "v1.0.0", "vulnerable": false}),
         );
         let auto_release = Event::new(
-            EventType::AutoReleaseCompleted,
+            EventType::ReleaseCompleted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({"new_tag": "v1.0.1", "success": true}),
