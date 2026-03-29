@@ -1,56 +1,20 @@
 use std::path::Path;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use foundry_core::gates::GateDefinition;
-use serde::Deserialize;
-
-/// On-disk representation of `.hone-gates.json`.
-#[derive(Deserialize)]
-struct GateFile {
-    gates: Vec<RawGate>,
-}
-
-/// A single gate entry as it appears in JSON (timeout is seconds, not Duration).
-#[derive(Deserialize)]
-struct RawGate {
-    name: String,
-    command: String,
-    required: bool,
-    timeout: Option<u64>,
-}
 
 /// Read gate definitions from `.hone-gates.json` in `project_dir`.
 ///
 /// Returns an empty vec if the file does not exist.
 /// Returns an error if the file exists but contains malformed JSON.
 pub fn read_gates(project_dir: &Path) -> Result<Vec<GateDefinition>> {
-    let path = project_dir.join(".hone-gates.json");
-
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-
-    let file: GateFile = serde_json::from_str(&contents)
-        .with_context(|| format!("malformed JSON in {}", path.display()))?;
-
-    Ok(file
-        .gates
-        .into_iter()
-        .map(|raw| GateDefinition {
-            name: raw.name,
-            command: raw.command,
-            required: raw.required,
-            timeout: raw.timeout.map(Duration::from_secs),
-        })
-        .collect())
+    foundry_core::gates::read_gates_file(project_dir)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
