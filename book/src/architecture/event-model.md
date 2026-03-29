@@ -25,8 +25,8 @@ roadmap for completing all task blocks and workflows is in
 | Event | Emitter | Purpose |
 |-------|---------|---------|
 | `project_validation_completed` | ValidateProject | Pre-flight check (dir, branch, gates) |
-| `project_iterate_completed` | RunHoneIterate | One structural improvement attempted |
-| `project_maintain_completed` | RunHoneMaintain | Dependencies updated, gates verified |
+| `project_iterate_completed` | RouteGateResult | One structural improvement attempted |
+| `project_maintain_completed` | RouteGateResult | Dependencies updated, gates verified |
 | `project_changes_committed` | CommitAndPush | Git commit created |
 | `project_changes_pushed` | CommitAndPush | Pushed to remote |
 
