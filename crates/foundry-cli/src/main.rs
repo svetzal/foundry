@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod commands;
+mod gates_commands;
 mod registry_commands;
 
 pub mod proto {
@@ -100,6 +101,20 @@ enum Commands {
         /// Filter by project name
         #[arg(long)]
         project: Option<String>,
+    },
+
+    /// Show or derive quality gates for a project
+    Gates {
+        /// Project name from registry
+        project: Option<String>,
+
+        /// Use a directory path instead of a registry project name
+        #[arg(long)]
+        dir: Option<String>,
+
+        /// Derive gates by inspecting the project (writes .hone-gates.json)
+        #[arg(long)]
+        init: bool,
     },
 
     /// Manage the project registry
@@ -291,6 +306,18 @@ async fn main() -> Result<()> {
         }
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
+        }
+        Commands::Gates { project, dir, init } => {
+            let project_dir = gates_commands::resolve_project_dir(
+                project.as_deref(),
+                dir.as_deref(),
+                &registry_path(),
+            )?;
+            if init {
+                gates_commands::init(&project_dir)
+            } else {
+                gates_commands::show(&project_dir)
+            }
         }
         Commands::Registry(sub) => {
             let path = registry_path();
