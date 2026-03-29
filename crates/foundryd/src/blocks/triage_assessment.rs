@@ -25,16 +25,10 @@ impl TriageAssessment {
 }
 
 impl TaskBlock for TriageAssessment {
-    fn name(&self) -> &'static str {
-        "Triage Assessment"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::AssessmentCompleted]
+    task_block_meta! {
+        name: "Triage Assessment",
+        kind: Observer,
+        sinks_on: [AssessmentCompleted],
     }
 
     #[allow(clippy::too_many_lines)]

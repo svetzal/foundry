@@ -62,5 +62,8 @@ async-stream = "0.3"
 # TUI
 comfy-table = "7"
 
+# Macro utilities
+pastey = "0.2"
+
 # Testing
 tempfile = "3"

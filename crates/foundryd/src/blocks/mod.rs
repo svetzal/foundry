@@ -1,3 +1,6 @@
+#[macro_use]
+mod macros;
+
 mod assess_project;
 mod audit;
 mod check_charter;

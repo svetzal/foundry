@@ -9,50 +9,28 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 
 use crate::gateway::ShellGateway;
 
-/// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
-///
-/// Terminal block: this is the end of both the dirty and clean vulnerability
-/// remediation paths.
-///
-/// Dispatches based on the project's `InstallConfig` in the registry:
-/// - `Command` — runs the specified shell command in the project directory
-/// - `Brew` — runs `brew upgrade <formula>` (installs if not already present)
-/// - absent — skips gracefully with `success=true`
-pub struct InstallLocally {
-    registry: Arc<Registry>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl InstallLocally {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self {
-            registry,
-            shell: Arc::new(crate::gateway::ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
-        Self { registry, shell }
+task_block_new! {
+    /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
+    /// Mutator — events logged but not delivered at `audit_only`;
+    /// simulated success at `dry_run`.
+    ///
+    /// Terminal block: this is the end of both the dirty and clean vulnerability
+    /// remediation paths.
+    ///
+    /// Dispatches based on the project's `InstallConfig` in the registry:
+    /// - `Command` — runs the specified shell command in the project directory
+    /// - `Brew` — runs `brew upgrade <formula>` (installs if not already present)
+    /// - absent — skips gracefully with `success=true`
+    pub struct InstallLocally {
+        shell: ShellGateway = crate::gateway::ProcessShellGateway
     }
 }
 
 impl TaskBlock for InstallLocally {
-    fn name(&self) -> &'static str {
-        "Install Locally"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::ProjectChangesPushed,
-            EventType::ReleasePipelineCompleted,
-        ]
+    task_block_meta! {
+        name: "Install Locally",
+        kind: Mutator,
+        sinks_on: [ProjectChangesPushed, ReleasePipelineCompleted],
     }
 
     fn retry_policy(&self) -> RetryPolicy {

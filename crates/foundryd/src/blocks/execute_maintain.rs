@@ -40,16 +40,10 @@ pub(super) fn resolve_agent_file(agent_name: &str) -> Option<PathBuf> {
 }
 
 impl TaskBlock for ExecuteMaintain {
-    fn name(&self) -> &'static str {
-        "Execute Maintain"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::GatesResolved]
+    task_block_meta! {
+        name: "Execute Maintain",
+        kind: Mutator,
+        sinks_on: [GatesResolved],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

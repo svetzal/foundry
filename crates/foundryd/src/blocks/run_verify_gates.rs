@@ -29,16 +29,10 @@ impl RunVerifyGates {
 }
 
 impl TaskBlock for RunVerifyGates {
-    fn name(&self) -> &'static str {
-        "Run Verify Gates"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::ExecutionCompleted]
+    task_block_meta! {
+        name: "Run Verify Gates",
+        kind: Observer,
+        sinks_on: [ExecutionCompleted],
     }
 
     #[allow(clippy::too_many_lines)]

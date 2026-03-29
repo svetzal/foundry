@@ -129,16 +129,10 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
 }
 
 impl TaskBlock for GenerateSummary {
-    fn name(&self) -> &'static str {
-        "Generate Summary"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MaintenanceRunCompleted]
+    task_block_meta! {
+        name: "Generate Summary",
+        kind: Observer,
+        sinks_on: [MaintenanceRunCompleted],
     }
 
     fn execute(

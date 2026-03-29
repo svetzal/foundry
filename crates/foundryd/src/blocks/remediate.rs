@@ -28,16 +28,10 @@ impl RemediateVulnerability {
 }
 
 impl TaskBlock for RemediateVulnerability {
-    fn name(&self) -> &'static str {
-        "Remediate Vulnerability"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MainBranchAudited]
+    task_block_meta! {
+        name: "Remediate Vulnerability",
+        kind: Mutator,
+        sinks_on: [MainBranchAudited],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

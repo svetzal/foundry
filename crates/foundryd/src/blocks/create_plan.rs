@@ -25,16 +25,10 @@ impl CreatePlan {
 }
 
 impl TaskBlock for CreatePlan {
-    fn name(&self) -> &'static str {
-        "Create Plan"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::TriageCompleted]
+    task_block_meta! {
+        name: "Create Plan",
+        kind: Observer,
+        sinks_on: [TriageCompleted],
     }
 
     #[allow(clippy::too_many_lines)]

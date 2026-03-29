@@ -25,16 +25,10 @@ impl ExecutePlan {
 }
 
 impl TaskBlock for ExecutePlan {
-    fn name(&self) -> &'static str {
-        "Execute Plan"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::PlanCompleted]
+    task_block_meta! {
+        name: "Execute Plan",
+        kind: Mutator,
+        sinks_on: [PlanCompleted],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

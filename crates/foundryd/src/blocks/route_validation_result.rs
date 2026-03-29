@@ -15,16 +15,10 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 pub struct RouteValidationResult;
 
 impl TaskBlock for RouteValidationResult {
-    fn name(&self) -> &'static str {
-        "Route Validation Result"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::PreflightCompleted]
+    task_block_meta! {
+        name: "Route Validation Result",
+        kind: Observer,
+        sinks_on: [PreflightCompleted],
     }
 
     fn execute(

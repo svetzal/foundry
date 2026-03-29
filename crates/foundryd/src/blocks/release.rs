@@ -45,16 +45,10 @@ impl CutRelease {
 }
 
 impl TaskBlock for CutRelease {
-    fn name(&self) -> &'static str {
-        "Cut Release"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MainBranchAudited]
+    task_block_meta! {
+        name: "Cut Release",
+        kind: Mutator,
+        sinks_on: [MainBranchAudited],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
@@ -306,16 +300,10 @@ impl WatchPipeline {
 }
 
 impl TaskBlock for WatchPipeline {
-    fn name(&self) -> &'static str {
-        "Watch Pipeline"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::AutoReleaseCompleted]
+    task_block_meta! {
+        name: "Watch Pipeline",
+        kind: Mutator,
+        sinks_on: [AutoReleaseCompleted],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

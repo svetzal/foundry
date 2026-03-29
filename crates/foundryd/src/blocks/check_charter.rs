@@ -21,16 +21,10 @@ impl CheckCharter {
 }
 
 impl TaskBlock for CheckCharter {
-    fn name(&self) -> &'static str {
-        "Check Charter"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::IterationRequested]
+    task_block_meta! {
+        name: "Check Charter",
+        kind: Observer,
+        sinks_on: [IterationRequested],
     }
 
     fn execute(

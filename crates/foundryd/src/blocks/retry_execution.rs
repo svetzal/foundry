@@ -25,16 +25,10 @@ impl RetryExecution {
 }
 
 impl TaskBlock for RetryExecution {
-    fn name(&self) -> &'static str {
-        "Retry Execution"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::RetryRequested]
+    task_block_meta! {
+        name: "Retry Execution",
+        kind: Mutator,
+        sinks_on: [RetryRequested],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

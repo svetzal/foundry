@@ -45,16 +45,10 @@ impl RunHoneIterate {
 }
 
 impl TaskBlock for RunHoneIterate {
-    fn name(&self) -> &'static str {
-        "Run Hone Iterate"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::IterationRequested]
+    task_block_meta! {
+        name: "Run Hone Iterate",
+        kind: Mutator,
+        sinks_on: [IterationRequested],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

@@ -26,19 +26,10 @@ impl SummarizeResult {
 }
 
 impl TaskBlock for SummarizeResult {
-    fn name(&self) -> &'static str {
-        "Summarize Result"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::ProjectIterateCompleted,
-            EventType::ProjectMaintainCompleted,
-        ]
+    task_block_meta! {
+        name: "Summarize Result",
+        kind: Observer,
+        sinks_on: [ProjectIterateCompleted, ProjectMaintainCompleted],
     }
 
     #[allow(clippy::too_many_lines)]

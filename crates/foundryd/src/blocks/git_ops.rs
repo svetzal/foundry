@@ -8,42 +8,29 @@ use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResul
 
 use crate::gateway::ShellGateway;
 
-/// Commits staged changes and pushes to the remote.
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
-///
-/// Real behaviour:
-/// - Self-filters when the trigger payload explicitly sets `"changes": false`.
-/// - Checks `git status --porcelain`; self-filters when the tree is clean.
-/// - Runs `git add -A` then `git commit`.
-/// - Runs `git push` only when `registry.actions.push` is `true`.
-/// - Emits [`EventType::ProjectChangesCommitted`] after a successful commit.
-/// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
-///
-/// Commit message varies by trigger event type:
-/// - [`EventType::ProjectIterateCompleted`] → `chore(<project>): automated iterate`
-/// - [`EventType::ProjectMaintainCompleted`] → `chore(<project>): automated maintenance`
-/// - All other triggers → `chore(<project>): automated remediation`
-///
-/// Fallback: when the project is not found in the registry, stub events are
-/// emitted so that integration tests that use synthetic project names remain
-/// green without requiring a real repository on disk.
-pub struct CommitAndPush {
-    registry: Arc<Registry>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl CommitAndPush {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self {
-            registry,
-            shell: Arc::new(crate::gateway::ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
-        Self { registry, shell }
+task_block_new! {
+    /// Commits staged changes and pushes to the remote.
+    /// Mutator — events logged but not delivered at `audit_only`;
+    /// simulated success at `dry_run`.
+    ///
+    /// Real behaviour:
+    /// - Self-filters when the trigger payload explicitly sets `"changes": false`.
+    /// - Checks `git status --porcelain`; self-filters when the tree is clean.
+    /// - Runs `git add -A` then `git commit`.
+    /// - Runs `git push` only when `registry.actions.push` is `true`.
+    /// - Emits [`EventType::ProjectChangesCommitted`] after a successful commit.
+    /// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
+    ///
+    /// Commit message varies by trigger event type:
+    /// - [`EventType::ProjectIterateCompleted`] → `chore(<project>): automated iterate`
+    /// - [`EventType::ProjectMaintainCompleted`] → `chore(<project>): automated maintenance`
+    /// - All other triggers → `chore(<project>): automated remediation`
+    ///
+    /// Fallback: when the project is not found in the registry, stub events are
+    /// emitted so that integration tests that use synthetic project names remain
+    /// green without requiring a real repository on disk.
+    pub struct CommitAndPush {
+        shell: ShellGateway = crate::gateway::ProcessShellGateway
     }
 }
 
@@ -162,20 +149,10 @@ impl CommitAndPush {
 }
 
 impl TaskBlock for CommitAndPush {
-    fn name(&self) -> &'static str {
-        "Commit and Push"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::RemediationCompleted,
-            EventType::ProjectIterateCompleted,
-            EventType::ProjectMaintainCompleted,
-        ]
+    task_block_meta! {
+        name: "Commit and Push",
+        kind: Mutator,
+        sinks_on: [RemediationCompleted, ProjectIterateCompleted, ProjectMaintainCompleted],
     }
 
     fn retry_policy(&self) -> RetryPolicy {

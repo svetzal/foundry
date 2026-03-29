@@ -31,16 +31,10 @@ impl RunPreflightGates {
 }
 
 impl TaskBlock for RunPreflightGates {
-    fn name(&self) -> &'static str {
-        "Run Preflight Gates"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::GatesResolved]
+    task_block_meta! {
+        name: "Run Preflight Gates",
+        kind: Observer,
+        sinks_on: [GatesResolved],
     }
 
     #[allow(clippy::too_many_lines)]

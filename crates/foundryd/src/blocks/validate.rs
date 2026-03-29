@@ -8,37 +8,24 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
-/// Validates a project before the maintenance run proceeds.
-///
-/// Observer — always runs regardless of throttle.
-///
-/// Self-filters: projects that are not in the active registry (i.e., marked
-/// `skip = true` or entirely absent) are silently acknowledged without error.
-///
-/// Checks (in order):
-/// 1. Project directory exists on disk.
-/// 2. Git branch matches the expected branch from the registry.
-///    Recovers automatically from detached HEAD by checking out the expected branch.
-/// 3. `.hone-gates.json` is present (warning only, not a hard failure).
-///
-/// Emits `ProjectValidationCompleted` with `status` ("ok" | "error" | "skipped")
-/// and an optional `reason` field.
-pub struct ValidateProject {
-    registry: Arc<Registry>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl ValidateProject {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self {
-            registry,
-            shell: Arc::new(crate::gateway::ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_shell(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
-        Self { registry, shell }
+task_block_new! {
+    /// Validates a project before the maintenance run proceeds.
+    ///
+    /// Observer — always runs regardless of throttle.
+    ///
+    /// Self-filters: projects that are not in the active registry (i.e., marked
+    /// `skip = true` or entirely absent) are silently acknowledged without error.
+    ///
+    /// Checks (in order):
+    /// 1. Project directory exists on disk.
+    /// 2. Git branch matches the expected branch from the registry.
+    ///    Recovers automatically from detached HEAD by checking out the expected branch.
+    /// 3. `.hone-gates.json` is present (warning only, not a hard failure).
+    ///
+    /// Emits `ProjectValidationCompleted` with `status` ("ok" | "error" | "skipped")
+    /// and an optional `reason` field.
+    pub struct ValidateProject {
+        shell: ShellGateway = crate::gateway::ProcessShellGateway
     }
 }
 
@@ -111,16 +98,10 @@ fn error_result(
 }
 
 impl TaskBlock for ValidateProject {
-    fn name(&self) -> &'static str {
-        "Validate Project"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MaintenanceRunStarted]
+    task_block_meta! {
+        name: "Validate Project",
+        kind: Observer,
+        sinks_on: [MaintenanceRunStarted],
     }
 
     fn execute(

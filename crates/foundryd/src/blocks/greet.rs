@@ -8,16 +8,10 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 pub struct ComposeGreeting;
 
 impl TaskBlock for ComposeGreeting {
-    fn name(&self) -> &'static str {
-        "Compose Greeting"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::GreetRequested]
+    task_block_meta! {
+        name: "Compose Greeting",
+        kind: Observer,
+        sinks_on: [GreetRequested],
     }
 
     fn execute(
@@ -56,16 +50,10 @@ impl TaskBlock for ComposeGreeting {
 pub struct DeliverGreeting;
 
 impl TaskBlock for DeliverGreeting {
-    fn name(&self) -> &'static str {
-        "Deliver Greeting"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::GreetingComposed]
+    task_block_meta! {
+        name: "Deliver Greeting",
+        kind: Mutator,
+        sinks_on: [GreetingComposed],
     }
 
     fn execute(

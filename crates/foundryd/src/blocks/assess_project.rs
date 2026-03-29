@@ -26,16 +26,10 @@ impl AssessProject {
 }
 
 impl TaskBlock for AssessProject {
-    fn name(&self) -> &'static str {
-        "Assess Project"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::PreflightCompleted]
+    task_block_meta! {
+        name: "Assess Project",
+        kind: Observer,
+        sinks_on: [PreflightCompleted],
     }
 
     #[allow(clippy::too_many_lines)]

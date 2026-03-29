@@ -221,19 +221,10 @@ impl AuditReleaseTag {
 }
 
 impl TaskBlock for AuditReleaseTag {
-    fn name(&self) -> &'static str {
-        "Audit Release Tag"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::VulnerabilityDetected,
-            EventType::ProjectChangesPushed,
-        ]
+    task_block_meta! {
+        name: "Audit Release Tag",
+        kind: Observer,
+        sinks_on: [VulnerabilityDetected, ProjectChangesPushed],
     }
 
     fn execute(
@@ -387,16 +378,10 @@ impl AuditMainBranch {
 }
 
 impl TaskBlock for AuditMainBranch {
-    fn name(&self) -> &'static str {
-        "Audit Main Branch"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::ReleaseTagAudited]
+    task_block_meta! {
+        name: "Audit Main Branch",
+        kind: Observer,
+        sinks_on: [ReleaseTagAudited],
     }
 
     fn execute(

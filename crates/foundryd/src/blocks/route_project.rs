@@ -16,16 +16,10 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 pub struct RouteProjectWorkflow;
 
 impl TaskBlock for RouteProjectWorkflow {
-    fn name(&self) -> &'static str {
-        "Route Project Workflow"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::ProjectValidationCompleted]
+    task_block_meta! {
+        name: "Route Project Workflow",
+        kind: Observer,
+        sinks_on: [ProjectValidationCompleted],
     }
 
     fn execute(

@@ -23,8 +23,8 @@ pub struct RunHoneMaintain {
     shell: Arc<dyn ShellGateway>,
 }
 
+#[allow(dead_code)]
 impl RunHoneMaintain {
-    #[allow(dead_code)]
     pub fn new(registry: Arc<Registry>) -> Self {
         Self {
             registry,
@@ -39,16 +39,10 @@ impl RunHoneMaintain {
 }
 
 impl TaskBlock for RunHoneMaintain {
-    fn name(&self) -> &'static str {
-        "Run Hone Maintain"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Mutator
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MaintenanceRequested]
+    task_block_meta! {
+        name: "Run Hone Maintain",
+        kind: Mutator,
+        sinks_on: [MaintenanceRequested],
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

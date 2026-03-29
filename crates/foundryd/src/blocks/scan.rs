@@ -7,42 +7,23 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ScannerGateway;
 
-/// Scans project dependencies for known vulnerabilities.
-/// Observer — always runs regardless of throttle.
-///
-/// Sinks on `ScanRequested` and emits zero or more `VulnerabilityDetected`
-/// events, one per discovered CVE. Downstream blocks (`AuditReleaseTag`, etc.)
-/// then handle the remediation chain for each vulnerability independently.
-pub struct ScanDependencies {
-    registry: Arc<Registry>,
-    scanner: Arc<dyn ScannerGateway>,
-}
-
-impl ScanDependencies {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self {
-            registry,
-            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_scanner(registry: Arc<Registry>, scanner: Arc<dyn ScannerGateway>) -> Self {
-        Self { registry, scanner }
+task_block_new! {
+    /// Scans project dependencies for known vulnerabilities.
+    /// Observer — always runs regardless of throttle.
+    ///
+    /// Sinks on `ScanRequested` and emits zero or more `VulnerabilityDetected`
+    /// events, one per discovered CVE. Downstream blocks (`AuditReleaseTag`, etc.)
+    /// then handle the remediation chain for each vulnerability independently.
+    pub struct ScanDependencies {
+        scanner: ScannerGateway = crate::gateway::ProcessScannerGateway
     }
 }
 
 impl TaskBlock for ScanDependencies {
-    fn name(&self) -> &'static str {
-        "Scan Dependencies"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::ScanRequested]
+    task_block_meta! {
+        name: "Scan Dependencies",
+        kind: Observer,
+        sinks_on: [ScanRequested],
     }
 
     fn execute(

@@ -22,20 +22,10 @@ impl ResolveGates {
 }
 
 impl TaskBlock for ResolveGates {
-    fn name(&self) -> &'static str {
-        "Resolve Gates"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[
-            EventType::CharterCheckCompleted,
-            EventType::MaintenanceRequested,
-            EventType::ValidationRequested,
-        ]
+    task_block_meta! {
+        name: "Resolve Gates",
+        kind: Observer,
+        sinks_on: [CharterCheckCompleted, MaintenanceRequested, ValidationRequested],
     }
 
     fn execute(

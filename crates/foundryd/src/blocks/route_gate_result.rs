@@ -16,16 +16,10 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 pub struct RouteGateResult;
 
 impl TaskBlock for RouteGateResult {
-    fn name(&self) -> &'static str {
-        "Route Gate Result"
-    }
-
-    fn kind(&self) -> BlockKind {
-        BlockKind::Observer
-    }
-
-    fn sinks_on(&self) -> &[EventType] {
-        &[EventType::GateVerificationCompleted]
+    task_block_meta! {
+        name: "Route Gate Result",
+        kind: Observer,
+        sinks_on: [GateVerificationCompleted],
     }
 
     #[allow(clippy::too_many_lines)]
