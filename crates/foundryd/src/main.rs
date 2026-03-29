@@ -95,8 +95,6 @@ async fn main() -> Result<()> {
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
     // correct sub-workflow via IterationRequested or MaintenanceRequested.
     engine.register(Box::new(blocks::RouteProjectWorkflow));
-    // RunHoneIterate removed — replaced by native iterate chain (Phase 3)
-    // RunHoneMaintain removed — replaced by native maintain chain (Phase 2)
     // Native gate orchestration blocks
     let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
     engine.register(Box::new(blocks::ResolveGates::new(registry.clone())));

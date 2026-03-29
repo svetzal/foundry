@@ -71,19 +71,17 @@ block focused on a single responsibility.
 |-------|------|----------|-------|--------------|
 | Validate Project | Observer | `maintenance_run_started` | `project_validation_completed` | Skips projects not in active registry |
 | Route Project Workflow | Observer | `project_validation_completed` | `iteration_requested` or `maintenance_requested` | Stops when `status != "ok"` or no actions enabled |
-| Run Hone Iterate | Mutator | `iteration_requested` | `project_iterate_completed`, optionally `maintenance_requested` | — |
-| Run Hone Maintain | Mutator | `maintenance_requested` | `project_maintain_completed` | — |
 | Commit and Push | Mutator | `project_iterate_completed`, `project_maintain_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean |
 | Audit Release Tag | Observer | `project_changes_pushed` | `release_tag_audited` | Skips when project not in registry |
 
 The `actions.maintain` flag is forwarded inside the `iteration_requested`
-payload so that `Run Hone Iterate` can chain directly to `maintenance_requested`
+payload so that the gate routing can chain directly to `maintenance_requested`
 after a successful iteration without re-querying the project configuration.
 
 ### Gate Orchestration
 
-These blocks provide native gate resolution, execution, and routing without
-delegating to hone. They coexist alongside the hone blocks during migration.
+These blocks provide native gate resolution, execution, and routing for
+iterate, maintain, and validation workflows.
 
 | Block | Kind | Sinks On | Emits | Self-filters |
 |-------|------|----------|-------|--------------|
@@ -92,6 +90,27 @@ delegating to hone. They coexist alongside the hone blocks during migration.
 | Run Verify Gates | Observer | `execution_completed` | `gate_verification_completed` | — |
 | Route Gate Result | Observer | `gate_verification_completed` | `project_iterate_completed` / `project_maintain_completed` / `retry_requested` | Routes based on pass/fail and retry count |
 | Route Validation Result | Observer | `preflight_completed` | `validation_completed` | Only handles `validate` workflow |
+
+### Iterate Workflow
+
+These blocks form the native iterate chain, running inside the gate
+orchestration lifecycle.
+
+| Block | Kind | Sinks On | Emits | Self-filters |
+|-------|------|----------|-------|--------------|
+| Check Charter | Observer | `preflight_completed` | `charter_validated` | Only handles `iterate` workflow |
+| Assess Project | Mutator | `charter_validated` | `project_assessed` | — |
+| Triage Assessment | Mutator | `project_assessed` | `assessment_triaged` | — |
+| Create Plan | Mutator | `assessment_triaged` | `plan_created` | — |
+| Execute Plan | Mutator | `plan_created` | `execution_completed` | — |
+
+### Maintain Workflow
+
+| Block | Kind | Sinks On | Emits | Self-filters |
+|-------|------|----------|-------|--------------|
+| Execute Maintain | Mutator | `gates_resolved` | `execution_completed` | Only handles `maintain` workflow |
+| Retry Execution | Mutator | `retry_requested` | `execution_completed` | — |
+| Summarize Result | Observer | `project_iterate_completed`, `project_maintain_completed` | `generate_summary` | — |
 
 ### Validation Workflow
 
@@ -143,11 +162,24 @@ flowchart TD
     D -->|iterate=true| E([iteration_requested])
     D -->|iterate=false, maintain=true| F([maintenance_requested])
     D -->|no actions| G([end — no automation])
-    E --> H[[Run Hone Iterate]]
-    H --> I([project_iterate_completed])
-    H -->|maintain=true| F
-    F --> J[[Run Hone Maintain]]
-    J --> K([project_maintain_completed])
+    E --> H[[Resolve Gates]]
+    H --> I[[Run Preflight Gates]]
+    I --> J[[Check Charter]]
+    J --> K[[Assess Project]]
+    K --> L[[Triage Assessment]]
+    L --> M[[Create Plan]]
+    M --> N[[Execute Plan]]
+    N --> O[[Run Verify Gates]]
+    O --> P[[Route Gate Result]]
+    P -->|pass| Q([project_iterate_completed])
+    P -->|fail, retries left| R[[Retry Execution]]
+    Q -->|maintain=true| F
+    F --> S[[Resolve Gates]]
+    S --> T[[Execute Maintain]]
+    T --> U[[Run Verify Gates]]
+    U --> V[[Route Gate Result]]
+    V -->|pass| W([project_maintain_completed])
+    V -->|fail, retries left| X[[Retry Execution]]
 ```
 
 ## Gateway Pattern

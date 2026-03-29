@@ -10,9 +10,6 @@ mod execute_plan;
 mod generate_summary;
 mod git_ops;
 mod greet;
-mod hone_common;
-mod hone_iterate;
-mod hone_maintain;
 mod install;
 mod release;
 mod remediate;
@@ -37,12 +34,6 @@ pub use execute_plan::ExecutePlan;
 pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
-// RunHoneIterate is unregistered (Phase 3) but kept for Phase 4 cleanup.
-#[allow(unused_imports)]
-pub use hone_iterate::RunHoneIterate;
-// RunHoneMaintain is unregistered (Phase 2) but kept for Phase 4 cleanup.
-#[allow(unused_imports)]
-pub use hone_maintain::RunHoneMaintain;
 pub use install::InstallLocally;
 pub use release::{CutRelease, WatchPipeline};
 pub use remediate::RemediateVulnerability;

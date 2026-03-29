@@ -82,8 +82,19 @@ the workflow engine.
 ### Task block implementations (`blocks/`)
 
 - `validate.rs` — `ValidateProject`: pre-flight checks before a maintenance run
-- `hone_iterate.rs` — `RunHoneIterate`: runs `hone iterate <agent> --json`
-- `hone_maintain.rs` — `RunHoneMaintain`: runs `hone maintain`
+- `resolve_gates.rs` — `ResolveGates`: reads `.hone-gates.json` and emits gate definitions
+- `run_preflight_gates.rs` — `RunPreflightGates`: runs gates on unmodified codebase
+- `run_verify_gates.rs` — `RunVerifyGates`: runs gates after code changes
+- `route_gate_result.rs` — `RouteGateResult`: routes pass/fail to completion or retry
+- `route_validation_result.rs` — `RouteValidationResult`: routes validation-only results
+- `check_charter.rs` — `CheckCharter`: validates project charter before iteration
+- `assess_project.rs` — `AssessProject`: AI-driven project assessment
+- `triage_assessment.rs` — `TriageAssessment`: prioritises assessment findings
+- `create_plan.rs` — `CreatePlan`: generates an execution plan from triaged findings
+- `execute_plan.rs` — `ExecutePlan`: executes the generated plan
+- `execute_maintain.rs` — `ExecuteMaintain`: runs maintenance tasks
+- `retry_execution.rs` — `RetryExecution`: retries failed executions with context
+- `summarize_result.rs` — `SummarizeResult`: generates workflow summary and traces
 - `git_ops.rs` — `CommitAndPush`: stages, commits, and optionally pushes changes
 - `audit.rs` — `AuditReleaseTag`, `AuditMainBranch`: vulnerability scanning
 - `release.rs` — `CutRelease`, `WatchPipeline`: tagging and CI monitoring

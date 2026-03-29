@@ -60,14 +60,14 @@ warning and continues with an empty registry (no projects will be processed).
 | `name` | Yes | string | Unique human-readable identifier used in events and logs |
 | `path` | Yes | string | Absolute path to the project on your local filesystem |
 | `stack` | Yes | string | Technology stack — see [Stack values](#stack-values) |
-| `agent` | Yes | string | AI agent name passed to `hone` commands (e.g. `"claude"`) |
+| `agent` | Yes | string | AI agent name used for automation (e.g. `"claude"`) |
 | `repo` | Yes | string | GitHub repository slug (`owner/repo`) used by `Watch Pipeline` |
 | `branch` | Yes | string | Default branch (e.g. `"main"`) — validation checks out this branch |
 | `skip` | No | string or null | Absent or `null` means not skipped; a non-empty string value is the skip reason. Accepts `true` (treated as `"skipped"`) and `false`/`null` for backwards compatibility |
 | `actions` | No | object | Which automation steps are enabled; all default to `false` |
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
-| `timeout_secs` | No | number | Timeout in seconds for long-running commands such as `hone`. Defaults to `1800` (30 minutes) when absent |
+| `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `1800` (30 minutes) when absent |
 
 ### Stack values
 
@@ -89,8 +89,8 @@ flags default to `false` when the `actions` key is absent.
 
 | Flag | What it enables |
 |------|-----------------|
-| `iterate` | Runs `hone iterate <agent> --json` after project validation passes |
-| `maintain` | Runs `hone maintain` — either after `iterate` completes (when both are enabled) or directly after validation (when only `maintain` is enabled) |
+| `iterate` | Runs the iterate workflow (assess, plan, execute) after project validation passes |
+| `maintain` | Runs the maintain workflow — either after `iterate` completes (when both are enabled) or directly after validation (when only `maintain` is enabled) |
 | `push` | Pushes commits to the remote via `git push` after a commit is made |
 | `audit` | (Reserved for future use — currently informational only) |
 | `release` | (Reserved for future use — currently informational only) |

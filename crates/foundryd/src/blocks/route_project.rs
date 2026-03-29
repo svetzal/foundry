@@ -162,7 +162,7 @@ mod tests {
 
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::IterationRequested);
-        // maintain=true forwarded so RunHoneIterate can chain to maintain
+        // maintain=true forwarded so iterate chain can route to maintain
         let maintain = result.events[0]
             .payload
             .get("actions")

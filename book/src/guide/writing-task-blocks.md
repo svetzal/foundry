@@ -74,7 +74,7 @@ impl TaskBlock for MyBlock {
 | `summary` | `String` | Human-readable one-line summary shown in traces |
 | `raw_output` | `Option<String>` | Combined stdout+stderr from any shell command — shown in `foundry trace --verbose` |
 | `exit_code` | `Option<i32>` | Exit code from any shell command — useful for observability |
-| `audit_artifacts` | `Vec<String>` | Paths to files produced by this block (e.g. hone audit logs). Listed under `artifacts:` in verbose trace output |
+| `audit_artifacts` | `Vec<String>` | Paths to files produced by this block (e.g. audit logs). Listed under `artifacts:` in verbose trace output |
 
 Blocks that do not run external processes should set `raw_output: None`,
 `exit_code: None`, and `audit_artifacts: vec![]`. Blocks that shell out should
@@ -224,15 +224,26 @@ Place block implementations in `foundryd/src/blocks/`:
 
 ```text
 blocks/
-├── mod.rs           # pub use declarations
-├── greet.rs         # hello-world blocks (ComposeGreeting, DeliverGreeting)
-├── validate.rs      # ValidateProject
-├── hone_iterate.rs  # RunHoneIterate
-├── hone_maintain.rs # RunHoneMaintain
-├── git_ops.rs       # CommitAndPush
-├── audit.rs         # AuditReleaseTag, AuditMainBranch
-├── release.rs       # CutRelease, WatchPipeline
-├── install.rs       # InstallLocally
-├── remediate.rs     # RemediateVulnerability
-└── scan.rs          # ScanDependencies
+├── mod.rs              # pub use declarations
+├── greet.rs            # hello-world blocks (ComposeGreeting, DeliverGreeting)
+├── validate.rs         # ValidateProject
+├── resolve_gates.rs    # ResolveGates
+├── run_preflight_gates.rs  # RunPreflightGates
+├── run_verify_gates.rs     # RunVerifyGates
+├── route_gate_result.rs    # RouteGateResult
+├── route_validation_result.rs # RouteValidationResult
+├── check_charter.rs    # CheckCharter
+├── assess_project.rs   # AssessProject
+├── triage_assessment.rs # TriageAssessment
+├── create_plan.rs      # CreatePlan
+├── execute_plan.rs     # ExecutePlan
+├── execute_maintain.rs # ExecuteMaintain
+├── retry_execution.rs  # RetryExecution
+├── summarize_result.rs # SummarizeResult
+├── git_ops.rs          # CommitAndPush
+├── audit.rs            # AuditReleaseTag, AuditMainBranch
+├── release.rs          # CutRelease, WatchPipeline
+├── install.rs          # InstallLocally
+├── remediate.rs        # RemediateVulnerability
+└── scan.rs             # ScanDependencies
 ```
