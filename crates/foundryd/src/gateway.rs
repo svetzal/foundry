@@ -373,6 +373,7 @@ pub mod fakes {
 
     /// A recorded agent invocation for use in test assertions.
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     pub struct AgentInvocation {
         pub prompt: String,
         pub working_dir: String,
