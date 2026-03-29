@@ -15,6 +15,7 @@
 - [Getting Started](guide/getting-started.md)
 - [Emitting Events](guide/emitting-events.md)
 - [The Project Registry](guide/registry.md)
+- [Workflow Formations](guide/workflow-formations.md)
 - [Vulnerability Remediation](guide/vulnerability-remediation.md)
 - [Iteration Workflow](guide/iteration-workflow.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)

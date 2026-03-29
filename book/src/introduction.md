@@ -31,18 +31,35 @@ Foundry decouples the work from the scheduling. The same task blocks that
 run during nightly maintenance can be triggered individually, at any time,
 with throttle controlling how deep the ripple goes.
 
+## Where We Are Today
+
+Foundry has two layers, both defined in Rust:
+
+- **Event library** — the vocabulary of immutable facts that flow through
+  the system. Each event type is a variant of the `EventType` enum with
+  a well-defined payload structure.
+- **Block library** — the catalogue of reusable task blocks. Each block
+  implements the `TaskBlock` trait, declaring which events it sinks on,
+  what work it performs, and what events it emits.
+
+All blocks are registered into a single engine at startup. **Workflows
+are not declared anywhere** — they emerge from the sink/emit relationships
+between blocks. The engine routes by event type; blocks self-filter by
+inspecting payload fields. This means a different entry event (or a
+different payload) activates a different subset of blocks, producing a
+different workflow — all from the same block library.
+
+See [Workflow Formations](guide/workflow-formations.md) for the formations
+that exist today and the possibilities the current block library opens up.
+
 ## Where We're Headed
 
-Today, task blocks are defined in Rust and event flows are declared in
-Rust code. This gives us strong type safety and compile-time guarantees,
-but it means adding a new workflow requires modifying the Foundry codebase
-itself.
-
-Our intent is to refine and extract user-definable workflows — allowing
-teams to compose task blocks and declare event flows through configuration
-rather than code, enabling situational customisation without recompilation.
-The Rust-defined blocks will remain the foundation, but the wiring between
-them will become a user concern.
+Events and blocks will remain Rust-defined — they benefit from strong
+type safety and compile-time guarantees. The composition layer is what
+we intend to extract: allowing teams to declare which blocks participate
+in a formation and how events flow between them through configuration
+rather than code, enabling situational customisation without
+recompilation.
 
 ## Key Ideas
 
