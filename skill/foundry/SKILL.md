@@ -7,6 +7,11 @@ description: >
   drift assessment, or wants to automate code quality workflows across projects.
   Also use when the user asks about .foundry directories, trace files, audit reports,
   event-driven workflows, or managing a registry of software projects for automated maintenance.
+license: MIT
+compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on [::1]:50051)
+metadata:
+  version: "0.8.0"
+  author: Mojility Inc.
 ---
 
 # Foundry Workflow Engine
