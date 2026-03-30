@@ -11,7 +11,7 @@ license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on [::1]:50051)
 metadata:
   version: "0.8.1"
-  author: Mojility Inc.
+  author: Stacey Vetzal
 ---
 
 # Foundry Workflow Engine
