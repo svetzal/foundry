@@ -113,15 +113,15 @@ foundry gates --dir /path/to/project
 foundry gates --init <project-name>
 ```
 
-### 6. Emit Raw Events
+### Prefer convenience commands over raw emit
 
-For advanced use or testing, emit any event directly.
+Always use the convenience commands above (`iterate`, `scout`, `validate`, `run`, `gates`) rather than `foundry emit`. The convenience commands handle watch-stream setup, progress display, and trace rendering automatically.
+
+Only use `foundry emit` for workflows that lack a convenience command (e.g., vulnerability scanning) or for advanced debugging:
 
 ```bash
 foundry emit <event_type> --project <name> [--throttle full|audit_only|dry_run] [--payload '{"key":"value"}'] [--wait]
 ```
-
-With `--wait`, the CLI polls until processing completes and shows the trace.
 
 ## Registry Management
 
@@ -163,70 +163,33 @@ foundry registry remove my-project
 
 ## Examining Results
 
-### Traces
+Always use the CLI commands first — they format output, handle pagination, and render traces as trees. Only read raw files on disk when CLI output is insufficient.
 
-Every event chain produces a trace file at `~/.foundry/traces/YYYY-MM-DD/{event_id}.json`.
+**Start here:**
+
+1. `foundry history` — overview of recent runs (last 7 days), shows event ID, status, duration, type, project
+2. `foundry trace <event_id> --verbose` — drill into a specific run to see what each block did
+3. `foundry watch --project <name>` — live stream for runs currently in progress
 
 ```bash
-# View a specific trace
-foundry trace <event_id> [--verbose]
-
-# View recent trace history (last 7 days)
+# What happened recently?
 foundry history
 
-# View traces for a specific date
+# What happened on a specific date?
 foundry history 2026-03-29
 
-# Filter by project
-foundry history --project my-project
-```
-
-The `--verbose` flag on `trace` shows trigger payloads, emitted payloads, raw command output, and audit artifacts for each block execution.
-
-### Live Event Stream
-
-Watch events as they flow through the engine in real-time.
-
-```bash
-# All events
-foundry watch
-
 # Filter to one project
-foundry watch --project my-project
+foundry history --project my-project
+
+# Drill into a specific trace (event ID from history output)
+foundry trace evt_a1b2c3d4e5f6 --verbose
 ```
 
-### Audit Reports
+**Only if you need more detail**, fall back to the files on disk:
 
-After a full maintenance run (`foundry run`), a markdown summary is written to `~/.foundry/audits/runs/YYYY-MM-DD/summary.md`. It contains:
-
-- **Project Status table** — success/failed/skipped with durations
-- **Failures section** — details on what failed and why
-- **Release Audit table** — which release tags are clean vs vulnerable
-- **Auto-Releases table** — releases that were cut automatically
-- **Local Installs table** — local reinstallation results
-- **Summary stats** — total/succeeded/failed/skipped counts and durations
-
-To review audit reports:
-
-```bash
-# Read the latest audit
-cat ~/.foundry/audits/runs/$(ls -t ~/.foundry/audits/runs/ | head -1)/summary.md
-
-# Or use your editor
-code ~/.foundry/audits/runs/
-```
-
-### Event Log
-
-All events are persisted to monthly JSONL files at `~/.foundry/events/YYYY-MM.jsonl`. Each line is a complete Event JSON object. Useful for analytics or debugging:
-
-```bash
-# Recent events for a project
-grep '"project":"my-project"' ~/.foundry/events/2026-03.jsonl | tail -20
-
-# Count events by type
-jq -r '.event_type' ~/.foundry/events/2026-03.jsonl | sort | uniq -c | sort -rn
-```
+- **Audit reports** (`~/.foundry/audits/runs/YYYY-MM-DD/summary.md`) — markdown summary after `foundry run`, with project status tables, failure details, release audits, and aggregate stats
+- **Event log** (`~/.foundry/events/YYYY-MM.jsonl`) — raw JSONL of every event, useful for analytics or grep
+- **Trace files** (`~/.foundry/traces/YYYY-MM-DD/{event_id}.json`) — full ProcessResult JSON with all events and block executions
 
 ## Throttle Levels
 
@@ -240,7 +203,7 @@ Every event chain runs under a throttle that controls what blocks can do:
 
 ```bash
 foundry run --throttle dry_run
-foundry emit scan_requested --project alpha --throttle audit_only
+foundry run --project alpha --throttle audit_only
 ```
 
 ## Workflow Status

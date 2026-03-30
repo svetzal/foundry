@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -42,19 +43,11 @@ impl TaskBlock for CreatePlan {
         let payload = trigger.payload.clone();
 
         // Self-filter: only create plan for accepted triages
-        let accepted =
-            payload.get("accepted").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let accepted = trigger.payload_bool_or("accepted", false);
 
         if !accepted {
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: triage was rejected".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: triage was rejected", vec![]))
             });
         }
 
@@ -64,14 +57,7 @@ impl TaskBlock for CreatePlan {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -121,14 +107,7 @@ impl TaskBlock for CreatePlan {
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "agent invocation failed for plan");
-                    return Ok(TaskBlockResult {
-                        events: vec![],
-                        success: false,
-                        summary: format!("agent unavailable: {err}"),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
-                    });
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
                 }
             };
 
@@ -151,6 +130,7 @@ impl TaskBlock for CreatePlan {
             if let Some(gates) = payload.get("gates") {
                 event_payload["gates"] = gates.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

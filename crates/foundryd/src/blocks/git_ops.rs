@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
+use foundry_core::loop_context::has_loop_context;
+
 use crate::gateway::ShellGateway;
 
 task_block_new! {
@@ -62,14 +64,7 @@ impl CommitAndPush {
         let status = shell.run(path, "git", &["status", "--porcelain"], None, None).await?;
         if status.stdout.trim().is_empty() {
             tracing::info!(%project, "working tree clean, skipping commit");
-            return Ok(TaskBlockResult {
-                events: vec![],
-                success: true,
-                summary: "No changes to commit".to_string(),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            });
+            return Ok(TaskBlockResult::success("No changes to commit", vec![]));
         }
 
         // Stage everything.
@@ -83,6 +78,9 @@ impl CommitAndPush {
             EventType::ProjectMaintenanceCompleted => {
                 format!("chore({project}): automated maintenance")
             }
+            EventType::InnerIterationCompleted => {
+                format!("chore({project}): strategic iterate cycle")
+            }
             _ => format!("chore({project}): automated remediation"),
         };
 
@@ -95,14 +93,7 @@ impl CommitAndPush {
             let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
             if combined.contains("nothing to commit") || combined.contains("no changes added") {
                 tracing::info!(%project, "git commit found nothing to commit");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "No changes to commit".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::success("No changes to commit", vec![]));
             }
             return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
         }
@@ -137,14 +128,7 @@ impl CommitAndPush {
             tracing::info!(%project, "push disabled in registry, skipping");
         }
 
-        Ok(TaskBlockResult {
-            success: true,
-            summary: "Committed and pushed changes".to_string(),
-            events,
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
-        })
+        Ok(TaskBlockResult::success("Committed and pushed changes", events))
     }
 }
 
@@ -152,7 +136,7 @@ impl TaskBlock for CommitAndPush {
     task_block_meta! {
         name: "Commit and Push",
         kind: Mutator,
-        sinks_on: [RemediationCompleted, ProjectIterationCompleted, ProjectMaintenanceCompleted],
+        sinks_on: [RemediationCompleted, ProjectIterationCompleted, ProjectMaintenanceCompleted, InnerIterationCompleted],
     }
 
     fn retry_policy(&self) -> RetryPolicy {
@@ -163,6 +147,15 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        // Respect the loop_context guard: no events for intermediate completions.
+        let is_completion_event = matches!(
+            trigger.event_type,
+            EventType::ProjectIterationCompleted | EventType::ProjectMaintenanceCompleted
+        );
+        if is_completion_event && has_loop_context(&trigger.payload) {
+            return vec![];
+        }
+
         // Respect the self-filter: no events when payload says no changes.
         let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
         if changes_flag == Some(false) {
@@ -214,19 +207,31 @@ impl TaskBlock for CommitAndPush {
         let throttle = trigger.throttle;
         let event_type = trigger.event_type.clone();
 
+        // Self-filter: skip intermediate completions inside a nested loop.
+        // The outermost loop controller emits the terminal completion without
+        // loop_context. Per-iteration commits are handled by sinking on
+        // InnerIterationCompleted (which carries loop_context but is explicitly
+        // handled).
+        let is_completion_event = matches!(
+            event_type,
+            EventType::ProjectIterationCompleted | EventType::ProjectMaintenanceCompleted
+        );
+        if is_completion_event && has_loop_context(&trigger.payload) {
+            tracing::info!(%project, "inside nested loop, skipping commit on intermediate completion");
+            return Box::pin(async {
+                Ok(TaskBlockResult::success(
+                    "Skipped: inside nested loop (intermediate completion)",
+                    vec![],
+                ))
+            });
+        }
+
         // Self-filter: when the payload explicitly signals no changes were made, skip early.
         let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
         if changes_flag == Some(false) {
             tracing::info!(%project, "payload indicates no changes, skipping commit");
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "No changes to commit".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("No changes to commit", vec![]))
             });
         }
 
@@ -250,8 +255,9 @@ fn stub_result(
     throttle: foundry_core::throttle::Throttle,
     cve: &str,
 ) -> TaskBlockResult {
-    TaskBlockResult {
-        events: vec![
+    TaskBlockResult::success(
+        format!("Committed and pushed fix for {cve} (stub)"),
+        vec![
             Event::new(
                 EventType::ProjectChangesCommitted,
                 project.to_string(),
@@ -265,12 +271,7 @@ fn stub_result(
                 serde_json::json!({ "cve": cve, "stub": true }),
             ),
         ],
-        success: true,
-        summary: format!("Committed and pushed fix for {cve} (stub)"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    }
+    )
 }
 
 #[cfg(test)]
@@ -467,12 +468,98 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_includes_all_three_event_types() {
+    fn sinks_on_includes_all_event_types() {
         let block = CommitAndPush::new(empty_registry());
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::RemediationCompleted));
         assert!(sinks.contains(&EventType::ProjectIterationCompleted));
         assert!(sinks.contains(&EventType::ProjectMaintenanceCompleted));
+        assert!(sinks.contains(&EventType::InnerIterationCompleted));
+    }
+
+    #[tokio::test]
+    async fn skips_iteration_completion_with_loop_context() {
+        let block = CommitAndPush::new(empty_registry());
+        let trigger = Event::new(
+            EventType::ProjectIterationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "success": true,
+                "loop_context": { "strategic": { "iteration": 1 } }
+            }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("nested loop"));
+    }
+
+    #[tokio::test]
+    async fn inner_iteration_completed_commits_with_strategic_message() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: " M f\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "[main x] msg\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CommitAndPush::with_shell(registry, shell);
+        let trigger = Event::new(
+            EventType::InnerIterationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "success": true,
+                "loop_context": { "strategic": { "iteration": 1 } }
+            }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let msg = result.events[0].payload["message"].as_str().unwrap();
+        assert!(msg.contains("strategic"), "expected 'strategic' in '{msg}'");
+    }
+
+    #[tokio::test]
+    async fn does_not_skip_remediation_with_loop_context() {
+        // RemediationCompleted is not a completion event, so loop_context should not trigger skip
+        let block = CommitAndPush::new(empty_registry());
+        let trigger = Event::new(
+            EventType::RemediationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "cve": "CVE-2026-0001",
+                "loop_context": { "strategic": { "iteration": 1 } }
+            }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // Should NOT skip — stub events emitted because project not in registry
+        assert!(result.success);
+        assert!(!result.events.is_empty());
     }
 
     #[tokio::test]

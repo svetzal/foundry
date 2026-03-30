@@ -6,6 +6,8 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use foundry_core::loop_context::has_loop_context;
+
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
 
 /// Generates a commit headline and summary after a successful workflow.
@@ -42,19 +44,24 @@ impl TaskBlock for SummarizeResult {
         let throttle = trigger.throttle;
         let payload = trigger.payload.clone();
 
+        // Self-filter: skip intermediate completions inside a nested loop.
+        // The outermost loop controller emits the terminal completion without
+        // loop_context, which is when we should summarize.
+        if has_loop_context(&payload) {
+            return Box::pin(async {
+                Ok(TaskBlockResult::success(
+                    "Skipped: inside nested loop (intermediate completion)",
+                    vec![],
+                ))
+            });
+        }
+
         // Self-filter: only summarize successful completions
-        let success = payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let success = trigger.payload_bool_or("success", false);
 
         if !success {
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: workflow did not succeed".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: workflow did not succeed", vec![]))
             });
         }
 
@@ -64,14 +71,7 @@ impl TaskBlock for SummarizeResult {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -123,8 +123,9 @@ impl TaskBlock for SummarizeResult {
                 "summary generated"
             );
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("{project}: {headline}"),
+                vec![Event::new(
                     EventType::SummarizeCompleted,
                     project.clone(),
                     throttle,
@@ -134,12 +135,7 @@ impl TaskBlock for SummarizeResult {
                         "summary": summary,
                     }),
                 )],
-                success: true,
-                summary: format!("{project}: {headline}"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }
@@ -257,6 +253,29 @@ mod tests {
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::ProjectIterationCompleted));
         assert!(sinks.contains(&EventType::ProjectMaintenanceCompleted));
+    }
+
+    #[tokio::test]
+    async fn skips_when_loop_context_present() {
+        let agent = FakeAgentGateway::success();
+        let registry = registry_with_project("my-project", "/tmp/test");
+        let block = SummarizeResult::new(agent.clone(), registry);
+        let trigger = Event::new(
+            EventType::ProjectIterationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "success": true,
+                "loop_context": { "strategic": { "iteration": 1 } }
+            }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(agent.invocations().is_empty(), "agent should not be called");
     }
 
     #[tokio::test]

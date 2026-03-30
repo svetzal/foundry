@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::gates::GateDefinition;
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -75,20 +76,20 @@ impl TaskBlock for RunPreflightGates {
                 if let Some(gates) = payload.get("gates") {
                     event_payload["gates"] = gates.clone();
                 }
+                forward_loop_context(&payload, &mut event_payload);
+                if let Some(prompt) = payload.get("prompt") {
+                    event_payload["prompt"] = prompt.clone();
+                }
 
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: preflight skipped for {workflow} workflow"),
+                    vec![Event::new(
                         EventType::PreflightCompleted,
                         project.clone(),
                         throttle,
                         event_payload,
                     )],
-                    success: true,
-                    summary: format!("{project}: preflight skipped for {workflow} workflow"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             }
 
             // Parse gate definitions from payload
@@ -108,32 +109,25 @@ impl TaskBlock for RunPreflightGates {
                 if let Some(actions) = payload.get("actions") {
                     event_payload["actions"] = actions.clone();
                 }
+                forward_loop_context(&payload, &mut event_payload);
+                if let Some(prompt) = payload.get("prompt") {
+                    event_payload["prompt"] = prompt.clone();
+                }
 
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: no gates defined, preflight passes"),
+                    vec![Event::new(
                         EventType::PreflightCompleted,
                         project.clone(),
                         throttle,
                         event_payload,
                     )],
-                    success: true,
-                    summary: format!("{project}: no gates defined, preflight passes"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             }
 
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let working_dir = std::path::PathBuf::from(&entry.path);
@@ -164,6 +158,10 @@ impl TaskBlock for RunPreflightGates {
             });
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
+            }
+            forward_loop_context(&payload, &mut event_payload);
+            if let Some(prompt) = payload.get("prompt") {
+                event_payload["prompt"] = prompt.clone();
             }
 
             let success = run_result.required_passed;

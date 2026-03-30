@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -44,17 +45,19 @@ impl TaskBlock for RetryExecution {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(1);
 
+        let mut payload = serde_json::json!({
+            "project": trigger.project,
+            "workflow": workflow,
+            "retry_count": retry_count,
+            "success": true,
+            "dry_run": true,
+        });
+        forward_loop_context(&trigger.payload, &mut payload);
         vec![Event::new(
             EventType::ExecutionCompleted,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({
-                "project": trigger.project,
-                "workflow": workflow,
-                "retry_count": retry_count,
-                "success": true,
-                "dry_run": true,
-            }),
+            payload,
         )]
     }
 
@@ -68,19 +71,12 @@ impl TaskBlock for RetryExecution {
         let throttle = trigger.throttle;
         let payload = trigger.payload.clone();
 
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
 
-        let retry_count =
-            payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(1);
+        let retry_count = trigger.payload_u64_or("retry_count", 1);
 
-        let failure_context = payload
-            .get("failure_context")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("no failure context available")
+        let failure_context = trigger
+            .payload_str_or("failure_context", "no failure context available")
             .to_string();
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
@@ -89,14 +85,7 @@ impl TaskBlock for RetryExecution {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -165,6 +154,7 @@ impl TaskBlock for RetryExecution {
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

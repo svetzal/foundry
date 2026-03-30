@@ -46,6 +46,34 @@ impl Event {
         }
     }
 
+    pub fn payload_str(&self, key: &str) -> Option<&str> {
+        self.payload.get(key).and_then(serde_json::Value::as_str)
+    }
+
+    pub fn payload_str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.payload_str(key).unwrap_or(default)
+    }
+
+    pub fn payload_bool(&self, key: &str) -> Option<bool> {
+        self.payload.get(key).and_then(serde_json::Value::as_bool)
+    }
+
+    pub fn payload_bool_or(&self, key: &str, default: bool) -> bool {
+        self.payload_bool(key).unwrap_or(default)
+    }
+
+    pub fn payload_u64(&self, key: &str) -> Option<u64> {
+        self.payload.get(key).and_then(serde_json::Value::as_u64)
+    }
+
+    pub fn payload_u64_or(&self, key: &str, default: u64) -> u64 {
+        self.payload_u64(key).unwrap_or(default)
+    }
+
+    pub fn payload_i64(&self, key: &str) -> Option<i64> {
+        self.payload.get(key).and_then(serde_json::Value::as_i64)
+    }
+
     fn compute_id(
         event_type: &EventType,
         project: &str,
@@ -87,6 +115,7 @@ pub enum EventType {
     // Maintenance sub-workflow triggers
     IterationRequested,
     MaintenanceRequested,
+    PromptExecutionRequested,
 
     // Validation workflow
     ValidationRequested,
@@ -112,6 +141,11 @@ pub enum EventType {
     AssessmentCompleted,
     TriageCompleted,
     PlanCompleted,
+
+    // Strategic loop workflow (nested iteration)
+    StrategicAssessmentCompleted,
+    StrategicCycleCompleted,
+    InnerIterationCompleted,
 
     // Drift scout workflow
     DriftAssessmentRequested,
@@ -142,6 +176,7 @@ impl EventType {
             Self::ProjectChangesPushed => "project_changes_pushed",
             Self::IterationRequested => "iteration_requested",
             Self::MaintenanceRequested => "maintenance_requested",
+            Self::PromptExecutionRequested => "prompt_execution_requested",
             Self::ValidationRequested => "validation_requested",
             Self::ValidationCompleted => "validation_completed",
             Self::MaintenanceRunStarted => "maintenance_run_started",
@@ -157,6 +192,9 @@ impl EventType {
             Self::AssessmentCompleted => "assessment_completed",
             Self::TriageCompleted => "triage_completed",
             Self::PlanCompleted => "plan_completed",
+            Self::StrategicAssessmentCompleted => "strategic_assessment_completed",
+            Self::StrategicCycleCompleted => "strategic_cycle_completed",
+            Self::InnerIterationCompleted => "inner_iteration_completed",
             Self::DriftAssessmentRequested => "drift_assessment_requested",
             Self::DriftAssessmentCompleted => "drift_assessment_completed",
             Self::GreetRequested => "greet_requested",
@@ -187,6 +225,7 @@ impl std::str::FromStr for EventType {
             "project_changes_pushed" => Ok(Self::ProjectChangesPushed),
             "iteration_requested" => Ok(Self::IterationRequested),
             "maintenance_requested" => Ok(Self::MaintenanceRequested),
+            "prompt_execution_requested" => Ok(Self::PromptExecutionRequested),
             "validation_requested" => Ok(Self::ValidationRequested),
             "validation_completed" => Ok(Self::ValidationCompleted),
             "maintenance_run_started" => Ok(Self::MaintenanceRunStarted),
@@ -202,6 +241,9 @@ impl std::str::FromStr for EventType {
             "assessment_completed" => Ok(Self::AssessmentCompleted),
             "triage_completed" => Ok(Self::TriageCompleted),
             "plan_completed" => Ok(Self::PlanCompleted),
+            "strategic_assessment_completed" => Ok(Self::StrategicAssessmentCompleted),
+            "strategic_cycle_completed" => Ok(Self::StrategicCycleCompleted),
+            "inner_iteration_completed" => Ok(Self::InnerIterationCompleted),
             "drift_assessment_requested" => Ok(Self::DriftAssessmentRequested),
             "drift_assessment_completed" => Ok(Self::DriftAssessmentCompleted),
             "greet_requested" => Ok(Self::GreetRequested),
@@ -279,6 +321,7 @@ mod tests {
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
             (EventType::IterationRequested, "iteration_requested"),
             (EventType::MaintenanceRequested, "maintenance_requested"),
+            (EventType::PromptExecutionRequested, "prompt_execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceRunStarted, "maintenance_run_started"),
@@ -294,6 +337,9 @@ mod tests {
             (EventType::AssessmentCompleted, "assessment_completed"),
             (EventType::TriageCompleted, "triage_completed"),
             (EventType::PlanCompleted, "plan_completed"),
+            (EventType::StrategicAssessmentCompleted, "strategic_assessment_completed"),
+            (EventType::StrategicCycleCompleted, "strategic_cycle_completed"),
+            (EventType::InnerIterationCompleted, "inner_iteration_completed"),
             (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::GreetRequested, "greet_requested"),
@@ -407,6 +453,48 @@ mod tests {
         let json = serde_json::to_string(&original).expect("should serialize");
         let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn strategic_assessment_completed_serde_round_trip() {
+        let original = EventType::StrategicAssessmentCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn strategic_cycle_completed_serde_round_trip() {
+        let original = EventType::StrategicCycleCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn inner_iteration_completed_serde_round_trip() {
+        let original = EventType::InnerIterationCompleted;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn strategic_assessment_completed_from_str() {
+        let parsed: EventType = "strategic_assessment_completed".parse().expect("should parse");
+        assert_eq!(parsed, EventType::StrategicAssessmentCompleted);
+    }
+
+    #[test]
+    fn strategic_cycle_completed_from_str() {
+        let parsed: EventType = "strategic_cycle_completed".parse().expect("should parse");
+        assert_eq!(parsed, EventType::StrategicCycleCompleted);
+    }
+
+    #[test]
+    fn inner_iteration_completed_from_str() {
+        let parsed: EventType = "inner_iteration_completed".parse().expect("should parse");
+        assert_eq!(parsed, EventType::InnerIterationCompleted);
     }
 
     #[test]

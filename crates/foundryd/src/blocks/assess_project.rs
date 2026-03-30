@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -43,24 +44,15 @@ impl TaskBlock for AssessProject {
         let payload = trigger.payload.clone();
 
         // Self-filter: only run for iterate workflow with passed preflight
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        let all_passed =
-            payload.get("all_passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let all_passed = trigger.payload_bool_or("all_passed", false);
 
         if workflow != "iterate" || !all_passed {
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: not an iterate workflow or preflight failed".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success(
+                    "Skipped: not an iterate workflow or preflight failed",
+                    vec![],
+                ))
             });
         }
 
@@ -70,14 +62,7 @@ impl TaskBlock for AssessProject {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -119,14 +104,7 @@ impl TaskBlock for AssessProject {
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "agent invocation failed for assessment");
-                    return Ok(TaskBlockResult {
-                        events: vec![],
-                        success: false,
-                        summary: format!("agent unavailable: {err}"),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
-                    });
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
                 }
             };
 
@@ -182,20 +160,17 @@ impl TaskBlock for AssessProject {
             if let Some(gates) = payload.get("gates") {
                 event_payload["gates"] = gates.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("{project}: assessed — severity {severity}, {principle}"),
+                vec![Event::new(
                     EventType::AssessmentCompleted,
                     project.clone(),
                     throttle,
                     event_payload,
                 )],
-                success: true,
-                summary: format!("{project}: assessed — severity {severity}, {principle}"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

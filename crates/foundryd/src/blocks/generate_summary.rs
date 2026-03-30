@@ -219,14 +219,7 @@ impl TaskBlock for GenerateSummary {
                     path = %runs_dir.display(),
                     "failed to create summary directory"
                 );
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Failed to create directory: {e}"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::failure(format!("Failed to create directory: {e}")));
             }
 
             let summary_path = runs_dir.join("summary.md");
@@ -236,14 +229,7 @@ impl TaskBlock for GenerateSummary {
                     path = %summary_path.display(),
                     "failed to write summary"
                 );
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Failed to write summary: {e}"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::failure(format!("Failed to write summary: {e}")));
             }
 
             let path_str = summary_path.to_string_lossy().to_string();

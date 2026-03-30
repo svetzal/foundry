@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -47,14 +48,7 @@ impl TaskBlock for TriageAssessment {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -138,24 +132,21 @@ impl TaskBlock for TriageAssessment {
             if let Some(gates) = payload.get("gates") {
                 event_payload["gates"] = gates.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                if accepted {
+                    format!("{project}: triage accepted — {reason}")
+                } else {
+                    format!("{project}: triage rejected — {reason}")
+                },
+                vec![Event::new(
                     EventType::TriageCompleted,
                     project.clone(),
                     throttle,
                     event_payload,
                 )],
-                success: true,
-                summary: if accepted {
-                    format!("{project}: triage accepted — {reason}")
-                } else {
-                    format!("{project}: triage rejected — {reason}")
-                },
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

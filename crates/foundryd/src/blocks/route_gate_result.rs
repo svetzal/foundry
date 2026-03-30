@@ -1,6 +1,7 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::{forward_loop_context, has_loop_context};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes gate verification results to the appropriate terminal event or retry.
@@ -8,11 +9,16 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Observer — sinks on `GateVerificationCompleted`.
 ///
 /// Routing logic:
-/// - All required gates passed → emit `ProjectIterationCompleted` or
-///   `ProjectMaintenanceCompleted` with `success: true`
+/// - All required gates passed → emit completion event with `success: true`
 /// - Failed and `retry_count < 3` → emit `RetryRequested` with incremented
 ///   `retry_count` and failure context
 /// - Failed and retries exhausted → emit completion event with `success: false`
+///
+/// Loop awareness: when `loop_context` is present in the payload and the
+/// workflow is `iterate`, emits `InnerIterationCompleted` instead of
+/// `ProjectIterationCompleted`. This allows the strategic loop controller
+/// to decide whether to continue iterating. Maintenance chaining is also
+/// suppressed inside a loop.
 pub struct RouteGateResult;
 
 impl TaskBlock for RouteGateResult {
@@ -47,8 +53,14 @@ impl TaskBlock for RouteGateResult {
                 .unwrap_or("iterate")
                 .to_string();
 
+            let in_loop = has_loop_context(&payload);
+
             let completion_event_type = if workflow == "maintain" {
                 EventType::ProjectMaintenanceCompleted
+            } else if in_loop {
+                // Inside a nested loop — emit InnerIterationCompleted so the
+                // strategic loop controller can decide whether to continue.
+                EventType::InnerIterationCompleted
             } else {
                 EventType::ProjectIterationCompleted
             };
@@ -63,6 +75,7 @@ impl TaskBlock for RouteGateResult {
                 if let Some(actions) = payload.get("actions") {
                     event_payload["actions"] = actions.clone();
                 }
+                forward_loop_context(&payload, &mut event_payload);
 
                 let mut events = vec![Event::new(
                     completion_event_type,
@@ -71,8 +84,10 @@ impl TaskBlock for RouteGateResult {
                     event_payload,
                 )];
 
-                // Chain to maintenance if actions.maintain=true and this is an iterate workflow
-                if workflow == "iterate" {
+                // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
+                // Skip chaining when inside a nested loop — the strategic loop controller
+                // handles post-loop maintenance chaining.
+                if workflow == "iterate" && !in_loop {
                     let maintain = payload
                         .get("actions")
                         .and_then(|a| a.get("maintain"))
@@ -89,14 +104,10 @@ impl TaskBlock for RouteGateResult {
                     }
                 }
 
-                return Ok(TaskBlockResult {
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: all required gates passed"),
                     events,
-                    success: true,
-                    summary: format!("{project}: all required gates passed"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             }
 
             // Required gates failed
@@ -118,6 +129,7 @@ impl TaskBlock for RouteGateResult {
                 if let Some(actions) = payload.get("actions") {
                     event_payload["actions"] = actions.clone();
                 }
+                forward_loop_context(&payload, &mut event_payload);
 
                 return Ok(TaskBlockResult {
                     events: vec![Event::new(
@@ -152,6 +164,7 @@ impl TaskBlock for RouteGateResult {
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(
@@ -371,6 +384,79 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
+    }
+
+    // --- loop-aware behaviour ---
+
+    fn verification_event_with_loop_context(
+        project: &str,
+        required_passed: bool,
+        retry_count: u64,
+        workflow: &str,
+    ) -> Event {
+        Event::new(
+            EventType::GateVerificationCompleted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": project,
+                "required_passed": required_passed,
+                "all_passed": required_passed,
+                "retry_count": retry_count,
+                "workflow": workflow,
+                "results": [],
+                "loop_context": {
+                    "strategic": { "iteration": 1, "max": 5 }
+                },
+                "actions": { "maintain": true },
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn iterate_with_loop_context_emits_inner_iteration_completed() {
+        let trigger = verification_event_with_loop_context("my-project", true, 0, "iterate");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::InnerIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], true);
+        // loop_context should be forwarded
+        assert!(result.events[0].payload.get("loop_context").is_some());
+    }
+
+    #[tokio::test]
+    async fn iterate_with_loop_context_does_not_chain_maintenance() {
+        let trigger = verification_event_with_loop_context("my-project", true, 0, "iterate");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        // Only one event — no MaintenanceRequested chaining inside a loop
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::InnerIterationCompleted);
+    }
+
+    #[tokio::test]
+    async fn iterate_with_loop_context_failed_retries_exhausted() {
+        let trigger = verification_event_with_loop_context("my-project", false, 3, "iterate");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        // Even on failure with exhausted retries, should use InnerIterationCompleted
+        assert_eq!(result.events[0].event_type, EventType::InnerIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn maintain_with_loop_context_still_uses_maintenance_completed() {
+        let trigger = verification_event_with_loop_context("my-project", true, 0, "maintain");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        // Maintenance workflow is not nested — still uses ProjectMaintenanceCompleted
+        assert!(result.success);
         assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
     }
 

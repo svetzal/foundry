@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -32,16 +33,18 @@ impl TaskBlock for ExecutePlan {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let mut payload = serde_json::json!({
+            "project": trigger.project,
+            "workflow": "iterate",
+            "success": true,
+            "dry_run": true,
+        });
+        forward_loop_context(&trigger.payload, &mut payload);
         vec![Event::new(
             EventType::ExecutionCompleted,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({
-                "project": trigger.project,
-                "workflow": "iterate",
-                "success": true,
-                "dry_run": true,
-            }),
+            payload,
         )]
     }
 
@@ -61,14 +64,7 @@ impl TaskBlock for ExecutePlan {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);
@@ -144,6 +140,7 @@ impl TaskBlock for ExecutePlan {
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
+            forward_loop_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

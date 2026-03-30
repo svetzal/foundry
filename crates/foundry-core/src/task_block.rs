@@ -43,6 +43,41 @@ pub struct TaskBlockResult {
     pub audit_artifacts: Vec<String>,
 }
 
+impl TaskBlockResult {
+    pub fn success(summary: impl Into<String>, events: Vec<Event>) -> Self {
+        Self {
+            events,
+            success: true,
+            summary: summary.into(),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        }
+    }
+
+    pub fn failure(summary: impl Into<String>) -> Self {
+        Self {
+            events: vec![],
+            success: false,
+            summary: summary.into(),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        }
+    }
+
+    #[must_use]
+    pub fn with_output(mut self, raw_output: Option<String>, exit_code: Option<i32>) -> Self {
+        self.raw_output = raw_output;
+        self.exit_code = exit_code;
+        self
+    }
+
+    pub fn project_not_found(project: &str) -> Self {
+        Self::failure(format!("Project '{project}' not found in registry"))
+    }
+}
+
 /// Whether a task block performs mutations or only observes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {

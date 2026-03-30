@@ -18,6 +18,7 @@
 - [Workflow Formations](guide/workflow-formations.md)
 - [Vulnerability Remediation](guide/vulnerability-remediation.md)
 - [Iteration Workflow](guide/iteration-workflow.md)
+- [Strategic Iteration](guide/strategic-iteration.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Throttle Control](guide/throttle.md)
 - [Writing Task Blocks](guide/writing-task-blocks.md)

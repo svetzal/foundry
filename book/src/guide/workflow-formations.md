@@ -56,6 +56,19 @@ These blocks appear in multiple formations:
 | Watch Pipeline | Mutator | `release_completed` | `release_pipeline_completed` |
 | Install Locally | Mutator | `project_changes_pushed`, `release_pipeline_completed` | `local_install_completed` |
 
+### Prompt Workflow Blocks
+
+| Block | Kind | Sinks On | Emits |
+|-------|------|----------|-------|
+| Direct Prompt | Observer | `preflight_completed` (workflow=prompt) | `plan_completed` |
+
+### Strategic Loop Blocks
+
+| Block | Kind | Sinks On | Emits |
+|-------|------|----------|-------|
+| Strategic Assessor | Observer | `iteration_requested` (strategic=true) | `strategic_assessment_completed` |
+| Strategic Loop Controller | Observer | `strategic_assessment_completed`, `inner_iteration_completed` | `iteration_requested` (loop) / `project_iteration_completed` (done) |
+
 ### Orchestration Blocks
 
 | Block | Kind | Sinks On | Emits |
@@ -111,6 +124,74 @@ flowchart TD
     K --> M[[Summarize Result]]
     K --> N[[Commit and Push]]
 ```
+
+### Prompt Formation
+
+Entry event: `prompt_execution_requested`
+
+A streamlined formation that executes an arbitrary user-provided prompt
+with gate verification. It skips assessment, triage, and plan creation —
+the user's prompt IS the plan.
+
+```mermaid
+flowchart TD
+    A([prompt_execution_requested]) --> B[[Check Charter]]
+    B -->|passed| C[[Resolve Gates]]
+    C --> D[[Run Preflight Gates]]
+    D -->|passed| E[[Direct Prompt]]
+    E --> F[[Execute Plan]]
+    F --> G[[Run Verify Gates]]
+    G --> H[[Route Gate Result]]
+    H -->|pass| I([project_iteration_completed])
+    H -->|fail, retries left| J[[Retry Execution]]
+    J --> G
+    I --> K[[Summarize Result]]
+    I --> L[[Commit and Push]]
+```
+
+Usage:
+
+```bash
+foundry emit prompt_execution_requested my-project \
+  --payload '{"prompt": "Pick the highest priority interaction from et and implement it."}'
+```
+
+### Strategic Iterate Formation
+
+Entry event: `iteration_requested` with `strategic: true`
+
+A nested loop that wraps the iterate formation. The strategic assessor
+identifies multiple areas for improvement, then the loop controller
+enters the inner iterate formation for each area. After each inner
+iteration completes, an AI assessment decides whether to continue.
+Changes are committed per iteration.
+
+```mermaid
+flowchart TD
+    A([iteration_requested<br/>strategic=true]) --> B[[Strategic Assessor]]
+    B --> C([strategic_assessment_completed])
+    C --> D[[Strategic Loop Controller]]
+    D --> E([iteration_requested<br/>with loop_context])
+    E --> F[Iterate Formation<br/>inner loop]
+    F --> G([inner_iteration_completed])
+    G --> H[[Commit and Push]]
+    G --> D
+    D -->|continue| E
+    D -->|done| I([project_iteration_completed])
+    I --> J[[Summarize Result]]
+    I --> K[[Commit and Push]]
+```
+
+The inner iterate formation runs exactly as documented above, with one
+difference: `Route Gate Result` emits `inner_iteration_completed`
+instead of `project_iteration_completed` when `loop_context` is present
+in the payload. This allows the strategic loop controller to intercept
+the completion and decide whether to continue.
+
+Terminal blocks (`Summarize Result` and `Commit and Push`) self-filter
+on `loop_context` — they skip intermediate completions and only fire
+on the final `project_iteration_completed` emitted by the strategic
+loop controller (which strips `loop_context` before emitting it).
 
 ### Maintain Formation
 
@@ -250,6 +331,21 @@ This means that after an iterate or maintain formation commits and pushes,
 the release tag is automatically re-audited. If the push introduced a
 vulnerability (or resolved one), the audit chain picks it up without a
 separate scan.
+
+### Strategic Iteration
+
+Emit `iteration_requested` with `strategic: true` to enter the nested
+loop. The strategic assessor analyses the codebase holistically and
+the loop controller runs multiple inner iterate cycles until the AI
+determines the codebase has plateaued.
+
+```bash
+foundry emit iteration_requested my-project \
+  --payload '{"strategic":true,"max_iterations":5}'
+```
+
+The `max_iterations` field caps the loop to prevent runaway iterations.
+Each inner cycle commits its changes independently.
 
 ### Gate Check Only
 

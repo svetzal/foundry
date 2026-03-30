@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -24,7 +25,7 @@ impl TaskBlock for CheckCharter {
     task_block_meta! {
         name: "Check Charter",
         kind: Observer,
-        sinks_on: [IterationRequested],
+        sinks_on: [IterationRequested, PromptExecutionRequested],
     }
 
     fn execute(
@@ -35,20 +36,25 @@ impl TaskBlock for CheckCharter {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let payload = trigger.payload.clone();
+        let event_type = trigger.event_type.clone();
+
+        // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
+        let strategic = trigger.payload_bool_or("strategic", false);
+        if strategic {
+            return Box::pin(async {
+                Ok(TaskBlockResult::success(
+                    "Skipped: strategic iteration handled by StrategicAssessor",
+                    vec![],
+                ))
+            });
+        }
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
 
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = std::path::Path::new(&entry.path);
@@ -71,6 +77,18 @@ impl TaskBlock for CheckCharter {
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
+            // Derive workflow from trigger event type, with payload override.
+            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
+                match event_type {
+                    EventType::PromptExecutionRequested => "prompt",
+                    _ => "iterate",
+                },
+            );
+            event_payload["workflow"] = serde_json::json!(workflow);
+            if let Some(prompt) = payload.get("prompt") {
+                event_payload["prompt"] = prompt.clone();
+            }
+            forward_loop_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(
@@ -133,12 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn sinks_on_iteration_requested() {
+    fn sinks_on_expected_events() {
         let block = CheckCharter::new(Arc::new(Registry {
             version: 2,
             projects: vec![],
         }));
-        assert_eq!(block.sinks_on(), &[EventType::IterationRequested]);
+        let sinks = block.sinks_on();
+        assert!(sinks.contains(&EventType::IterationRequested));
+        assert!(sinks.contains(&EventType::PromptExecutionRequested));
     }
 
     #[tokio::test]

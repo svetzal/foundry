@@ -111,6 +111,12 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::AssessProject::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::TriageAssessment::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CreatePlan::new(agent.clone(), registry.clone())));
+    // Prompt workflow (direct prompt execution with gates)
+    engine.register(Box::new(blocks::DirectPrompt));
+    // Strategic loop workflow (nested iteration)
+    engine.register(Box::new(blocks::StrategicAssessor::new(agent.clone(), registry.clone())));
+    engine
+        .register(Box::new(blocks::StrategicLoopController::new(agent.clone(), registry.clone())));
     // Drift scout workflow
     engine.register(Box::new(blocks::ScoutDrift::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::ExecutePlan::new(agent, registry.clone())));

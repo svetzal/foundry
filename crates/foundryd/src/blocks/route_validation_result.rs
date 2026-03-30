@@ -36,14 +36,10 @@ impl TaskBlock for RouteValidationResult {
 
             // Self-filter: only handle validation workflow
             if workflow != "validate" {
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: format!("{project}: skipped (workflow={workflow}, not validate)"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: skipped (workflow={workflow}, not validate)"),
+                    vec![],
+                ));
             }
 
             let required_passed = payload

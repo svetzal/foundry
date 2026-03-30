@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -47,34 +48,27 @@ impl TaskBlock for ResolveGates {
                     payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
                 if !success {
                     tracing::info!(project = %project, "charter check failed, skipping gate resolution");
-                    return Ok(TaskBlockResult {
-                        events: vec![],
-                        success: true,
-                        summary: format!("{project}: charter check failed, no gates to resolve"),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
-                    });
+                    return Ok(TaskBlockResult::success(
+                        format!("{project}: charter check failed, no gates to resolve"),
+                        vec![],
+                    ));
                 }
             }
 
-            let workflow = match event_type {
-                EventType::CharterCheckCompleted => "iterate",
-                EventType::MaintenanceRequested => "maintain",
-                EventType::ValidationRequested => "validate",
-                _ => "unknown",
-            };
+            // Payload workflow overrides the event-type default — this allows
+            // the prompt formation to carry workflow="prompt" through CharterCheckCompleted.
+            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
+                match event_type {
+                    EventType::CharterCheckCompleted => "iterate",
+                    EventType::MaintenanceRequested => "maintain",
+                    EventType::ValidationRequested => "validate",
+                    _ => "unknown",
+                },
+            );
 
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry, cannot resolve gates");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: false,
-                    summary: format!("Project '{project}' not found in registry"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::project_not_found(&project));
             };
 
             let project_path = std::path::Path::new(&entry.path);
@@ -112,23 +106,20 @@ impl TaskBlock for ResolveGates {
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
+            if let Some(prompt) = payload.get("prompt") {
+                event_payload["prompt"] = prompt.clone();
+            }
+            forward_loop_context(&payload, &mut event_payload);
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("{project}: resolved {} gates for {workflow} workflow", gates.len()),
+                vec![Event::new(
                     EventType::GateResolutionCompleted,
                     project.clone(),
                     throttle,
                     event_payload,
                 )],
-                success: true,
-                summary: format!(
-                    "{project}: resolved {} gates for {workflow} workflow",
-                    gates.len()
-                ),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

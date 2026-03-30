@@ -141,14 +141,7 @@ async fn run_release(
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(path_str) = project_path else {
         tracing::warn!(project = %project, "project not found in registry, skipping release");
-        return Ok(TaskBlockResult {
-            events: vec![],
-            success: false,
-            summary: format!("Project '{project}' not found in registry"),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
-        });
+        return Ok(TaskBlockResult::project_not_found(&project));
     };
 
     let project_dir = Path::new(&path_str);
