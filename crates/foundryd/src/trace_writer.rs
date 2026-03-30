@@ -107,7 +107,7 @@ impl TraceWriter {
                 .first()
                 .map(|e| (e.event_type.to_string(), e.project.clone()))
                 .unwrap_or_default();
-            let success = result.block_executions.iter().all(|b| b.success);
+            let success = result.is_success();
             indices.push(TraceIndex {
                 event_id,
                 event_type,

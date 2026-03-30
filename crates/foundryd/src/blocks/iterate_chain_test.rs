@@ -463,6 +463,12 @@ async fn gate_verification_retry_loop() {
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
+    // ProcessResult::is_success() must agree — the retry-recovered chain is successful
+    assert!(
+        result.is_success(),
+        "is_success() should be true when retry recovers from gate failure"
+    );
+
     // Should have summary
     assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
 }

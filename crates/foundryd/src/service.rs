@@ -127,7 +127,7 @@ impl Foundry for FoundryService {
                 // Broadcast a completion event for maintenance runs so the CLI
                 // `run` command can detect when to exit its watch stream.
                 if root_event_type == EventType::MaintenanceRunStarted {
-                    let success = result.block_executions.iter().all(|b| b.success);
+                    let success = result.is_success();
                     let completed = Event::new(
                         EventType::MaintenanceRunCompleted,
                         root_project,

@@ -192,6 +192,12 @@ async fn retry_loop_on_gate_failure_then_success() {
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
+    // ProcessResult::is_success() must agree — the retry-recovered chain is successful
+    assert!(
+        result.is_success(),
+        "is_success() should be true when retry recovers from gate failure"
+    );
+
     // Should have summary
     assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
 }
@@ -233,6 +239,9 @@ async fn retries_exhausted_emits_failure() {
         .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], false);
+
+    // ProcessResult::is_success() must agree — exhausted retries is a real failure
+    assert!(!result.is_success(), "is_success() should be false when retries are exhausted");
 
     // Should NOT have SummarizeCompleted (only on success)
     assert!(!event_types.contains(&"summarize_completed"), "should not summarize on failure");

@@ -478,7 +478,7 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
                 continue;
             }
         }
-        let success = result.block_executions.iter().all(|b| b.success);
+        let success = result.is_success();
         indices.push(TraceIndex {
             event_id,
             event_type,
