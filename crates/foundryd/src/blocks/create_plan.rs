@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_loop_context;
+use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -62,14 +62,9 @@ impl TaskBlock for CreatePlan {
 
             let project_path = PathBuf::from(&entry.path);
 
-            let principle = payload
-                .get("principle")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let category =
-                payload.get("category").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let assessment =
-                payload.get("assessment").and_then(serde_json::Value::as_str).unwrap_or("");
+            let principle = payload.str_or("principle", "unknown");
+            let category = payload.str_or("category", "unknown");
+            let assessment = payload.str_or("assessment", "");
 
             let prompt = format!(
                 "You are creating a correction plan for project '{project}'.\n\n\
@@ -121,16 +116,7 @@ impl TaskBlock for CreatePlan {
                 "assessment": assessment,
                 "workflow": "iterate",
             });
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            if let Some(audit_name) = payload.get("audit_name") {
-                event_payload["audit_name"] = audit_name.clone();
-            }
-            if let Some(gates) = payload.get("gates") {
-                event_payload["gates"] = gates.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
+            forward_chain_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

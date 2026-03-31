@@ -119,8 +119,9 @@ impl TaskBlock for ValidateProject {
             let Some(entry) = registry.active_projects().into_iter().find(|p| p.name == project)
             else {
                 tracing::info!(%project, "project skipped or not in registry, skipping validation");
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                return Ok(TaskBlockResult::success(
+                    format!("Project {project} skipped"),
+                    vec![Event::new(
                         EventType::ProjectValidationCompleted,
                         project.clone(),
                         throttle,
@@ -129,12 +130,7 @@ impl TaskBlock for ValidateProject {
                             "reason": "project skipped or not in registry"
                         }),
                     )],
-                    success: true,
-                    summary: format!("Project {project} skipped"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             };
 
             let path = Path::new(&entry.path);
@@ -160,8 +156,9 @@ impl TaskBlock for ValidateProject {
             }
 
             tracing::info!(%project, %has_gates, "project validated successfully");
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("Project {project} validated"),
+                vec![Event::new(
                     EventType::ProjectValidationCompleted,
                     project.clone(),
                     throttle,
@@ -171,12 +168,7 @@ impl TaskBlock for ValidateProject {
                         "actions": entry.actions,
                     }),
                 )],
-                success: true,
-                summary: format!("Project {project} validated"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

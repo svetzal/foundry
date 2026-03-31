@@ -50,20 +50,17 @@ impl TaskBlock for RouteProjectWorkflow {
         Box::pin(async move {
             if status != "ok" {
                 tracing::info!(%project, %status, "skipping routing: validation did not succeed");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: format!("{project}: skipped — validation status={status}"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: skipped — validation status={status}"),
+                    vec![],
+                ));
             }
 
             if iterate {
                 tracing::info!(%project, "routing to iteration workflow");
-                Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                Ok(TaskBlockResult::success(
+                    format!("{project}: routing to iteration workflow"),
+                    vec![Event::new(
                         EventType::IterationRequested,
                         project.clone(),
                         throttle,
@@ -72,37 +69,24 @@ impl TaskBlock for RouteProjectWorkflow {
                             "actions": { "maintain": maintain },
                         }),
                     )],
-                    success: true,
-                    summary: format!("{project}: routing to iteration workflow"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                ))
             } else if maintain {
                 tracing::info!(%project, "routing to maintenance workflow");
-                Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                Ok(TaskBlockResult::success(
+                    format!("{project}: routing to maintenance workflow"),
+                    vec![Event::new(
                         EventType::MaintenanceRequested,
                         project.clone(),
                         throttle,
                         serde_json::json!({ "project": project }),
                     )],
-                    success: true,
-                    summary: format!("{project}: routing to maintenance workflow"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                ))
             } else {
                 tracing::info!(%project, "no automation actions enabled");
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: format!("{project}: no automation actions enabled"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success(
+                    format!("{project}: no automation actions enabled"),
+                    vec![],
+                ))
             }
         })
     }

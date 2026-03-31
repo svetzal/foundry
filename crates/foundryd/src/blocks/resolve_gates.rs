@@ -1,8 +1,8 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_loop_context;
+use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -44,8 +44,7 @@ impl TaskBlock for ResolveGates {
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
             if event_type == EventType::CharterCheckCompleted {
-                let success =
-                    payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let success = payload.bool_or("success", false);
                 if !success {
                     tracing::info!(project = %project, "charter check failed, skipping gate resolution");
                     return Ok(TaskBlockResult::success(
@@ -57,7 +56,8 @@ impl TaskBlock for ResolveGates {
 
             // Payload workflow overrides the event-type default — this allows
             // the prompt formation to carry workflow="prompt" through CharterCheckCompleted.
-            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
+            let workflow = payload.str_or(
+                "workflow",
                 match event_type {
                     EventType::CharterCheckCompleted => "iterate",
                     EventType::MaintenanceRequested => "maintain",
@@ -103,13 +103,7 @@ impl TaskBlock for ResolveGates {
                 "gates": gates_json,
             });
             // Merge forwarded fields from trigger payload
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            if let Some(prompt) = payload.get("prompt") {
-                event_payload["prompt"] = prompt.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
+            forward_chain_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult::success(
                 format!("{project}: resolved {} gates for {workflow} workflow", gates.len()),

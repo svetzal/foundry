@@ -99,14 +99,7 @@ impl TaskBlock for CutRelease {
         if dirty {
             tracing::info!("main branch is dirty, skipping release");
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: main branch is dirty".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: main branch is dirty", vec![]))
             });
         }
 
@@ -150,17 +143,10 @@ async fn run_release(
     let agents_md = project_dir.join("AGENTS.md");
     if !agents_md.exists() {
         tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
-        return Ok(TaskBlockResult {
-            events: vec![],
-            success: false,
-            summary: format!(
-                "AGENTS.md not found at {}; cannot invoke Claude CLI",
-                agents_md.display()
-            ),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
-        });
+        return Ok(TaskBlockResult::failure(format!(
+            "AGENTS.md not found at {}; cannot invoke Claude CLI",
+            agents_md.display()
+        )));
     }
 
     let prompt = format!(
@@ -340,19 +326,15 @@ impl TaskBlock for WatchPipeline {
 
 /// Emit a stub successful pipeline completion event.
 fn stub_success(project: String, throttle: foundry_core::throttle::Throttle) -> TaskBlockResult {
-    TaskBlockResult {
-        events: vec![Event::new(
+    TaskBlockResult::success(
+        "Release pipeline completed successfully",
+        vec![Event::new(
             EventType::ReleasePipelineCompleted,
             project,
             throttle,
             serde_json::json!({ "status": "success" }),
         )],
-        success: true,
-        summary: "Release pipeline completed successfully".to_string(),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    }
+    )
 }
 
 /// Poll GitHub Actions for the latest workflow run on `repo` until it

@@ -74,6 +74,10 @@ impl Event {
         self.payload.get(key).and_then(serde_json::Value::as_i64)
     }
 
+    pub fn payload_i64_or(&self, key: &str, default: i64) -> i64 {
+        self.payload_i64(key).unwrap_or(default)
+    }
+
     fn compute_id(
         event_type: &EventType,
         project: &str,
@@ -87,6 +91,35 @@ impl Event {
         hasher.update(payload.to_string().as_bytes());
         let hash = hasher.finalize();
         format!("evt_{}", hex::encode(&hash[..12]))
+    }
+}
+
+/// Extension methods for extracting typed values from a `serde_json::Value` payload object.
+///
+/// Provides `str_or`, `bool_or`, `u64_or`, and `i64_or` to replace the repetitive
+/// `.get(key).and_then(Value::as_T).unwrap_or(default)` pattern used across task blocks.
+pub trait PayloadExt {
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str;
+    fn bool_or(&self, key: &str, default: bool) -> bool;
+    fn u64_or(&self, key: &str, default: u64) -> u64;
+    fn i64_or(&self, key: &str, default: i64) -> i64;
+}
+
+impl PayloadExt for serde_json::Value {
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.get(key).and_then(serde_json::Value::as_str).unwrap_or(default)
+    }
+
+    fn bool_or(&self, key: &str, default: bool) -> bool {
+        self.get(key).and_then(serde_json::Value::as_bool).unwrap_or(default)
+    }
+
+    fn u64_or(&self, key: &str, default: u64) -> u64 {
+        self.get(key).and_then(serde_json::Value::as_u64).unwrap_or(default)
+    }
+
+    fn i64_or(&self, key: &str, default: i64) -> i64 {
+        self.get(key).and_then(serde_json::Value::as_i64).unwrap_or(default)
     }
 }
 

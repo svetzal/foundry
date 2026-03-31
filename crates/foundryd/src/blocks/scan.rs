@@ -50,26 +50,15 @@ impl TaskBlock for ScanDependencies {
 
             if let Some(ref err) = audit_result.error {
                 tracing::warn!(project = %project, error = %err, "audit tool error");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: format!("Scan skipped: {err}"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::success(format!("Scan skipped: {err}"), vec![]));
             }
 
             if audit_result.vulnerabilities.is_empty() {
                 tracing::info!(project = %project, "no vulnerabilities found");
-                return Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: format!("{project}: no vulnerabilities found"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: no vulnerabilities found"),
+                    vec![],
+                ));
             }
 
             let events: Vec<Event> = audit_result
@@ -96,14 +85,10 @@ impl TaskBlock for ScanDependencies {
             let cves: Vec<&str> =
                 audit_result.vulnerabilities.iter().filter_map(|v| v.cve.as_deref()).collect();
 
-            Ok(TaskBlockResult {
+            Ok(TaskBlockResult::success(
+                format!("{project}: {count} vulnerabilities found ({})", cves.join(", ")),
                 events,
-                success: true,
-                summary: format!("{project}: {count} vulnerabilities found ({})", cves.join(", ")),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

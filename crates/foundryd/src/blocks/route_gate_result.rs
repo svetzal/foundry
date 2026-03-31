@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::{forward_loop_context, has_loop_context};
+use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::loop_context::{forward_chain_context, has_loop_context};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes gate verification results to the appropriate terminal event or retry.
@@ -39,19 +39,11 @@ impl TaskBlock for RouteGateResult {
         let payload = trigger.payload.clone();
 
         Box::pin(async move {
-            let required_passed = payload
-                .get("required_passed")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            let required_passed = payload.bool_or("required_passed", false);
 
-            let retry_count =
-                payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let retry_count = payload.u64_or("retry_count", 0);
 
-            let workflow = payload
-                .get("workflow")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("iterate")
-                .to_string();
+            let workflow = payload.str_or("workflow", "iterate").to_string();
 
             let in_loop = has_loop_context(&payload);
 
@@ -72,10 +64,7 @@ impl TaskBlock for RouteGateResult {
                     "success": true,
                     "summary": "all required gates passed",
                 });
-                if let Some(actions) = payload.get("actions") {
-                    event_payload["actions"] = actions.clone();
-                }
-                forward_loop_context(&payload, &mut event_payload);
+                forward_chain_context(&payload, &mut event_payload);
 
                 let mut events = vec![Event::new(
                     completion_event_type,
@@ -126,10 +115,7 @@ impl TaskBlock for RouteGateResult {
                     "retry_count": retry_count + 1,
                     "failure_context": failure_context,
                 });
-                if let Some(actions) = payload.get("actions") {
-                    event_payload["actions"] = actions.clone();
-                }
-                forward_loop_context(&payload, &mut event_payload);
+                forward_chain_context(&payload, &mut event_payload);
 
                 return Ok(TaskBlockResult {
                     events: vec![Event::new(
@@ -161,10 +147,7 @@ impl TaskBlock for RouteGateResult {
                 "success": false,
                 "summary": format!("gates failed after {retry_count} retries"),
             });
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
+            forward_chain_context(&payload, &mut event_payload);
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(
@@ -191,10 +174,10 @@ fn build_failure_context(payload: &serde_json::Value) -> String {
 
     let failures: Vec<String> = results
         .iter()
-        .filter(|r| !r.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(true))
+        .filter(|r| !r.bool_or("passed", true))
         .map(|r| {
-            let name = r.get("name").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let output = r.get("output").and_then(serde_json::Value::as_str).unwrap_or("");
+            let name = r.str_or("name", "unknown");
+            let output = r.str_or("output", "");
             if output.is_empty() {
                 name.to_string()
             } else {

@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Composes a greeting message from a greet request.
@@ -21,25 +21,21 @@ impl TaskBlock for ComposeGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let name = trigger.payload.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+        let name = trigger.payload.str_or("name", "world");
         let greeting = format!("Hello, {name}!");
 
         tracing::info!(%greeting, "composed greeting");
 
         Box::pin(async move {
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("Composed: {greeting}"),
+                vec![Event::new(
                     EventType::GreetingComposed,
                     project,
                     throttle,
                     serde_json::json!({ "greeting": greeting }),
                 )],
-                success: true,
-                summary: format!("Composed: {greeting}"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }
@@ -63,38 +59,26 @@ impl TaskBlock for DeliverGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let greeting = trigger
-            .payload
-            .get("greeting")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(no greeting)");
+        let greeting = trigger.payload.str_or("greeting", "(no greeting)");
 
         tracing::info!(%greeting, "delivering greeting");
 
         let greeting = greeting.to_string();
         Box::pin(async move {
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("Delivered: {greeting}"),
+                vec![Event::new(
                     EventType::GreetingDelivered,
                     project,
                     throttle,
                     serde_json::json!({ "delivered": true, "greeting": greeting }),
                 )],
-                success: true,
-                summary: format!("Delivered: {greeting}"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let greeting = trigger
-            .payload
-            .get("greeting")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(no greeting)");
+        let greeting = trigger.payload.str_or("greeting", "(no greeting)");
         vec![Event::new(
             EventType::GreetingDelivered,
             trigger.project.clone(),

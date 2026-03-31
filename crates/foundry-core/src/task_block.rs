@@ -73,6 +73,12 @@ impl TaskBlockResult {
         self
     }
 
+    #[must_use]
+    pub fn with_audit_artifacts(mut self, audit_artifacts: Vec<String>) -> Self {
+        self.audit_artifacts = audit_artifacts;
+        self
+    }
+
     pub fn project_not_found(project: &str) -> Self {
         Self::failure(format!("Project '{project}' not found in registry"))
     }

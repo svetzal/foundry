@@ -82,14 +82,7 @@ impl AuditReleaseTag {
         let Some(entry) = entry else {
             tracing::info!(%project, "project not in registry, skipping post-push audit");
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: project not in registry".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: project not in registry", vec![]))
             });
         };
 
@@ -106,8 +99,9 @@ impl AuditReleaseTag {
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
+                vec![Event::new(
                     EventType::ReleaseTagAudited,
                     project,
                     throttle,
@@ -117,12 +111,7 @@ impl AuditReleaseTag {
                         "dirty": false,
                     }),
                 )],
-                success: true,
-                summary: format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 
@@ -309,19 +298,15 @@ async fn perform_tag_checkout_and_scan(
         payload["dirty"] = serde_json::Value::Bool(dirty);
     }
 
-    Ok(TaskBlockResult {
-        events: vec![Event::new(
+    Ok(TaskBlockResult::success(
+        format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+        vec![Event::new(
             EventType::ReleaseTagAudited,
             project.to_string(),
             throttle,
             payload,
         )],
-        success: true,
-        summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    })
+    ))
 }
 
 /// Build a `TaskBlockResult` that forwards the payload-based vulnerability
@@ -338,19 +323,15 @@ fn emit_payload_result(
     if let Some(d) = dirty {
         payload["dirty"] = serde_json::Value::Bool(d);
     }
-    TaskBlockResult {
-        events: vec![Event::new(
+    TaskBlockResult::success(
+        format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+        vec![Event::new(
             EventType::ReleaseTagAudited,
             project,
             throttle,
             payload,
         )],
-        success: true,
-        summary: format!("Release tag audited: {cve} vulnerable={vulnerable}"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    }
+    )
 }
 
 /// Checks whether the main branch still contains a detected vulnerability.
@@ -401,14 +382,7 @@ impl TaskBlock for AuditMainBranch {
         if !vulnerable {
             tracing::info!("release tag not vulnerable, skipping main branch audit");
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: release tag not vulnerable".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: release tag not vulnerable", vec![]))
             });
         }
 
@@ -469,19 +443,15 @@ impl TaskBlock for AuditMainBranch {
 
             tracing::info!(%cve, %dirty, "audited main branch");
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!("Main branch audited: {cve} dirty={dirty}"),
+                vec![Event::new(
                     EventType::MainBranchAudited,
                     project,
                     throttle,
                     serde_json::json!({ "cve": cve, "dirty": dirty }),
                 )],
-                success: true,
-                summary: format!("Main branch audited: {cve} dirty={dirty}"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            ))
         })
     }
 }

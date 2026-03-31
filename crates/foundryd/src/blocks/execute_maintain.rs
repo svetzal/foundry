@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -47,11 +47,7 @@ impl TaskBlock for ExecuteMaintain {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = trigger
-            .payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
+        let workflow = trigger.payload.str_or("workflow", "unknown");
         if workflow != "maintain" {
             return vec![];
         }
@@ -80,22 +76,11 @@ impl TaskBlock for ExecuteMaintain {
         let payload = trigger.payload.clone();
 
         // Self-filter: only handle maintain workflow
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let workflow = payload.str_or("workflow", "unknown").to_string();
 
         if workflow != "maintain" {
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: not a maintain workflow".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: not a maintain workflow", vec![]))
             });
         }
 

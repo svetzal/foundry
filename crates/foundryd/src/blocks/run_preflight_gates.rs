@@ -2,9 +2,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::gates::GateDefinition;
-use foundry_core::loop_context::forward_loop_context;
+use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -48,11 +48,7 @@ impl TaskBlock for RunPreflightGates {
         let throttle = trigger.throttle;
         let payload = trigger.payload.clone();
 
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let workflow = payload.str_or("workflow", "unknown").to_string();
 
         let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
         let shell = Arc::clone(&self.shell);
@@ -70,16 +66,7 @@ impl TaskBlock for RunPreflightGates {
                     "skipped": true,
                     "results": [],
                 });
-                if let Some(actions) = payload.get("actions") {
-                    event_payload["actions"] = actions.clone();
-                }
-                if let Some(gates) = payload.get("gates") {
-                    event_payload["gates"] = gates.clone();
-                }
-                forward_loop_context(&payload, &mut event_payload);
-                if let Some(prompt) = payload.get("prompt") {
-                    event_payload["prompt"] = prompt.clone();
-                }
+                forward_chain_context(&payload, &mut event_payload);
 
                 return Ok(TaskBlockResult::success(
                     format!("{project}: preflight skipped for {workflow} workflow"),
@@ -106,13 +93,7 @@ impl TaskBlock for RunPreflightGates {
                     "required_passed": true,
                     "results": [],
                 });
-                if let Some(actions) = payload.get("actions") {
-                    event_payload["actions"] = actions.clone();
-                }
-                forward_loop_context(&payload, &mut event_payload);
-                if let Some(prompt) = payload.get("prompt") {
-                    event_payload["prompt"] = prompt.clone();
-                }
+                forward_chain_context(&payload, &mut event_payload);
 
                 return Ok(TaskBlockResult::success(
                     format!("{project}: no gates defined, preflight passes"),
@@ -156,13 +137,7 @@ impl TaskBlock for RunPreflightGates {
                 "required_passed": run_result.required_passed,
                 "results": results_json,
             });
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
-            if let Some(prompt) = payload.get("prompt") {
-                event_payload["prompt"] = prompt.clone();
-            }
+            forward_chain_context(&payload, &mut event_payload);
 
             let success = run_result.required_passed;
 

@@ -64,36 +64,28 @@ impl TaskBlock for InstallLocally {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry, skipping install");
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                return Ok(TaskBlockResult::success(
+                    "Skipped: project not found in registry",
+                    vec![Event::new(
                         EventType::LocalInstallCompleted,
                         project,
                         throttle,
                         serde_json::json!({ "status": "skipped", "reason": "project not found in registry" }),
                     )],
-                    success: true,
-                    summary: "Skipped: project not found in registry".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             };
 
             let Some(install_config) = entry.install else {
                 tracing::info!(project = %project, "no install config, skipping");
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
+                return Ok(TaskBlockResult::success(
+                    "Skipped: no install config defined",
+                    vec![Event::new(
                         EventType::LocalInstallCompleted,
                         project,
                         throttle,
                         serde_json::json!({ "status": "skipped", "reason": "no install config" }),
                     )],
-                    success: true,
-                    summary: "Skipped: no install config defined".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
+                ));
             };
 
             let (method_name, cmd_result) = match &install_config {

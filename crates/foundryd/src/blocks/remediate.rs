@@ -83,14 +83,7 @@ impl TaskBlock for RemediateVulnerability {
         if !dirty {
             tracing::info!("main branch is clean, skipping remediation");
             return Box::pin(async {
-                Ok(TaskBlockResult {
-                    events: vec![],
-                    success: true,
-                    summary: "Skipped: main branch is clean".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                })
+                Ok(TaskBlockResult::success("Skipped: main branch is clean", vec![]))
             });
         }
 

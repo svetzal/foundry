@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -219,14 +219,7 @@ impl TaskBlock for ScoutDrift {
                 Ok(r) => r,
                 Err(err) => {
                     tracing::warn!(error = %err, "agent invocation failed for drift scout");
-                    return Ok(TaskBlockResult {
-                        events: vec![],
-                        success: false,
-                        summary: format!("agent unavailable: {err}"),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
-                    });
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
                 }
             };
 
@@ -266,22 +259,22 @@ impl TaskBlock for ScoutDrift {
                 event_payload["parse_error"] = serde_json::Value::String(err.clone());
             }
 
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+            Ok(TaskBlockResult::success(
+                format!(
+                    "{project}: drift assessment — {} candidates, {} high-value",
+                    result.candidate_count, result.high_value_count
+                ),
+                vec![Event::new(
                     EventType::DriftAssessmentCompleted,
                     project.clone(),
                     throttle,
                     event_payload,
                 )],
-                success: true,
-                summary: format!(
-                    "{project}: drift assessment — {} candidates, {} high-value",
-                    result.candidate_count, result.high_value_count
-                ),
-                raw_output: Some(format!("{}\n{}", response.stdout, response.stderr)),
-                exit_code: Some(response.exit_code),
-                audit_artifacts: vec![],
-            })
+            )
+            .with_output(
+                Some(format!("{}\n{}", response.stdout, response.stderr)),
+                Some(response.exit_code),
+            ))
         })
     }
 }
@@ -302,10 +295,7 @@ fn parse_drift_assessment(output: &str) -> DriftAssessmentResult {
             .cloned()
             .unwrap_or_default();
         let candidate_count = candidates.len();
-        let high_value_count = candidates
-            .iter()
-            .filter(|c| c.get("high_value").and_then(serde_json::Value::as_bool).unwrap_or(false))
-            .count();
+        let high_value_count = candidates.iter().filter(|c| c.bool_or("high_value", false)).count();
         DriftAssessmentResult {
             candidate_count,
             high_value_count,
