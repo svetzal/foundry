@@ -53,10 +53,10 @@ All event types follow a disciplined taxonomy with four suffix categories:
 
 | Category | Suffix | Meaning | Examples |
 |----------|--------|---------|----------|
-| Command | `*Requested` | Intent — someone or something wants action taken | `IterationRequested`, `MaintenanceRequested`, `ReleaseRequested` |
+| Command | `*Requested` | Intent — someone or something wants action taken | `IterationRequested`, `MaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested` |
 | Lifecycle start | `*Started` | A multi-step operation began | `RemediationStarted`, `MaintenanceRunStarted` |
 | Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `PreflightCompleted`, `GateResolutionCompleted`, `ProjectIterationCompleted` |
-| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed` |
+| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked` |
 
 Rules:
 
@@ -65,6 +65,18 @@ Rules:
 - **`*Started`/`*Completed` must pair** — if you add a `*Started`, there must be a corresponding `*Completed`.
 - **Noun form for compound prefixes** — use `ProjectIterationCompleted` (noun), not `ProjectIterateCompleted` (verb).
 - **Payload boolean results use `success`** — not `passed`, `ok`, or other variants. The one exception is the `passed` field on individual gate results (where "passed" is domain-specific to gates).
+
+## CLI Commands
+
+| Command | Purpose |
+|---------|---------|
+| `foundry iterate <project>` | AI-assisted quality improvement cycle |
+| `foundry scout <project>` | Detect intent drift without changes |
+| `foundry validate <project>` | Check quality gate health |
+| `foundry run` | Full maintenance across registered projects |
+| `foundry gates <project>` | Auto-discover quality gates |
+| `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
+| `foundry emit <event>` | Raw event emission for advanced use |
 
 ## Key Conventions
 
