@@ -184,6 +184,10 @@ pub enum EventType {
     DriftAssessmentRequested,
     DriftAssessmentCompleted,
 
+    // Pipeline health workflow
+    PipelineCheckRequested,
+    PipelineChecked,
+
     // Hello-world workflow (validates engine mechanics)
     GreetRequested,
     GreetingComposed,
@@ -230,6 +234,8 @@ impl EventType {
             Self::InnerIterationCompleted => "inner_iteration_completed",
             Self::DriftAssessmentRequested => "drift_assessment_requested",
             Self::DriftAssessmentCompleted => "drift_assessment_completed",
+            Self::PipelineCheckRequested => "pipeline_check_requested",
+            Self::PipelineChecked => "pipeline_checked",
             Self::GreetRequested => "greet_requested",
             Self::GreetingComposed => "greeting_composed",
             Self::GreetingDelivered => "greeting_delivered",
@@ -279,6 +285,8 @@ impl std::str::FromStr for EventType {
             "inner_iteration_completed" => Ok(Self::InnerIterationCompleted),
             "drift_assessment_requested" => Ok(Self::DriftAssessmentRequested),
             "drift_assessment_completed" => Ok(Self::DriftAssessmentCompleted),
+            "pipeline_check_requested" => Ok(Self::PipelineCheckRequested),
+            "pipeline_checked" => Ok(Self::PipelineChecked),
             "greet_requested" => Ok(Self::GreetRequested),
             "greeting_composed" => Ok(Self::GreetingComposed),
             "greeting_delivered" => Ok(Self::GreetingDelivered),
@@ -375,6 +383,8 @@ mod tests {
             (EventType::InnerIterationCompleted, "inner_iteration_completed"),
             (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
+            (EventType::PipelineCheckRequested, "pipeline_check_requested"),
+            (EventType::PipelineChecked, "pipeline_checked"),
             (EventType::GreetRequested, "greet_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -556,6 +566,34 @@ mod tests {
     fn drift_assessment_completed_from_str() {
         let parsed: EventType = "drift_assessment_completed".parse().expect("should parse");
         assert_eq!(parsed, EventType::DriftAssessmentCompleted);
+    }
+
+    #[test]
+    fn pipeline_check_requested_serde_round_trip() {
+        let original = EventType::PipelineCheckRequested;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn pipeline_checked_serde_round_trip() {
+        let original = EventType::PipelineChecked;
+        let json = serde_json::to_string(&original).expect("should serialize");
+        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn pipeline_check_requested_from_str() {
+        let parsed: EventType = "pipeline_check_requested".parse().expect("should parse");
+        assert_eq!(parsed, EventType::PipelineCheckRequested);
+    }
+
+    #[test]
+    fn pipeline_checked_from_str() {
+        let parsed: EventType = "pipeline_checked".parse().expect("should parse");
+        assert_eq!(parsed, EventType::PipelineChecked);
     }
 
     #[test]

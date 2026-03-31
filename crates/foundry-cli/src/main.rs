@@ -116,6 +116,12 @@ enum Commands {
         project: String,
     },
 
+    /// Check GitHub Actions pipeline health and remediate failures
+    Pipeline {
+        /// Project name from registry
+        project: String,
+    },
+
     /// Install the Foundry skill for Claude agents
     Init {
         /// Install globally (~/.claude/skills/) instead of locally (.claude/skills/)
@@ -326,6 +332,7 @@ async fn main() -> Result<()> {
         }
         Commands::Iterate { project } => commands::iterate(&cli.addr, &project).await,
         Commands::Scout { project } => commands::scout(&cli.addr, &project).await,
+        Commands::Pipeline { project } => commands::pipeline(&cli.addr, &project).await,
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
         }

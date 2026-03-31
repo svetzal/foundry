@@ -369,6 +369,65 @@ pub async fn scout(addr: &str, project: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn pipeline(addr: &str, project: &str) -> Result<()> {
+    // Subscribe to the watch stream before emitting so we don't miss events.
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let watch_request = WatchRequest {
+        project: project.to_string(),
+    };
+    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+    // Emit PipelineCheckRequested
+    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let request = EmitRequest {
+        event_type: "pipeline_check_requested".to_string(),
+        project: project.to_string(),
+        throttle: 0, // Full
+        payload_json: String::new(),
+    };
+
+    let response = emit_client.emit(request).await?.into_inner();
+    println!("Checking pipeline for {project}...");
+    println!("Event: {}", response.event_id);
+    println!();
+
+    // Stream events until we see pipeline_checked (if passing) or
+    // remediation_completed (if it went to remediation).
+    while let Some(event) = stream.message().await? {
+        let status = extract_status(&event.payload_json);
+        println!("[{}] {} {}", event.project, event.event_type, status);
+
+        if event.event_type == "pipeline_checked" {
+            // Check if passing -- if so, we're done
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
+                if v.get("passing").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                    break;
+                }
+            }
+        }
+
+        if event.event_type == "remediation_completed" {
+            break;
+        }
+    }
+
+    // Show the trace for full visibility
+    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let trace_resp = trace_client
+        .trace(TraceRequest {
+            event_id: response.event_id.clone(),
+        })
+        .await?
+        .into_inner();
+    if trace_resp.found {
+        render_trace(&trace_resp, false);
+        println!("---");
+    }
+
+    Ok(())
+}
+
 /// Print drift scout results in a human-readable format.
 fn print_scout_result(project: &str, payload_json: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) else {
