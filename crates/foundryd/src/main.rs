@@ -131,8 +131,14 @@ async fn main() -> Result<()> {
         trace_writer.clone(),
     ));
     let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
-    let service =
-        service::FoundryService::new(engine, trace_store, event_tx, workflow_tracker, trace_writer);
+    let service = service::FoundryService::new(
+        engine,
+        trace_store,
+        event_tx,
+        workflow_tracker,
+        trace_writer,
+        registry,
+    );
 
     let addr = "[::1]:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");

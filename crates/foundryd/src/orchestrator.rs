@@ -15,8 +15,9 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// `MaintenanceRunStarted` event for each one. These per-project events then
 /// trigger the existing chain (`ValidateProject` → `RouteProjectWorkflow` → …).
 ///
-/// A `MaintenanceRunCompleted` event is emitted first in the list so that the
-/// engine's LIFO queue processes it *last*, after all per-project chains finish.
+/// `MaintenanceRunCompleted` is NOT emitted here — it is synthesised by the
+/// service layer after `engine.process()` returns, so that per-project traces
+/// are available on disk when `GenerateSummary` runs.
 ///
 /// When the triggering project is anything other than `"system"`, the block
 /// returns immediately with no emitted events — the per-project event is
@@ -76,21 +77,7 @@ impl TaskBlock for FanOutMaintenance {
                 "fanning out maintenance to active projects"
             );
 
-            // The engine processes emitted events via a LIFO queue (Vec::pop).
-            // Place MaintenanceRunCompleted first so it is processed *last*,
-            // after all per-project chains have completed.
-            let mut events = Vec::with_capacity(active_count + 1);
-
-            events.push(Event::new(
-                EventType::MaintenanceRunCompleted,
-                "system".to_string(),
-                throttle,
-                serde_json::json!({
-                    "project_count": active_count,
-                    "skipped_count": skipped_count,
-                    "projects": project_names,
-                }),
-            ));
+            let mut events = Vec::with_capacity(active_count);
 
             for name in &project_names {
                 events.push(Event::new(
@@ -224,19 +211,14 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
 
-        // 1 MaintenanceRunCompleted + 3 per-project MaintenanceRunStarted
-        assert_eq!(result.events.len(), 4);
+        // 3 per-project MaintenanceRunStarted (no MaintenanceRunCompleted —
+        // that is synthesised by the service layer after process() returns).
+        assert_eq!(result.events.len(), 3);
 
-        // First event is MaintenanceRunCompleted (processed last by LIFO queue).
-        assert_eq!(result.events[0].event_type, EventType::MaintenanceRunCompleted);
-        assert_eq!(result.events[0].project, "system");
-
-        // Remaining events are per-project MaintenanceRunStarted.
-        let project_events: Vec<&Event> = result.events[1..].iter().collect();
-        assert!(project_events.iter().all(|e| e.event_type == EventType::MaintenanceRunStarted));
+        assert!(result.events.iter().all(|e| e.event_type == EventType::MaintenanceRunStarted));
 
         let mut project_names: Vec<&str> =
-            project_events.iter().map(|e| e.project.as_str()).collect();
+            result.events.iter().map(|e| e.project.as_str()).collect();
         project_names.sort_unstable();
         assert_eq!(project_names, vec!["alpha", "beta", "gamma"]);
     }
@@ -254,11 +236,10 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
 
-        // 1 MaintenanceRunCompleted + 2 per-project events (beta skipped)
-        assert_eq!(result.events.len(), 3);
+        // 2 per-project events (beta skipped)
+        assert_eq!(result.events.len(), 2);
 
-        let project_names: Vec<&str> =
-            result.events[1..].iter().map(|e| e.project.as_str()).collect();
+        let project_names: Vec<&str> = result.events.iter().map(|e| e.project.as_str()).collect();
         assert!(project_names.contains(&"alpha"));
         assert!(project_names.contains(&"gamma"));
         assert!(!project_names.contains(&"beta"));
@@ -277,19 +258,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_registry_emits_only_completed() {
+    async fn empty_registry_emits_no_events() {
         let block = FanOutMaintenance::new(make_registry(vec![]));
         let trigger = system_trigger(Throttle::Full);
 
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::MaintenanceRunCompleted);
-        assert_eq!(result.events[0].payload["project_count"], 0);
+        assert!(result.events.is_empty());
     }
 
     #[tokio::test]
-    async fn completed_event_contains_project_metadata() {
+    async fn fan_out_events_are_all_per_project() {
         let registry = make_registry(vec![
             active_entry("alpha"),
             skipped_entry("beta"),
@@ -300,12 +279,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.expect("should succeed");
 
-        let completed = &result.events[0];
-        assert_eq!(completed.event_type, EventType::MaintenanceRunCompleted);
-        assert_eq!(completed.payload["project_count"], 2);
-        assert_eq!(completed.payload["skipped_count"], 1);
-        let projects = completed.payload["projects"].as_array().unwrap();
-        assert_eq!(projects.len(), 2);
+        // Only per-project events, no MaintenanceRunCompleted.
+        assert!(result.events.iter().all(|e| e.event_type == EventType::MaintenanceRunStarted));
     }
 
     #[tokio::test]

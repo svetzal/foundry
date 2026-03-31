@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -6,7 +7,9 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
+use foundry_core::trace::ProcessResult;
 
 use crate::engine::Engine;
 use crate::proto::{
@@ -25,6 +28,7 @@ pub struct FoundryService {
     /// Sender held so new receivers can be created for each Watch subscriber.
     event_tx: broadcast::Sender<Event>,
     trace_writer: Arc<TraceWriter>,
+    registry: Arc<Registry>,
 }
 
 impl FoundryService {
@@ -34,6 +38,7 @@ impl FoundryService {
         event_tx: broadcast::Sender<Event>,
         workflow_tracker: Arc<WorkflowTracker>,
         trace_writer: Arc<TraceWriter>,
+        registry: Arc<Registry>,
     ) -> Self {
         Self {
             engine,
@@ -41,8 +46,118 @@ impl FoundryService {
             workflow_tracker,
             event_tx,
             trace_writer,
+            registry,
         }
     }
+}
+
+/// Extract per-project sub-traces from a system-level maintenance `ProcessResult`.
+///
+/// Groups events and block executions by project name, returning a map of
+/// project name → `ProcessResult` for each per-project `MaintenanceRunStarted`
+/// event found in the result.
+fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, ProcessResult> {
+    let event_map: HashMap<&str, &Event> =
+        result.events.iter().map(|e| (e.id.as_str(), e)).collect();
+
+    // Find per-project root events.
+    let project_roots: Vec<&Event> = result
+        .events
+        .iter()
+        .filter(|e| e.event_type == EventType::MaintenanceRunStarted && e.project != "system")
+        .collect();
+
+    let mut traces = HashMap::new();
+
+    for root in project_roots {
+        let project = &root.project;
+
+        let events: Vec<Event> =
+            result.events.iter().filter(|e| e.project == *project).cloned().collect();
+
+        let block_executions: Vec<_> = result
+            .block_executions
+            .iter()
+            .filter(|b| {
+                event_map
+                    .get(b.trigger_event_id.as_str())
+                    .is_some_and(|e| e.project == *project)
+            })
+            .cloned()
+            .collect();
+
+        let total_duration_ms: u64 = block_executions.iter().map(|b| b.duration_ms).sum();
+
+        traces.insert(
+            project.clone(),
+            ProcessResult {
+                events,
+                block_executions,
+                total_duration_ms,
+            },
+        );
+    }
+
+    traces
+}
+
+/// After a system-level maintenance run completes, write per-project sub-traces
+/// to disk, then synthesise and process `MaintenanceRunCompleted` so that
+/// `GenerateSummary` can read the traces.
+async fn finalise_system_maintenance(
+    result: &ProcessResult,
+    engine: &Engine,
+    trace_writer: &TraceWriter,
+    registry: &Registry,
+    throttle: Throttle,
+    event_tx: &broadcast::Sender<Event>,
+) {
+    let per_project = extract_per_project_traces(result);
+    let mut project_trace_ids: HashMap<String, String> = HashMap::new();
+
+    for (project_name, sub_result) in &per_project {
+        if let Some(root_evt) = sub_result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::MaintenanceRunStarted)
+        {
+            let sub_id = root_evt.id.clone();
+            if let Err(e) = trace_writer.write(&sub_id, sub_result) {
+                tracing::warn!(
+                    error = %e,
+                    project = %project_name,
+                    "failed to write per-project trace"
+                );
+            }
+            project_trace_ids.insert(project_name.clone(), sub_id);
+        }
+    }
+
+    let skipped_projects: Vec<String> = registry
+        .projects
+        .iter()
+        .filter(|p| p.skip.is_some())
+        .map(|p| p.name.clone())
+        .collect();
+
+    let completed_event = Event::new(
+        EventType::MaintenanceRunCompleted,
+        "system".to_string(),
+        throttle,
+        serde_json::json!({
+            "project_trace_ids": project_trace_ids,
+            "skipped_projects": skipped_projects,
+            "total_duration_ms": result.total_duration_ms,
+        }),
+    );
+
+    let summary_result = engine.process(completed_event.clone()).await;
+
+    if let Err(e) = trace_writer.write(&completed_event.id, &summary_result) {
+        tracing::warn!(error = %e, "failed to write summary trace");
+    }
+
+    let _ = event_tx.send(completed_event);
 }
 
 fn parse_throttle(proto_value: i32) -> Throttle {
@@ -97,6 +212,7 @@ impl Foundry for FoundryService {
         let root_event_type = event.event_type.clone();
         let root_project = event.project.clone();
         let root_throttle = event.throttle;
+        let registry = Arc::clone(&self.registry);
 
         let span = tracing::info_span!(
             "process",
@@ -124,9 +240,21 @@ impl Foundry for FoundryService {
                     tracing::warn!(error = %e, event_id = %bg_event_id, "failed to write trace to disk");
                 }
 
-                // Broadcast a completion event for maintenance runs so the CLI
-                // `run` command can detect when to exit its watch stream.
-                if root_event_type == EventType::MaintenanceRunStarted {
+                if root_event_type == EventType::MaintenanceRunStarted
+                    && root_project == "system"
+                {
+                    finalise_system_maintenance(
+                        &result,
+                        &engine,
+                        &trace_writer,
+                        &registry,
+                        root_throttle,
+                        &event_tx,
+                    )
+                    .await;
+                } else if root_event_type == EventType::MaintenanceRunStarted {
+                    // Per-project maintenance run (not system-level): broadcast
+                    // completion so Watch clients see it.
                     let success = result.is_success();
                     let completed = Event::new(
                         EventType::MaintenanceRunCompleted,
@@ -303,8 +431,18 @@ mod tests {
         let workflow_tracker = Arc::new(WorkflowTracker::new());
         let tmp = tempfile::tempdir().expect("tempdir");
         let trace_writer = Arc::new(TraceWriter::new(tmp.path().to_str().unwrap()));
-        let service =
-            FoundryService::new(engine, trace_store, event_tx, workflow_tracker, trace_writer);
+        let registry = Arc::new(Registry {
+            version: 2,
+            projects: vec![],
+        });
+        let service = FoundryService::new(
+            engine,
+            trace_store,
+            event_tx,
+            workflow_tracker,
+            trace_writer,
+            registry,
+        );
         (service, rx)
     }
 
