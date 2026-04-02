@@ -49,12 +49,11 @@ impl TaskBlock for CheckCharter {
             });
         }
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
 
         Box::pin(async move {
             let Some(entry) = entry else {
-                tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult::project_not_found(&project));
+                return Ok(super::project_not_found_result(&project));
             };
 
             let project_path = std::path::Path::new(&entry.path);

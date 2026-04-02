@@ -39,7 +39,7 @@ impl TaskBlock for ResolveGates {
         let event_type = trigger.event_type.clone();
         let payload = trigger.payload.clone();
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
 
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
@@ -67,8 +67,7 @@ impl TaskBlock for ResolveGates {
             );
 
             let Some(entry) = entry else {
-                tracing::warn!(project = %project, "project not found in registry, cannot resolve gates");
-                return Ok(TaskBlockResult::project_not_found(&project));
+                return Ok(super::project_not_found_result(&project));
             };
 
             let project_path = std::path::Path::new(&entry.path);

@@ -1,6 +1,14 @@
 #[macro_use]
 mod macros;
 
+use foundry_core::task_block::TaskBlockResult;
+
+/// Log a warning and return a not-found failure result for a missing project.
+fn project_not_found_result(project: &str) -> TaskBlockResult {
+    tracing::warn!(project = %project, "project not found in registry");
+    TaskBlockResult::project_not_found(project)
+}
+
 mod assess_project;
 mod audit;
 mod check_charter;

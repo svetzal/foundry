@@ -186,13 +186,12 @@ impl TaskBlock for ScoutDrift {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
             let Some(entry) = entry else {
-                tracing::warn!(project = %project, "project not found in registry");
-                return Ok(TaskBlockResult::project_not_found(&project));
+                return Ok(super::project_not_found_result(&project));
             };
 
             let project_path = PathBuf::from(&entry.path);

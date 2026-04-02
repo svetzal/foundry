@@ -50,7 +50,7 @@ impl TaskBlock for RunPreflightGates {
 
         let workflow = payload.str_or("workflow", "unknown").to_string();
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
@@ -107,8 +107,7 @@ impl TaskBlock for RunPreflightGates {
             }
 
             let Some(entry) = entry else {
-                tracing::warn!(project = %project, "project not in registry");
-                return Ok(TaskBlockResult::project_not_found(&project));
+                return Ok(super::project_not_found_result(&project));
             };
 
             let working_dir = std::path::PathBuf::from(&entry.path);

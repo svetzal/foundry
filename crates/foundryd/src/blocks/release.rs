@@ -110,12 +110,7 @@ impl TaskBlock for CutRelease {
             .unwrap_or("unknown")
             .to_string();
 
-        let project_path = self
-            .registry
-            .projects
-            .iter()
-            .find(|p| p.name == project)
-            .map(|p| p.path.clone());
+        let project_path = self.registry.find_project(&project).map(|p| p.path.clone());
 
         let agent = Arc::clone(&self.agent);
 
@@ -133,8 +128,7 @@ async fn run_release(
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(path_str) = project_path else {
-        tracing::warn!(project = %project, "project not found in registry, skipping release");
-        return Ok(TaskBlockResult::project_not_found(&project));
+        return Ok(super::project_not_found_result(&project));
     };
 
     let project_dir = Path::new(&path_str);
@@ -304,9 +298,7 @@ impl TaskBlock for WatchPipeline {
 
         let repo = self
             .registry
-            .projects
-            .iter()
-            .find(|p| p.name == project)
+            .find_project(&project)
             .map(|p| p.repo.clone())
             .filter(|r| !r.is_empty());
 

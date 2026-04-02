@@ -101,7 +101,7 @@ impl TaskBlock for RemediatePipeline {
             .unwrap_or("unknown")
             .to_string();
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%project, %run_name, "remediating pipeline failure");
@@ -119,8 +119,7 @@ async fn run_remediation(
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(entry) = entry else {
-        tracing::warn!(project = %project, "project not found in registry, cannot remediate pipeline");
-        return Ok(TaskBlockResult::project_not_found(&project));
+        return Ok(super::project_not_found_result(&project));
     };
 
     let project_path = PathBuf::from(&entry.path);

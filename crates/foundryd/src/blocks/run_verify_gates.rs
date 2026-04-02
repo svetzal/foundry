@@ -50,13 +50,12 @@ impl TaskBlock for RunVerifyGates {
 
         let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             let Some(entry) = entry else {
-                tracing::warn!(project = %project, "project not in registry");
-                return Ok(TaskBlockResult::project_not_found(&project));
+                return Ok(super::project_not_found_result(&project));
             };
 
             let project_path = std::path::Path::new(&entry.path);

@@ -51,6 +51,11 @@ impl Registry {
     pub fn active_projects(&self) -> Vec<&ProjectEntry> {
         self.projects.iter().filter(|p| p.skip.is_none()).collect()
     }
+
+    /// Look up a project by name.
+    pub fn find_project(&self, name: &str) -> Option<&ProjectEntry> {
+        self.projects.iter().find(|p| p.name == name)
+    }
 }
 
 /// A single project entry in the registry.
@@ -375,6 +380,20 @@ mod tests {
         };
         registry.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn find_project_returns_some_for_known_name() {
+        let registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        let found = registry.find_project("my-project");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "my-project");
+    }
+
+    #[test]
+    fn find_project_returns_none_for_unknown_name() {
+        let registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        assert!(registry.find_project("nonexistent").is_none());
     }
 
     #[test]

@@ -34,7 +34,7 @@ impl TaskBlock for CheckPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(run_check(project, throttle, entry, shell))
@@ -49,8 +49,7 @@ async fn run_check(
     shell: Arc<dyn ShellGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let Some(entry) = entry else {
-        tracing::warn!(project = %project, "project not found in registry");
-        return Ok(TaskBlockResult::project_not_found(&project));
+        return Ok(super::project_not_found_result(&project));
     };
 
     if entry.repo.is_empty() {
