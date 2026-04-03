@@ -185,7 +185,13 @@ impl Foundry for FoundryService {
                 .map_err(|e| Status::invalid_argument(format!("invalid payload JSON: {e}")))?
         };
 
-        let event = Event::new(event_type, req.project, throttle, payload);
+        let trace_id = if req.trace_id.is_empty() {
+            foundry_core::event::mint_trace_id()
+        } else {
+            req.trace_id
+        };
+        let event =
+            Event::new(event_type, req.project, throttle, payload).with_trace_id(Some(trace_id));
         let event_id = event.id.clone();
 
         tracing::info!(
@@ -332,6 +338,7 @@ impl Foundry for FoundryService {
                                 event_type: event.event_type.to_string(),
                                 project: event.project.clone(),
                                 payload_json: event.payload.to_string(),
+                                trace_id: event.trace_id.clone().unwrap_or_default(),
                             });
                         }
                     }
@@ -371,6 +378,7 @@ impl Foundry for FoundryService {
                         Throttle::AuditOnly => 1,
                         Throttle::DryRun => 2,
                     },
+                    trace_id: e.trace_id.clone().unwrap_or_default(),
                 })
                 .collect();
 
@@ -455,6 +463,7 @@ mod tests {
             project: "test-project".to_string(),
             throttle: 2, // dry_run
             payload_json: String::new(),
+            trace_id: String::new(),
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -499,6 +508,7 @@ mod tests {
             project: "test-project".to_string(),
             throttle: 0,
             payload_json: String::new(),
+            trace_id: String::new(),
         });
 
         service.emit(request).await.expect("emit should succeed");

@@ -126,6 +126,9 @@ impl TaskBlock for RunVerifyGates {
                 "retry_count": retry_count,
                 "results": results_json,
             });
+            if let Some(exec_output) = payload.get("execution_output") {
+                event_payload["execution_output"] = exec_output.clone();
+            }
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }

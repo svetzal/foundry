@@ -85,10 +85,46 @@ impl Engine {
         self.blocks.push(block);
     }
 
+    /// Propagate trace IDs, persist to JSONL, broadcast to Watch subscribers,
+    /// and optionally deliver to the processing queue.
+    /// Returns collected event IDs and payloads for the [`BlockExecution`] record.
+    fn persist_and_broadcast_events(
+        &self,
+        events: Vec<Event>,
+        trigger: &Event,
+        all_events: &mut Vec<Event>,
+        queue: &mut Vec<Event>,
+        deliver: bool,
+    ) -> (Vec<String>, Vec<serde_json::Value>) {
+        let mut emitted_ids = Vec::new();
+        let mut emitted_payloads = Vec::new();
+        for mut emitted in events {
+            if emitted.trace_id.is_none() {
+                emitted.trace_id.clone_from(&trigger.trace_id);
+            }
+            if let Some(writer) = &self.event_writer {
+                if let Err(e) = writer.write(&emitted) {
+                    tracing::warn!(error = %e, event_id = %emitted.id, "failed to write event to JSONL");
+                }
+            }
+            if let Some(tx) = &self.event_tx {
+                let _ = tx.send(emitted.clone());
+            }
+            emitted_ids.push(emitted.id.clone());
+            emitted_payloads.push(emitted.payload.clone());
+            all_events.push(emitted.clone());
+            if deliver {
+                queue.push(emitted);
+            } else {
+                tracing::info!(event_type = %emitted.event_type, "event logged but delivery throttled");
+            }
+        }
+        (emitted_ids, emitted_payloads)
+    }
+
     /// Execute one block against a triggering event, persist any emitted events,
     /// and return the [`BlockExecution`] record.  Mutates `all_events` and
     /// `queue` in place so downstream events continue to be processed.
-    #[allow(clippy::too_many_lines)]
     async fn run_block(
         &self,
         block: &dyn TaskBlock,
@@ -106,28 +142,13 @@ impl Engine {
         {
             let simulated_events = block.dry_run_events(current);
             tracing::info!(simulated = simulated_events.len(), "dry-run: simulating success");
-            let mut emitted_ids = Vec::new();
-            let mut emitted_payloads = Vec::new();
-            for emitted in simulated_events {
-                // Persist simulated events — they are facts (with dry_run marker).
-                if let Some(writer) = &self.event_writer {
-                    if let Err(e) = writer.write(&emitted) {
-                        tracing::warn!(
-                            error = %e,
-                            event_id = %emitted.id,
-                            "failed to write simulated event to JSONL"
-                        );
-                    }
-                }
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(emitted.clone());
-                }
-                emitted_ids.push(emitted.id.clone());
-                emitted_payloads.push(emitted.payload.clone());
-                all_events.push(emitted.clone());
-                // Deliver simulated events so the chain continues.
-                queue.push(emitted);
-            }
+            let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                simulated_events,
+                current,
+                all_events,
+                queue,
+                true,
+            );
             return BlockExecution {
                 block_name: block.name().to_string(),
                 trigger_event_id: current.id.clone(),
@@ -164,67 +185,36 @@ impl Engine {
 
         match execute_with_retry(block, current, block.retry_policy()).await {
             Ok(result) => {
-                let duration_ms =
-                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 tracing::info!(
                     success = result.success,
                     summary = %result.summary,
                     emitted = result.events.len(),
                     "completed"
                 );
-                let raw_output = result.raw_output.clone();
-                let exit_code = result.exit_code;
-                let audit_artifacts = result.audit_artifacts;
-                let trigger_payload = current.payload.clone();
                 let deliver = block.should_emit(current.throttle);
-                let mut emitted_ids = Vec::new();
-                let mut emitted_payloads = Vec::new();
-                for emitted in result.events {
-                    // ALWAYS persist — events are facts.
-                    if let Some(writer) = &self.event_writer {
-                        if let Err(e) = writer.write(&emitted) {
-                            tracing::warn!(
-                                error = %e,
-                                event_id = %emitted.id,
-                                "failed to write emitted event to JSONL"
-                            );
-                        }
-                    }
-                    // ALWAYS broadcast to Watch subscribers.
-                    if let Some(tx) = &self.event_tx {
-                        let _ = tx.send(emitted.clone());
-                    }
-                    emitted_ids.push(emitted.id.clone());
-                    emitted_payloads.push(emitted.payload.clone());
-                    all_events.push(emitted.clone());
-
-                    // THROTTLE GATE: only deliver to downstream blocks if allowed.
-                    if deliver {
-                        queue.push(emitted);
-                    } else {
-                        tracing::info!(
-                            event_type = %emitted.event_type,
-                            "event logged but delivery throttled"
-                        );
-                    }
-                }
+                let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                    result.events,
+                    current,
+                    all_events,
+                    queue,
+                    deliver,
+                );
                 BlockExecution {
                     block_name: block.name().to_string(),
                     trigger_event_id: current.id.clone(),
                     success: result.success,
                     summary: result.summary,
                     emitted_event_ids: emitted_ids,
-                    duration_ms,
-                    raw_output,
-                    exit_code,
-                    trigger_payload,
+                    duration_ms: u64::try_from(block_start.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                    raw_output: result.raw_output,
+                    exit_code: result.exit_code,
+                    trigger_payload: current.payload.clone(),
                     emitted_payloads,
-                    audit_artifacts,
+                    audit_artifacts: result.audit_artifacts,
                 }
             }
             Err(err) => {
-                let duration_ms =
-                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 tracing::error!(error = %err, "failed");
                 BlockExecution {
                     block_name: block.name().to_string(),
@@ -232,7 +222,8 @@ impl Engine {
                     success: false,
                     summary: format!("error: {err}"),
                     emitted_event_ids: vec![],
-                    duration_ms,
+                    duration_ms: u64::try_from(block_start.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
                     raw_output: None,
                     exit_code: None,
                     trigger_payload: current.payload.clone(),
@@ -1084,5 +1075,86 @@ mod tests {
         assert_eq!(result.block_executions.len(), 1);
         assert!(!result.block_executions[0].success);
         assert!(result.block_executions[0].summary.contains("error:"));
+    }
+
+    // -- Trace ID propagation tests --
+
+    #[tokio::test]
+    async fn trace_id_propagates_through_chain() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("trc_test123".to_string()));
+
+        let result = engine.process(trigger).await;
+
+        // All events in the chain should share the same trace_id.
+        for event in &result.events {
+            assert_eq!(
+                event.trace_id.as_deref(),
+                Some("trc_test123"),
+                "event {} should have propagated trace_id",
+                event.event_type,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn none_trace_id_propagates_as_none() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        // trace_id is None by default
+
+        let result = engine.process(trigger).await;
+
+        for event in &result.events {
+            assert!(
+                event.trace_id.is_none(),
+                "event {} should have no trace_id when root has none",
+                event.event_type,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn trace_id_propagates_in_dry_run() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::DryRun,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("trc_dryrun".to_string()));
+
+        let result = engine.process(trigger).await;
+
+        // Even dry-run simulated events should carry the trace_id.
+        for event in &result.events {
+            assert_eq!(
+                event.trace_id.as_deref(),
+                Some("trc_dryrun"),
+                "dry-run event {} should have propagated trace_id",
+                event.event_type,
+            );
+        }
     }
 }

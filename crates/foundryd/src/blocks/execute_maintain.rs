@@ -153,6 +153,12 @@ impl TaskBlock for ExecuteMaintain {
                 "success": success,
                 "summary": summary,
             });
+            if let Some(ref output) = raw_output {
+                let lines: Vec<&str> = output.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                event_payload["execution_output"] =
+                    serde_json::Value::String(lines[start..].join("\n"));
+            }
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
@@ -297,6 +303,27 @@ mod tests {
         assert_eq!(invocations[0].access, AgentAccess::Full);
         assert_eq!(invocations[0].capability, AgentCapability::Coding);
         assert!(invocations[0].prompt.contains("maintaining"));
+    }
+
+    #[tokio::test]
+    async fn emitted_event_includes_execution_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("Dependencies updated");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ExecuteMaintain::new(agent, registry);
+        let trigger = gate_resolution_maintain("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        let exec_output = result.events[0].payload.get("execution_output").and_then(|v| v.as_str());
+        assert!(
+            exec_output.is_some(),
+            "ExecutionCompleted should include execution_output in payload",
+        );
+        assert!(
+            exec_output.unwrap().contains("Dependencies updated"),
+            "execution_output should contain agent stdout",
+        );
     }
 
     #[tokio::test]

@@ -35,6 +35,7 @@ pub async fn emit(
         project: project.to_string(),
         throttle: parse_throttle(throttle),
         payload_json: payload.unwrap_or_default(),
+        trace_id: String::new(),
     };
 
     let response = client.emit(request).await?.into_inner();
@@ -97,7 +98,15 @@ pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
     let mut stream = client.watch(request).await?.into_inner();
 
     while let Some(event) = stream.message().await? {
-        println!("{} {} project={}", event.event_id, event.event_type, event.project);
+        let trace_suffix = if event.trace_id.is_empty() {
+            String::new()
+        } else {
+            format!(" trace={}", event.trace_id)
+        };
+        println!(
+            "{} {} project={}{}",
+            event.event_id, event.event_type, event.project, trace_suffix
+        );
         if !event.payload_json.is_empty() && event.payload_json != "{}" {
             println!("  payload: {}", event.payload_json);
         }
@@ -144,6 +153,9 @@ fn render_trace(response: &TraceResponse, verbose: bool) {
 
     // Start with the root event (first in the list)
     if let Some(root) = response.events.first() {
+        if !root.trace_id.is_empty() {
+            println!("trace: {}", root.trace_id);
+        }
         print_event_tree(root, &events, &blocks_by_trigger, 0, verbose);
     }
 }
@@ -225,6 +237,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         project: project_name.clone(),
         throttle: parse_throttle(throttle),
         payload_json: String::new(),
+        trace_id: String::new(),
     };
 
     let response = emit_client.emit(request).await?.into_inner();
@@ -288,6 +301,7 @@ pub async fn iterate(addr: &str, project: &str) -> Result<()> {
             "actions": { "maintain": false },
         })
         .to_string(),
+        trace_id: String::new(),
     };
 
     let response = emit_client.emit(request).await?.into_inner();
@@ -337,6 +351,7 @@ pub async fn scout(addr: &str, project: &str) -> Result<()> {
         project: project.to_string(),
         throttle: 0, // Full
         payload_json: String::new(),
+        trace_id: String::new(),
     };
 
     let response = emit_client.emit(request).await?.into_inner();
@@ -384,6 +399,7 @@ pub async fn pipeline(addr: &str, project: &str) -> Result<()> {
         project: project.to_string(),
         throttle: 0, // Full
         payload_json: String::new(),
+        trace_id: String::new(),
     };
 
     let response = emit_client.emit(request).await?.into_inner();
@@ -538,12 +554,14 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
             }
         }
         let success = result.is_success();
+        let trace_id = result.events.first().and_then(|e| e.trace_id.clone());
         indices.push(TraceIndex {
             event_id,
             event_type,
             project,
             success,
             total_duration_ms: result.total_duration_ms,
+            trace_id,
         });
     }
     indices
@@ -553,12 +571,14 @@ fn print_trace_table(date: &str, indices: &[TraceIndex]) {
     println!("{date}");
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Event ID", "Status", "Duration", "Type", "Project"]);
+    table.set_header(vec!["Event ID", "Trace", "Status", "Duration", "Type", "Project"]);
 
     for idx in indices {
         let status = if idx.success { "ok" } else { "FAILED" };
+        let trace = idx.trace_id.as_deref().unwrap_or("-");
         table.add_row(vec![
             &idx.event_id,
+            trace,
             status,
             &format!("{}ms", idx.total_duration_ms),
             &idx.event_type,
@@ -643,6 +663,7 @@ pub async fn validate(
             project: project_name.clone(),
             throttle: 0, // Full — the workflow is read-only by design
             payload_json: String::new(),
+            trace_id: String::new(),
         };
 
         let response = emit_client.emit(request).await?.into_inner();

@@ -136,6 +136,12 @@ impl TaskBlock for ExecutePlan {
                 "success": success,
                 "summary": summary,
             });
+            if let Some(ref output) = raw_output {
+                let lines: Vec<&str> = output.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                event_payload["execution_output"] =
+                    serde_json::Value::String(lines[start..].join("\n"));
+            }
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }

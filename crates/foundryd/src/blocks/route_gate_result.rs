@@ -115,6 +115,9 @@ impl TaskBlock for RouteGateResult {
                     "retry_count": retry_count + 1,
                     "failure_context": failure_context,
                 });
+                if let Some(exec_output) = payload.get("execution_output") {
+                    event_payload["prior_execution_output"] = exec_output.clone();
+                }
                 forward_chain_context(&payload, &mut event_payload);
 
                 return Ok(TaskBlockResult {

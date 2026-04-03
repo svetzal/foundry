@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, mint_trace_id};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -80,12 +80,15 @@ impl TaskBlock for FanOutMaintenance {
             let mut events = Vec::with_capacity(active_count);
 
             for name in &project_names {
-                events.push(Event::new(
-                    EventType::MaintenanceRunStarted,
-                    name.clone(),
-                    throttle,
-                    serde_json::json!({}),
-                ));
+                events.push(
+                    Event::new(
+                        EventType::MaintenanceRunStarted,
+                        name.clone(),
+                        throttle,
+                        serde_json::json!({}),
+                    )
+                    .with_trace_id(Some(mint_trace_id())),
+                );
             }
 
             Ok(TaskBlockResult {
@@ -243,6 +246,31 @@ mod tests {
         assert!(project_names.contains(&"alpha"));
         assert!(project_names.contains(&"gamma"));
         assert!(!project_names.contains(&"beta"));
+    }
+
+    #[tokio::test]
+    async fn per_project_events_have_distinct_trace_ids() {
+        let registry = make_registry(vec![active_entry("alpha"), active_entry("beta")]);
+        let block = FanOutMaintenance::new(registry);
+        let trigger = system_trigger(Throttle::Full);
+
+        let result = block.execute(&trigger).await.expect("should succeed");
+        assert_eq!(result.events.len(), 2);
+
+        // Each per-project event should have a trace_id.
+        for event in &result.events {
+            assert!(event.trace_id.is_some(), "per-project event should have a trace_id");
+            assert!(
+                event.trace_id.as_ref().unwrap().starts_with("trc_"),
+                "trace_id should start with trc_",
+            );
+        }
+
+        // And they should be distinct.
+        assert_ne!(
+            result.events[0].trace_id, result.events[1].trace_id,
+            "each project should get its own trace_id",
+        );
     }
 
     #[tokio::test]

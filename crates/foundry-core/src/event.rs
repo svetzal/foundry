@@ -19,6 +19,10 @@ pub struct Event {
     pub recorded_at: DateTime<Utc>,
     /// The throttle level propagated through this event chain.
     pub throttle: Throttle,
+    /// Groups related events into a single workflow instance.
+    /// Propagated automatically by the engine from trigger to emitted events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     /// Event-type-specific payload.
     pub payload: serde_json::Value,
 }
@@ -42,8 +46,16 @@ impl Event {
             occurred_at,
             recorded_at,
             throttle,
+            trace_id: None,
             payload,
         }
+    }
+
+    /// Attach a trace ID to this event (builder pattern).
+    #[must_use]
+    pub fn with_trace_id(mut self, trace_id: Option<String>) -> Self {
+        self.trace_id = trace_id;
+        self
     }
 
     pub fn payload_str(&self, key: &str) -> Option<&str> {
@@ -94,6 +106,11 @@ impl Event {
     }
 }
 
+/// Generate a fresh trace ID for a new workflow instance.
+pub fn mint_trace_id() -> String {
+    format!("trc_{}", uuid::Uuid::new_v4().simple())
+}
+
 /// Extension methods for extracting typed values from a `serde_json::Value` payload object.
 ///
 /// Provides `str_or`, `bool_or`, `u64_or`, and `i64_or` to replace the repetitive
@@ -124,8 +141,20 @@ impl PayloadExt for serde_json::Value {
 }
 
 /// Known event types in the system.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum EventType {
     // Vulnerability remediation workflow
     ScanRequested,
@@ -196,112 +225,7 @@ pub enum EventType {
 
 impl EventType {
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::ScanRequested => "scan_requested",
-            Self::VulnerabilityDetected => "vulnerability_detected",
-            Self::MainBranchAudited => "main_branch_audited",
-            Self::RemediationStarted => "remediation_started",
-            Self::RemediationCompleted => "remediation_completed",
-            Self::ReleaseRequested => "release_requested",
-            Self::ReleaseCompleted => "release_completed",
-            Self::ReleasePipelineCompleted => "release_pipeline_completed",
-            Self::LocalInstallCompleted => "local_install_completed",
-            Self::ProjectValidationCompleted => "project_validation_completed",
-            Self::ProjectIterationCompleted => "project_iteration_completed",
-            Self::ProjectMaintenanceCompleted => "project_maintenance_completed",
-            Self::ProjectChangesCommitted => "project_changes_committed",
-            Self::ProjectChangesPushed => "project_changes_pushed",
-            Self::IterationRequested => "iteration_requested",
-            Self::MaintenanceRequested => "maintenance_requested",
-            Self::PromptExecutionRequested => "prompt_execution_requested",
-            Self::ValidationRequested => "validation_requested",
-            Self::ValidationCompleted => "validation_completed",
-            Self::MaintenanceRunStarted => "maintenance_run_started",
-            Self::MaintenanceRunCompleted => "maintenance_run_completed",
-            Self::ReleaseTagAudited => "release_tag_audited",
-            Self::GateResolutionCompleted => "gate_resolution_completed",
-            Self::PreflightCompleted => "preflight_completed",
-            Self::ExecutionCompleted => "execution_completed",
-            Self::GateVerificationCompleted => "gate_verification_completed",
-            Self::RetryRequested => "retry_requested",
-            Self::SummarizeCompleted => "summarize_completed",
-            Self::CharterCheckCompleted => "charter_check_completed",
-            Self::AssessmentCompleted => "assessment_completed",
-            Self::TriageCompleted => "triage_completed",
-            Self::PlanCompleted => "plan_completed",
-            Self::StrategicAssessmentCompleted => "strategic_assessment_completed",
-            Self::StrategicCycleCompleted => "strategic_cycle_completed",
-            Self::InnerIterationCompleted => "inner_iteration_completed",
-            Self::DriftAssessmentRequested => "drift_assessment_requested",
-            Self::DriftAssessmentCompleted => "drift_assessment_completed",
-            Self::PipelineCheckRequested => "pipeline_check_requested",
-            Self::PipelineChecked => "pipeline_checked",
-            Self::GreetRequested => "greet_requested",
-            Self::GreetingComposed => "greeting_composed",
-            Self::GreetingDelivered => "greeting_delivered",
-        }
-    }
-}
-
-impl std::str::FromStr for EventType {
-    type Err = EventTypeParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "scan_requested" => Ok(Self::ScanRequested),
-            "vulnerability_detected" => Ok(Self::VulnerabilityDetected),
-            "main_branch_audited" => Ok(Self::MainBranchAudited),
-            "remediation_started" => Ok(Self::RemediationStarted),
-            "remediation_completed" => Ok(Self::RemediationCompleted),
-            "release_requested" => Ok(Self::ReleaseRequested),
-            "release_completed" => Ok(Self::ReleaseCompleted),
-            "release_pipeline_completed" => Ok(Self::ReleasePipelineCompleted),
-            "local_install_completed" => Ok(Self::LocalInstallCompleted),
-            "project_validation_completed" => Ok(Self::ProjectValidationCompleted),
-            "project_iteration_completed" => Ok(Self::ProjectIterationCompleted),
-            "project_maintenance_completed" => Ok(Self::ProjectMaintenanceCompleted),
-            "project_changes_committed" => Ok(Self::ProjectChangesCommitted),
-            "project_changes_pushed" => Ok(Self::ProjectChangesPushed),
-            "iteration_requested" => Ok(Self::IterationRequested),
-            "maintenance_requested" => Ok(Self::MaintenanceRequested),
-            "prompt_execution_requested" => Ok(Self::PromptExecutionRequested),
-            "validation_requested" => Ok(Self::ValidationRequested),
-            "validation_completed" => Ok(Self::ValidationCompleted),
-            "maintenance_run_started" => Ok(Self::MaintenanceRunStarted),
-            "maintenance_run_completed" => Ok(Self::MaintenanceRunCompleted),
-            "release_tag_audited" => Ok(Self::ReleaseTagAudited),
-            "gate_resolution_completed" => Ok(Self::GateResolutionCompleted),
-            "preflight_completed" => Ok(Self::PreflightCompleted),
-            "execution_completed" => Ok(Self::ExecutionCompleted),
-            "gate_verification_completed" => Ok(Self::GateVerificationCompleted),
-            "retry_requested" => Ok(Self::RetryRequested),
-            "summarize_completed" => Ok(Self::SummarizeCompleted),
-            "charter_check_completed" => Ok(Self::CharterCheckCompleted),
-            "assessment_completed" => Ok(Self::AssessmentCompleted),
-            "triage_completed" => Ok(Self::TriageCompleted),
-            "plan_completed" => Ok(Self::PlanCompleted),
-            "strategic_assessment_completed" => Ok(Self::StrategicAssessmentCompleted),
-            "strategic_cycle_completed" => Ok(Self::StrategicCycleCompleted),
-            "inner_iteration_completed" => Ok(Self::InnerIterationCompleted),
-            "drift_assessment_requested" => Ok(Self::DriftAssessmentRequested),
-            "drift_assessment_completed" => Ok(Self::DriftAssessmentCompleted),
-            "pipeline_check_requested" => Ok(Self::PipelineCheckRequested),
-            "pipeline_checked" => Ok(Self::PipelineChecked),
-            "greet_requested" => Ok(Self::GreetRequested),
-            "greeting_composed" => Ok(Self::GreetingComposed),
-            "greeting_delivered" => Ok(Self::GreetingDelivered),
-            _ => Err(EventTypeParseError(s.to_string())),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("unknown event type: {0}")]
-pub struct EventTypeParseError(String);
-
-impl std::fmt::Display for EventType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+        self.into()
     }
 }
 
@@ -401,199 +325,59 @@ mod tests {
     }
 
     #[test]
-    fn iteration_requested_as_str() {
-        assert_eq!(EventType::IterationRequested.as_str(), "iteration_requested");
-    }
+    fn all_variants_round_trip_through_from_str() {
+        let cases = [
+            (EventType::ScanRequested, "scan_requested"),
+            (EventType::VulnerabilityDetected, "vulnerability_detected"),
+            (EventType::MainBranchAudited, "main_branch_audited"),
+            (EventType::RemediationStarted, "remediation_started"),
+            (EventType::RemediationCompleted, "remediation_completed"),
+            (EventType::ReleaseRequested, "release_requested"),
+            (EventType::ReleaseCompleted, "release_completed"),
+            (EventType::ReleasePipelineCompleted, "release_pipeline_completed"),
+            (EventType::LocalInstallCompleted, "local_install_completed"),
+            (EventType::ProjectValidationCompleted, "project_validation_completed"),
+            (EventType::ProjectIterationCompleted, "project_iteration_completed"),
+            (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),
+            (EventType::ProjectChangesCommitted, "project_changes_committed"),
+            (EventType::ProjectChangesPushed, "project_changes_pushed"),
+            (EventType::IterationRequested, "iteration_requested"),
+            (EventType::MaintenanceRequested, "maintenance_requested"),
+            (EventType::PromptExecutionRequested, "prompt_execution_requested"),
+            (EventType::ValidationRequested, "validation_requested"),
+            (EventType::ValidationCompleted, "validation_completed"),
+            (EventType::MaintenanceRunStarted, "maintenance_run_started"),
+            (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
+            (EventType::ReleaseTagAudited, "release_tag_audited"),
+            (EventType::GateResolutionCompleted, "gate_resolution_completed"),
+            (EventType::PreflightCompleted, "preflight_completed"),
+            (EventType::ExecutionCompleted, "execution_completed"),
+            (EventType::GateVerificationCompleted, "gate_verification_completed"),
+            (EventType::RetryRequested, "retry_requested"),
+            (EventType::SummarizeCompleted, "summarize_completed"),
+            (EventType::CharterCheckCompleted, "charter_check_completed"),
+            (EventType::AssessmentCompleted, "assessment_completed"),
+            (EventType::TriageCompleted, "triage_completed"),
+            (EventType::PlanCompleted, "plan_completed"),
+            (EventType::StrategicAssessmentCompleted, "strategic_assessment_completed"),
+            (EventType::StrategicCycleCompleted, "strategic_cycle_completed"),
+            (EventType::InnerIterationCompleted, "inner_iteration_completed"),
+            (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
+            (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
+            (EventType::PipelineCheckRequested, "pipeline_check_requested"),
+            (EventType::PipelineChecked, "pipeline_checked"),
+            (EventType::GreetRequested, "greet_requested"),
+            (EventType::GreetingComposed, "greeting_composed"),
+            (EventType::GreetingDelivered, "greeting_delivered"),
+        ];
 
-    #[test]
-    fn maintenance_requested_as_str() {
-        assert_eq!(EventType::MaintenanceRequested.as_str(), "maintenance_requested");
-    }
-
-    #[test]
-    fn iteration_requested_from_str() {
-        let parsed: EventType = "iteration_requested".parse().expect("should parse");
-        assert_eq!(parsed, EventType::IterationRequested);
-    }
-
-    #[test]
-    fn maintenance_requested_from_str() {
-        let parsed: EventType = "maintenance_requested".parse().expect("should parse");
-        assert_eq!(parsed, EventType::MaintenanceRequested);
-    }
-
-    #[test]
-    fn iteration_requested_serde_round_trip() {
-        let original = EventType::IterationRequested;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn maintenance_requested_serde_round_trip() {
-        let original = EventType::MaintenanceRequested;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn validation_requested_serde_round_trip() {
-        let original = EventType::ValidationRequested;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn validation_completed_serde_round_trip() {
-        let original = EventType::ValidationCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn validation_requested_from_str() {
-        let parsed: EventType = "validation_requested".parse().expect("should parse");
-        assert_eq!(parsed, EventType::ValidationRequested);
-    }
-
-    #[test]
-    fn validation_completed_from_str() {
-        let parsed: EventType = "validation_completed".parse().expect("should parse");
-        assert_eq!(parsed, EventType::ValidationCompleted);
-    }
-
-    #[test]
-    fn charter_check_completed_serde_round_trip() {
-        let original = EventType::CharterCheckCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn assessment_completed_serde_round_trip() {
-        let original = EventType::AssessmentCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn triage_completed_serde_round_trip() {
-        let original = EventType::TriageCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn plan_completed_serde_round_trip() {
-        let original = EventType::PlanCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn strategic_assessment_completed_serde_round_trip() {
-        let original = EventType::StrategicAssessmentCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn strategic_cycle_completed_serde_round_trip() {
-        let original = EventType::StrategicCycleCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn inner_iteration_completed_serde_round_trip() {
-        let original = EventType::InnerIterationCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn strategic_assessment_completed_from_str() {
-        let parsed: EventType = "strategic_assessment_completed".parse().expect("should parse");
-        assert_eq!(parsed, EventType::StrategicAssessmentCompleted);
-    }
-
-    #[test]
-    fn strategic_cycle_completed_from_str() {
-        let parsed: EventType = "strategic_cycle_completed".parse().expect("should parse");
-        assert_eq!(parsed, EventType::StrategicCycleCompleted);
-    }
-
-    #[test]
-    fn inner_iteration_completed_from_str() {
-        let parsed: EventType = "inner_iteration_completed".parse().expect("should parse");
-        assert_eq!(parsed, EventType::InnerIterationCompleted);
-    }
-
-    #[test]
-    fn drift_assessment_requested_serde_round_trip() {
-        let original = EventType::DriftAssessmentRequested;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn drift_assessment_completed_serde_round_trip() {
-        let original = EventType::DriftAssessmentCompleted;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn drift_assessment_requested_from_str() {
-        let parsed: EventType = "drift_assessment_requested".parse().expect("should parse");
-        assert_eq!(parsed, EventType::DriftAssessmentRequested);
-    }
-
-    #[test]
-    fn drift_assessment_completed_from_str() {
-        let parsed: EventType = "drift_assessment_completed".parse().expect("should parse");
-        assert_eq!(parsed, EventType::DriftAssessmentCompleted);
-    }
-
-    #[test]
-    fn pipeline_check_requested_serde_round_trip() {
-        let original = EventType::PipelineCheckRequested;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn pipeline_checked_serde_round_trip() {
-        let original = EventType::PipelineChecked;
-        let json = serde_json::to_string(&original).expect("should serialize");
-        let restored: EventType = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn pipeline_check_requested_from_str() {
-        let parsed: EventType = "pipeline_check_requested".parse().expect("should parse");
-        assert_eq!(parsed, EventType::PipelineCheckRequested);
-    }
-
-    #[test]
-    fn pipeline_checked_from_str() {
-        let parsed: EventType = "pipeline_checked".parse().expect("should parse");
-        assert_eq!(parsed, EventType::PipelineChecked);
+        for (variant, expected_str) in &cases {
+            assert_eq!(variant.as_str(), *expected_str, "as_str for {variant:?}");
+            assert_eq!(&format!("{variant}"), *expected_str, "Display for {variant:?}");
+            let parsed: EventType =
+                expected_str.parse().unwrap_or_else(|_| panic!("should parse {expected_str}"));
+            assert_eq!(&parsed, variant, "FromStr for {expected_str}");
+        }
     }
 
     #[test]
@@ -608,6 +392,74 @@ mod tests {
 
         assert_eq!(id1, id2);
         assert!(id1.starts_with("evt_"));
+    }
+
+    #[test]
+    fn trace_id_omitted_from_json_when_none() {
+        let event = Event::new(
+            EventType::GreetRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("trace_id").is_none(), "trace_id should be absent when None");
+    }
+
+    #[test]
+    fn trace_id_present_in_json_when_set() {
+        let event = Event::new(
+            EventType::GreetRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("trc_abc123".to_string()));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["trace_id"], "trc_abc123");
+    }
+
+    #[test]
+    fn trace_id_deserialized_as_none_when_absent() {
+        let json = r#"{
+            "id": "evt_test",
+            "event_type": "greet_requested",
+            "project": "test",
+            "occurred_at": "2026-01-01T00:00:00Z",
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "throttle": "full",
+            "payload": {}
+        }"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert!(event.trace_id.is_none());
+    }
+
+    #[test]
+    fn trace_id_round_trip() {
+        let event = Event::new(
+            EventType::GreetRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("trc_deadbeef".to_string()));
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.trace_id, Some("trc_deadbeef".to_string()));
+    }
+
+    #[test]
+    fn mint_trace_id_produces_trc_prefix() {
+        let id = super::mint_trace_id();
+        assert!(id.starts_with("trc_"), "trace ID must start with trc_");
+        assert!(id.len() > 10, "trace ID must have sufficient entropy");
+    }
+
+    #[test]
+    fn mint_trace_id_unique() {
+        let id1 = super::mint_trace_id();
+        let id2 = super::mint_trace_id();
+        assert_ne!(id1, id2);
     }
 
     #[test]

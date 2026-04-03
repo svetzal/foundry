@@ -11,6 +11,8 @@ pub struct TraceIndex {
     pub project: String,
     pub success: bool,
     pub total_duration_ms: u64,
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 /// Record of a single block execution within a processing chain.

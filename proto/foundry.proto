@@ -17,6 +17,7 @@ message Event {
     string occurred_at = 4;  // ISO 8601
     string payload_json = 5; // Event-type-specific payload as JSON
     Throttle throttle = 6;
+    string trace_id = 7;     // Groups events into a workflow instance
 }
 
 // Status of a running or completed workflow.
@@ -44,6 +45,7 @@ message EmitRequest {
     string project = 2;
     Throttle throttle = 3;
     string payload_json = 4;  // Optional additional payload
+    string trace_id = 5;      // Optional; auto-minted if empty
 }
 
 message EmitResponse {
@@ -82,6 +84,7 @@ message TraceEvent {
     string project = 3;
     string occurred_at = 4;
     Throttle throttle = 5;
+    string trace_id = 6;     // Workflow instance this event belongs to
 }
 
 // Request to retrieve a completed event trace.
@@ -108,6 +111,7 @@ message WatchResponse {
     string event_type = 2;
     string project = 3;
     string payload_json = 4;
+    string trace_id = 5;     // Workflow instance this event belongs to
 }
 
 // The Foundry service.

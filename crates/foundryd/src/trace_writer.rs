@@ -108,12 +108,14 @@ impl TraceWriter {
                 .map(|e| (e.event_type.to_string(), e.project.clone()))
                 .unwrap_or_default();
             let success = result.is_success();
+            let trace_id = result.events.first().and_then(|e| e.trace_id.clone());
             indices.push(TraceIndex {
                 event_id,
                 event_type,
                 project,
                 success,
                 total_duration_ms: result.total_duration_ms,
+                trace_id,
             });
         }
         indices

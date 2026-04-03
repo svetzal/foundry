@@ -79,6 +79,8 @@ impl TaskBlock for RetryExecution {
             .payload_str_or("failure_context", "no failure context available")
             .to_string();
 
+        let prior_output = trigger.payload_str_or("prior_execution_output", "").to_string();
+
         let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);
 
@@ -89,11 +91,21 @@ impl TaskBlock for RetryExecution {
 
             let project_path = PathBuf::from(&entry.path);
 
+            let prior_work_section = if prior_output.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n\nHere is the output from the previous attempt:\n\
+                     {prior_output}\n\n\
+                     Analyze what was tried and avoid repeating the same approach if it failed."
+                )
+            };
+
             let prompt = format!(
                 "You are retrying a {workflow} operation on project '{project}' \
                  (attempt {retry_count} of 3).\n\n\
                  The previous attempt failed because the following quality gates did not pass:\n\
-                 {failure_context}\n\n\
+                 {failure_context}{prior_work_section}\n\n\
                  Please fix the issues that caused these gate failures. \
                  Focus specifically on the failures listed above. \
                  Make only the changes necessary to resolve these issues."
@@ -150,6 +162,12 @@ impl TaskBlock for RetryExecution {
                 "success": success,
                 "summary": summary,
             });
+            if let Some(ref output) = raw_output {
+                let lines: Vec<&str> = output.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                event_payload["execution_output"] =
+                    serde_json::Value::String(lines[start..].join("\n"));
+            }
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();
             }
@@ -315,6 +333,61 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn includes_prior_execution_output_in_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RetryExecution::new(agent.clone(), registry);
+        let trigger = Event::new(
+            EventType::RetryRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "workflow": "maintain",
+                "retry_count": 2,
+                "failure_context": "fmt failed",
+                "prior_execution_output": "tried updating deps\ncargo fmt failed on lib.rs",
+            }),
+        );
+
+        block.execute(&trigger).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(
+            invocations[0].prompt.contains("tried updating deps"),
+            "prompt should include prior execution output",
+        );
+        assert!(
+            invocations[0].prompt.contains("Analyze what was tried"),
+            "prompt should include guidance about prior attempt",
+        );
+    }
+
+    #[tokio::test]
+    async fn emitted_event_includes_execution_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("Fixed the issue");
+        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RetryExecution::new(agent, registry);
+        let trigger = retry_event("my-project", 1, "maintain");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let exec_output = result.events[0].payload.get("execution_output").and_then(|v| v.as_str());
+        assert!(
+            exec_output.is_some(),
+            "ExecutionCompleted should include execution_output in payload",
+        );
+        assert!(
+            exec_output.unwrap().contains("Fixed the issue"),
+            "execution_output should contain agent stdout",
+        );
     }
 
     #[tokio::test]
