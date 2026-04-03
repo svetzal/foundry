@@ -28,7 +28,6 @@ impl TaskBlock for RouteGateResult {
         sinks_on: [GateVerificationCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -40,11 +39,8 @@ impl TaskBlock for RouteGateResult {
 
         Box::pin(async move {
             let required_passed = payload.bool_or("required_passed", false);
-
             let retry_count = payload.u64_or("retry_count", 0);
-
             let workflow = payload.str_or("workflow", "iterate").to_string();
-
             let in_loop = has_loop_context(&payload);
 
             let completion_event_type = if workflow == "maintain" {
@@ -57,115 +53,149 @@ impl TaskBlock for RouteGateResult {
                 EventType::ProjectIterationCompleted
             };
 
-            if required_passed {
-                tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
-                let mut event_payload = serde_json::json!({
-                    "project": project,
-                    "success": true,
-                    "summary": "all required gates passed",
-                });
-                forward_chain_context(&payload, &mut event_payload);
-
-                let mut events = vec![Event::new(
+            let result = if required_passed {
+                handle_gates_passed(
+                    &project,
+                    &workflow,
                     completion_event_type,
-                    project.clone(),
+                    in_loop,
+                    &payload,
                     throttle,
-                    event_payload,
-                )];
-
-                // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
-                // Skip chaining when inside a nested loop — the strategic loop controller
-                // handles post-loop maintenance chaining.
-                if workflow == "iterate" && !in_loop {
-                    let maintain = payload
-                        .get("actions")
-                        .and_then(|a| a.get("maintain"))
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    if maintain {
-                        tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
-                        events.push(Event::new(
-                            EventType::MaintenanceRequested,
-                            project.clone(),
-                            throttle,
-                            serde_json::json!({ "project": project }),
-                        ));
-                    }
-                }
-
-                return Ok(TaskBlockResult::success(
-                    format!("{project}: all required gates passed"),
-                    events,
-                ));
-            }
-
-            // Required gates failed
-            let max_retries: u64 = 3;
-            if retry_count < max_retries {
-                let failure_context = build_failure_context(&payload);
-                tracing::info!(
-                    project = %project,
-                    retry_count = retry_count,
-                    "gates failed, requesting retry"
-                );
-
-                let mut event_payload = serde_json::json!({
-                    "project": project,
-                    "workflow": workflow,
-                    "retry_count": retry_count + 1,
-                    "failure_context": failure_context,
-                });
-                if let Some(exec_output) = payload.get("execution_output") {
-                    event_payload["prior_execution_output"] = exec_output.clone();
-                }
-                forward_chain_context(&payload, &mut event_payload);
-
-                return Ok(TaskBlockResult {
-                    events: vec![Event::new(
-                        EventType::RetryRequested,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                    success: false,
-                    summary: format!(
-                        "{project}: gates failed, retry {}/{max_retries} requested",
-                        retry_count + 1
-                    ),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
-                });
-            }
-
-            // Retries exhausted
-            tracing::warn!(
-                project = %project,
-                retry_count = retry_count,
-                "gates failed, retries exhausted"
-            );
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "success": false,
-                "summary": format!("gates failed after {retry_count} retries"),
-            });
-            forward_chain_context(&payload, &mut event_payload);
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
+                )
+            } else {
+                handle_retry_or_exhaustion(
+                    &project,
+                    &workflow,
                     completion_event_type,
-                    project.clone(),
+                    retry_count,
+                    &payload,
                     throttle,
-                    event_payload,
-                )],
-                success: false,
-                summary: format!("{project}: gates failed after {retry_count} retries"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+                )
+            };
+
+            Ok(result)
         })
+    }
+}
+
+fn handle_gates_passed(
+    project: &str,
+    workflow: &str,
+    completion_event_type: foundry_core::event::EventType,
+    in_loop: bool,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "success": true,
+        "summary": "all required gates passed",
+    });
+    forward_chain_context(payload, &mut event_payload);
+
+    let mut events = vec![Event::new(
+        completion_event_type,
+        project.to_string(),
+        throttle,
+        event_payload,
+    )];
+
+    // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
+    // Skip chaining when inside a nested loop — the strategic loop controller
+    // handles post-loop maintenance chaining.
+    if workflow == "iterate" && !in_loop {
+        let maintain = payload
+            .get("actions")
+            .and_then(|a| a.get("maintain"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if maintain {
+            tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
+            events.push(Event::new(
+                EventType::MaintenanceRequested,
+                project.to_string(),
+                throttle,
+                serde_json::json!({ "project": project }),
+            ));
+        }
+    }
+
+    TaskBlockResult::success(format!("{project}: all required gates passed"), events)
+}
+
+fn handle_retry_or_exhaustion(
+    project: &str,
+    workflow: &str,
+    completion_event_type: foundry_core::event::EventType,
+    retry_count: u64,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let max_retries: u64 = 3;
+    if retry_count < max_retries {
+        let failure_context = build_failure_context(payload);
+        tracing::info!(
+            project = %project,
+            retry_count = retry_count,
+            "gates failed, requesting retry"
+        );
+
+        let mut event_payload = serde_json::json!({
+            "project": project,
+            "workflow": workflow,
+            "retry_count": retry_count + 1,
+            "failure_context": failure_context,
+        });
+        if let Some(exec_output) = payload.get("execution_output") {
+            event_payload["prior_execution_output"] = exec_output.clone();
+        }
+        forward_chain_context(payload, &mut event_payload);
+
+        return TaskBlockResult {
+            events: vec![Event::new(
+                EventType::RetryRequested,
+                project.to_string(),
+                throttle,
+                event_payload,
+            )],
+            success: false,
+            summary: format!(
+                "{project}: gates failed, retry {}/{max_retries} requested",
+                retry_count + 1
+            ),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        };
+    }
+
+    // Retries exhausted
+    tracing::warn!(
+        project = %project,
+        retry_count = retry_count,
+        "gates failed, retries exhausted"
+    );
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "success": false,
+        "summary": format!("gates failed after {retry_count} retries"),
+    });
+    forward_chain_context(payload, &mut event_payload);
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            completion_event_type,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success: false,
+        summary: format!("{project}: gates failed after {retry_count} retries"),
+        raw_output: None,
+        exit_code: None,
+        audit_artifacts: vec![],
     }
 }
 

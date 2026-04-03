@@ -36,7 +36,6 @@ impl TaskBlock for StrategicAssessor {
         sinks_on: [IterationRequested],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -70,25 +69,20 @@ impl TaskBlock for StrategicAssessor {
             let max_iterations =
                 payload.get("max_iterations").and_then(serde_json::Value::as_u64).unwrap_or(5);
 
-            let strategic_prompt =
-                payload.get("strategic_prompt").and_then(serde_json::Value::as_str);
+            let strategic_prompt = payload
+                .get("strategic_prompt")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
 
-            let default_directive = "Analyse the codebase holistically and identify the top areas that need \
-                 improvement. Consider: code clarity, test coverage, error handling, naming, \
-                 duplication, separation of concerns, and adherence to the project's stated \
-                 conventions.\n\n\
-                 Rank the areas by impact — the most impactful improvement should come first.";
-            let directive = strategic_prompt.unwrap_or(default_directive);
-
-            let prompt = format!(
-                "You are performing a strategic assessment of the project '{project}'.\n\n\
-                 {directive}\n\n\
-                 Output ONLY valid JSON in this exact format, nothing else:\n\
-                 {{\n  \
-                   \"areas\": [\n    \
-                     {{\"area\": \"<short description>\", \"severity\": <1-10>, \"category\": \"<category>\"}}\n  \
-                   ]\n\
-                 }}"
+            let prompt = build_strategic_prompt(
+                &project,
+                strategic_prompt.as_deref().unwrap_or(
+                    "Analyse the codebase holistically and identify the top areas that need \
+                     improvement. Consider: code clarity, test coverage, error handling, naming, \
+                     duplication, separation of concerns, and adherence to the project's stated \
+                     conventions.\n\n\
+                     Rank the areas by impact — the most impactful improvement should come first.",
+                ),
             );
 
             let request = AgentRequest {
@@ -126,37 +120,69 @@ impl TaskBlock for StrategicAssessor {
                 "strategic assessment completed"
             );
 
-            let mut strategic_context = serde_json::json!({
-                "iteration": 0,
-                "max": max_iterations,
-                "total_areas": areas.len(),
-            });
-            if let Some(sp) = strategic_prompt {
-                strategic_context["prompt"] = serde_json::json!(sp);
-            }
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "areas": areas,
-                "loop_context": {
-                    "strategic": strategic_context,
-                },
-            });
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-
-            Ok(TaskBlockResult::success(
-                format!("{project}: strategic assessment identified {} areas", areas.len()),
-                vec![Event::new(
-                    EventType::StrategicAssessmentCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
+            Ok(build_strategic_result(
+                &project,
+                &areas,
+                strategic_prompt.as_deref(),
+                max_iterations,
+                &payload,
+                throttle,
             ))
         })
     }
+}
+
+fn build_strategic_prompt(project: &str, directive: &str) -> String {
+    format!(
+        "You are performing a strategic assessment of the project '{project}'.\n\n\
+         {directive}\n\n\
+         Output ONLY valid JSON in this exact format, nothing else:\n\
+         {{\n  \
+           \"areas\": [\n    \
+             {{\"area\": \"<short description>\", \"severity\": <1-10>, \"category\": \"<category>\"}}\n  \
+           ]\n\
+         }}"
+    )
+}
+
+fn build_strategic_result(
+    project: &str,
+    areas: &[serde_json::Value],
+    strategic_prompt: Option<&str>,
+    max_iterations: u64,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let mut strategic_context = serde_json::json!({
+        "iteration": 0,
+        "max": max_iterations,
+        "total_areas": areas.len(),
+    });
+    if let Some(sp) = strategic_prompt {
+        strategic_context["prompt"] = serde_json::json!(sp);
+    }
+
+    let area_count = areas.len();
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "areas": areas,
+        "loop_context": {
+            "strategic": strategic_context,
+        },
+    });
+    if let Some(actions) = payload.get("actions") {
+        event_payload["actions"] = actions.clone();
+    }
+
+    TaskBlockResult::success(
+        format!("{project}: strategic assessment identified {area_count} areas"),
+        vec![Event::new(
+            EventType::StrategicAssessmentCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+    )
 }
 
 /// Parse the agent output as a JSON object with an `areas` array.

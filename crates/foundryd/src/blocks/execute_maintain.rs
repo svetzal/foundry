@@ -65,7 +65,6 @@ impl TaskBlock for ExecuteMaintain {
         )]
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -94,23 +93,7 @@ impl TaskBlock for ExecuteMaintain {
 
             let project_path = PathBuf::from(&entry.path);
 
-            // Build gate context for the prompt
-            let gates_context = if let Some(gates) = payload.get("gates") {
-                format!(
-                    "\n\nThe following quality gates must pass after your changes:\n{}",
-                    serde_json::to_string_pretty(gates).unwrap_or_default()
-                )
-            } else {
-                String::new()
-            };
-
-            let prompt = format!(
-                "You are maintaining the project '{project}'. \
-                 Update dependencies to their latest compatible versions, \
-                 fix any known vulnerabilities, and resolve any quality gate failures. \
-                 Make only the changes necessary to bring the project up to date \
-                 and ensure all gates pass.{gates_context}"
-            );
+            let prompt = build_maintain_prompt(&project, payload.get("gates"));
 
             let agent_file = resolve_agent_file(&entry.agent);
 
@@ -127,56 +110,82 @@ impl TaskBlock for ExecuteMaintain {
 
             let response = agent.invoke(&request).await;
 
-            let (raw_output, exit_code, success, summary) = match response {
-                Ok(r) => {
-                    let s = r.success;
-                    let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-                    let summary = if s {
-                        "maintenance completed".to_string()
-                    } else {
-                        let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                        format!("maintenance failed: {first_line}")
-                    };
-                    (Some(out), Some(r.exit_code), s, summary)
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed");
-                    (None, None, false, format!("agent unavailable: {err}"))
-                }
-            };
-
-            tracing::info!(project = %project, success = success, "maintain execution completed");
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "workflow": "maintain",
-                "success": success,
-                "summary": summary,
-            });
-            if let Some(ref output) = raw_output {
-                let lines: Vec<&str> = output.lines().collect();
-                let start = lines.len().saturating_sub(200);
-                event_payload["execution_output"] =
-                    serde_json::Value::String(lines[start..].join("\n"));
-            }
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ExecutionCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success,
-                summary: format!("{project}: {summary}"),
-                raw_output,
-                exit_code,
-                audit_artifacts: vec![],
-            })
+            Ok(build_maintain_result(&project, response, &payload, throttle))
         })
+    }
+}
+
+fn build_maintain_prompt(project: &str, gates: Option<&serde_json::Value>) -> String {
+    let gates_context = if let Some(gates) = gates {
+        format!(
+            "\n\nThe following quality gates must pass after your changes:\n{}",
+            serde_json::to_string_pretty(gates).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "You are maintaining the project '{project}'. \
+         Update dependencies to their latest compatible versions, \
+         fix any known vulnerabilities, and resolve any quality gate failures. \
+         Make only the changes necessary to bring the project up to date \
+         and ensure all gates pass.{gates_context}"
+    )
+}
+
+fn build_maintain_result(
+    project: &str,
+    response: anyhow::Result<crate::gateway::AgentResponse>,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                "maintenance completed".to_string()
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("maintenance failed: {first_line}")
+            };
+            (Some(out), Some(r.exit_code), s, summary)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent invocation failed");
+            (None, None, false, format!("agent unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(project = %project, success = success, "maintain execution completed");
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "workflow": "maintain",
+        "success": success,
+        "summary": summary,
+    });
+    if let Some(ref output) = raw_output {
+        let lines: Vec<&str> = output.lines().collect();
+        let start = lines.len().saturating_sub(200);
+        event_payload["execution_output"] = serde_json::Value::String(lines[start..].join("\n"));
+    }
+    if let Some(actions) = payload.get("actions") {
+        event_payload["actions"] = actions.clone();
+    }
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: format!("{project}: {summary}"),
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
     }
 }
 

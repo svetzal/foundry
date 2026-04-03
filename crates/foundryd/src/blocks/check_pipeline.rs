@@ -41,7 +41,6 @@ impl TaskBlock for CheckPipeline {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn run_check(
     project: String,
     throttle: foundry_core::throttle::Throttle,
@@ -54,20 +53,7 @@ async fn run_check(
 
     if entry.repo.is_empty() {
         tracing::info!(project = %project, "no repo configured, skipping pipeline check");
-        return Ok(TaskBlockResult::success(
-            "no repo configured",
-            vec![Event::new(
-                EventType::PipelineChecked,
-                project,
-                throttle,
-                serde_json::json!({
-                    "passing": true,
-                    "conclusion": "skipped",
-                    "run_id": null,
-                    "run_name": null,
-                }),
-            )],
-        ));
+        return Ok(make_no_repo_result(project, throttle));
     }
 
     let repo = &entry.repo;
@@ -151,6 +137,48 @@ async fn run_check(
         fetch_failure_logs(run_id, repo, shell.as_ref()).await
     };
 
+    tracing::info!(project = %project, %passing, %conclusion, "pipeline check complete");
+
+    Ok(build_pipeline_result(
+        project,
+        &conclusion,
+        run_id,
+        &run_name,
+        passing,
+        failure_logs.as_deref(),
+        throttle,
+    ))
+}
+
+fn make_no_repo_result(
+    project: String,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    TaskBlockResult::success(
+        "no repo configured",
+        vec![Event::new(
+            EventType::PipelineChecked,
+            project,
+            throttle,
+            serde_json::json!({
+                "passing": true,
+                "conclusion": "skipped",
+                "run_id": null,
+                "run_name": null,
+            }),
+        )],
+    )
+}
+
+fn build_pipeline_result(
+    project: String,
+    conclusion: &str,
+    run_id: u64,
+    run_name: &str,
+    passing: bool,
+    failure_logs: Option<&str>,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
     let mut payload = serde_json::json!({
         "passing": passing,
         "conclusion": conclusion,
@@ -158,8 +186,8 @@ async fn run_check(
         "run_name": run_name,
     });
 
-    if let Some(logs) = &failure_logs {
-        payload["failure_logs"] = serde_json::Value::String(logs.clone());
+    if let Some(logs) = failure_logs {
+        payload["failure_logs"] = serde_json::Value::String(logs.to_string());
     }
 
     let summary = if passing {
@@ -168,9 +196,7 @@ async fn run_check(
         format!("Pipeline failing: {run_name} (#{run_id}) conclusion={conclusion}")
     };
 
-    tracing::info!(project = %project, %passing, %conclusion, "pipeline check complete");
-
-    Ok(TaskBlockResult::success(
+    TaskBlockResult::success(
         summary,
         vec![Event::new(
             EventType::PipelineChecked,
@@ -178,7 +204,7 @@ async fn run_check(
             throttle,
             payload,
         )],
-    ))
+    )
 }
 
 /// Fetch the failure logs for a specific run, truncated to 4000 characters.

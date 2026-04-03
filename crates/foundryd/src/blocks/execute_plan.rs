@@ -48,7 +48,6 @@ impl TaskBlock for ExecutePlan {
         )]
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -77,23 +76,7 @@ impl TaskBlock for ExecutePlan {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown");
 
-            // Build gate context for the prompt
-            let gates_context = if let Some(gates) = payload.get("gates") {
-                format!(
-                    "\n\nThe following quality gates must pass after your changes:\n{}",
-                    serde_json::to_string_pretty(gates).unwrap_or_default()
-                )
-            } else {
-                String::new()
-            };
-
-            let prompt = format!(
-                "You are executing a correction plan for project '{project}'.\n\n\
-                 Principle being addressed: {principle}\n\n\
-                 Plan:\n{plan}\n\n\
-                 Execute this plan. Make only the changes described. \
-                 Ensure the code compiles and existing tests pass after your changes.{gates_context}"
-            );
+            let prompt = build_execution_prompt(&project, plan, principle, payload.get("gates"));
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
@@ -110,57 +93,88 @@ impl TaskBlock for ExecutePlan {
 
             let response = agent.invoke(&request).await;
 
-            let (raw_output, exit_code, success, summary) = match response {
-                Ok(r) => {
-                    let s = r.success;
-                    let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-                    let summary = if s {
-                        "plan execution completed".to_string()
-                    } else {
-                        let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                        format!("plan execution failed: {first_line}")
-                    };
-                    (Some(out), Some(r.exit_code), s, summary)
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed");
-                    (None, None, false, format!("agent unavailable: {err}"))
-                }
-            };
-
-            tracing::info!(project = %project, success = success, "plan execution completed");
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "workflow": "iterate",
-                "success": success,
-                "summary": summary,
-            });
-            if let Some(ref output) = raw_output {
-                let lines: Vec<&str> = output.lines().collect();
-                let start = lines.len().saturating_sub(200);
-                event_payload["execution_output"] =
-                    serde_json::Value::String(lines[start..].join("\n"));
-            }
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ExecutionCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success,
-                summary: format!("{project}: {summary}"),
-                raw_output,
-                exit_code,
-                audit_artifacts: vec![],
-            })
+            Ok(build_execution_result(&project, response, &payload, throttle))
         })
+    }
+}
+
+fn build_execution_prompt(
+    project: &str,
+    plan: &str,
+    principle: &str,
+    gates: Option<&serde_json::Value>,
+) -> String {
+    let gates_context = if let Some(gates) = gates {
+        format!(
+            "\n\nThe following quality gates must pass after your changes:\n{}",
+            serde_json::to_string_pretty(gates).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "You are executing a correction plan for project '{project}'.\n\n\
+         Principle being addressed: {principle}\n\n\
+         Plan:\n{plan}\n\n\
+         Execute this plan. Make only the changes described. \
+         Ensure the code compiles and existing tests pass after your changes.{gates_context}"
+    )
+}
+
+fn build_execution_result(
+    project: &str,
+    response: anyhow::Result<crate::gateway::AgentResponse>,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                "plan execution completed".to_string()
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("plan execution failed: {first_line}")
+            };
+            (Some(out), Some(r.exit_code), s, summary)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent invocation failed");
+            (None, None, false, format!("agent unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(project = %project, success = success, "plan execution completed");
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "workflow": "iterate",
+        "success": success,
+        "summary": summary,
+    });
+    if let Some(ref output) = raw_output {
+        let lines: Vec<&str> = output.lines().collect();
+        let start = lines.len().saturating_sub(200);
+        event_payload["execution_output"] = serde_json::Value::String(lines[start..].join("\n"));
+    }
+    if let Some(actions) = payload.get("actions") {
+        event_payload["actions"] = actions.clone();
+    }
+    forward_loop_context(payload, &mut event_payload);
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: format!("{project}: {summary}"),
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
     }
 }
 

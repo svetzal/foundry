@@ -36,7 +36,6 @@ impl TaskBlock for RunVerifyGates {
         sinks_on: [ExecutionCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -93,65 +92,83 @@ impl TaskBlock for RunVerifyGates {
             let run_result =
                 crate::gate_runner::run_gates(&gates, project_path, shell.as_ref()).await?;
 
-            let results_json: Vec<serde_json::Value> = run_result
-                .results
-                .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "name": r.name,
-                        "command": r.command,
-                        "passed": r.passed,
-                        "required": r.required,
-                        "output": r.output,
-                        "exit_code": r.exit_code,
-                    })
-                })
-                .collect();
+            Ok(build_verification_result(
+                &project,
+                &workflow,
+                retry_count,
+                &run_result,
+                &payload,
+                throttle,
+            ))
+        })
+    }
+}
 
-            let success = run_result.all_passed;
-
-            tracing::info!(
-                project = %project,
-                all_passed = run_result.all_passed,
-                required_passed = run_result.required_passed,
-                retry_count = retry_count,
-                "gate verification completed"
-            );
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "workflow": workflow,
-                "all_passed": run_result.all_passed,
-                "required_passed": run_result.required_passed,
-                "retry_count": retry_count,
-                "results": results_json,
-            });
-            if let Some(exec_output) = payload.get("execution_output") {
-                event_payload["execution_output"] = exec_output.clone();
-            }
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::GateVerificationCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success,
-                summary: if success {
-                    format!("{project}: gate verification passed")
-                } else {
-                    format!("{project}: gate verification failed")
-                },
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
+fn build_verification_result(
+    project: &str,
+    workflow: &str,
+    retry_count: u64,
+    run_result: &foundry_core::gates::GatesRunResult,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let results_json: Vec<serde_json::Value> = run_result
+        .results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "command": r.command,
+                "passed": r.passed,
+                "required": r.required,
+                "output": r.output,
+                "exit_code": r.exit_code,
             })
         })
+        .collect();
+
+    let success = run_result.all_passed;
+
+    tracing::info!(
+        project = %project,
+        all_passed = run_result.all_passed,
+        required_passed = run_result.required_passed,
+        retry_count = retry_count,
+        "gate verification completed"
+    );
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "workflow": workflow,
+        "all_passed": run_result.all_passed,
+        "required_passed": run_result.required_passed,
+        "retry_count": retry_count,
+        "results": results_json,
+    });
+    if let Some(exec_output) = payload.get("execution_output") {
+        event_payload["execution_output"] = exec_output.clone();
+    }
+    if let Some(actions) = payload.get("actions") {
+        event_payload["actions"] = actions.clone();
+    }
+    forward_loop_context(payload, &mut event_payload);
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::GateVerificationCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: if success {
+            format!("{project}: gate verification passed")
+        } else {
+            format!("{project}: gate verification failed")
+        },
+        raw_output: None,
+        exit_code: None,
+        audit_artifacts: vec![],
     }
 }
 

@@ -34,7 +34,6 @@ impl TaskBlock for SummarizeResult {
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,

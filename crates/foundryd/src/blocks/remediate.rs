@@ -64,7 +64,6 @@ impl TaskBlock for RemediateVulnerability {
         )]
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -133,53 +132,62 @@ impl TaskBlock for RemediateVulnerability {
 
             let response = agent.invoke(&request).await;
 
-            let (raw_output, exit_code, success, summary) = match response {
-                Ok(r) => {
-                    let s = r.success;
-                    let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-                    let summary = if s {
-                        "remediation completed".to_string()
-                    } else {
-                        let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                        format!("remediation failed: {first_line}")
-                    };
-                    (Some(out), Some(r.exit_code), s, summary)
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent not available or failed to spawn");
-                    (None, None, false, format!("agent unavailable: {err}"))
-                }
-            };
-
-            tracing::info!(
-                project = %project,
-                success = success,
-                summary = %summary,
-                "remediation completed"
-            );
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::RemediationCompleted,
-                    project,
-                    throttle,
-                    serde_json::json!({
-                        "cve": cve,
-                        "success": success,
-                        "summary": summary,
-                    }),
-                )],
-                success,
-                summary: if success {
-                    format!("Remediated {cve}: {summary}")
-                } else {
-                    format!("Remediation of {cve} failed: {summary}")
-                },
-                raw_output,
-                exit_code,
-                audit_artifacts: vec![],
-            })
+            Ok(build_remediation_result(&project, &cve, response, throttle))
         })
+    }
+}
+
+fn build_remediation_result(
+    project: &str,
+    cve: &str,
+    response: anyhow::Result<crate::gateway::AgentResponse>,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                "remediation completed".to_string()
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("remediation failed: {first_line}")
+            };
+            (Some(out), Some(r.exit_code), s, summary)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent not available or failed to spawn");
+            (None, None, false, format!("agent unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(
+        project = %project,
+        success = success,
+        summary = %summary,
+        "remediation completed"
+    );
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::RemediationCompleted,
+            project.to_string(),
+            throttle,
+            serde_json::json!({
+                "cve": cve,
+                "success": success,
+                "summary": summary,
+            }),
+        )],
+        success,
+        summary: if success {
+            format!("Remediated {cve}: {summary}")
+        } else {
+            format!("Remediation of {cve} failed: {summary}")
+        },
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
     }
 }
 

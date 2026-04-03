@@ -32,7 +32,6 @@ impl TaskBlock for TriageAssessment {
         sinks_on: [AssessmentCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,

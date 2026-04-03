@@ -41,7 +41,6 @@ impl TaskBlock for StrategicLoopController {
         sinks_on: [StrategicAssessmentCompleted, InnerIterationCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,

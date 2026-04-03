@@ -33,7 +33,6 @@ impl TaskBlock for AssessProject {
         sinks_on: [PreflightCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -67,73 +66,24 @@ impl TaskBlock for AssessProject {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            // Assessment prompt
-            let assess_prompt = format!(
-                "You are assessing the project '{project}' for code quality improvements.\n\n\
-                 Analyze the codebase and identify the single most-violated engineering principle. \
-                 Consider: code clarity, test coverage, error handling, naming, duplication, \
-                 separation of concerns, and adherence to the project's stated conventions.\n\n\
-                 Output ONLY valid JSON in this exact format, nothing else:\n\
-                 {{\n  \
-                   \"severity\": <1-10 integer>,\n  \
-                   \"principle\": \"<the principle being violated>\",\n  \
-                   \"category\": \"<one of: clarity, testing, error-handling, naming, duplication, architecture, conventions>\",\n  \
-                   \"assessment\": \"<2-3 sentence description of the violation and where it occurs>\"\n\
-                 }}"
-            );
-
-            let assess_request = AgentRequest {
-                prompt: assess_prompt,
-                working_dir: project_path.clone(),
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Reasoning,
-                agent_file: agent_file.clone(),
-                timeout: entry.timeout(),
-            };
-
-            tracing::info!(project = %project, "assessing project via agent");
-
-            let assess_response = agent.invoke(&assess_request).await;
-
-            let (severity, principle, category, assessment) = match assess_response {
-                Ok(r) if r.success => parse_assessment(&r.stdout),
-                Ok(r) => {
-                    tracing::warn!(project = %project, stderr = %r.stderr, "assessment agent failed");
-                    (5, "unknown".to_string(), "conventions".to_string(), r.stderr)
-                }
+            let (severity, principle, category, assessment) = match run_assessment_agent(
+                &agent,
+                &project,
+                project_path.clone(),
+                agent_file.clone(),
+                entry.timeout(),
+            )
+            .await
+            {
+                Ok(v) => v,
                 Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for assessment");
                     return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
                 }
             };
 
-            // Generate audit filename via Quick agent
-            let name_prompt = format!(
-                "Generate a short kebab-case filename (no extension) that describes this assessment: \
-                 principle={principle}, category={category}. \
-                 Output ONLY the kebab-case string, nothing else. Example: fix-error-handling"
-            );
-
-            let name_request = AgentRequest {
-                prompt: name_prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Quick,
-                agent_file,
-                timeout: std::time::Duration::from_secs(60),
-            };
-
-            let audit_name = match agent.invoke(&name_request).await {
-                Ok(r) if r.success => {
-                    let name = r.stdout.trim().to_string();
-                    if name.is_empty() {
-                        format!("assess-{category}")
-                    } else {
-                        name
-                    }
-                }
-                _ => format!("assess-{category}"),
-            };
+            let audit_name =
+                run_naming_agent(&agent, &project, &principle, &category, project_path, agent_file)
+                    .await;
 
             tracing::info!(
                 project = %project,
@@ -165,6 +115,87 @@ impl TaskBlock for AssessProject {
                 )],
             ))
         })
+    }
+}
+
+async fn run_assessment_agent(
+    agent: &Arc<dyn AgentGateway>,
+    project: &str,
+    project_path: PathBuf,
+    agent_file: Option<PathBuf>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<(i64, String, String, String)> {
+    let assess_prompt = format!(
+        "You are assessing the project '{project}' for code quality improvements.\n\n\
+         Analyze the codebase and identify the single most-violated engineering principle. \
+         Consider: code clarity, test coverage, error handling, naming, duplication, \
+         separation of concerns, and adherence to the project's stated conventions.\n\n\
+         Output ONLY valid JSON in this exact format, nothing else:\n\
+         {{\n  \
+           \"severity\": <1-10 integer>,\n  \
+           \"principle\": \"<the principle being violated>\",\n  \
+           \"category\": \"<one of: clarity, testing, error-handling, naming, duplication, architecture, conventions>\",\n  \
+           \"assessment\": \"<2-3 sentence description of the violation and where it occurs>\"\n\
+         }}"
+    );
+
+    let assess_request = AgentRequest {
+        prompt: assess_prompt,
+        working_dir: project_path,
+        access: AgentAccess::ReadOnly,
+        capability: AgentCapability::Reasoning,
+        agent_file,
+        timeout,
+    };
+
+    tracing::info!(project = %project, "assessing project via agent");
+
+    let assess_response = agent.invoke(&assess_request).await?;
+
+    if assess_response.success {
+        Ok(parse_assessment(&assess_response.stdout))
+    } else {
+        tracing::warn!(project = %project, stderr = %assess_response.stderr, "assessment agent failed");
+        Ok((5, "unknown".to_string(), "conventions".to_string(), assess_response.stderr))
+    }
+}
+
+async fn run_naming_agent(
+    agent: &Arc<dyn AgentGateway>,
+    project: &str,
+    principle: &str,
+    category: &str,
+    project_path: PathBuf,
+    agent_file: Option<PathBuf>,
+) -> String {
+    let name_prompt = format!(
+        "Generate a short kebab-case filename (no extension) that describes this assessment: \
+         principle={principle}, category={category}. \
+         Output ONLY the kebab-case string, nothing else. Example: fix-error-handling"
+    );
+
+    let name_request = AgentRequest {
+        prompt: name_prompt,
+        working_dir: project_path,
+        access: AgentAccess::ReadOnly,
+        capability: AgentCapability::Quick,
+        agent_file,
+        timeout: std::time::Duration::from_secs(60),
+    };
+
+    match agent.invoke(&name_request).await {
+        Ok(r) if r.success => {
+            let name = r.stdout.trim().to_string();
+            if name.is_empty() {
+                format!("assess-{category}")
+            } else {
+                name
+            }
+        }
+        _ => {
+            tracing::warn!(project = %project, "naming agent failed, using fallback");
+            format!("assess-{category}")
+        }
     }
 }
 

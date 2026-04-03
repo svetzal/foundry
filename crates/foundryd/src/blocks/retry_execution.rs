@@ -61,7 +61,6 @@ impl TaskBlock for RetryExecution {
         )]
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
@@ -91,24 +90,12 @@ impl TaskBlock for RetryExecution {
 
             let project_path = PathBuf::from(&entry.path);
 
-            let prior_work_section = if prior_output.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n\nHere is the output from the previous attempt:\n\
-                     {prior_output}\n\n\
-                     Analyze what was tried and avoid repeating the same approach if it failed."
-                )
-            };
-
-            let prompt = format!(
-                "You are retrying a {workflow} operation on project '{project}' \
-                 (attempt {retry_count} of 3).\n\n\
-                 The previous attempt failed because the following quality gates did not pass:\n\
-                 {failure_context}{prior_work_section}\n\n\
-                 Please fix the issues that caused these gate failures. \
-                 Focus specifically on the failures listed above. \
-                 Make only the changes necessary to resolve these issues."
+            let prompt = build_retry_prompt(
+                &project,
+                &workflow,
+                retry_count,
+                &failure_context,
+                &prior_output,
             );
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
@@ -130,63 +117,107 @@ impl TaskBlock for RetryExecution {
 
             let response = agent.invoke(&request).await;
 
-            let (raw_output, exit_code, success, summary) = match response {
-                Ok(r) => {
-                    let s = r.success;
-                    let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-                    let summary = if s {
-                        format!("retry {retry_count} completed")
-                    } else {
-                        let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                        format!("retry {retry_count} failed: {first_line}")
-                    };
-                    (Some(out), Some(r.exit_code), s, summary)
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed during retry");
-                    (None, None, false, format!("agent unavailable during retry: {err}"))
-                }
-            };
-
-            tracing::info!(
-                project = %project,
-                retry_count = retry_count,
-                success = success,
-                "retry execution completed"
-            );
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "workflow": workflow,
-                "retry_count": retry_count,
-                "success": success,
-                "summary": summary,
-            });
-            if let Some(ref output) = raw_output {
-                let lines: Vec<&str> = output.lines().collect();
-                let start = lines.len().saturating_sub(200);
-                event_payload["execution_output"] =
-                    serde_json::Value::String(lines[start..].join("\n"));
-            }
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ExecutionCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success,
-                summary: format!("{project}: {summary}"),
-                raw_output,
-                exit_code,
-                audit_artifacts: vec![],
-            })
+            Ok(build_retry_result(
+                &project,
+                &workflow,
+                retry_count,
+                response,
+                &payload,
+                throttle,
+            ))
         })
+    }
+}
+
+fn build_retry_prompt(
+    project: &str,
+    workflow: &str,
+    retry_count: u64,
+    failure_context: &str,
+    prior_output: &str,
+) -> String {
+    let prior_work_section = if prior_output.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nHere is the output from the previous attempt:\n\
+             {prior_output}\n\n\
+             Analyze what was tried and avoid repeating the same approach if it failed."
+        )
+    };
+    format!(
+        "You are retrying a {workflow} operation on project '{project}' \
+         (attempt {retry_count} of 3).\n\n\
+         The previous attempt failed because the following quality gates did not pass:\n\
+         {failure_context}{prior_work_section}\n\n\
+         Please fix the issues that caused these gate failures. \
+         Focus specifically on the failures listed above. \
+         Make only the changes necessary to resolve these issues."
+    )
+}
+
+fn build_retry_result(
+    project: &str,
+    workflow: &str,
+    retry_count: u64,
+    response: anyhow::Result<crate::gateway::AgentResponse>,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                format!("retry {retry_count} completed")
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("retry {retry_count} failed: {first_line}")
+            };
+            (Some(out), Some(r.exit_code), s, summary)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent invocation failed during retry");
+            (None, None, false, format!("agent unavailable during retry: {err}"))
+        }
+    };
+
+    tracing::info!(
+        project = %project,
+        retry_count = retry_count,
+        success = success,
+        "retry execution completed"
+    );
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "workflow": workflow,
+        "retry_count": retry_count,
+        "success": success,
+        "summary": summary,
+    });
+    if let Some(ref output) = raw_output {
+        let lines: Vec<&str> = output.lines().collect();
+        let start = lines.len().saturating_sub(200);
+        event_payload["execution_output"] = serde_json::Value::String(lines[start..].join("\n"));
+    }
+    if let Some(actions) = payload.get("actions") {
+        event_payload["actions"] = actions.clone();
+    }
+    forward_loop_context(payload, &mut event_payload);
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: format!("{project}: {summary}"),
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
     }
 }
 

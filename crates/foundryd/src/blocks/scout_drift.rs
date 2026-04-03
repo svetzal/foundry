@@ -177,7 +177,6 @@ impl TaskBlock for ScoutDrift {
         sinks_on: [DriftAssessmentRequested],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,

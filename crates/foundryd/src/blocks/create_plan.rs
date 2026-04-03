@@ -32,7 +32,6 @@ impl TaskBlock for CreatePlan {
         sinks_on: [TriageCompleted],
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         trigger: &Event,
