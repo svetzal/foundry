@@ -81,3 +81,19 @@ foundry emit maintenance_run_started my-project
 
 Under `dry_run`, only `iteration_requested` or `maintenance_requested` are
 emitted (by the Observer router). No execution blocks run.
+
+## Agent Capabilities
+
+The maintenance workflow uses a single agent invocation in `Execute Maintain`:
+
+| Phase | Capability | Model | Access | Purpose |
+|-------|-----------|-------|--------|---------|
+| Execute Maintain | Coding | `claude-sonnet-4-6` | Full | Update dependencies, fix vulnerabilities, resolve gate failures |
+
+Gate definitions are passed as context so the agent knows what must pass
+after its changes. If the project has an agent file registered, it is
+supplied via `--agent`.
+
+See the [Iteration Workflow](iteration-workflow.md#agent-capabilities) for
+the full model-to-capability mapping and CLI parameters used across all
+agent invocations.

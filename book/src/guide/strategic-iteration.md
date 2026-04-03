@@ -307,6 +307,23 @@ iteration_requested (strategic=true)
       project_changes_committed
 ```
 
+## Agent Capabilities
+
+Strategic iteration adds two blocks with their own agent invocations on top
+of the standard iterate chain:
+
+| Phase | Capability | Model | Access | Purpose |
+|-------|-----------|-------|--------|---------|
+| Strategic Assessor | Reasoning | `claude-opus-4-6` | Read-only | Holistic codebase analysis producing ranked improvement areas |
+| Continue check | Quick | `claude-haiku-4-5-20251001` | Read-only | Decide whether the loop should continue after each cycle |
+
+The inner iterate formation uses the same model assignments described in
+the [Iteration Workflow](iteration-workflow.md#agent-capabilities) guide.
+
+When a `strategic_prompt` is set, both the assessment and continue-check
+prompts incorporate it — the same custom directive steers area selection
+and termination decisions.
+
 ## Comparison with Standard Iterate
 
 | Aspect | Standard Iterate | Strategic Iterate |

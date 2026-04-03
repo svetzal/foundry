@@ -194,17 +194,40 @@ foundry emit iteration_requested my-project \
 
 ## Agent Capabilities
 
-The iterate workflow uses progressively stronger agent capabilities:
+Foundry delegates AI work to the Claude CLI, mapping each block's capability
+hint to a concrete model:
 
-| Phase | Capability | Access | Purpose |
-|-------|-----------|--------|---------|
-| Assessment | Reasoning | Read-only | Deep analysis of codebase |
-| Audit naming | Quick | Read-only | Generate kebab-case filename |
-| Triage | Quick | Read-only | Accept/reject decision |
-| Plan creation | Reasoning | Read-only | Step-by-step correction plan |
-| Execution | Coding | Full | Apply code changes |
-| Retry | Coding | Full | Fix gate failures |
-| Summarisation | Quick | Read-only | Generate headline and summary |
+| Capability | Model | Use Case |
+|------------|-------|----------|
+| Reasoning | `claude-opus-4-6` | Deep analysis and planning |
+| Coding | `claude-sonnet-4-6` | Code generation and modification |
+| Quick | `claude-haiku-4-5-20251001` | Fast, lightweight decisions |
+
+Access levels control which CLI tools the agent may use:
+
+| Access | Allowed Tools |
+|--------|---------------|
+| Read-only | `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch` |
+| Full | All tools (no restrictions) |
+
+Each phase in the iterate workflow maps to a specific capability and access
+level:
+
+| Phase | Capability | Model | Access | Purpose |
+|-------|-----------|-------|--------|---------|
+| Assessment | Reasoning | Opus | Read-only | Deep analysis of codebase |
+| Audit naming | Quick | Haiku | Read-only | Generate kebab-case filename |
+| Triage | Quick | Haiku | Read-only | Accept/reject decision |
+| Plan creation | Reasoning | Opus | Read-only | Step-by-step correction plan |
+| Execution | Coding | Sonnet | Full | Apply code changes |
+| Retry | Coding | Sonnet | Full | Fix gate failures |
+| Summarisation | Quick | Haiku | Read-only | Generate headline and summary |
+
+All agent invocations use the `--print` flag (non-interactive output) and
+`--dangerously-skip-permissions` (unattended execution). Blocks that
+reference a project agent file pass it via `--agent`. Timeouts are set
+per-project from the registry entry, except Triage and Summarisation which
+use a fixed 120-second timeout for their lightweight Quick calls.
 
 ## Payload Fields
 
