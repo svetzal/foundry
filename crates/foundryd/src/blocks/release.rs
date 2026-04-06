@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
@@ -53,21 +53,12 @@ impl TaskBlock for CutRelease {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: skip when dirty.
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let dirty = trigger.payload.bool_or("dirty", true);
         if dirty {
             return vec![];
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         vec![Event::new(
             EventType::ReleaseCompleted,
@@ -90,11 +81,7 @@ impl TaskBlock for CutRelease {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let dirty = trigger.payload.bool_or("dirty", true);
 
         if dirty {
             tracing::info!("main branch is dirty, skipping release");
@@ -103,12 +90,7 @@ impl TaskBlock for CutRelease {
             });
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         let project_path = self.registry.find_project(&project).map(|p| p.path.clone());
 

@@ -51,7 +51,7 @@ impl TaskBlock for StrategicLoopController {
         let payload = trigger.payload.clone();
         let event_type = trigger.event_type.clone();
 
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
@@ -300,32 +300,14 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::StrategicLoopController;
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -463,7 +445,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let agent =
             FakeAgentGateway::success_with(r#"{"continue": true, "reason": "more work needed"}"#);
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicLoopController::new(agent, registry);
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
@@ -492,7 +475,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             r#"{"continue": false, "reason": "quality plateau reached"}"#,
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicLoopController::new(agent, registry);
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
@@ -518,7 +502,8 @@ mod tests {
     async fn forwards_actions_on_continue() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with(r#"{"continue": true, "reason": "more work"}"#);
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicLoopController::new(agent, registry);
         let trigger = Event::new(
             EventType::InnerIterationCompleted,

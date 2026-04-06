@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -33,17 +33,8 @@ impl TaskBlock for RetryExecution {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = trigger
-            .payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        let retry_count = trigger
-            .payload
-            .get("retry_count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(1);
+        let workflow = trigger.payload.str_or("workflow", "unknown").to_string();
+        let retry_count = trigger.payload.u64_or("retry_count", 1);
 
         let mut payload = serde_json::json!({
             "project": trigger.project,
@@ -226,33 +217,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
 
+    use super::super::test_helpers;
     use super::RetryExecution;
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn retry_event(project: &str, retry_count: u64, workflow: &str) -> Event {
         Event::new(
@@ -298,7 +271,8 @@ mod tests {
     async fn emits_execution_completed_on_success() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with("Fixed formatting");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent.clone(), registry);
         let trigger = retry_event("my-project", 1, "maintain");
 
@@ -316,7 +290,8 @@ mod tests {
     async fn includes_failure_context_in_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent.clone(), registry);
         let trigger = retry_event("my-project", 2, "maintain");
 
@@ -335,7 +310,8 @@ mod tests {
     async fn emits_execution_completed_on_failure() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::failure("still broken");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent, registry);
         let trigger = retry_event("my-project", 1, "iterate");
 
@@ -370,7 +346,8 @@ mod tests {
     async fn includes_prior_execution_output_in_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::RetryRequested,
@@ -403,7 +380,8 @@ mod tests {
     async fn emitted_event_includes_execution_output() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with("Fixed the issue");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent, registry);
         let trigger = retry_event("my-project", 1, "maintain");
 
@@ -425,7 +403,8 @@ mod tests {
     async fn forwards_actions_from_payload() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RetryExecution::new(agent, registry);
         let trigger = Event::new(
             EventType::RetryRequested,

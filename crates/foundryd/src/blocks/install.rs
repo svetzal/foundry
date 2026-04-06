@@ -58,7 +58,7 @@ impl TaskBlock for InstallLocally {
         let throttle = trigger.throttle;
 
         // Resolve install config and project path from registry.
-        let entry = self.registry.projects.iter().find(|p| p.name == project).cloned();
+        let entry = self.registry.find_project(&project).cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
@@ -233,7 +233,7 @@ mod tests {
             exit_code: 0,
             success: true,
         });
-        let block = InstallLocally::with_shell(registry, shell);
+        let block = InstallLocally::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -250,7 +250,7 @@ mod tests {
         let registry =
             registry_with_install(Some(InstallConfig::Command("make install".to_string())));
         let shell = FakeShellGateway::failure("make: error\n");
-        let block = InstallLocally::with_shell(registry, shell);
+        let block = InstallLocally::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -269,7 +269,7 @@ mod tests {
             exit_code: 0,
             success: true,
         });
-        let block = InstallLocally::with_shell(registry, shell);
+        let block = InstallLocally::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();

@@ -167,7 +167,7 @@ mod tests {
     async fn clean_project_emits_no_events() {
         let registry = registry_with_project("my-project", "/tmp");
         let scanner = FakeScannerGateway::clean();
-        let block = ScanDependencies::with_scanner(registry, scanner);
+        let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -187,7 +187,7 @@ mod tests {
             version: Some("0.1.0".to_string()),
         }];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
-        let block = ScanDependencies::with_scanner(registry, scanner);
+        let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -219,7 +219,7 @@ mod tests {
             },
         ];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
-        let block = ScanDependencies::with_scanner(registry, scanner);
+        let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -233,7 +233,7 @@ mod tests {
     async fn scanner_error_handled_gracefully() {
         let registry = registry_with_project("my-project", "/tmp");
         let scanner = FakeScannerGateway::with_error("cargo audit not installed");
-        let block = ScanDependencies::with_scanner(registry, scanner);
+        let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();

@@ -7,7 +7,7 @@ use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
 /// Creates a step-by-step correction plan for an accepted assessment.
 ///
@@ -92,15 +92,15 @@ impl TaskBlock for CreatePlan {
 
             let response = agent.invoke(&request).await;
 
-            let (plan, success) = match response {
-                Ok(r) if r.success => (r.stdout.trim().to_string(), true),
-                Ok(r) => {
-                    tracing::warn!(project = %project, stderr = %r.stderr, "plan agent failed");
-                    (format!("Plan generation failed: {}", r.stderr), false)
+            let (plan, success) = match AgentOutcome::from_response(response) {
+                AgentOutcome::Success { stdout } => (stdout.trim().to_string(), true),
+                AgentOutcome::AgentFailed { stderr } => {
+                    tracing::warn!(project = %project, stderr = %stderr, "plan agent failed");
+                    (format!("Plan generation failed: {stderr}"), false)
                 }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for plan");
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
+                AgentOutcome::Unavailable { error } => {
+                    tracing::warn!(error = %error, "agent invocation failed for plan");
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
                 }
             };
 
@@ -138,33 +138,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
 
+    use super::super::test_helpers;
     use super::CreatePlan;
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn triage_accepted_event(project: &str) -> Event {
         Event::new(
@@ -226,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn skips_rejected_triage() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
         let trigger = triage_rejected_event("my-project");
 
@@ -243,7 +225,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "1. Extract shared validation into a helper function\n2. Update callers\n3. Add tests",
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CreatePlan::new(agent.clone(), registry);
         let trigger = triage_accepted_event("my-project");
 
@@ -265,7 +248,8 @@ mod tests {
     async fn forwards_actions_and_audit_name() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with("1. Do the thing");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CreatePlan::new(agent, registry);
         let trigger = Event::new(
             EventType::TriageCompleted,

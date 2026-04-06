@@ -231,33 +231,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
 
+    use super::super::test_helpers;
     use super::{AssessProject, parse_assessment};
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn preflight_passed_event(project: &str) -> Event {
         Event::new(
@@ -302,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn skips_non_iterate_workflow() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = AssessProject::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::PreflightCompleted,
@@ -325,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn skips_failed_preflight() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = AssessProject::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::PreflightCompleted,
@@ -363,7 +345,8 @@ mod tests {
                 success: true,
             },
         ]);
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = AssessProject::new(agent.clone(), registry);
         let trigger = preflight_passed_event("my-project");
 

@@ -119,6 +119,30 @@ pub struct AgentResponse {
     pub success: bool,
 }
 
+/// The outcome of an agent invocation, abstracting over `Result<AgentResponse>`.
+/// Separates three distinct cases: successful run, agent ran but failed (non-zero exit),
+/// and the agent could not be invoked at all.
+pub enum AgentOutcome {
+    /// Agent ran and succeeded (`success=true`).
+    Success { stdout: String },
+    /// Agent ran but exited with failure (`success=false`).
+    AgentFailed { stderr: String },
+    /// Agent could not be invoked (spawn failure, timeout, etc.).
+    Unavailable { error: String },
+}
+
+impl AgentOutcome {
+    pub fn from_response(response: anyhow::Result<AgentResponse>) -> Self {
+        match response {
+            Ok(r) if r.success => AgentOutcome::Success { stdout: r.stdout },
+            Ok(r) => AgentOutcome::AgentFailed { stderr: r.stderr },
+            Err(err) => AgentOutcome::Unavailable {
+                error: err.to_string(),
+            },
+        }
+    }
+}
+
 /// Abstracts over AI agent runtimes so that blocks can be tested without
 /// invoking real agent processes.
 pub trait AgentGateway: Send + Sync {

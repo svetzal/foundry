@@ -70,6 +70,9 @@ pub use triage_assessment::TriageAssessment;
 pub use validate::ValidateProject;
 
 #[cfg(test)]
+mod test_helpers;
+
+#[cfg(test)]
 mod iterate_chain_test;
 #[cfg(test)]
 mod maintain_chain_test;

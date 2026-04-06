@@ -9,31 +9,17 @@
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
+use crate::blocks::test_helpers;
 use crate::engine::Engine;
 use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use crate::shell::CommandResult;
 
 fn test_registry(project_path: &str) -> Arc<Registry> {
-    Arc::new(Registry {
-        version: 2,
-        projects: vec![ProjectEntry {
-            name: "test-project".to_string(),
-            path: project_path.to_string(),
-            stack: Stack::Rust,
-            agent: "claude".to_string(),
-            repo: String::new(),
-            branch: "main".to_string(),
-            skip: None,
-            notes: None,
-            actions: ActionFlags::default(),
-            install: None,
-            timeout_secs: None,
-        }],
-    })
+    test_helpers::registry_with_project("test-project", project_path)
 }
 
 /// Build the full strategic loop engine with inner iterate chain.

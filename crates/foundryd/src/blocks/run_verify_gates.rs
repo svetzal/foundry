@@ -177,32 +177,14 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
 
+    use super::super::test_helpers;
     use super::RunVerifyGates;
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn execution_completed_event(project: &str, retry_count: u64, workflow: &str) -> Event {
         Event::new(
@@ -253,7 +235,8 @@ mod tests {
         .unwrap();
 
         let shell = FakeShellGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 0, "iterate");
 
@@ -276,7 +259,8 @@ mod tests {
         .unwrap();
 
         let shell = FakeShellGateway::failure("test failed");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 1, "iterate");
 
@@ -297,7 +281,8 @@ mod tests {
         .unwrap();
 
         let shell = FakeShellGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 2, "iterate");
 
@@ -312,7 +297,8 @@ mod tests {
         // No .hone-gates.json written
 
         let shell = FakeShellGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = RunVerifyGates::with_shell(shell, registry);
         let trigger = execution_completed_event("my-project", 0, "iterate");
 

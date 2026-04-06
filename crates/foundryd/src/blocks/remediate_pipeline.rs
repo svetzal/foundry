@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -45,11 +45,7 @@ impl TaskBlock for RemediatePipeline {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: only remediate when failing.
-        let passing = trigger
-            .payload
-            .get("passing")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let passing = trigger.payload.bool_or("passing", true);
         if passing {
             return vec![];
         }
@@ -75,11 +71,7 @@ impl TaskBlock for RemediatePipeline {
         let throttle = trigger.throttle;
 
         // Self-filter: only remediate when pipeline is failing.
-        let passing = trigger
-            .payload
-            .get("passing")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let passing = trigger.payload.bool_or("passing", true);
 
         if passing {
             tracing::info!("pipeline is passing, no remediation needed");
@@ -88,18 +80,8 @@ impl TaskBlock for RemediatePipeline {
             });
         }
 
-        let failure_logs = trigger
-            .payload
-            .get("failure_logs")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let run_name = trigger
-            .payload
-            .get("run_name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let failure_logs = trigger.payload.str_or("failure_logs", "").to_string();
+        let run_name = trigger.payload.str_or("run_name", "unknown").to_string();
 
         let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);

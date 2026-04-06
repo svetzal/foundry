@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes a validated project to the correct maintenance sub-workflow.
@@ -30,8 +30,7 @@ impl TaskBlock for RouteProjectWorkflow {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let status =
-            trigger.payload.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let status = trigger.payload.str_or("status", "").to_string();
 
         let iterate = trigger
             .payload

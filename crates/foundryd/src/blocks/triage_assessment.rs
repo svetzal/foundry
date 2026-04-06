@@ -7,7 +7,7 @@ use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
 /// Filters assessments: rejects low-severity issues and busy-work.
 ///
@@ -86,16 +86,16 @@ impl TaskBlock for TriageAssessment {
 
             let response = agent.invoke(&request).await;
 
-            let (accepted, reason) = match response {
-                Ok(r) if r.success => parse_triage(&r.stdout),
-                Ok(r) => {
-                    tracing::warn!(project = %project, stderr = %r.stderr, "triage agent failed");
+            let (accepted, reason) = match AgentOutcome::from_response(response) {
+                AgentOutcome::Success { stdout } => parse_triage(&stdout),
+                AgentOutcome::AgentFailed { stderr } => {
+                    tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
                     // Default to accepting on agent failure — better to attempt the fix
                     (true, "triage agent failed, defaulting to accept".to_string())
                 }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for triage");
-                    (true, format!("agent unavailable: {err}, defaulting to accept"))
+                AgentOutcome::Unavailable { error } => {
+                    tracing::warn!(error = %error, "agent invocation failed for triage");
+                    (true, format!("agent unavailable: {error}, defaulting to accept"))
                 }
             };
 
@@ -153,32 +153,14 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::{TriageAssessment, parse_triage};
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn assessment_event(project: &str) -> Event {
         Event::new(
@@ -229,7 +211,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             r#"{"accepted": true, "reason": "severity warrants fix"}"#,
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
         let trigger = assessment_event("my-project");
 
@@ -247,7 +230,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             r#"{"accepted": false, "reason": "too trivial to fix"}"#,
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
         let trigger = assessment_event("my-project");
 
@@ -262,7 +246,8 @@ mod tests {
     async fn forwards_assessment_fields() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with(r#"{"accepted": true, "reason": "ok"}"#);
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
         let trigger = assessment_event("my-project");
 

@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -46,7 +46,7 @@ impl CommitAndPush {
         cve: String,
     ) -> anyhow::Result<TaskBlockResult> {
         // Resolve the project path and push flag from the registry.
-        let Some(entry) = registry.projects.iter().find(|p| p.name == project) else {
+        let Some(entry) = registry.find_project(&project) else {
             // Project not in registry — emit stub events for test compatibility.
             tracing::warn!(
                 project = %project,
@@ -164,12 +164,7 @@ impl TaskBlock for CommitAndPush {
 
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         let mut events = vec![Event::new(
             EventType::ProjectChangesCommitted,
@@ -179,12 +174,7 @@ impl TaskBlock for CommitAndPush {
         )];
 
         // Simulate push if the project has push enabled, or if unknown (stub path).
-        let push_enabled = self
-            .registry
-            .projects
-            .iter()
-            .find(|p| p.name == project)
-            .is_none_or(|e| e.actions.push);
+        let push_enabled = self.registry.find_project(&project).is_none_or(|e| e.actions.push);
 
         if push_enabled {
             events.push(Event::new(
@@ -235,12 +225,7 @@ impl TaskBlock for CommitAndPush {
             });
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
@@ -407,7 +392,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
         let shell = clean_sequence();
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0002");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -422,7 +407,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
         let shell = dirty_sequence();
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0003");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -457,7 +442,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-0004");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -522,7 +507,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
             "my-project".to_string(),
@@ -599,7 +584,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger("my-project", "CVE-2026-1000");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -634,7 +619,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -668,7 +653,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -703,7 +688,7 @@ mod tests {
                 success: false,
             },
         ]);
-        let block = CommitAndPush::with_shell(registry, shell);
+        let block = CommitAndPush::with_gateways(registry, shell);
         let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();

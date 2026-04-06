@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -67,14 +67,8 @@ impl TaskBlock for ExecutePlan {
 
             let project_path = PathBuf::from(&entry.path);
 
-            let plan = payload
-                .get("plan")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("No plan provided");
-            let principle = payload
-                .get("principle")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
+            let plan = payload.str_or("plan", "No plan provided");
+            let principle = payload.str_or("principle", "unknown");
 
             let prompt = build_execution_prompt(&project, plan, principle, payload.get("gates"));
 
@@ -183,33 +177,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
 
+    use super::super::test_helpers;
     use super::ExecutePlan;
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn plan_completed_event(project: &str) -> Event {
         Event::new(
@@ -256,7 +232,8 @@ mod tests {
     async fn executes_plan_successfully() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with("Changes applied successfully");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecutePlan::new(agent.clone(), registry);
         let trigger = plan_completed_event("my-project");
 
@@ -279,7 +256,8 @@ mod tests {
     async fn agent_failure_emits_execution_completed_with_failure() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::failure("compilation error");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecutePlan::new(agent, registry);
         let trigger = plan_completed_event("my-project");
 
@@ -295,7 +273,8 @@ mod tests {
     async fn forwards_actions_from_payload() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecutePlan::new(agent, registry);
         let trigger = Event::new(
             EventType::PlanCompleted,

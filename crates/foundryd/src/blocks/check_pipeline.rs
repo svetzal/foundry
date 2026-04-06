@@ -307,7 +307,7 @@ mod tests {
             }],
         });
         let shell = FakeShellGateway::success();
-        let block = CheckPipeline::with_shell(registry, shell);
+        let block = CheckPipeline::with_gateways(registry, shell);
         let t = trigger("my-project");
 
         let result = block.execute(&t).await.unwrap();
@@ -335,7 +335,7 @@ mod tests {
             exit_code: 0,
             success: true,
         });
-        let block = CheckPipeline::with_shell(registry, shell);
+        let block = CheckPipeline::with_gateways(registry, shell);
         let t = trigger("my-project");
 
         let result = block.execute(&t).await.unwrap();
@@ -375,7 +375,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = CheckPipeline::with_shell(registry, shell);
+        let block = CheckPipeline::with_gateways(registry, shell);
         let t = trigger("my-project");
 
         let result = block.execute(&t).await.unwrap();

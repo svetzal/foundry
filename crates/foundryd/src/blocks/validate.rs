@@ -349,7 +349,7 @@ mod tests {
         }]);
 
         let shell = FakeShellGateway::always(ok_result("main"));
-        let block = ValidateProject::with_shell(registry, shell);
+        let block = ValidateProject::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
@@ -383,7 +383,7 @@ mod tests {
 
         // Fake reports we're on "feature-branch" but registry expects "main".
         let shell = FakeShellGateway::always(ok_result("feature-branch"));
-        let block = ValidateProject::with_shell(registry, shell);
+        let block = ValidateProject::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
@@ -422,7 +422,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = ValidateProject::with_shell(registry, shell);
+        let block = ValidateProject::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
@@ -458,7 +458,7 @@ mod tests {
                 success: false,
             },
         ]);
-        let block = ValidateProject::with_shell(registry, shell);
+        let block = ValidateProject::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");
@@ -492,7 +492,7 @@ mod tests {
             exit_code: 128,
             success: false,
         });
-        let block = ValidateProject::with_shell(registry, shell);
+        let block = ValidateProject::with_gateways(registry, shell);
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.expect("should not error");

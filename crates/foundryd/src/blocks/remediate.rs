@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -36,21 +36,12 @@ impl TaskBlock for RemediateVulnerability {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: only remediate when dirty.
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let dirty = trigger.payload.bool_or("dirty", false);
         if !dirty {
             return vec![];
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         vec![Event::new(
             EventType::RemediationCompleted,
@@ -73,11 +64,7 @@ impl TaskBlock for RemediateVulnerability {
         let throttle = trigger.throttle;
 
         // Self-filter: only remediate when main branch is dirty.
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let dirty = trigger.payload.bool_or("dirty", false);
 
         if !dirty {
             tracing::info!("main branch is clean, skipping remediation");
@@ -86,12 +73,7 @@ impl TaskBlock for RemediateVulnerability {
             });
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = trigger.payload.str_or("cve", "unknown").to_string();
 
         // Resolve project agent and path from registry.
         let entry = self.registry.find_project(&project).cloned();

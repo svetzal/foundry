@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
 /// Performs a strategic assessment of the project to identify multiple areas
 /// for improvement, then emits a plan for the strategic loop controller.
@@ -66,8 +66,7 @@ impl TaskBlock for StrategicAssessor {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let max_iterations =
-                payload.get("max_iterations").and_then(serde_json::Value::as_u64).unwrap_or(5);
+            let max_iterations = payload.u64_or("max_iterations", 5);
 
             let strategic_prompt = payload
                 .get("strategic_prompt")
@@ -98,19 +97,19 @@ impl TaskBlock for StrategicAssessor {
 
             let response = agent.invoke(&request).await;
 
-            let areas = match response {
-                Ok(r) if r.success => parse_strategic_assessment(&r.stdout),
-                Ok(r) => {
-                    tracing::warn!(project = %project, stderr = %r.stderr, "strategic assessment agent failed");
+            let areas = match AgentOutcome::from_response(response) {
+                AgentOutcome::Success { stdout } => parse_strategic_assessment(&stdout),
+                AgentOutcome::AgentFailed { stderr } => {
+                    tracing::warn!(project = %project, stderr = %stderr, "strategic assessment agent failed");
                     vec![serde_json::json!({
                         "area": "general quality improvement",
                         "severity": 5,
                         "category": "conventions",
                     })]
                 }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for strategic assessment");
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
+                AgentOutcome::Unavailable { error } => {
+                    tracing::warn!(error = %error, "agent invocation failed for strategic assessment");
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
                 }
             };
 
@@ -222,32 +221,14 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::{StrategicAssessor, parse_strategic_assessment};
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     #[test]
     fn kind_is_observer() {
@@ -278,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn skips_when_strategic_not_set() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = StrategicAssessor::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::IterationRequested,
@@ -300,7 +281,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             r#"{"areas": [{"area": "test coverage", "severity": 8, "category": "testing"}]}"#,
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::IterationRequested,
@@ -330,7 +312,8 @@ mod tests {
     async fn forwards_actions() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with(r#"{"areas": []}"#);
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent, registry);
         let trigger = Event::new(
             EventType::IterationRequested,

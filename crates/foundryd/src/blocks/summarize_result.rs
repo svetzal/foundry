@@ -8,7 +8,7 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use foundry_core::loop_context::has_loop_context;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
 /// Generates a commit headline and summary after a successful workflow.
 ///
@@ -99,18 +99,18 @@ impl TaskBlock for SummarizeResult {
 
             let response = agent.invoke(&request).await;
 
-            let (headline, summary) = match response {
-                Ok(r) if r.success => parse_summary_output(&r.stdout),
-                Ok(r) => {
+            let (headline, summary) = match AgentOutcome::from_response(response) {
+                AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
+                AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(
                         project = %project,
-                        stderr = %r.stderr,
+                        stderr = %stderr,
                         "summary agent failed"
                     );
                     (format!("Update {project}"), "Automated maintenance completed.".to_string())
                 }
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for summary");
+                AgentOutcome::Unavailable { error } => {
+                    tracing::warn!(error = %error, "agent invocation failed for summary");
                     (format!("Update {project}"), "Automated maintenance completed.".to_string())
                 }
             };
@@ -173,33 +173,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
 
+    use super::super::test_helpers;
     use super::{SummarizeResult, parse_summary_output};
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn success_completion(project: &str, event_type: EventType) -> Event {
         Event::new(
@@ -256,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn skips_when_loop_context_present() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = SummarizeResult::new(agent.clone(), registry);
         let trigger = Event::new(
             EventType::ProjectIterationCompleted,
@@ -279,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn skips_failed_completion() {
         let agent = FakeAgentGateway::success();
-        let registry = registry_with_project("my-project", "/tmp/test");
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = SummarizeResult::new(agent.clone(), registry);
         let trigger = failed_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
@@ -296,7 +278,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "HEADLINE: Update dependencies to latest versions\nSUMMARY: Updated cargo deps.",
         );
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent.clone(), registry);
         let trigger = success_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
@@ -319,7 +302,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let agent =
             FakeAgentGateway::success_with("HEADLINE: Fix linting\nSUMMARY: Fixed lint issues.");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent, registry);
         let trigger = success_completion("my-project", EventType::ProjectIterationCompleted);
 
@@ -334,7 +318,8 @@ mod tests {
     async fn agent_failure_uses_fallback_headline() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::failure("agent error");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap());
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = SummarizeResult::new(agent, registry);
         let trigger = success_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
