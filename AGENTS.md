@@ -125,6 +125,10 @@ mdbook build book/
 - `~/.foundry/audits/{project}/` — centralized audit logs
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
+## Future Direction: Agent Efficacy Retrospectives
+
+Foundry already captures rich event data about agent activity — iterations, maintenance runs, gate results, failures, retries. The next step is automated retrospectives on agent efficacy: analyzing patterns across runs to surface what's working, what's failing persistently, and where agent time is being wasted. This could feed back into the MBOS event stream as `ai_learning_detected` events, closing the loop between automated work and operational awareness. See the archived `Skills/_archived/LearningReview/` in Operations for the original concept.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
