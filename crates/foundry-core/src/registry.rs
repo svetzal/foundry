@@ -85,15 +85,15 @@ pub struct ProjectEntry {
     /// Human-readable notes about the project.
     pub notes: Option<String>,
     /// Per-project timeout in seconds for long-running commands.
-    /// Defaults to 1800 (30 minutes) when absent.
+    /// Defaults to 3600 (60 minutes) when absent.
     pub timeout_secs: Option<u64>,
 }
 
-/// Default timeout for long-running commands: 30 minutes.
-const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+/// Default timeout for long-running commands: 60 minutes.
+const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
 impl ProjectEntry {
-    /// Returns the configured timeout or the default (30 minutes).
+    /// Returns the configured timeout or the default (60 minutes).
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS))
     }

@@ -67,7 +67,7 @@ warning and continues with an empty registry (no projects will be processed).
 | `actions` | No | object | Which automation steps are enabled; all default to `false` |
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
-| `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `1800` (30 minutes) when absent |
+| `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
 
 ### Stack values
 

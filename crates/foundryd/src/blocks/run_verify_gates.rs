@@ -112,21 +112,6 @@ fn build_verification_result(
     payload: &serde_json::Value,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let results_json: Vec<serde_json::Value> = run_result
-        .results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "command": r.command,
-                "passed": r.passed,
-                "required": r.required,
-                "output": r.output,
-                "exit_code": r.exit_code,
-            })
-        })
-        .collect();
-
     let success = run_result.all_passed;
 
     tracing::info!(
@@ -137,14 +122,8 @@ fn build_verification_result(
         "gate verification completed"
     );
 
-    let mut event_payload = serde_json::json!({
-        "project": project,
-        "workflow": workflow,
-        "all_passed": run_result.all_passed,
-        "required_passed": run_result.required_passed,
-        "retry_count": retry_count,
-        "results": results_json,
-    });
+    let mut event_payload = super::build_gate_run_payload(project, workflow, run_result);
+    event_payload["retry_count"] = serde_json::json!(retry_count);
     if let Some(exec_output) = payload.get("execution_output") {
         event_payload["execution_output"] = exec_output.clone();
     }
@@ -153,23 +132,14 @@ fn build_verification_result(
     }
     forward_loop_context(payload, &mut event_payload);
 
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::GateVerificationCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+    super::build_gate_block_result(
+        project,
+        EventType::GateVerificationCompleted,
         success,
-        summary: if success {
-            format!("{project}: gate verification passed")
-        } else {
-            format!("{project}: gate verification failed")
-        },
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    }
+        "gate verification",
+        throttle,
+        event_payload,
+    )
 }
 
 #[cfg(test)]

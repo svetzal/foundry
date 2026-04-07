@@ -79,7 +79,7 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
     if let Some(timeout) = project.timeout_secs {
         println!("Timeout:   {timeout}s");
     } else {
-        println!("Timeout:   1800s (default)");
+        println!("Timeout:   3600s (default)");
     }
 
     Ok(())

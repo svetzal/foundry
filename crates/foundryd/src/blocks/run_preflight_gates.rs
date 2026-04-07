@@ -125,49 +125,18 @@ fn build_preflight_result(
     payload: &serde_json::Value,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let results_json: Vec<serde_json::Value> = run_result
-        .results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "command": r.command,
-                "passed": r.passed,
-                "required": r.required,
-                "output": r.output,
-                "exit_code": r.exit_code,
-            })
-        })
-        .collect();
-
-    let mut event_payload = serde_json::json!({
-        "project": project,
-        "workflow": workflow,
-        "all_passed": run_result.all_passed,
-        "required_passed": run_result.required_passed,
-        "results": results_json,
-    });
+    let mut event_payload = super::build_gate_run_payload(project, workflow, run_result);
     forward_chain_context(payload, &mut event_payload);
 
     let success = run_result.required_passed;
-
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::PreflightCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+    super::build_gate_block_result(
+        project,
+        EventType::PreflightCompleted,
         success,
-        summary: if success {
-            format!("{project}: preflight gates passed")
-        } else {
-            format!("{project}: preflight gates failed")
-        },
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
-    }
+        "preflight gates",
+        throttle,
+        event_payload,
+    )
 }
 
 /// Parse gate definitions from a `GateResolutionCompleted` event payload.

@@ -1,12 +1,62 @@
 #[macro_use]
 mod macros;
 
+use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::TaskBlockResult;
+use foundry_core::throttle::Throttle;
 
 /// Log a warning and return a not-found failure result for a missing project.
 fn project_not_found_result(project: &str) -> TaskBlockResult {
     tracing::warn!(project = %project, "project not found in registry");
     TaskBlockResult::project_not_found(project)
+}
+
+/// Serialize a slice of gate results to JSON values using the `Serialize` derive.
+fn gate_results_to_json(results: &[foundry_core::gates::GateResult]) -> Vec<serde_json::Value> {
+    results.iter().filter_map(|r| serde_json::to_value(r).ok()).collect()
+}
+
+/// Build the shared base payload for any gate-run event.
+fn build_gate_run_payload(
+    project: &str,
+    workflow: &str,
+    run_result: &foundry_core::gates::GatesRunResult,
+) -> serde_json::Value {
+    serde_json::json!({
+        "project": project,
+        "workflow": workflow,
+        "all_passed": run_result.all_passed,
+        "required_passed": run_result.required_passed,
+        "results": gate_results_to_json(&run_result.results),
+    })
+}
+
+/// Construct a `TaskBlockResult` for a gate-run event.
+fn build_gate_block_result(
+    project: &str,
+    event_type: EventType,
+    success: bool,
+    label: &str,
+    throttle: Throttle,
+    event_payload: serde_json::Value,
+) -> TaskBlockResult {
+    TaskBlockResult {
+        events: vec![Event::new(
+            event_type,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: if success {
+            format!("{project}: {label} passed")
+        } else {
+            format!("{project}: {label} failed")
+        },
+        raw_output: None,
+        exit_code: None,
+        audit_artifacts: vec![],
+    }
 }
 
 mod assess_project;
