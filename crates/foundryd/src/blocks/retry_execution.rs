@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -33,8 +33,8 @@ impl TaskBlock for RetryExecution {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = trigger.payload.str_or("workflow", "unknown").to_string();
-        let retry_count = trigger.payload.u64_or("retry_count", 1);
+        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let retry_count = trigger.payload_u64_or("retry_count", 1);
 
         let mut payload = serde_json::json!({
             "project": trigger.project,

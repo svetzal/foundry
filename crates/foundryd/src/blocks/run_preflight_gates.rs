@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::gates::GateDefinition;
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
@@ -47,7 +47,11 @@ impl TaskBlock for RunPreflightGates {
         let throttle = trigger.throttle;
         let payload = trigger.payload.clone();
 
-        let workflow = payload.str_or("workflow", "unknown").to_string();
+        let workflow = payload
+            .get("workflow")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
 
         let entry = self.registry.find_project(&project).cloned();
         let shell = Arc::clone(&self.shell);

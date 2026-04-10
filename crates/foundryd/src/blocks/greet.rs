@@ -1,6 +1,7 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{GreetingComposedPayload, GreetingDeliveredPayload};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Composes a greeting message from a greet request.
@@ -21,7 +22,7 @@ impl TaskBlock for ComposeGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let name = trigger.payload.str_or("name", "world");
+        let name = trigger.payload_str_or("name", "world");
         let greeting = format!("Hello, {name}!");
 
         tracing::info!(%greeting, "composed greeting");
@@ -33,7 +34,7 @@ impl TaskBlock for ComposeGreeting {
                     EventType::GreetingComposed,
                     project,
                     throttle,
-                    serde_json::json!({ "greeting": greeting }),
+                    Event::serialize_payload(&GreetingComposedPayload { greeting })?,
                 )],
             ))
         })
@@ -59,11 +60,10 @@ impl TaskBlock for DeliverGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let greeting = trigger.payload.str_or("greeting", "(no greeting)");
+        let greeting = trigger.payload_str_or("greeting", "(no greeting)").to_string();
 
         tracing::info!(%greeting, "delivering greeting");
 
-        let greeting = greeting.to_string();
         Box::pin(async move {
             Ok(TaskBlockResult::success(
                 format!("Delivered: {greeting}"),
@@ -71,19 +71,29 @@ impl TaskBlock for DeliverGreeting {
                     EventType::GreetingDelivered,
                     project,
                     throttle,
-                    serde_json::json!({ "delivered": true, "greeting": greeting }),
+                    Event::serialize_payload(&GreetingDeliveredPayload {
+                        delivered: true,
+                        greeting,
+                        dry_run: None,
+                    })?,
                 )],
             ))
         })
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let greeting = trigger.payload.str_or("greeting", "(no greeting)");
+        let greeting = trigger.payload_str_or("greeting", "(no greeting)").to_string();
+        let payload = Event::serialize_payload(&GreetingDeliveredPayload {
+            delivered: true,
+            greeting,
+            dry_run: Some(true),
+        })
+        .unwrap_or_else(|_| serde_json::json!({}));
         vec![Event::new(
             EventType::GreetingDelivered,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({ "delivered": true, "greeting": greeting, "dry_run": true }),
+            payload,
         )]
     }
 }

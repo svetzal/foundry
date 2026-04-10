@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -132,8 +132,8 @@ impl AuditReleaseTag {
         // Payload fallback fields used when the project is not in the registry
         // or when no release tags exist — preserves backward compatibility with
         // integration tests that drive the block via synthetic payloads.
-        let payload_cve = trigger.payload.str_or("cve", "unknown").to_string();
-        let payload_vulnerable = trigger.payload.bool_or("vulnerable", true);
+        let payload_cve = trigger.payload_str_or("cve", "unknown").to_string();
+        let payload_vulnerable = trigger.payload_bool_or("vulnerable", true);
         let payload_dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
 
         // Look up the project entry in the registry.
@@ -351,7 +351,7 @@ impl TaskBlock for AuditMainBranch {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let vulnerable = trigger.payload.bool_or("vulnerable", false);
+        let vulnerable = trigger.payload_bool_or("vulnerable", false);
 
         if !vulnerable {
             tracing::info!("release tag not vulnerable, skipping main branch audit");
@@ -362,8 +362,8 @@ impl TaskBlock for AuditMainBranch {
 
         // Payload fallback values — used when the project is not in the registry,
         // or when the scanner cannot run (no lockfile / tooling not installed).
-        let cve_from_payload = trigger.payload.str_or("cve", "unknown").to_string();
-        let dirty_from_payload = trigger.payload.bool_or("dirty", true);
+        let cve_from_payload = trigger.payload_str_or("cve", "unknown").to_string();
+        let dirty_from_payload = trigger.payload_bool_or("dirty", true);
 
         // Look up the project entry in the registry.
         let entry = self.registry.find_project(&project).cloned();

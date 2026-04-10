@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -164,7 +164,7 @@ impl TaskBlock for CommitAndPush {
 
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let cve = trigger.payload.str_or("cve", "unknown").to_string();
+        let cve = trigger.payload_str_or("cve", "unknown").to_string();
 
         let mut events = vec![Event::new(
             EventType::ProjectChangesCommitted,
@@ -225,7 +225,7 @@ impl TaskBlock for CommitAndPush {
             });
         }
 
-        let cve = trigger.payload.str_or("cve", "unknown").to_string();
+        let cve = trigger.payload_str_or("cve", "unknown").to_string();
 
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);

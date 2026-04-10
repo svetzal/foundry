@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -88,6 +89,32 @@ impl Event {
 
     pub fn payload_i64_or(&self, key: &str, default: i64) -> i64 {
         self.payload_i64(key).unwrap_or(default)
+    }
+
+    /// Deserialize the event payload into a typed struct.
+    ///
+    /// Returns an error if the payload cannot be deserialized into `T`.
+    /// Use this in task blocks to get a strongly-typed view of the trigger payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if deserialization fails.
+    pub fn parse_payload<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
+        serde_json::from_value(self.payload.clone()).map_err(|e| {
+            anyhow::anyhow!("failed to parse payload for event {:?}: {e}", self.event_type)
+        })
+    }
+
+    /// Serialize a typed payload struct into a `serde_json::Value`.
+    ///
+    /// Convenience for constructing `Event::new(…, event_type.with_payload(payload)?)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if serialization fails (extremely rare in practice).
+    pub fn serialize_payload<T: Serialize>(payload: &T) -> anyhow::Result<serde_json::Value> {
+        serde_json::to_value(payload)
+            .map_err(|e| anyhow::anyhow!("failed to serialize payload: {e}"))
     }
 
     fn compute_id(

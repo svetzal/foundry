@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
 
@@ -68,8 +68,17 @@ fn extract_release_audits(project: &str, result: &ProcessResult) -> Vec<ReleaseA
         .iter()
         .filter(|e| e.event_type == EventType::ReleaseTagAudited)
         .map(|e| {
-            let tag = e.payload.str_or("tag", "").to_string();
-            let vulnerable = e.payload.bool_or("vulnerable", false);
+            let tag = e
+                .payload
+                .get("tag")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let vulnerable = e
+                .payload
+                .get("vulnerable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             let status = if vulnerable { "vulnerable" } else { "clean" }.to_string();
             ReleaseAuditEntry {
                 name: project.to_string(),
@@ -89,7 +98,8 @@ fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoRelea
         .map(|e| {
             let new_tag =
                 e.payload.get("new_tag").and_then(|v| v.as_str()).map(ToString::to_string);
-            let success = e.payload.bool_or("success", false);
+            let success =
+                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
             AutoReleaseEntry {
                 name: project.to_string(),
                 new_tag,
@@ -106,8 +116,14 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .iter()
         .filter(|e| e.event_type == EventType::LocalInstallCompleted)
         .map(|e| {
-            let method = e.payload.str_or("method", "unknown").to_string();
-            let success = e.payload.bool_or("success", false);
+            let method = e
+                .payload
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let success =
+                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
             LocalInstallEntry {
                 name: project.to_string(),
                 method,
@@ -145,7 +161,10 @@ impl TaskBlock for GenerateSummary {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
 
-            let total_duration_ms: u64 = payload.u64_or("total_duration_ms", 0);
+            let total_duration_ms: u64 = payload
+                .get("total_duration_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
 
             let mut projects = Vec::new();
             let mut release_audits = Vec::new();

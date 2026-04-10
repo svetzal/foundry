@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes preflight results for the validation workflow to `ValidationCompleted`.
@@ -28,11 +28,11 @@ impl TaskBlock for RouteValidationResult {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let required_passed = trigger.payload_bool_or("required_passed", false);
+        let results = trigger.payload.get("results").cloned().unwrap_or(serde_json::json!([]));
 
         Box::pin(async move {
-            let workflow = payload.str_or("workflow", "unknown");
-
             // Self-filter: only handle validation workflow
             if workflow != "validate" {
                 return Ok(TaskBlockResult::success(
@@ -40,10 +40,6 @@ impl TaskBlock for RouteValidationResult {
                     vec![],
                 ));
             }
-
-            let required_passed = payload.bool_or("required_passed", false);
-
-            let results = payload.get("results").cloned().unwrap_or(serde_json::json!([]));
 
             let event_payload = serde_json::json!({
                 "project": project,

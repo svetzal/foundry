@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -73,8 +73,7 @@ impl TaskBlock for CheckCharter {
                 "guidance": result.guidance,
             });
             // Derive workflow from trigger event type, with payload override.
-            let workflow = payload.str_or(
-                "workflow",
+            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
                 match event_type {
                     EventType::PromptExecutionRequested => "prompt",
                     _ => "iterate",

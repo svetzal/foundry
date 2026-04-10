@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -66,7 +66,8 @@ impl TaskBlock for StrategicAssessor {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let max_iterations = payload.u64_or("max_iterations", 5);
+            let max_iterations =
+                payload.get("max_iterations").and_then(serde_json::Value::as_u64).unwrap_or(5);
 
             let strategic_prompt = payload
                 .get("strategic_prompt")

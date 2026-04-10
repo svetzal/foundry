@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -293,7 +293,10 @@ fn parse_drift_assessment(output: &str) -> DriftAssessmentResult {
             .cloned()
             .unwrap_or_default();
         let candidate_count = candidates.len();
-        let high_value_count = candidates.iter().filter(|c| c.bool_or("high_value", false)).count();
+        let high_value_count = candidates
+            .iter()
+            .filter(|c| c.get("high_value").and_then(serde_json::Value::as_bool).unwrap_or(false))
+            .count();
         DriftAssessmentResult {
             candidate_count,
             high_value_count,

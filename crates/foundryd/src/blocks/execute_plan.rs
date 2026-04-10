@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -67,8 +67,14 @@ impl TaskBlock for ExecutePlan {
 
             let project_path = PathBuf::from(&entry.path);
 
-            let plan = payload.str_or("plan", "No plan provided");
-            let principle = payload.str_or("principle", "unknown");
+            let plan = payload
+                .get("plan")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("No plan provided");
+            let principle = payload
+                .get("principle")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
 
             let prompt = build_execution_prompt(&project, plan, principle, payload.get("gates"));
 
