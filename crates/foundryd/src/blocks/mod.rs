@@ -134,7 +134,7 @@ pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use install::InstallLocally;
-pub use release::{CutRelease, WatchPipeline};
+pub use release::{CutRelease, ExecuteRelease, WatchPipeline};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
 pub use resolve_gates::ResolveGates;
@@ -161,5 +161,7 @@ mod iterate_chain_test;
 mod maintain_chain_test;
 #[cfg(test)]
 mod prompt_chain_test;
+#[cfg(test)]
+mod release_chain_test;
 #[cfg(test)]
 mod strategic_chain_test;

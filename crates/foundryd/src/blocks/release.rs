@@ -220,6 +220,190 @@ fn extract_version_tag(output: &str) -> Option<String> {
     None
 }
 
+/// Executes a manual release workflow driven by an AI agent following the
+/// project's AGENTS.md release process.
+/// Mutator — events logged but not delivered at `audit_only`;
+/// simulated success at `dry_run`.
+///
+/// Sinks on: `ReleaseRequested`
+///
+/// Checks `entry.actions.release` — skips if false.
+/// Verifies `AGENTS.md` exists in the project directory.
+/// Reads optional `bump` from the trigger payload to guide version bump type.
+///
+/// Invokes the Claude CLI to follow the project's documented release process.
+pub struct ExecuteRelease {
+    registry: Arc<Registry>,
+    agent: Arc<dyn AgentGateway>,
+}
+
+impl ExecuteRelease {
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+        Self { registry, agent }
+    }
+
+    /// Generous timeout for Claude CLI — release tasks can take several minutes.
+    const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
+
+    #[cfg(test)]
+    fn with_agent(registry: Arc<Registry>, agent: Arc<dyn AgentGateway>) -> Self {
+        Self { registry, agent }
+    }
+}
+
+impl TaskBlock for ExecuteRelease {
+    task_block_meta! {
+        name: "Execute Release",
+        kind: Mutator,
+        sinks_on: [ReleaseRequested],
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        vec![Event::new(
+            EventType::ReleaseCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            serde_json::json!({
+                "release": "manual",
+                "success": true,
+                "dry_run": true,
+            }),
+        )]
+    }
+
+    fn execute(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let bump = trigger.payload_str("bump").map(String::from);
+
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
+
+        if !entry.actions.release {
+            tracing::info!(%project, "release action disabled, skipping");
+            return Box::pin(async {
+                Ok(TaskBlockResult::success("Skipped: release action disabled", vec![]))
+            });
+        }
+
+        let project_path = entry.path.clone();
+        let agent = Arc::clone(&self.agent);
+
+        tracing::info!(%project, bump = bump.as_deref().unwrap_or("auto"), "executing release");
+
+        Box::pin(run_execute_release(project, throttle, bump, project_path, agent))
+    }
+}
+
+async fn run_execute_release(
+    project: String,
+    throttle: Throttle,
+    bump: Option<String>,
+    project_path: String,
+    agent: Arc<dyn AgentGateway>,
+) -> anyhow::Result<TaskBlockResult> {
+    let project_dir = Path::new(&project_path);
+
+    // Verify AGENTS.md exists — required by Claude Code for agentic automation.
+    let agents_md = project_dir.join("AGENTS.md");
+    if !agents_md.exists() {
+        tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
+        return Ok(TaskBlockResult::failure(format!(
+            "AGENTS.md not found at {}; cannot invoke Claude CLI",
+            agents_md.display()
+        )));
+    }
+
+    let bump_instruction = match &bump {
+        Some(b) => format!("The version bump type is {b}."),
+        None => "Determine the appropriate version bump from the changelog and unreleased changes."
+            .to_string(),
+    };
+
+    let prompt = format!(
+        "Release {project}. Follow the release process documented in AGENTS.md exactly.\n\
+         {bump_instruction}\n\
+         Complete all steps: run quality gates, update the changelog, bump the version in all \
+         locations, commit, tag, and push. Output the new version tag on a line by itself (e.g. v1.2.3)."
+    );
+
+    tracing::info!(%project, "invoking claude CLI for release");
+
+    let request = AgentRequest {
+        prompt,
+        working_dir: project_dir.to_path_buf(),
+        access: AgentAccess::Full,
+        capability: AgentCapability::Coding,
+        agent_file: None,
+        timeout: ExecuteRelease::CLAUDE_TIMEOUT,
+    };
+
+    let run_result = agent.invoke(&request).await;
+
+    let (raw_output, exit_code) = match &run_result {
+        Ok(r) => (
+            Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+            Some(r.exit_code),
+        ),
+        Err(_) => (None, None),
+    };
+
+    let (cli_success, new_tag, cli_summary) = match run_result {
+        Ok(r) if r.success => {
+            let tag = extract_version_tag(&r.stdout);
+            let s = format!(
+                "Release completed for {project}{}",
+                tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
+            );
+            (true, tag, s)
+        }
+        Ok(r) => {
+            tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
+            let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
+            (
+                false,
+                None,
+                format!("Claude CLI exited with code {}; stderr: {first_stderr}", r.exit_code),
+            )
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
+            (false, None, format!("claude CLI unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(
+        project = %project,
+        new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
+        success = cli_success,
+        "release step completed"
+    );
+
+    Ok(TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ReleaseCompleted,
+            project,
+            throttle,
+            serde_json::json!({
+                "release": "manual",
+                "new_tag": new_tag,
+                "success": cli_success,
+            }),
+        )],
+        success: cli_success,
+        summary: cli_summary,
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
+    })
+}
+
 /// Watches the CI pipeline after a release tag is pushed.
 /// Mutator — events logged but not delivered at `audit_only`;
 /// simulated success at `dry_run`.
@@ -459,6 +643,15 @@ mod tests {
     }
 
     fn registry_with_project(name: &str, path: &str, has_agents_md: bool) -> Arc<Registry> {
+        registry_with_project_flags(name, path, has_agents_md, ActionFlags::default())
+    }
+
+    fn registry_with_project_flags(
+        name: &str,
+        path: &str,
+        has_agents_md: bool,
+        actions: ActionFlags,
+    ) -> Arc<Registry> {
         // Create a real temp dir when has_agents_md is requested.
         // The path parameter is ignored in that case so tests are hermetic.
         let project_path = if has_agents_md {
@@ -484,7 +677,7 @@ mod tests {
                 branch: "main".to_string(),
                 skip: None,
                 notes: None,
-                actions: ActionFlags::default(),
+                actions,
                 install: None,
                 timeout_secs: None,
             }],
@@ -623,6 +816,146 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
         assert_eq!(result.events[0].payload["status"], "success");
+    }
+
+    // --- ExecuteRelease tests ---
+
+    fn release_actions() -> ActionFlags {
+        ActionFlags {
+            release: true,
+            ..ActionFlags::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_release_skips_when_action_disabled() {
+        let registry = registry_with_project("my-project", "/unused", true);
+        let agent = FakeAgentGateway::success();
+        let block = ExecuteRelease::with_agent(registry, agent);
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("release action disabled"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_fails_when_project_not_in_registry() {
+        let agent = FakeAgentGateway::success();
+        let block = ExecuteRelease::with_agent(empty_registry(), agent);
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "unknown-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("not found in registry"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_fails_when_agents_md_missing() {
+        let registry = registry_with_project_flags(
+            "my-project",
+            "/nonexistent/path",
+            false,
+            release_actions(),
+        );
+        let agent = FakeAgentGateway::success();
+        let block = ExecuteRelease::with_agent(registry, agent);
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("AGENTS.md not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_success_emits_release_completed() {
+        let registry =
+            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let agent = FakeAgentGateway::success_with("Release complete!\nv2.0.0\nAll steps done.");
+        let block = ExecuteRelease::with_agent(registry, agent.clone());
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "bump": "minor" }),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(result.events[0].payload["new_tag"], "v2.0.0");
+        assert_eq!(result.events[0].payload["success"], true);
+        assert_eq!(result.events[0].payload["release"], "manual");
+
+        // Verify the agent was invoked with expected capability and access.
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].access, AgentAccess::Full);
+        assert!(invocations[0].prompt.contains("minor"));
+        assert!(invocations[0].prompt.contains("AGENTS.md"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_auto_bump_when_no_bump_specified() {
+        let registry =
+            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let agent = FakeAgentGateway::success_with("v1.3.0");
+        let block = ExecuteRelease::with_agent(registry, agent.clone());
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+
+        let invocations = agent.invocations();
+        assert!(invocations[0].prompt.contains("Determine the appropriate version bump"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_failure_emits_release_completed_with_success_false() {
+        let registry =
+            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let agent = FakeAgentGateway::failure("release failed");
+        let block = ExecuteRelease::with_agent(registry, agent);
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
     }
 
     #[tokio::test]

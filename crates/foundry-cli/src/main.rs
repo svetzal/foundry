@@ -122,6 +122,16 @@ enum Commands {
         project: String,
     },
 
+    /// Run an agent-driven release workflow for a project
+    Release {
+        /// Project name from registry
+        project: String,
+
+        /// Version bump type: patch, minor, or major (auto-detected if omitted)
+        #[arg(long)]
+        bump: Option<String>,
+    },
+
     /// Install the Foundry skill for Claude agents
     Init {
         /// Install globally (~/.claude/skills/) instead of locally (.claude/skills/)
@@ -411,6 +421,7 @@ async fn main() -> Result<()> {
         Commands::Iterate { project } => commands::iterate(&cli.addr, &project).await,
         Commands::Scout { project } => commands::scout(&cli.addr, &project).await,
         Commands::Pipeline { project } => commands::pipeline(&cli.addr, &project).await,
+        Commands::Release { project, bump } => commands::release(&cli.addr, &project, bump).await,
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
         }

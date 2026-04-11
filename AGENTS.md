@@ -76,6 +76,7 @@ Rules:
 | `foundry run` | Full maintenance across registered projects |
 | `foundry gates <project>` | Auto-discover quality gates |
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
+| `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
 ## Key Conventions

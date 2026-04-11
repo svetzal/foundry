@@ -336,6 +336,70 @@ pub async fn iterate(addr: &str, project: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<()> {
+    // Subscribe to the watch stream before emitting so we don't miss events.
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let watch_request = WatchRequest {
+        project: project.to_string(),
+    };
+    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+
+    // Emit ReleaseRequested
+    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let payload = match &bump {
+        Some(b) => serde_json::json!({ "bump": b }),
+        None => serde_json::json!({}),
+    };
+    let request = EmitRequest {
+        event_type: "release_requested".to_string(),
+        project: project.to_string(),
+        throttle: 0, // Full
+        payload_json: payload.to_string(),
+        trace_id: String::new(),
+    };
+
+    let response = emit_client.emit(request).await?.into_inner();
+    println!("Releasing {project}...");
+    println!("Event: {}", response.event_id);
+    println!();
+
+    // Stream progress events until the release chain completes.
+    // The terminal event is local_install_completed (end of chain).
+    while let Some(event) = stream.message().await? {
+        let status = extract_status(&event.payload_json);
+        println!("[{}] {} {}", event.project, event.event_type, status);
+
+        if event.event_type == "local_install_completed" {
+            break;
+        }
+
+        // Also break on release_completed with failure — no downstream events will follow.
+        if event.event_type == "release_completed" {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
+                if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(true) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Show the trace for full visibility
+    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let trace_resp = trace_client
+        .trace(TraceRequest {
+            event_id: response.event_id.clone(),
+        })
+        .await?
+        .into_inner();
+    if trace_resp.found {
+        render_trace(&trace_resp, false);
+        println!("---");
+    }
+
+    Ok(())
+}
+
 pub async fn scout(addr: &str, project: &str) -> Result<()> {
     // Subscribe to the watch stream before emitting so we don't miss events.
     let mut watch_client = FoundryClient::connect(addr.to_string()).await?;

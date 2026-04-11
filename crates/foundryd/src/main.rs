@@ -73,9 +73,50 @@ async fn main() -> Result<()> {
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
+    let engine = register_blocks(
+        &registry,
+        event_writer,
+        event_tx.clone(),
+        trace_writer.clone(),
+        audits_dir,
+    );
+
+    let engine = Arc::new(engine);
+    let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
+        Duration::from_secs(3600),
+        trace_writer.clone(),
+    ));
+    let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
+    let service = service::FoundryService::new(
+        engine,
+        trace_store,
+        event_tx,
+        workflow_tracker,
+        trace_writer,
+        registry,
+    );
+
+    let addr = "[::1]:50051".parse()?;
+    tracing::info!("foundryd listening on {addr}");
+
+    Server::builder()
+        .add_service(proto::foundry_server::FoundryServer::new(service))
+        .serve(addr)
+        .await?;
+
+    Ok(())
+}
+
+fn register_blocks(
+    registry: &Arc<foundry_core::registry::Registry>,
+    event_writer: Arc<event_writer::EventWriter>,
+    event_tx: tokio::sync::broadcast::Sender<foundry_core::event::Event>,
+    trace_writer: Arc<trace_writer::TraceWriter>,
+    audits_dir: String,
+) -> engine::Engine {
     let mut engine = engine::Engine::new()
         .with_event_writer(event_writer)
-        .with_event_broadcaster(event_tx.clone());
+        .with_event_broadcaster(event_tx);
     engine.register(Box::new(orchestrator::FanOutMaintenance::new(registry.clone())));
     engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
@@ -90,6 +131,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::RemediateVulnerability::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
+    engine.register(Box::new(blocks::ExecuteRelease::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
@@ -124,30 +166,6 @@ async fn main() -> Result<()> {
     // Drift scout workflow
     engine.register(Box::new(blocks::ScoutDrift::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::ExecutePlan::new(agent, registry.clone())));
-    engine.register(Box::new(blocks::GenerateSummary::new(trace_writer.clone(), audits_dir)));
-
-    let engine = Arc::new(engine);
-    let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
-        Duration::from_secs(3600),
-        trace_writer.clone(),
-    ));
-    let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
-    let service = service::FoundryService::new(
-        engine,
-        trace_store,
-        event_tx,
-        workflow_tracker,
-        trace_writer,
-        registry,
-    );
-
-    let addr = "[::1]:50051".parse()?;
-    tracing::info!("foundryd listening on {addr}");
-
-    Server::builder()
-        .add_service(proto::foundry_server::FoundryServer::new(service))
-        .serve(addr)
-        .await?;
-
-    Ok(())
+    engine.register(Box::new(blocks::GenerateSummary::new(trace_writer, audits_dir)));
+    engine
 }
