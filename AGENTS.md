@@ -91,19 +91,41 @@ Rules:
 ## CI / Release
 
 - **CI** runs on push/PR to `main`: fmt, clippy, test (`.github/workflows/ci.yml`)
-- **Release** runs on tag push (`v*`): builds macOS arm64, macOS x86_64, and Linux x86_64 binaries, creates a GitHub release with tarballs and checksums (`.github/workflows/release.yml`)
+- **Release** runs on tag push (`v*`): builds macOS arm64, macOS x86_64, and Linux x86_64 binaries, creates a GitHub release with tarballs and checksums (`.github/workflows/release.yml`). The release workflow also auto-updates the Homebrew formula in `svetzal/homebrew-tap`.
 
-To cut a release:
+To create a new release:
 
-```bash
-# Update version in Cargo.toml [workspace.package], update CHANGELOG.md
-git tag v0.X.0
-git push origin main --tags
-```
+1. Verify all quality gates pass:
 
-The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace -- -D warnings
+   cargo test --workspace
+   ```
 
-Install via Homebrew:
+2. Update `CHANGELOG.md` — move `[Unreleased]` entries to `[X.Y.Z] - YYYY-MM-DD` with today's date
+3. Bump the version in root `Cargo.toml` `[workspace.package]`
+4. Commit:
+
+   ```bash
+   git commit -am "Release vX.Y.Z"
+   ```
+
+5. Tag and push:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin main --tags
+   ```
+
+6. Install locally immediately (don't wait for Homebrew):
+
+   ```bash
+   cargo install --path crates/foundryd
+   cargo install --path crates/foundry-cli
+   ```
+
+The repo is public under `svetzal/foundry`. Install via Homebrew:
 
 ```bash
 brew tap svetzal/tap
