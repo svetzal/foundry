@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-04-10
+
+### Added
+
+- `CleanupBranches` task block — automatically deletes merged local branches and removes stale git worktrees during project validation, preventing accumulation of leftover branches from hopper jobs and Claude Code agent sessions
+
 ## [0.8.0] - 2026-03-29
 
 ### Added

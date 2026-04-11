@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
     // correct sub-workflow via IterationRequested or MaintenanceRequested.
+    engine.register(Box::new(blocks::CleanupBranches::new(registry.clone())));
     engine.register(Box::new(blocks::RouteProjectWorkflow));
     // Native gate orchestration blocks
     let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
