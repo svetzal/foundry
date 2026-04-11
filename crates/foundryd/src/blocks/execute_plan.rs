@@ -6,8 +6,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+
+use super::TriggerContext;
 
 /// Applies the correction plan to the project.
 ///
@@ -35,7 +38,7 @@ impl TaskBlock for ExecutePlan {
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         let mut payload = serde_json::json!({
             "project": trigger.project,
-            "workflow": "iterate",
+            "workflow": WorkflowType::Iterate,
             "success": true,
             "dry_run": true,
         });
@@ -53,18 +56,19 @@ impl TaskBlock for ExecutePlan {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let plan = payload
@@ -149,7 +153,7 @@ fn build_execution_result(
 
     let mut event_payload = serde_json::json!({
         "project": project,
-        "workflow": "iterate",
+        "workflow": WorkflowType::Iterate,
         "success": success,
         "summary": summary,
     });

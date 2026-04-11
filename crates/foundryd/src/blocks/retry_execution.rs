@@ -6,8 +6,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+
+use super::TriggerContext;
 
 /// Retries the execution phase with context about which gates failed.
 ///
@@ -33,7 +36,7 @@ impl TaskBlock for RetryExecution {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let workflow = WorkflowType::from_payload(&trigger.payload);
         let retry_count = trigger.payload_u64_or("retry_count", 1);
 
         let mut payload = serde_json::json!({
@@ -57,11 +60,13 @@ impl TaskBlock for RetryExecution {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
-        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let workflow = WorkflowType::from_payload(&payload);
 
         let retry_count = trigger.payload_u64_or("retry_count", 1);
 
@@ -71,19 +76,18 @@ impl TaskBlock for RetryExecution {
 
         let prior_output = trigger.payload_str_or("prior_execution_output", "").to_string();
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let prompt = build_retry_prompt(
                 &project,
-                &workflow,
+                workflow,
                 retry_count,
                 &failure_context,
                 &prior_output,
@@ -110,7 +114,7 @@ impl TaskBlock for RetryExecution {
 
             Ok(build_retry_result(
                 &project,
-                &workflow,
+                workflow,
                 retry_count,
                 response,
                 &payload,
@@ -122,7 +126,7 @@ impl TaskBlock for RetryExecution {
 
 fn build_retry_prompt(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     retry_count: u64,
     failure_context: &str,
     prior_output: &str,
@@ -149,7 +153,7 @@ fn build_retry_prompt(
 
 fn build_retry_result(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     retry_count: u64,
     response: anyhow::Result<crate::gateway::AgentResponse>,
     payload: &serde_json::Value,

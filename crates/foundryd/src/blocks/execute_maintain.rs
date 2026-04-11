@@ -5,8 +5,11 @@ use std::sync::Arc;
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+
+use super::TriggerContext;
 
 /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
 /// and resolves quality gate failures.
@@ -47,8 +50,8 @@ impl TaskBlock for ExecuteMaintain {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = trigger.payload_str_or("workflow", "unknown");
-        if workflow != "maintain" {
+        let workflow = WorkflowType::from_payload(&trigger.payload);
+        if workflow != WorkflowType::Maintain {
             return vec![];
         }
 
@@ -58,7 +61,7 @@ impl TaskBlock for ExecuteMaintain {
             trigger.throttle,
             serde_json::json!({
                 "project": trigger.project,
-                "workflow": "maintain",
+                "workflow": WorkflowType::Maintain,
                 "success": true,
                 "dry_run": true,
             }),
@@ -70,31 +73,28 @@ impl TaskBlock for ExecuteMaintain {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only handle maintain workflow
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let workflow = WorkflowType::from_payload(&payload);
 
-        if workflow != "maintain" {
+        if workflow != WorkflowType::Maintain {
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Skipped: not a maintain workflow", vec![]))
             });
         }
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let prompt = build_maintain_prompt(&project, payload.get("gates"));
@@ -165,7 +165,7 @@ fn build_maintain_result(
 
     let mut event_payload = serde_json::json!({
         "project": project,
-        "workflow": "maintain",
+        "workflow": WorkflowType::Maintain,
         "success": success,
         "summary": summary,
     });

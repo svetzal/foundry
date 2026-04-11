@@ -3,6 +3,9 @@ use std::pin::Pin;
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
+
+use super::TriggerContext;
 
 /// Bridges the prompt workflow from preflight directly to execution,
 /// bypassing assessment, triage, and plan creation.
@@ -28,14 +31,16 @@ impl TaskBlock for DirectPrompt {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
-        let workflow = trigger.payload_str_or("workflow", "unknown");
+        let workflow = WorkflowType::from_payload(&payload);
 
         // Self-filter: only run for prompt workflow
-        if workflow != "prompt" {
+        if workflow != WorkflowType::Prompt {
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Skipped: not a prompt workflow", vec![]))
             });
@@ -71,7 +76,7 @@ impl TaskBlock for DirectPrompt {
             let mut event_payload = serde_json::json!({
                 "project": project,
                 "plan": prompt,
-                "workflow": "prompt",
+                "workflow": WorkflowType::Prompt,
             });
             if let Some(actions) = payload.get("actions") {
                 event_payload["actions"] = actions.clone();

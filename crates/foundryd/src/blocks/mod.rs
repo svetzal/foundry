@@ -4,11 +4,42 @@ mod macros;
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
+use foundry_core::workflow::WorkflowType;
 
-/// Log a warning and return a not-found failure result for a missing project.
-fn project_not_found_result(project: &str) -> TaskBlockResult {
-    tracing::warn!(project = %project, "project not found in registry");
-    TaskBlockResult::project_not_found(project)
+/// Bundles the three fields every block `execute()` extracts from the trigger event.
+///
+/// Use [`TriggerContext::from_trigger`] to populate it, then destructure immediately:
+/// ```ignore
+/// let TriggerContext { project, throttle, payload } = TriggerContext::from_trigger(trigger);
+/// ```
+pub(super) struct TriggerContext {
+    pub project: String,
+    pub throttle: foundry_core::throttle::Throttle,
+    pub payload: serde_json::Value,
+}
+
+impl TriggerContext {
+    pub fn from_trigger(trigger: &foundry_core::event::Event) -> Self {
+        Self {
+            project: trigger.project.clone(),
+            throttle: trigger.throttle,
+            payload: trigger.payload.clone(),
+        }
+    }
+}
+
+/// Look up a project in the registry, returning the entry or a not-found failure result.
+///
+/// Replaces the two-phase pattern of cloning `Option<ProjectEntry>` before `Box::pin`
+/// and then unwrapping inside the async block.
+fn require_project(
+    registry: &foundry_core::registry::Registry,
+    project: &str,
+) -> Result<foundry_core::registry::ProjectEntry, TaskBlockResult> {
+    registry.find_project(project).cloned().ok_or_else(|| {
+        tracing::warn!(project = %project, "project not found in registry");
+        TaskBlockResult::project_not_found(project)
+    })
 }
 
 /// Serialize a slice of gate results to JSON values using the `Serialize` derive.
@@ -19,7 +50,7 @@ fn gate_results_to_json(results: &[foundry_core::gates::GateResult]) -> Vec<serd
 /// Build the shared base payload for any gate-run event.
 fn build_gate_run_payload(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     run_result: &foundry_core::gates::GatesRunResult,
 ) -> serde_json::Value {
     serde_json::json!({

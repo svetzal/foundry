@@ -83,7 +83,10 @@ impl TaskBlock for RemediatePipeline {
         let failure_logs = trigger.payload_str_or("failure_logs", "").to_string();
         let run_name = trigger.payload_str_or("run_name", "unknown").to_string();
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%project, %run_name, "remediating pipeline failure");
@@ -97,13 +100,9 @@ async fn run_remediation(
     throttle: foundry_core::throttle::Throttle,
     run_name: String,
     failure_logs: String,
-    entry: Option<foundry_core::registry::ProjectEntry>,
+    entry: foundry_core::registry::ProjectEntry,
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
-    let Some(entry) = entry else {
-        return Ok(super::project_not_found_result(&project));
-    };
-
     let project_path = PathBuf::from(&entry.path);
 
     // Verify AGENTS.md exists -- required by Claude Code for agentic automation.

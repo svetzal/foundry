@@ -9,6 +9,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
 
+use super::TriggerContext;
+
 /// Controls the strategic iteration loop: picks the next area to improve
 /// and decides when the loop is done.
 ///
@@ -46,9 +48,11 @@ impl TaskBlock for StrategicLoopController {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
         let entry = self.registry.find_project(&project).cloned();

@@ -3,6 +3,9 @@ use std::pin::Pin;
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::{forward_chain_context, has_loop_context};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
+
+use super::TriggerContext;
 
 /// Routes gate verification results to the appropriate terminal event or retry.
 ///
@@ -33,9 +36,11 @@ impl TaskBlock for RouteGateResult {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         Box::pin(async move {
             let required_passed = payload
@@ -44,14 +49,10 @@ impl TaskBlock for RouteGateResult {
                 .unwrap_or(false);
             let retry_count =
                 payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
-            let workflow = payload
-                .get("workflow")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("iterate")
-                .to_string();
+            let workflow = WorkflowType::from_payload(&payload);
             let in_loop = has_loop_context(&payload);
 
-            let completion_event_type = if workflow == "maintain" {
+            let completion_event_type = if workflow == WorkflowType::Maintain {
                 EventType::ProjectMaintenanceCompleted
             } else if in_loop {
                 // Inside a nested loop — emit InnerIterationCompleted so the
@@ -64,7 +65,7 @@ impl TaskBlock for RouteGateResult {
             let result = if required_passed {
                 handle_gates_passed(
                     &project,
-                    &workflow,
+                    workflow,
                     completion_event_type,
                     in_loop,
                     &payload,
@@ -73,7 +74,7 @@ impl TaskBlock for RouteGateResult {
             } else {
                 handle_retry_or_exhaustion(
                     &project,
-                    &workflow,
+                    workflow,
                     completion_event_type,
                     retry_count,
                     &payload,
@@ -88,7 +89,7 @@ impl TaskBlock for RouteGateResult {
 
 fn handle_gates_passed(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     completion_event_type: foundry_core::event::EventType,
     in_loop: bool,
     payload: &serde_json::Value,
@@ -112,7 +113,7 @@ fn handle_gates_passed(
     // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
     // Skip chaining when inside a nested loop — the strategic loop controller
     // handles post-loop maintenance chaining.
-    if workflow == "iterate" && !in_loop {
+    if workflow == WorkflowType::Iterate && !in_loop {
         let maintain = payload
             .get("actions")
             .and_then(|a| a.get("maintain"))
@@ -134,7 +135,7 @@ fn handle_gates_passed(
 
 fn handle_retry_or_exhaustion(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     completion_event_type: foundry_core::event::EventType,
     retry_count: u64,
     payload: &serde_json::Value,

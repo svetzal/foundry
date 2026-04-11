@@ -34,14 +34,13 @@ impl TaskBlock for ScanDependencies {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let path = std::path::Path::new(&entry.path);
             tracing::info!(project = %project, stack = %entry.stack, "scanning dependencies");
 

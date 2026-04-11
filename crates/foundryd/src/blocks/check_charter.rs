@@ -6,6 +6,8 @@ use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use super::TriggerContext;
+
 /// Validates that a project has intent documentation before the iterate workflow proceeds.
 ///
 /// Observer — sinks on `IterationRequested`.
@@ -33,9 +35,11 @@ impl TaskBlock for CheckCharter {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
@@ -49,13 +53,12 @@ impl TaskBlock for CheckCharter {
             });
         }
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = std::path::Path::new(&entry.path);
             let result = crate::charter::check_charter(project_path);
 

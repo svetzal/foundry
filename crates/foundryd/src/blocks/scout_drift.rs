@@ -185,14 +185,13 @@ impl TaskBlock for ScoutDrift {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 

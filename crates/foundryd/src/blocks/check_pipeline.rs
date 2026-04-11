@@ -34,7 +34,10 @@ impl TaskBlock for CheckPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let shell = Arc::clone(&self.shell);
 
         Box::pin(run_check(project, throttle, entry, shell))
@@ -44,13 +47,9 @@ impl TaskBlock for CheckPipeline {
 async fn run_check(
     project: String,
     throttle: foundry_core::throttle::Throttle,
-    entry: Option<foundry_core::registry::ProjectEntry>,
+    entry: foundry_core::registry::ProjectEntry,
     shell: Arc<dyn ShellGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
-    let Some(entry) = entry else {
-        return Ok(super::project_not_found_result(&project));
-    };
-
     if entry.repo.is_empty() {
         tracing::info!(project = %project, "no repo configured, skipping pipeline check");
         return Ok(make_no_repo_result(project, throttle));

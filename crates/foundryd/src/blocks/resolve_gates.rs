@@ -6,6 +6,8 @@ use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
+use super::TriggerContext;
+
 /// Reads `.hone-gates.json` from the project directory and emits `GateResolutionCompleted`
 /// with the gate definitions and workflow type.
 ///
@@ -34,12 +36,17 @@ impl TaskBlock for ResolveGates {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
-        let payload = trigger.payload.clone();
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
 
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
@@ -65,10 +72,6 @@ impl TaskBlock for ResolveGates {
                     _ => "unknown",
                 },
             );
-
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
 
             let project_path = std::path::Path::new(&entry.path);
             let gates = crate::gate_file::read_gates(project_path)?;

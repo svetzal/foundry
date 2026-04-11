@@ -6,8 +6,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+
+use super::TriggerContext;
 
 /// Identifies the most-violated engineering principle in the project.
 ///
@@ -38,15 +41,17 @@ impl TaskBlock for AssessProject {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only run for iterate workflow with passed preflight
-        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let workflow = WorkflowType::from_payload(&payload);
         let all_passed = trigger.payload_bool_or("all_passed", false);
 
-        if workflow != "iterate" || !all_passed {
+        if workflow != WorkflowType::Iterate || !all_passed {
             return Box::pin(async {
                 Ok(TaskBlockResult::success(
                     "Skipped: not an iterate workflow or preflight failed",
@@ -55,14 +60,13 @@ impl TaskBlock for AssessProject {
             });
         }
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
@@ -101,7 +105,7 @@ impl TaskBlock for AssessProject {
                 "category": category,
                 "assessment": assessment,
                 "audit_name": audit_name,
-                "workflow": "iterate",
+                "workflow": WorkflowType::Iterate,
             });
             forward_chain_context(&payload, &mut event_payload);
 

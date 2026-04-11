@@ -92,7 +92,11 @@ impl TaskBlock for CutRelease {
 
         let cve = trigger.payload_str_or("cve", "unknown").to_string();
 
-        let project_path = self.registry.find_project(&project).map(|p| p.path.clone());
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
+        let project_path = entry.path.clone();
 
         let agent = Arc::clone(&self.agent);
 
@@ -106,12 +110,10 @@ async fn run_release(
     project: String,
     throttle: Throttle,
     cve: String,
-    project_path: Option<String>,
+    project_path: String,
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
-    let Some(path_str) = project_path else {
-        return Ok(super::project_not_found_result(&project));
-    };
+    let path_str = project_path;
 
     let project_dir = Path::new(&path_str);
 

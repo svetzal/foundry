@@ -8,6 +8,8 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
+use super::TriggerContext;
+
 /// Performs a strategic assessment of the project to identify multiple areas
 /// for improvement, then emits a plan for the strategic loop controller.
 ///
@@ -41,9 +43,11 @@ impl TaskBlock for StrategicAssessor {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only run when strategic mode is requested.
         // When strategic=false or absent, the existing CheckCharter path handles it.
@@ -55,14 +59,13 @@ impl TaskBlock for StrategicAssessor {
             });
         }
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 

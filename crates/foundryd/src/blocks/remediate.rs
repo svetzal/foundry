@@ -76,16 +76,15 @@ impl TaskBlock for RemediateVulnerability {
         let cve = trigger.payload_str_or("cve", "unknown").to_string();
 
         // Resolve project agent and path from registry.
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%cve, "remediating vulnerability");
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let prompt = format!(

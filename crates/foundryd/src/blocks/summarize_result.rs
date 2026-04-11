@@ -10,6 +10,8 @@ use foundry_core::loop_context::has_loop_context;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
+use super::TriggerContext;
+
 /// Generates a commit headline and summary after a successful workflow.
 ///
 /// Observer — sinks on `ProjectIterationCompleted` and `ProjectMaintenanceCompleted`
@@ -39,9 +41,11 @@ impl TaskBlock for SummarizeResult {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: skip intermediate completions inside a nested loop.
         // The outermost loop controller emits the terminal completion without
@@ -64,14 +68,13 @@ impl TaskBlock for SummarizeResult {
             });
         }
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let prompt = "Review the recent changes in this project's working directory \

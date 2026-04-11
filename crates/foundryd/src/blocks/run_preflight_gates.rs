@@ -7,8 +7,11 @@ use foundry_core::gates::GateDefinition;
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::ShellGateway;
+
+use super::TriggerContext;
 
 /// Runs preflight quality gates before the main execution phase.
 ///
@@ -43,22 +46,20 @@ impl TaskBlock for RunPreflightGates {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
-        let workflow = payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let workflow = WorkflowType::from_payload(&payload);
 
-        let entry = self.registry.find_project(&project).cloned();
+        let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             // Maintain workflows skip preflight; iterate and validate run gates
-            if workflow != "iterate" && workflow != "validate" {
+            if workflow != WorkflowType::Iterate && workflow != WorkflowType::Validate {
                 tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate/validate workflow");
 
                 let mut event_payload = serde_json::json!({
@@ -109,22 +110,23 @@ impl TaskBlock for RunPreflightGates {
                 ));
             }
 
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
+            let entry = match super::require_project(&registry, &project) {
+                Ok(e) => e,
+                Err(result) => return Ok(result),
             };
 
             let working_dir = std::path::PathBuf::from(&entry.path);
             let run_result =
                 crate::gate_runner::run_gates(&gates, &working_dir, shell.as_ref()).await?;
 
-            Ok(build_preflight_result(&project, &workflow, &run_result, &payload, throttle))
+            Ok(build_preflight_result(&project, workflow, &run_result, &payload, throttle))
         })
     }
 }
 
 fn build_preflight_result(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     run_result: &foundry_core::gates::GatesRunResult,
     payload: &serde_json::Value,
     throttle: foundry_core::throttle::Throttle,

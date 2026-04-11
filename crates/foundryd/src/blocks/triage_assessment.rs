@@ -6,8 +6,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+
+use super::TriggerContext;
 
 /// Filters assessments: rejects low-severity issues and busy-work.
 ///
@@ -37,18 +40,19 @@ impl TaskBlock for TriageAssessment {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = PathBuf::from(&entry.path);
 
             let severity = payload.get("severity").and_then(serde_json::Value::as_i64).unwrap_or(0);
@@ -119,7 +123,7 @@ impl TaskBlock for TriageAssessment {
                 "principle": principle,
                 "category": category,
                 "assessment": assessment,
-                "workflow": "iterate",
+                "workflow": WorkflowType::Iterate,
             });
             forward_chain_context(&payload, &mut event_payload);
 

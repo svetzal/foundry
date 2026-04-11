@@ -5,8 +5,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::ShellGateway;
+
+use super::TriggerContext;
 
 /// Runs quality gates after the execution phase to verify changes.
 ///
@@ -41,22 +44,23 @@ impl TaskBlock for RunVerifyGates {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let payload = trigger.payload.clone();
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         let retry_count = trigger.payload_u64_or("retry_count", 0);
 
-        let workflow = trigger.payload_str_or("workflow", "unknown").to_string();
+        let workflow = WorkflowType::from_payload(&payload);
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = match super::require_project(&self.registry, &project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        };
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let Some(entry) = entry else {
-                return Ok(super::project_not_found_result(&project));
-            };
-
             let project_path = std::path::Path::new(&entry.path);
 
             // Re-read gates from disk (not from earlier resolution)
@@ -94,7 +98,7 @@ impl TaskBlock for RunVerifyGates {
 
             Ok(build_verification_result(
                 &project,
-                &workflow,
+                workflow,
                 retry_count,
                 &run_result,
                 &payload,
@@ -106,7 +110,7 @@ impl TaskBlock for RunVerifyGates {
 
 fn build_verification_result(
     project: &str,
-    workflow: &str,
+    workflow: WorkflowType,
     retry_count: u64,
     run_result: &foundry_core::gates::GatesRunResult,
     payload: &serde_json::Value,
