@@ -562,7 +562,7 @@ mod tests {
             Arc::clone(&registry),
         )));
         engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::CutRelease::new(Arc::clone(&registry))));
+        engine.register(Box::new(crate::blocks::cut_release_step(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
         engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));
         engine

@@ -60,8 +60,8 @@ fn release_requested_event(bump: Option<&str>) -> Event {
 fn release_engine(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Engine {
     let mut engine = Engine::new();
 
-    // ExecuteRelease (sinks on ReleaseRequested)
-    engine.register(Box::new(super::ExecuteRelease::new(agent, registry.clone())));
+    // ExecuteRelease (composed step, sinks on ReleaseRequested)
+    engine.register(Box::new(super::execute_release_step(agent, registry.clone())));
     // WatchPipeline (sinks on ReleaseCompleted)
     engine.register(Box::new(super::WatchPipeline::new(registry.clone())));
     // InstallLocally (sinks on ReleasePipelineCompleted, ProjectChangesPushed)

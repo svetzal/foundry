@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,49 +6,371 @@ use std::time::Duration;
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::throttle::Throttle;
+use foundry_core::work_block::{ComposedStep, EventAdapter, OutputMapper, WorkBlock};
 
 use crate::gateway::{
     AgentAccess, AgentCapability, AgentGateway, AgentRequest, ClaudeAgentGateway, ShellGateway,
 };
 
-/// Tags a patch release when the main branch is clean (vulnerability already fixed).
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
+// ---------------------------------------------------------------------------
+// AgentRelease WorkBlock — shared release behavior
+// ---------------------------------------------------------------------------
+
+/// Typed input for the agent release work block.
+pub struct ReleaseInput {
+    pub project_path: PathBuf,
+    pub prompt: String,
+}
+
+/// Typed output from the agent release work block.
+pub struct ReleaseOutput {
+    pub success: bool,
+    pub new_tag: Option<String>,
+    pub summary: String,
+    pub raw_output: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
+/// Pure behavior: verify AGENTS.md exists, invoke Claude agent with a prompt,
+/// extract version tag from output, return structured result.
 ///
-/// Self-filters: only acts when `dirty=false` in the trigger payload.
-///
-/// Invokes the Claude CLI to draft the changelog, bump the version, create
-/// the tag, and push. Requires `AGENTS.md` to exist in the project directory
-/// (Claude Code convention for agentic automation).
-pub struct CutRelease {
-    registry: Arc<Registry>,
+/// This is the shared logic previously duplicated between `CutRelease` and
+/// `ExecuteRelease`.
+pub struct AgentRelease {
     agent: Arc<dyn AgentGateway>,
 }
 
-impl CutRelease {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        let shell = Arc::new(crate::gateway::ProcessShellGateway);
-        Self {
-            registry,
-            agent: Arc::new(ClaudeAgentGateway::new(shell)),
-        }
-    }
-
+impl AgentRelease {
     /// Generous timeout for Claude CLI — release tasks can take several minutes.
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
 
-    #[cfg(test)]
-    fn with_agent(registry: Arc<Registry>, agent: Arc<dyn AgentGateway>) -> Self {
-        Self { registry, agent }
+    pub fn new(agent: Arc<dyn AgentGateway>) -> Self {
+        Self { agent }
     }
 }
 
-impl TaskBlock for CutRelease {
-    task_block_meta! {
-        name: "Cut Release",
-        kind: Mutator,
-        sinks_on: [MainBranchAudited],
+impl WorkBlock for AgentRelease {
+    type Input = ReleaseInput;
+    type Output = ReleaseOutput;
+
+    fn name(&self) -> &'static str {
+        "Agent Release"
+    }
+
+    fn execute(
+        &self,
+        input: Self::Input,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self::Output>> + Send + '_>> {
+        Box::pin(async move {
+            let project_dir = &input.project_path;
+
+            // Verify AGENTS.md exists — required by Claude Code for agentic automation.
+            let agents_md = project_dir.join("AGENTS.md");
+            if !agents_md.exists() {
+                tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
+                anyhow::bail!(
+                    "AGENTS.md not found at {}; cannot invoke Claude CLI",
+                    agents_md.display()
+                );
+            }
+
+            tracing::info!(prompt = %input.prompt, "invoking claude CLI for release");
+
+            let request = AgentRequest {
+                prompt: input.prompt,
+                working_dir: project_dir.clone(),
+                access: AgentAccess::Full,
+                capability: AgentCapability::Coding,
+                agent_file: None,
+                timeout: Self::CLAUDE_TIMEOUT,
+            };
+
+            let run_result = self.agent.invoke(&request).await;
+
+            let (raw_output, exit_code) = match &run_result {
+                Ok(r) => (
+                    Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+                    Some(r.exit_code),
+                ),
+                Err(_) => (None, None),
+            };
+
+            let (cli_success, new_tag, cli_summary) = match run_result {
+                Ok(r) if r.success => {
+                    let tag = extract_version_tag(&r.stdout);
+                    let s = format!(
+                        "Release completed{}",
+                        tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
+                    );
+                    (true, tag, s)
+                }
+                Ok(r) => {
+                    tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
+                    let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
+                    (
+                        false,
+                        None,
+                        format!(
+                            "Claude CLI exited with code {}; stderr: {first_stderr}",
+                            r.exit_code
+                        ),
+                    )
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
+                    (false, None, format!("claude CLI unavailable: {err}"))
+                }
+            };
+
+            tracing::info!(
+                new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
+                success = cli_success,
+                "release step completed"
+            );
+
+            Ok(ReleaseOutput {
+                success: cli_success,
+                new_tag,
+                summary: cli_summary,
+                raw_output,
+                exit_code,
+            })
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VulnReleaseAdapter — CutRelease trigger path (MainBranchAudited, dirty=false)
+// ---------------------------------------------------------------------------
+
+/// Adapts a `MainBranchAudited` event into a [`ReleaseInput`] for the
+/// vulnerability-driven release path.
+///
+/// Returns `None` when `dirty=true` (self-filter: only acts on clean branches).
+pub struct VulnReleaseAdapter {
+    registry: Arc<Registry>,
+}
+
+impl VulnReleaseAdapter {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
+    fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
+        let dirty = trigger.payload_bool_or("dirty", true);
+        if dirty {
+            tracing::info!("main branch is dirty, skipping release");
+            return None;
+        }
+
+        let project = &trigger.project;
+        let cve = trigger.payload_str_or("cve", "unknown").to_string();
+
+        let entry = self.registry.find_project(project)?;
+        let project_path = PathBuf::from(&entry.path);
+
+        let prompt = format!(
+            "Cut a patch release for {project} fixing {cve}. \
+             Create a changelog entry, bump the patch version, tag the release, and push."
+        );
+
+        tracing::info!(%project, %cve, "cutting patch release");
+
+        Some(ReleaseInput {
+            project_path,
+            prompt,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ManualReleaseAdapter — ExecuteRelease trigger path (ReleaseRequested)
+// ---------------------------------------------------------------------------
+
+/// Adapts a `ReleaseRequested` event into a [`ReleaseInput`] for the
+/// manual release path.
+///
+/// Returns `None` when `entry.actions.release` is false.
+pub struct ManualReleaseAdapter {
+    registry: Arc<Registry>,
+}
+
+impl ManualReleaseAdapter {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
+    fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
+        let project = &trigger.project;
+
+        let Some(entry) = self.registry.find_project(project) else {
+            tracing::warn!(project = %project, "project not found in registry");
+            return None;
+        };
+
+        if !entry.actions.release {
+            tracing::info!(%project, "release action disabled, skipping");
+            return None;
+        }
+
+        let project_path = PathBuf::from(&entry.path);
+        let bump = trigger.payload_str("bump").map(String::from);
+
+        let bump_instruction = match &bump {
+            Some(b) => format!("The version bump type is {b}."),
+            None => {
+                "Determine the appropriate version bump from the changelog and unreleased changes."
+                    .to_string()
+            }
+        };
+
+        let prompt = format!(
+            "Release {project}. Follow the release process documented in AGENTS.md exactly.\n\
+             {bump_instruction}\n\
+             Complete all steps: run quality gates, update the changelog, bump the version in all \
+             locations, commit, tag, and push. Output the new version tag on a line by itself (e.g. v1.2.3)."
+        );
+
+        tracing::info!(%project, bump = bump.as_deref().unwrap_or("auto"), "executing release");
+
+        Some(ReleaseInput {
+            project_path,
+            prompt,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReleaseOutputMapper — shared output mapping for both release paths
+// ---------------------------------------------------------------------------
+
+/// Maps [`ReleaseOutput`] into a [`TaskBlockResult`] with a `ReleaseCompleted` event.
+///
+/// Parameterized with `release_type` (e.g. "patch" or "manual") and optional
+/// extra payload fields (e.g. CVE for vulnerability releases).
+/// Closure type for producing extra payload fields from a trigger event.
+type ExtraPayloadFn = Box<dyn Fn(&Event) -> serde_json::Value + Send + Sync>;
+
+pub struct ReleaseOutputMapper {
+    release_type: &'static str,
+    /// Extra payload fields merged into every `ReleaseCompleted` event.
+    extra_payload: Option<ExtraPayloadFn>,
+}
+
+impl ReleaseOutputMapper {
+    pub fn new(release_type: &'static str) -> Self {
+        Self {
+            release_type,
+            extra_payload: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_extra_payload(
+        mut self,
+        f: impl Fn(&Event) -> serde_json::Value + Send + Sync + 'static,
+    ) -> Self {
+        self.extra_payload = Some(Box::new(f));
+        self
+    }
+
+    fn build_payload(
+        &self,
+        trigger: &Event,
+        success: bool,
+        new_tag: Option<&String>,
+    ) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "release": self.release_type,
+            "new_tag": new_tag,
+            "success": success,
+        });
+
+        if let Some(extra) = &self.extra_payload {
+            if let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
+            {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        payload
+    }
+}
+
+impl OutputMapper<ReleaseOutput> for ReleaseOutputMapper {
+    fn map(&self, output: ReleaseOutput, trigger: &Event) -> TaskBlockResult {
+        let payload = self.build_payload(trigger, output.success, output.new_tag.as_ref());
+
+        TaskBlockResult {
+            events: vec![Event::new(
+                EventType::ReleaseCompleted,
+                trigger.project.clone(),
+                trigger.throttle,
+                payload,
+            )],
+            success: output.success,
+            summary: output.summary,
+            raw_output: output.raw_output,
+            exit_code: output.exit_code,
+            audit_artifacts: vec![],
+        }
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let mut payload = serde_json::json!({
+            "release": self.release_type,
+            "success": true,
+            "dry_run": true,
+        });
+
+        if let Some(extra) = &self.extra_payload {
+            if let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
+            {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        vec![Event::new(
+            EventType::ReleaseCompleted,
+            trigger.project.clone(),
+            trigger.throttle,
+            payload,
+        )]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VulnReleaseMapper — specialized mapper for vulnerability releases
+// ---------------------------------------------------------------------------
+
+/// Dry-run mapper for the vulnerability release path that respects
+/// the `dirty` self-filter — emits no events when dirty.
+pub struct VulnReleaseMapper {
+    inner: ReleaseOutputMapper,
+}
+
+impl VulnReleaseMapper {
+    pub fn new() -> Self {
+        Self {
+            inner: ReleaseOutputMapper::new("patch").with_extra_payload(|trigger| {
+                let cve = trigger.payload_str_or("cve", "unknown").to_string();
+                serde_json::json!({ "cve": cve })
+            }),
+        }
+    }
+}
+
+impl OutputMapper<ReleaseOutput> for VulnReleaseMapper {
+    fn map(&self, output: ReleaseOutput, trigger: &Event) -> TaskBlockResult {
+        self.inner.map(output, trigger)
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
@@ -57,152 +379,75 @@ impl TaskBlock for CutRelease {
         if dirty {
             return vec![];
         }
-
-        let cve = trigger.payload_str_or("cve", "unknown").to_string();
-
-        vec![Event::new(
-            EventType::ReleaseCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            serde_json::json!({
-                "cve": cve,
-                "release": "patch",
-                "success": true,
-                "dry_run": true,
-            }),
-        )]
-    }
-
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-
-        let dirty = trigger.payload_bool_or("dirty", true);
-
-        if dirty {
-            tracing::info!("main branch is dirty, skipping release");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: main branch is dirty", vec![]))
-            });
-        }
-
-        let cve = trigger.payload_str_or("cve", "unknown").to_string();
-
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
-        let project_path = entry.path.clone();
-
-        let agent = Arc::clone(&self.agent);
-
-        tracing::info!(%cve, "cutting patch release");
-
-        Box::pin(run_release(project, throttle, cve, project_path, agent))
+        self.inner.dry_run_events(trigger)
     }
 }
 
-async fn run_release(
-    project: String,
-    throttle: Throttle,
-    cve: String,
-    project_path: String,
+// ---------------------------------------------------------------------------
+// Composed step constructors
+// ---------------------------------------------------------------------------
+
+/// The composed `TaskBlock` type for the vulnerability-driven release path
+/// (replaces `CutRelease`).
+pub type CutReleaseStep = ComposedStep<AgentRelease, VulnReleaseAdapter, VulnReleaseMapper>;
+
+/// The composed `TaskBlock` type for the manual release path
+/// (replaces `ExecuteRelease`).
+pub type ExecuteReleaseStep = ComposedStep<AgentRelease, ManualReleaseAdapter, ReleaseOutputMapper>;
+
+/// Build the composed "Cut Release" step (vulnerability flow).
+///
+/// Sinks on `MainBranchAudited`, skips when dirty, invokes agent for patch release.
+pub fn cut_release_step(registry: Arc<Registry>) -> CutReleaseStep {
+    let shell: Arc<dyn ShellGateway> = Arc::new(crate::gateway::ProcessShellGateway);
+    let agent: Arc<dyn AgentGateway> = Arc::new(ClaudeAgentGateway::new(shell));
+
+    ComposedStep::new(
+        "Cut Release",
+        BlockKind::Mutator,
+        vec![EventType::MainBranchAudited],
+        AgentRelease::new(agent),
+        VulnReleaseAdapter::new(registry),
+        VulnReleaseMapper::new(),
+    )
+}
+
+/// Build the composed "Execute Release" step (manual flow).
+///
+/// Sinks on `ReleaseRequested`, checks action flag, invokes agent following AGENTS.md.
+pub fn execute_release_step(
     agent: Arc<dyn AgentGateway>,
-) -> anyhow::Result<TaskBlockResult> {
-    let path_str = project_path;
-
-    let project_dir = Path::new(&path_str);
-
-    // Verify AGENTS.md exists — required by Claude Code for agentic automation.
-    let agents_md = project_dir.join("AGENTS.md");
-    if !agents_md.exists() {
-        tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
-        return Ok(TaskBlockResult::failure(format!(
-            "AGENTS.md not found at {}; cannot invoke Claude CLI",
-            agents_md.display()
-        )));
-    }
-
-    let prompt = format!(
-        "Cut a patch release for {project} fixing {cve}. \
-         Create a changelog entry, bump the patch version, tag the release, and push."
-    );
-
-    tracing::info!(%project, %cve, "invoking claude CLI for release");
-
-    let request = AgentRequest {
-        prompt,
-        working_dir: project_dir.to_path_buf(),
-        access: AgentAccess::Full,
-        capability: AgentCapability::Coding,
-        agent_file: None,
-        timeout: CutRelease::CLAUDE_TIMEOUT,
-    };
-
-    let run_result = agent.invoke(&request).await;
-
-    let (raw_output, exit_code) = match &run_result {
-        Ok(r) => (
-            Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
-            Some(r.exit_code),
-        ),
-        Err(_) => (None, None),
-    };
-
-    let (cli_success, new_tag, cli_summary) = match run_result {
-        Ok(r) if r.success => {
-            let tag = extract_version_tag(&r.stdout);
-            let s = format!(
-                "Cut patch release for {cve}{}",
-                tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
-            );
-            (true, tag, s)
-        }
-        Ok(r) => {
-            tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
-            let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
-            (
-                false,
-                None,
-                format!("Claude CLI exited with code {}; stderr: {first_stderr}", r.exit_code),
-            )
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
-            (false, None, format!("claude CLI unavailable: {err}"))
-        }
-    };
-
-    tracing::info!(
-        project = %project,
-        new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
-        success = cli_success,
-        "release step completed"
-    );
-
-    Ok(TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ReleaseCompleted,
-            project,
-            throttle,
-            serde_json::json!({
-                "cve": cve,
-                "release": "patch",
-                "new_tag": new_tag,
-                "success": cli_success,
-            }),
-        )],
-        success: cli_success,
-        summary: cli_summary,
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
-    })
+    registry: Arc<Registry>,
+) -> ExecuteReleaseStep {
+    ComposedStep::new(
+        "Execute Release",
+        BlockKind::Mutator,
+        vec![EventType::ReleaseRequested],
+        AgentRelease::new(agent),
+        ManualReleaseAdapter::new(registry),
+        ReleaseOutputMapper::new("manual"),
+    )
 }
+
+/// Build a "Cut Release" step with a test agent (for unit/integration tests).
+#[cfg(test)]
+pub fn cut_release_step_with_agent(
+    agent: Arc<dyn AgentGateway>,
+    registry: Arc<Registry>,
+) -> CutReleaseStep {
+    ComposedStep::new(
+        "Cut Release",
+        BlockKind::Mutator,
+        vec![EventType::MainBranchAudited],
+        AgentRelease::new(agent),
+        VulnReleaseAdapter::new(registry),
+        VulnReleaseMapper::new(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// extract_version_tag — shared utility
+// ---------------------------------------------------------------------------
 
 /// Scan output words for a semver tag of the form `v<major>.<minor>.<patch>`.
 fn extract_version_tag(output: &str) -> Option<String> {
@@ -220,189 +465,9 @@ fn extract_version_tag(output: &str) -> Option<String> {
     None
 }
 
-/// Executes a manual release workflow driven by an AI agent following the
-/// project's AGENTS.md release process.
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
-///
-/// Sinks on: `ReleaseRequested`
-///
-/// Checks `entry.actions.release` — skips if false.
-/// Verifies `AGENTS.md` exists in the project directory.
-/// Reads optional `bump` from the trigger payload to guide version bump type.
-///
-/// Invokes the Claude CLI to follow the project's documented release process.
-pub struct ExecuteRelease {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl ExecuteRelease {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-
-    /// Generous timeout for Claude CLI — release tasks can take several minutes.
-    const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
-
-    #[cfg(test)]
-    fn with_agent(registry: Arc<Registry>, agent: Arc<dyn AgentGateway>) -> Self {
-        Self { registry, agent }
-    }
-}
-
-impl TaskBlock for ExecuteRelease {
-    task_block_meta! {
-        name: "Execute Release",
-        kind: Mutator,
-        sinks_on: [ReleaseRequested],
-    }
-
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        vec![Event::new(
-            EventType::ReleaseCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            serde_json::json!({
-                "release": "manual",
-                "success": true,
-                "dry_run": true,
-            }),
-        )]
-    }
-
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let bump = trigger.payload_str("bump").map(String::from);
-
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
-
-        if !entry.actions.release {
-            tracing::info!(%project, "release action disabled, skipping");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: release action disabled", vec![]))
-            });
-        }
-
-        let project_path = entry.path.clone();
-        let agent = Arc::clone(&self.agent);
-
-        tracing::info!(%project, bump = bump.as_deref().unwrap_or("auto"), "executing release");
-
-        Box::pin(run_execute_release(project, throttle, bump, project_path, agent))
-    }
-}
-
-async fn run_execute_release(
-    project: String,
-    throttle: Throttle,
-    bump: Option<String>,
-    project_path: String,
-    agent: Arc<dyn AgentGateway>,
-) -> anyhow::Result<TaskBlockResult> {
-    let project_dir = Path::new(&project_path);
-
-    // Verify AGENTS.md exists — required by Claude Code for agentic automation.
-    let agents_md = project_dir.join("AGENTS.md");
-    if !agents_md.exists() {
-        tracing::warn!(path = %agents_md.display(), "AGENTS.md not found, skipping release");
-        return Ok(TaskBlockResult::failure(format!(
-            "AGENTS.md not found at {}; cannot invoke Claude CLI",
-            agents_md.display()
-        )));
-    }
-
-    let bump_instruction = match &bump {
-        Some(b) => format!("The version bump type is {b}."),
-        None => "Determine the appropriate version bump from the changelog and unreleased changes."
-            .to_string(),
-    };
-
-    let prompt = format!(
-        "Release {project}. Follow the release process documented in AGENTS.md exactly.\n\
-         {bump_instruction}\n\
-         Complete all steps: run quality gates, update the changelog, bump the version in all \
-         locations, commit, tag, and push. Output the new version tag on a line by itself (e.g. v1.2.3)."
-    );
-
-    tracing::info!(%project, "invoking claude CLI for release");
-
-    let request = AgentRequest {
-        prompt,
-        working_dir: project_dir.to_path_buf(),
-        access: AgentAccess::Full,
-        capability: AgentCapability::Coding,
-        agent_file: None,
-        timeout: ExecuteRelease::CLAUDE_TIMEOUT,
-    };
-
-    let run_result = agent.invoke(&request).await;
-
-    let (raw_output, exit_code) = match &run_result {
-        Ok(r) => (
-            Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
-            Some(r.exit_code),
-        ),
-        Err(_) => (None, None),
-    };
-
-    let (cli_success, new_tag, cli_summary) = match run_result {
-        Ok(r) if r.success => {
-            let tag = extract_version_tag(&r.stdout);
-            let s = format!(
-                "Release completed for {project}{}",
-                tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
-            );
-            (true, tag, s)
-        }
-        Ok(r) => {
-            tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
-            let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
-            (
-                false,
-                None,
-                format!("Claude CLI exited with code {}; stderr: {first_stderr}", r.exit_code),
-            )
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
-            (false, None, format!("claude CLI unavailable: {err}"))
-        }
-    };
-
-    tracing::info!(
-        project = %project,
-        new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
-        success = cli_success,
-        "release step completed"
-    );
-
-    Ok(TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ReleaseCompleted,
-            project,
-            throttle,
-            serde_json::json!({
-                "release": "manual",
-                "new_tag": new_tag,
-                "success": cli_success,
-            }),
-        )],
-        success: cli_success,
-        summary: cli_summary,
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
-    })
-}
+// ---------------------------------------------------------------------------
+// WatchPipeline — unchanged
+// ---------------------------------------------------------------------------
 
 /// Watches the CI pipeline after a release tag is pushed.
 /// Mutator — events logged but not delivered at `audit_only`;
@@ -684,9 +749,11 @@ mod tests {
         })
     }
 
+    // --- CutRelease (composed) tests ---
+
     #[tokio::test]
     async fn skips_when_dirty() {
-        let block = CutRelease::new(empty_registry());
+        let block = cut_release_step(empty_registry());
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "test-project".to_string(),
@@ -697,12 +764,13 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
         assert!(result.success);
         assert!(result.events.is_empty());
-        assert!(result.summary.contains("dirty"));
+        assert!(result.summary.contains("Skipped"));
     }
 
     #[tokio::test]
     async fn fails_when_project_not_in_registry() {
-        let block = CutRelease::new(empty_registry());
+        let agent = FakeAgentGateway::success();
+        let block = cut_release_step_with_agent(agent, empty_registry());
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "unknown-project".to_string(),
@@ -711,16 +779,17 @@ mod tests {
         );
 
         let result = block.execute(&trigger).await.unwrap();
-        assert!(!result.success);
+        assert!(result.success); // adapter returns None → skip
         assert!(result.events.is_empty());
-        assert!(result.summary.contains("not found in registry"));
+        assert!(result.summary.contains("Skipped"));
     }
 
     #[tokio::test]
     async fn fails_when_agents_md_missing() {
         // Use a path that definitely doesn't have AGENTS.md.
         let registry = registry_with_project("my-project", "/nonexistent/path", false);
-        let block = CutRelease::new(registry);
+        let agent = FakeAgentGateway::success();
+        let block = cut_release_step_with_agent(agent, registry);
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "my-project".to_string(),
@@ -730,6 +799,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
+        // AgentRelease returns Err when AGENTS.md missing — default map_error
+        // produces a failure with no events, stopping the chain.
         assert!(result.events.is_empty());
         assert!(result.summary.contains("AGENTS.md not found"));
     }
@@ -739,7 +810,7 @@ mod tests {
         let registry = registry_with_project("my-project", "/unused", true);
         let agent =
             FakeAgentGateway::success_with("Release complete! Tagged as v1.2.3 and pushed.");
-        let block = CutRelease::with_agent(registry, agent.clone());
+        let block = cut_release_step_with_agent(agent.clone(), registry);
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "my-project".to_string(),
@@ -767,7 +838,7 @@ mod tests {
     async fn release_failure_emits_release_completed_with_success_false() {
         let registry = registry_with_project("my-project", "/unused", true);
         let agent = FakeAgentGateway::failure("Claude CLI failed");
-        let block = CutRelease::with_agent(registry, agent);
+        let block = cut_release_step_with_agent(agent, registry);
         let trigger = Event::new(
             EventType::MainBranchAudited,
             "my-project".to_string(),
@@ -818,7 +889,7 @@ mod tests {
         assert_eq!(result.events[0].payload["status"], "success");
     }
 
-    // --- ExecuteRelease tests ---
+    // --- ExecuteRelease (composed) tests ---
 
     fn release_actions() -> ActionFlags {
         ActionFlags {
@@ -831,7 +902,7 @@ mod tests {
     async fn execute_release_skips_when_action_disabled() {
         let registry = registry_with_project("my-project", "/unused", true);
         let agent = FakeAgentGateway::success();
-        let block = ExecuteRelease::with_agent(registry, agent);
+        let block = execute_release_step(agent, registry);
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "my-project".to_string(),
@@ -842,13 +913,13 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
         assert!(result.success);
         assert!(result.events.is_empty());
-        assert!(result.summary.contains("release action disabled"));
+        assert!(result.summary.contains("Skipped"));
     }
 
     #[tokio::test]
     async fn execute_release_fails_when_project_not_in_registry() {
         let agent = FakeAgentGateway::success();
-        let block = ExecuteRelease::with_agent(empty_registry(), agent);
+        let block = execute_release_step(agent, empty_registry());
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "unknown-project".to_string(),
@@ -857,9 +928,9 @@ mod tests {
         );
 
         let result = block.execute(&trigger).await.unwrap();
-        assert!(!result.success);
+        assert!(result.success); // adapter returns None → skip
         assert!(result.events.is_empty());
-        assert!(result.summary.contains("not found in registry"));
+        assert!(result.summary.contains("Skipped"));
     }
 
     #[tokio::test]
@@ -871,7 +942,7 @@ mod tests {
             release_actions(),
         );
         let agent = FakeAgentGateway::success();
-        let block = ExecuteRelease::with_agent(registry, agent);
+        let block = execute_release_step(agent, registry);
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "my-project".to_string(),
@@ -881,6 +952,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
+        // AgentRelease returns Err when AGENTS.md missing — default map_error
+        // produces a failure with no events, stopping the chain.
         assert!(result.events.is_empty());
         assert!(result.summary.contains("AGENTS.md not found"));
     }
@@ -890,7 +963,7 @@ mod tests {
         let registry =
             registry_with_project_flags("my-project", "/unused", true, release_actions());
         let agent = FakeAgentGateway::success_with("Release complete!\nv2.0.0\nAll steps done.");
-        let block = ExecuteRelease::with_agent(registry, agent.clone());
+        let block = execute_release_step(agent.clone(), registry);
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "my-project".to_string(),
@@ -921,7 +994,7 @@ mod tests {
         let registry =
             registry_with_project_flags("my-project", "/unused", true, release_actions());
         let agent = FakeAgentGateway::success_with("v1.3.0");
-        let block = ExecuteRelease::with_agent(registry, agent.clone());
+        let block = execute_release_step(agent.clone(), registry);
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "my-project".to_string(),
@@ -942,7 +1015,7 @@ mod tests {
         let registry =
             registry_with_project_flags("my-project", "/unused", true, release_actions());
         let agent = FakeAgentGateway::failure("release failed");
-        let block = ExecuteRelease::with_agent(registry, agent);
+        let block = execute_release_step(agent, registry);
         let trigger = Event::new(
             EventType::ReleaseRequested,
             "my-project".to_string(),

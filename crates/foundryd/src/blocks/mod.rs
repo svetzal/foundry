@@ -134,7 +134,7 @@ pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use install::InstallLocally;
-pub use release::{CutRelease, ExecuteRelease, WatchPipeline};
+pub use release::{WatchPipeline, cut_release_step, execute_release_step};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
 pub use resolve_gates::ResolveGates;

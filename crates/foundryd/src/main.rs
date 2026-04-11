@@ -130,8 +130,8 @@ fn register_blocks(
         Arc::new(gateway::ClaudeAgentGateway::new(shell_for_agent));
     engine.register(Box::new(blocks::RemediateVulnerability::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
-    engine.register(Box::new(blocks::CutRelease::new(registry.clone())));
-    engine.register(Box::new(blocks::ExecuteRelease::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(blocks::cut_release_step(registry.clone())));
+    engine.register(Box::new(blocks::execute_release_step(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::WatchPipeline::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
