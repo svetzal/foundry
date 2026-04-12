@@ -89,6 +89,10 @@ Rules:
 - No external observability dependencies — tracing spans only
 - All tasks must include tests and all relevant documentation updates
 
+## Branching Workflow
+
+This project follows trunk-based development. `main` is the only long-lived branch. All work lands on `main` via direct commit. Feature branches are not pushed to `origin` and pull requests are not used. Short-lived local working branches (e.g. from hopper worktrees) are merged to `main` and deleted locally before work is considered complete.
+
 ## CI / Release
 
 - **CI** runs on push/PR to `main`: fmt, clippy, test (`.github/workflows/ci.yml`)
