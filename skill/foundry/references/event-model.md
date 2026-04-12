@@ -40,72 +40,73 @@ Rules:
 
 ## Complete Event Type List
 
+Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseRequested` → `release_requested`).
+
 ### Vulnerability Remediation Workflow
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `ScanRequested` | `scan_requested` | Command |
-| `VulnerabilityDetected` | `vulnerability_detected` | Domain fact |
-| `MainBranchAudited` | `main_branch_audited` | Domain fact |
-| `ReleaseTagAudited` | `release_tag_audited` | Domain fact |
-| `RemediationStarted` | `remediation_started` | Lifecycle start |
-| `RemediationCompleted` | `remediation_completed` | Lifecycle end |
-| `ReleaseRequested` | `release_requested` | Command |
-| `ReleaseCompleted` | `release_completed` | Lifecycle end |
-| `ReleasePipelineCompleted` | `release_pipeline_completed` | Lifecycle end |
-| `LocalInstallCompleted` | `local_install_completed` | Lifecycle end |
+| Event | Category |
+|-------|----------|
+| `ScanRequested` | Command |
+| `VulnerabilityDetected` | Domain fact |
+| `MainBranchAudited` | Domain fact |
+| `ReleaseTagAudited` | Domain fact |
+| `RemediationStarted` | Lifecycle start |
+| `RemediationCompleted` | Lifecycle end |
+| `ReleaseRequested` | Command |
+| `ReleaseCompleted` | Lifecycle end |
+| `ReleasePipelineCompleted` | Lifecycle end |
+| `LocalInstallCompleted` | Lifecycle end |
 
 ### Project Lifecycle (Cross-workflow)
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `ProjectValidationCompleted` | `project_validation_completed` | Lifecycle end |
-| `ProjectIterationCompleted` | `project_iteration_completed` | Lifecycle end |
-| `ProjectMaintenanceCompleted` | `project_maintenance_completed` | Lifecycle end |
-| `ProjectChangesCommitted` | `project_changes_committed` | Domain fact |
-| `ProjectChangesPushed` | `project_changes_pushed` | Domain fact |
+| Event | Category |
+|-------|----------|
+| `ProjectValidationCompleted` | Lifecycle end |
+| `ProjectIterationCompleted` | Lifecycle end |
+| `ProjectMaintenanceCompleted` | Lifecycle end |
+| `ProjectChangesCommitted` | Domain fact |
+| `ProjectChangesPushed` | Domain fact |
 
 ### Workflow Triggers
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `IterationRequested` | `iteration_requested` | Command |
-| `MaintenanceRequested` | `maintenance_requested` | Command |
-| `ValidationRequested` | `validation_requested` | Command |
-| `DriftAssessmentRequested` | `drift_assessment_requested` | Command |
-| `PipelineCheckRequested` | `pipeline_check_requested` | Command |
+| Event | Category |
+|-------|----------|
+| `IterationRequested` | Command |
+| `MaintenanceRequested` | Command |
+| `ValidationRequested` | Command |
+| `DriftAssessmentRequested` | Command |
+| `PipelineCheckRequested` | Command |
 
 ### Run Lifecycle
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `MaintenanceRunStarted` | `maintenance_run_started` | Lifecycle start |
-| `MaintenanceRunCompleted` | `maintenance_run_completed` | Lifecycle end |
+| Event | Category |
+|-------|----------|
+| `MaintenanceRunStarted` | Lifecycle start |
+| `MaintenanceRunCompleted` | Lifecycle end |
 
 ### Gate Orchestration
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `GateResolutionCompleted` | `gate_resolution_completed` | Lifecycle end |
-| `PreflightCompleted` | `preflight_completed` | Lifecycle end |
-| `ExecutionCompleted` | `execution_completed` | Lifecycle end |
-| `GateVerificationCompleted` | `gate_verification_completed` | Lifecycle end |
-| `RetryRequested` | `retry_requested` | Command |
-| `SummarizeCompleted` | `summarize_completed` | Lifecycle end |
+| Event | Category |
+|-------|----------|
+| `GateResolutionCompleted` | Lifecycle end |
+| `PreflightCompleted` | Lifecycle end |
+| `ExecutionCompleted` | Lifecycle end |
+| `GateVerificationCompleted` | Lifecycle end |
+| `RetryRequested` | Command |
+| `SummarizeCompleted` | Lifecycle end |
 
 ### Iterate Workflow (Phase 3)
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `CharterCheckCompleted` | `charter_check_completed` | Lifecycle end |
-| `AssessmentCompleted` | `assessment_completed` | Lifecycle end |
-| `TriageCompleted` | `triage_completed` | Lifecycle end |
-| `PlanCompleted` | `plan_completed` | Lifecycle end |
+| Event | Category |
+|-------|----------|
+| `CharterCheckCompleted` | Lifecycle end |
+| `AssessmentCompleted` | Lifecycle end |
+| `TriageCompleted` | Lifecycle end |
+| `PlanCompleted` | Lifecycle end |
 
 ### Pipeline Health Check
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `PipelineCheckRequested` | `pipeline_check_requested` | Command |
-| `PipelineChecked` | `pipeline_checked` | Domain fact |
+| Event | Category |
+|-------|----------|
+| `PipelineChecked` | Domain fact |
 
 ### Drift Scout
-| Event | Snake Case | Category |
-|-------|-----------|----------|
-| `DriftAssessmentCompleted` | `drift_assessment_completed` | Lifecycle end |
+| Event | Category |
+|-------|----------|
+| `DriftAssessmentCompleted` | Lifecycle end |
 
 ## Key Payload Fields by Event
 

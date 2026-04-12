@@ -123,13 +123,7 @@ ScanRequested
                                                └─ ReleaseTagAudited
 ```
 
-If the main branch is clean (not dirty), the release path fires:
-```
-MainBranchAudited {dirty: false}
-  └─ CutRelease (Mutator, AI Coding) → ReleaseCompleted
-       └─ WatchPipeline (Observer) → ReleasePipelineCompleted
-            └─ InstallLocally (Mutator) → LocalInstallCompleted
-```
+If the main branch is clean (not dirty), the automatic release path fires — see **Release Workflow > Automatic Release** below.
 
 ## Pipeline Health Check Workflow
 

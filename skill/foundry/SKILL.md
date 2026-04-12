@@ -4,14 +4,17 @@ description: >
   How to use the Foundry workflow engine for engineering automation.
   Use this skill whenever the user mentions foundry, foundryd, foundry iterate,
   foundry scout, foundry validate, foundry run, foundry pipeline, foundry release,
-  quality gates, maintenance runs, drift assessment, pipeline health, CI remediation,
-  release automation, or wants to automate code quality workflows across projects.
-  Also use when the user asks about .foundry directories, trace files, audit reports,
-  event-driven workflows, or managing a registry of software projects for automated maintenance.
+  foundry gates, foundry registry, quality gates, maintenance runs, drift assessment,
+  pipeline health, CI remediation, release automation, or wants to automate code
+  quality workflows across projects. Also use when the user asks about .foundry
+  directories, trace files, audit reports, event-driven workflows, managing a
+  registry of software projects, or checking what happened in a previous foundry run.
+  Even if the user doesn't say "foundry" explicitly, use this skill when they ask
+  about automated iterate/maintain cycles, gate health checks, or agent-driven releases.
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on [::1]:50051)
 metadata:
-  version: "0.10.1"
+  version: "0.10.2"
   author: Stacey Vetzal
 ---
 
@@ -188,8 +191,8 @@ foundry registry list
 # Show project details
 foundry registry show my-project
 
-# Edit project flags
-foundry registry edit my-project --iterate --maintain
+# Edit project flags (use true/false)
+foundry registry edit my-project --iterate true --maintain true
 
 # Remove a project
 foundry registry remove my-project
@@ -204,33 +207,16 @@ foundry registry remove my-project
 
 ## Examining Results
 
-Always use the CLI commands first — they format output, handle pagination, and render traces as trees. Only read raw files on disk when CLI output is insufficient.
+Use CLI commands first — they format output and render traces as trees. Fall back to raw files only when CLI output is insufficient.
 
-**Start here:**
+- `foundry history` — recent runs (last 7 days); filter with `--project <name>` or a date (`foundry history 2026-03-29`)
+- `foundry trace <event_id> --verbose` — drill into a specific run
+- `foundry watch --project <name>` — live stream for runs in progress
 
-1. `foundry history` — overview of recent runs (last 7 days), shows event ID, status, duration, type, project
-2. `foundry trace <event_id> --verbose` — drill into a specific run to see what each block did
-3. `foundry watch --project <name>` — live stream for runs currently in progress
-
-```bash
-# What happened recently?
-foundry history
-
-# What happened on a specific date?
-foundry history 2026-03-29
-
-# Filter to one project
-foundry history --project my-project
-
-# Drill into a specific trace (event ID from history output)
-foundry trace evt_a1b2c3d4e5f6 --verbose
-```
-
-**Only if you need more detail**, fall back to the files on disk:
-
-- **Audit reports** (`~/.foundry/audits/runs/YYYY-MM-DD/summary.md`) — markdown summary after `foundry run`, with project status tables, failure details, release audits, and aggregate stats
-- **Event log** (`~/.foundry/events/YYYY-MM.jsonl`) — raw JSONL of every event, useful for analytics or grep
-- **Trace files** (`~/.foundry/traces/YYYY-MM-DD/{event_id}.json`) — full ProcessResult JSON with all events and block executions
+Raw files on disk (when CLI isn't enough):
+- `~/.foundry/audits/runs/YYYY-MM-DD/summary.md` — markdown summary after `foundry run`
+- `~/.foundry/events/YYYY-MM.jsonl` — raw JSONL event log
+- `~/.foundry/traces/YYYY-MM-DD/{event_id}.json` — full ProcessResult JSON
 
 ## Throttle Levels
 
@@ -258,15 +244,6 @@ foundry status
 # Specific workflow
 foundry status <workflow_id>
 ```
-
-## Environment Variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
-| `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event log directory |
-| `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Trace file storage |
-| `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Audit report storage |
 
 ## Event Model Reference
 

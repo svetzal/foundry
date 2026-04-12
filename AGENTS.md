@@ -121,7 +121,12 @@ mdbook build book/
 
 ## Deployable Skill
 
-The `skill/foundry/` directory contains the Claude Code skill that teaches agents how to use Foundry. It is deployed to `~/.claude/skills/foundry/` via `foundry init`. When adding new CLI commands or workflows, update the in-repo skill files (`SKILL.md`, `references/workflows.md`, `references/event-model.md`) to match, then re-run `foundry init` to deploy locally.
+The `skill/foundry/` directory contains the Claude Code skill that teaches agents how to use Foundry. It is deployed via `foundry init`:
+
+- `foundry init` — installs to project-local `.claude/skills/foundry/`
+- `foundry init --global` — installs to `~/.claude/skills/foundry/` (available across all projects)
+
+When adding new CLI commands or workflows, update the in-repo skill files (`SKILL.md`, `references/workflows.md`, `references/event-model.md`) to match, then re-run `foundry init --global` to deploy.
 
 The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must always match the workspace version in `Cargo.toml`. When bumping the version for a release, update both locations.
 

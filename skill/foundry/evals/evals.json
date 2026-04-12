@@ -9,12 +9,22 @@
     {
       "id": 2,
       "prompt": "My last foundry run finished overnight. I want to see what happened — which projects succeeded, which failed, and why. Where do I look?",
-      "expected_output": "Should explain multiple approaches: `foundry history` for recent traces, the audit report at ~/.foundry/audits/runs/YYYY-MM-DD/summary.md for the overview, and `foundry trace <event_id> --verbose` for drilling into specific failures."
+      "expected_output": "Should recommend `foundry history` first, then `foundry trace <event_id> --verbose` for drilling into specifics. May mention the audit report at ~/.foundry/audits/runs/YYYY-MM-DD/summary.md as a fallback for more detail."
     },
     {
       "id": 3,
       "prompt": "I want foundry to do an AI-assisted quality improvement on my 'checkout-service' project but I'm nervous about it pushing changes. Can I preview what it would do first?",
-      "expected_output": "Should explain the dry_run throttle: `foundry emit iteration_requested --project checkout-service --throttle dry_run` or the general approach of using throttle levels. Should also mention that push is controlled by the registry flag and can be disabled with `foundry registry edit checkout-service --no-push`."
+      "expected_output": "Should explain two options: (1) `foundry run --project checkout-service --throttle dry_run` to simulate the full chain with no side effects, or (2) disable push in the registry with `foundry registry edit checkout-service --push false` so iterate runs but doesn't push. Should NOT suggest `foundry emit` since convenience commands are preferred."
+    },
+    {
+      "id": 4,
+      "prompt": "I need to release my 'foundry' project. The changelog has a mix of bug fixes and a new feature. How does foundry handle that?",
+      "expected_output": "Should recommend `foundry release foundry` and explain that without --bump, the agent reads the changelog and determines the appropriate bump automatically. May mention `--bump minor` if the user wants to override. Should note the release action must be enabled in the registry."
+    },
+    {
+      "id": 5,
+      "prompt": "CI is failing on my 'web-app' project after a recent merge. Can foundry help fix it?",
+      "expected_output": "Should recommend `foundry pipeline web-app` and explain it checks GitHub Actions status, fetches failure logs, and invokes Claude to diagnose and fix CI failures automatically."
     }
   ]
 }
