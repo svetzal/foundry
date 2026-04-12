@@ -3,14 +3,15 @@ name: foundry
 description: >
   How to use the Foundry workflow engine for engineering automation.
   Use this skill whenever the user mentions foundry, foundryd, foundry iterate,
-  foundry scout, foundry validate, foundry run, quality gates, maintenance runs,
-  drift assessment, or wants to automate code quality workflows across projects.
+  foundry scout, foundry validate, foundry run, foundry pipeline, foundry release,
+  quality gates, maintenance runs, drift assessment, pipeline health, CI remediation,
+  release automation, or wants to automate code quality workflows across projects.
   Also use when the user asks about .foundry directories, trace files, audit reports,
   event-driven workflows, or managing a registry of software projects for automated maintenance.
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on [::1]:50051)
 metadata:
-  version: "0.8.1"
+  version: "0.10.1"
   author: Stacey Vetzal
 ---
 
@@ -113,9 +114,49 @@ foundry gates --dir /path/to/project
 foundry gates --init <project-name>
 ```
 
+### 6. Check Pipeline Health
+
+Check GitHub Actions pipeline status for a project and auto-remediate failures.
+
+```bash
+foundry pipeline <project-name>
+```
+
+What happens:
+- Looks up the project's repo and branch from the registry
+- Runs `gh run list` to check GitHub Actions pipeline status
+- If pipeline is passing, reports success and stops
+- If pipeline is failing, fetches failure logs with `gh run view --log-failed`
+- Invokes Claude with Coding capability and Full access to diagnose and fix CI failures
+- Commits and pushes the fix
+
+### 7. Release a Project
+
+Run an agent-driven release workflow: quality gates, changelog, version bump, tag, push, pipeline watch, local install.
+
+```bash
+# Auto-determine bump from changelog
+foundry release <project-name>
+
+# Specify bump type
+foundry release <project-name> --bump patch
+foundry release <project-name> --bump minor
+foundry release <project-name> --bump major
+```
+
+What happens:
+- Requires `release` action enabled in the project's registry entry
+- Invokes Claude agent to follow the release process in the project's AGENTS.md
+- If no `--bump` is specified, the agent determines the appropriate bump from changelog and unreleased changes
+- Agent runs quality gates, updates changelog, bumps version, commits, tags, and pushes
+- After release completes, watches the CI/CD pipeline for the release tag
+- Once pipeline succeeds, installs the new version locally
+
+The release chain also fires automatically during vulnerability remediation when the main branch is clean after a CVE fix.
+
 ### Prefer convenience commands over raw emit
 
-Always use the convenience commands above (`iterate`, `scout`, `validate`, `run`, `gates`) rather than `foundry emit`. The convenience commands handle watch-stream setup, progress display, and trace rendering automatically.
+Always use the convenience commands above (`iterate`, `scout`, `validate`, `run`, `gates`, `pipeline`, `release`) rather than `foundry emit`. The convenience commands handle watch-stream setup, progress display, and trace rendering automatically.
 
 Only use `foundry emit` for workflows that lack a convenience command (e.g., vulnerability scanning) or for advanced debugging:
 

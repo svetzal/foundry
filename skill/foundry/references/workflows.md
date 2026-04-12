@@ -125,11 +125,64 @@ ScanRequested
 
 If the main branch is clean (not dirty), the release path fires:
 ```
-RemediationCompleted
-  └─ CutRelease (Mutator) → ReleaseRequested
+MainBranchAudited {dirty: false}
+  └─ CutRelease (Mutator, AI Coding) → ReleaseCompleted
        └─ WatchPipeline (Observer) → ReleasePipelineCompleted
             └─ InstallLocally (Mutator) → LocalInstallCompleted
 ```
+
+## Pipeline Health Check Workflow
+
+Triggered by `foundry pipeline <project>`. Checks GitHub Actions CI status and auto-remediates failures.
+
+```
+PipelineCheckRequested
+  └─ CheckPipeline (Observer)
+       └─ PipelineChecked {passing: bool, logs: Option<String>}
+            └─ RemediatePipeline (Mutator, AI Coding) — self-filters when passing
+                 └─ RemediationCompleted
+                      └─ CommitAndPush (Mutator)
+                           ├─ ProjectChangesCommitted
+                           └─ ProjectChangesPushed
+```
+
+**CheckPipeline** looks up the project repo and branch from the registry, runs `gh run list` to check status, and if failing fetches failure logs with `gh run view --log-failed`.
+
+**RemediatePipeline** self-filters (skips when pipeline is passing). When failing, invokes Claude with Coding capability and Full access to diagnose and fix CI failures.
+
+## Release Workflow
+
+Triggered by `foundry release <project>` (manual) or automatically after vulnerability remediation (CutRelease).
+
+### Manual Release (via CLI)
+
+```
+ReleaseRequested
+  └─ ExecuteRelease (Mutator, AI Coding)
+       └─ ReleaseCompleted {success, new_tag, release: "manual"}
+            └─ WatchPipeline (Observer)
+                 └─ ReleasePipelineCompleted
+                      └─ InstallLocally (Mutator)
+                           └─ LocalInstallCompleted
+```
+
+**ExecuteRelease** checks that `actions.release=true` in the registry. Invokes Claude agent with the project's AGENTS.md to run quality gates, update changelog, bump version, commit, tag, and push. If `--bump` is provided, passes it to the agent; otherwise the agent determines the bump from changelog.
+
+### Automatic Release (vulnerability path)
+
+```
+MainBranchAudited {dirty: false}
+  └─ CutRelease (Mutator, AI Coding)
+       └─ ReleaseCompleted {success, new_tag, release: "patch", cve: "..."}
+            └─ WatchPipeline (Observer)
+                 └─ ReleasePipelineCompleted
+                      └─ InstallLocally (Mutator)
+                           └─ LocalInstallCompleted
+```
+
+**CutRelease** self-filters when `dirty=true`. Invokes Claude agent to cut a patch release for the specific CVE.
+
+Both paths share the same `AgentRelease` work block (ComposedStep architecture) — only the event adapter and output mapper differ.
 
 ## Task Block Types
 

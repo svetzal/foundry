@@ -70,6 +70,7 @@ Rules:
 | `MaintenanceRequested` | `maintenance_requested` | Command |
 | `ValidationRequested` | `validation_requested` | Command |
 | `DriftAssessmentRequested` | `drift_assessment_requested` | Command |
+| `PipelineCheckRequested` | `pipeline_check_requested` | Command |
 
 ### Run Lifecycle
 | Event | Snake Case | Category |
@@ -95,6 +96,12 @@ Rules:
 | `TriageCompleted` | `triage_completed` | Lifecycle end |
 | `PlanCompleted` | `plan_completed` | Lifecycle end |
 
+### Pipeline Health Check
+| Event | Snake Case | Category |
+|-------|-----------|----------|
+| `PipelineCheckRequested` | `pipeline_check_requested` | Command |
+| `PipelineChecked` | `pipeline_checked` | Domain fact |
+
 ### Drift Scout
 | Event | Snake Case | Category |
 |-------|-----------|----------|
@@ -116,3 +123,7 @@ Rules:
 | `ProjectIterationCompleted` | `success`, `project` |
 | `ProjectMaintenanceCompleted` | `success`, `project` |
 | `MaintenanceRunCompleted` | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level only) |
+| `PipelineChecked` | `passing`, `logs` |
+| `ReleaseCompleted` | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only) |
+| `ReleasePipelineCompleted` | `success`, `new_tag` |
+| `LocalInstallCompleted` | `success` |
