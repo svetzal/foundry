@@ -14,13 +14,8 @@ use foundry_core::throttle::Throttle;
 
 use crate::blocks::test_helpers;
 use crate::engine::Engine;
-use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
-use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
-use crate::shell::CommandResult;
-
-fn test_registry(project_path: &str) -> Arc<Registry> {
-    test_helpers::registry_with_project("test-project", project_path)
-}
+use crate::gateway::fakes::FakeAgentGateway;
+use crate::gateway::{AgentGateway, ShellGateway};
 
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
@@ -56,28 +51,6 @@ fn prompt_engine(
     engine
 }
 
-fn passing_shell() -> Arc<dyn ShellGateway> {
-    FakeShellGateway::always(CommandResult {
-        stdout: String::new(),
-        stderr: String::new(),
-        exit_code: 0,
-        success: true,
-    })
-}
-
-fn sequenced_agent(responses: Vec<&str>) -> Arc<dyn AgentGateway> {
-    let agent_responses: Vec<AgentResponse> = responses
-        .into_iter()
-        .map(|s| AgentResponse {
-            stdout: s.to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-        .collect();
-    FakeAgentGateway::sequence(agent_responses)
-}
-
 #[tokio::test]
 async fn prompt_workflow_happy_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,17 +61,18 @@ async fn prompt_workflow_happy_path() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // Agent responses:
     // 1. ExecutePlan: execute the user's prompt
     // 2. SummarizeResult: generate summary
-    let agent = sequenced_agent(vec![
+    let agent = test_helpers::sequenced_agent(vec![
         "Done, implemented the feature",
         "HEADLINE: Implement feature\nSUMMARY: Implemented the requested feature.",
     ]);
 
-    let engine = prompt_engine(passing_shell(), agent, registry);
+    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
 
     let trigger = Event::new(
         EventType::PromptExecutionRequested,
@@ -178,10 +152,11 @@ async fn prompt_workflow_charter_failure_stops_chain() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let agent = FakeAgentGateway::success();
 
-    let engine = prompt_engine(passing_shell(), agent, registry);
+    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
 
     let trigger = Event::new(
         EventType::PromptExecutionRequested,

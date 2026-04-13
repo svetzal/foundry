@@ -23,10 +23,6 @@ use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use crate::shell::CommandResult;
 
-fn test_registry(project_path: &str) -> Arc<Registry> {
-    test_helpers::registry_with_project("test-project", project_path)
-}
-
 fn iteration_requested_event(maintain: bool) -> Event {
     Event::new(
         EventType::IterationRequested,
@@ -46,30 +42,7 @@ fn iterate_engine(
     registry: Arc<Registry>,
 ) -> Engine {
     let mut engine = Engine::new();
-
-    // CheckCharter (sinks on IterationRequested)
-    engine.register(Box::new(super::CheckCharter::new(registry.clone())));
-    // ResolveGates (sinks on CharterCheckCompleted, MaintenanceRequested, ValidationRequested)
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    // RunPreflightGates (sinks on GateResolutionCompleted)
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
-    // AssessProject (sinks on PreflightCompleted, iterate+passed only)
-    engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
-    // TriageAssessment (sinks on AssessmentCompleted)
-    engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
-    // CreatePlan (sinks on TriageCompleted, accepted only)
-    engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    // ExecutePlan (sinks on PlanCompleted)
-    engine.register(Box::new(super::ExecutePlan::new(agent.clone(), registry.clone())));
-    // RunVerifyGates (sinks on ExecutionCompleted)
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
-    // RouteGateResult (sinks on GateVerificationCompleted)
-    engine.register(Box::new(super::RouteGateResult));
-    // RetryExecution (sinks on RetryRequested)
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
-    // SummarizeResult (sinks on ProjectIterationCompleted/ProjectMaintenanceCompleted, success only)
-    engine.register(Box::new(super::SummarizeResult::new(agent, registry)));
-
+    test_helpers::register_iterate_chain(&mut engine, shell, agent, registry);
     engine
 }
 
@@ -85,7 +58,8 @@ async fn happy_path_iterate_chain() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // All gates pass
     let shell = FakeShellGateway::success();
     // Agent responses: assess (JSON), name (kebab), triage (JSON), plan (text), execute (success), summarize
@@ -183,7 +157,8 @@ async fn charter_failure_stops_chain() {
     let dir = tempfile::tempdir().unwrap();
     // No CHARTER.md — charter check will fail
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
     let agent = FakeAgentGateway::success();
 
@@ -226,7 +201,8 @@ async fn preflight_failure_stops_chain() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Preflight gate fails
     let shell = FakeShellGateway::failure("formatting error");
     let agent = FakeAgentGateway::success();
@@ -269,7 +245,8 @@ async fn triage_rejection_stops_chain() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
     // Agent responses: assess, name, triage (rejected)
     let agent = FakeAgentGateway::sequence(vec![
@@ -334,7 +311,8 @@ async fn gate_verification_retry_loop() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // Shell: preflight passes, first verify fails, second verify passes
     let shell = FakeShellGateway::sequence(vec![
@@ -469,7 +447,8 @@ async fn iterate_with_maintain_chaining() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
     // Agent: assess, name, triage, plan, execute, summarize (iterate), then maintain chain agents...
     // We only verify MaintenanceRequested is emitted; the maintain chain needs its own engine blocks.
@@ -534,17 +513,7 @@ async fn iterate_with_maintain_chaining() {
 
     // Build engine with BOTH iterate and maintain chain blocks
     let mut engine = Engine::new();
-    engine.register(Box::new(super::CheckCharter::new(registry.clone())));
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::ExecutePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
-    engine.register(Box::new(super::RouteGateResult));
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::SummarizeResult::new(agent.clone(), registry.clone())));
+    test_helpers::register_iterate_chain(&mut engine, shell, agent.clone(), registry.clone());
     // Also register maintain blocks so the chained MaintenanceRequested is handled
     engine.register(Box::new(super::ExecuteMaintain::new(agent.clone(), registry.clone())));
 

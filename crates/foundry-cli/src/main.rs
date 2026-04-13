@@ -1,6 +1,3 @@
-use std::env;
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -308,16 +305,6 @@ enum RegistryCommands {
     },
 }
 
-/// Resolve the registry file path from env or default.
-fn registry_path() -> PathBuf {
-    if let Ok(p) = env::var("FOUNDRY_REGISTRY_PATH") {
-        PathBuf::from(p)
-    } else {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(format!("{home}/.foundry/registry.json"))
-    }
-}
-
 fn handle_registry_command(sub: RegistryCommands, path: &std::path::Path) -> Result<()> {
     match sub {
         RegistryCommands::Init => registry_commands::init(path),
@@ -416,7 +403,8 @@ async fn main() -> Result<()> {
         }
         Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
         Commands::Validate { projects, all } => {
-            commands::validate(&cli.addr, projects, all, &registry_path()).await
+            commands::validate(&cli.addr, projects, all, &foundry_core::paths::registry_path())
+                .await
         }
         Commands::Iterate { project } => commands::iterate(&cli.addr, &project).await,
         Commands::Scout { project } => commands::scout(&cli.addr, &project).await,
@@ -430,7 +418,7 @@ async fn main() -> Result<()> {
             let project_dir = gates_commands::resolve_project_dir(
                 project.as_deref(),
                 dir.as_deref(),
-                &registry_path(),
+                &foundry_core::paths::registry_path(),
             )?;
             if init {
                 gates_commands::init(&project_dir)
@@ -438,6 +426,8 @@ async fn main() -> Result<()> {
                 gates_commands::show(&project_dir)
             }
         }
-        Commands::Registry(sub) => handle_registry_command(sub, &registry_path()),
+        Commands::Registry(sub) => {
+            handle_registry_command(sub, &foundry_core::paths::registry_path())
+        }
     }
 }

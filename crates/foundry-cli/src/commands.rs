@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table};
@@ -8,7 +7,7 @@ use comfy_table::{ContentArrangement, Table};
 use foundry_core::trace::{ProcessResult, TraceIndex};
 
 use crate::proto::{
-    EmitRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest,
+    EmitRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
     foundry_client::FoundryClient,
 };
 
@@ -17,6 +16,100 @@ fn parse_throttle(s: &str) -> i32 {
         "audit_only" => 1,
         "dry_run" => 2,
         _ => 0,
+    }
+}
+
+/// Connect, emit, and stream watch events until `is_terminal` returns true.
+///
+/// Returns the root event ID and all collected [`WatchResponse`] events.
+/// Does not print any output — callers are responsible for all display logic.
+struct WorkflowRunner {
+    addr: String,
+    project: String,
+}
+
+impl WorkflowRunner {
+    fn new(addr: &str, project: &str) -> Self {
+        Self {
+            addr: addr.to_string(),
+            project: project.to_string(),
+        }
+    }
+
+    /// Subscribe to the watch stream, emit `event_type` with `payload`, then
+    /// stream events until `is_terminal` returns `true`.
+    ///
+    /// `payload` is serialised as JSON; pass [`serde_json::Value::Null`] for an
+    /// empty payload.
+    ///
+    /// Returns `(root_event_id, collected_events)`.
+    async fn run_workflow(
+        &self,
+        event_type: &str,
+        payload: serde_json::Value,
+        is_terminal: impl Fn(&str, &str) -> bool,
+    ) -> Result<(String, Vec<WatchResponse>)> {
+        // Subscribe before emitting so we don't miss events.
+        let mut watch_client = FoundryClient::connect(self.addr.clone()).await?;
+        let mut stream = watch_client
+            .watch(WatchRequest {
+                project: self.project.clone(),
+            })
+            .await?
+            .into_inner();
+
+        let mut emit_client = FoundryClient::connect(self.addr.clone()).await?;
+        let payload_json = if payload.is_null() {
+            String::new()
+        } else {
+            payload.to_string()
+        };
+        let response = emit_client
+            .emit(EmitRequest {
+                event_type: event_type.to_string(),
+                project: self.project.clone(),
+                throttle: 0, // Full
+                payload_json,
+                trace_id: String::new(),
+            })
+            .await?
+            .into_inner();
+
+        let mut events = Vec::new();
+        while let Some(event) = stream.message().await? {
+            let done = is_terminal(&event.event_type, &event.payload_json);
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+
+        Ok((response.event_id, events))
+    }
+
+    /// Fetch and render the trace for `event_id` after a 1-second delay.
+    async fn show_trace(&self, event_id: &str) -> Result<()> {
+        let mut trace_client = FoundryClient::connect(self.addr.clone()).await?;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let trace_resp = trace_client
+            .trace(TraceRequest {
+                event_id: event_id.to_string(),
+            })
+            .await?
+            .into_inner();
+        if trace_resp.found {
+            render_trace(&trace_resp, false);
+            println!("---");
+        }
+        Ok(())
+    }
+}
+
+/// Print a slice of watch events in `[project] event_type (status)` format.
+fn print_watch_events(events: &[WatchResponse]) {
+    for event in events {
+        let status = extract_status(&event.payload_json);
+        println!("[{}] {} {}", event.project, event.event_type, status);
     }
 }
 
@@ -283,228 +376,92 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
 }
 
 pub async fn iterate(addr: &str, project: &str) -> Result<()> {
-    // Subscribe to the watch stream before emitting so we don't miss events.
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
-    let watch_request = WatchRequest {
-        project: project.to_string(),
-    };
-    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+    let runner = WorkflowRunner::new(addr, project);
+    let (event_id, events) = runner
+        .run_workflow(
+            "iteration_requested",
+            serde_json::json!({
+                "project": project,
+                "actions": { "maintain": false },
+            }),
+            |t, _| t == "project_iteration_completed",
+        )
+        .await?;
 
-    // Emit IterationRequested
-    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
-    let request = EmitRequest {
-        event_type: "iteration_requested".to_string(),
-        project: project.to_string(),
-        throttle: 0, // Full
-        payload_json: serde_json::json!({
-            "project": project,
-            "actions": { "maintain": false },
-        })
-        .to_string(),
-        trace_id: String::new(),
-    };
-
-    let response = emit_client.emit(request).await?.into_inner();
     println!("Iterating {project}...");
-    println!("Event: {}", response.event_id);
+    println!("Event: {event_id}");
     println!();
+    print_watch_events(&events);
 
-    // Stream progress events until the iteration completes
-    while let Some(event) = stream.message().await? {
-        let status = extract_status(&event.payload_json);
-        println!("[{}] {} {}", event.project, event.event_type, status);
-
-        if event.event_type == "project_iteration_completed" {
-            break;
-        }
-    }
-
-    // Show the trace for full visibility
-    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let trace_resp = trace_client
-        .trace(TraceRequest {
-            event_id: response.event_id.clone(),
-        })
-        .await?
-        .into_inner();
-    if trace_resp.found {
-        render_trace(&trace_resp, false);
-        println!("---");
-    }
-
+    runner.show_trace(&event_id).await?;
     Ok(())
 }
 
 pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<()> {
-    // Subscribe to the watch stream before emitting so we don't miss events.
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
-    let watch_request = WatchRequest {
-        project: project.to_string(),
-    };
-    let mut stream = watch_client.watch(watch_request).await?.into_inner();
-
-    // Emit ReleaseRequested
-    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let runner = WorkflowRunner::new(addr, project);
     let payload = match &bump {
         Some(b) => serde_json::json!({ "bump": b }),
         None => serde_json::json!({}),
     };
-    let request = EmitRequest {
-        event_type: "release_requested".to_string(),
-        project: project.to_string(),
-        throttle: 0, // Full
-        payload_json: payload.to_string(),
-        trace_id: String::new(),
-    };
-
-    let response = emit_client.emit(request).await?.into_inner();
-    println!("Releasing {project}...");
-    println!("Event: {}", response.event_id);
-    println!();
-
-    // Stream progress events until the release chain completes.
-    // The terminal event is local_install_completed (end of chain).
-    while let Some(event) = stream.message().await? {
-        let status = extract_status(&event.payload_json);
-        println!("[{}] {} {}", event.project, event.event_type, status);
-
-        if event.event_type == "local_install_completed" {
-            break;
-        }
-
-        // Also break on release_completed with failure — no downstream events will follow.
-        if event.event_type == "release_completed" {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
-                if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(true) {
-                    break;
-                }
-            }
-        }
-    }
-
-    // Show the trace for full visibility
-    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let trace_resp = trace_client
-        .trace(TraceRequest {
-            event_id: response.event_id.clone(),
+    let (event_id, events) = runner
+        .run_workflow("release_requested", payload, |t, p| {
+            t == "local_install_completed"
+                || (t == "release_completed"
+                    && !serde_json::from_str::<serde_json::Value>(p)
+                        .ok()
+                        .and_then(|v| v.get("success").and_then(serde_json::Value::as_bool))
+                        .unwrap_or(true))
         })
-        .await?
-        .into_inner();
-    if trace_resp.found {
-        render_trace(&trace_resp, false);
-        println!("---");
-    }
+        .await?;
 
+    println!("Releasing {project}...");
+    println!("Event: {event_id}");
+    println!();
+    print_watch_events(&events);
+
+    runner.show_trace(&event_id).await?;
     Ok(())
 }
 
 pub async fn scout(addr: &str, project: &str) -> Result<()> {
-    // Subscribe to the watch stream before emitting so we don't miss events.
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
-    let watch_request = WatchRequest {
-        project: project.to_string(),
-    };
-    let mut stream = watch_client.watch(watch_request).await?.into_inner();
+    let runner = WorkflowRunner::new(addr, project);
+    let (event_id, events) = runner
+        .run_workflow("drift_assessment_requested", serde_json::Value::Null, |t, _| {
+            t == "drift_assessment_completed"
+        })
+        .await?;
 
-    // Emit DriftAssessmentRequested
-    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
-    let request = EmitRequest {
-        event_type: "drift_assessment_requested".to_string(),
-        project: project.to_string(),
-        throttle: 0, // Full
-        payload_json: String::new(),
-        trace_id: String::new(),
-    };
-
-    let response = emit_client.emit(request).await?.into_inner();
     println!("Scouting {project} for intent drift...");
-    println!("Event: {}", response.event_id);
+    println!("Event: {event_id}");
     println!();
 
-    // Stream events until we see DriftAssessmentCompleted
-    while let Some(event) = stream.message().await? {
-        if event.event_type == "drift_assessment_completed" {
-            print_scout_result(project, &event.payload_json);
-            break;
-        }
+    if let Some(terminal) = events.iter().find(|e| e.event_type == "drift_assessment_completed") {
+        print_scout_result(project, &terminal.payload_json);
     }
 
-    // Show the trace for full visibility
-    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let trace_resp = trace_client
-        .trace(TraceRequest {
-            event_id: response.event_id.clone(),
-        })
-        .await?
-        .into_inner();
-    if trace_resp.found {
-        render_trace(&trace_resp, false);
-        println!("---");
-    }
-
+    runner.show_trace(&event_id).await?;
     Ok(())
 }
 
 pub async fn pipeline(addr: &str, project: &str) -> Result<()> {
-    // Subscribe to the watch stream before emitting so we don't miss events.
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
-    let watch_request = WatchRequest {
-        project: project.to_string(),
-    };
-    let mut stream = watch_client.watch(watch_request).await?.into_inner();
-
-    // Emit PipelineCheckRequested
-    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
-    let request = EmitRequest {
-        event_type: "pipeline_check_requested".to_string(),
-        project: project.to_string(),
-        throttle: 0, // Full
-        payload_json: String::new(),
-        trace_id: String::new(),
-    };
-
-    let response = emit_client.emit(request).await?.into_inner();
-    println!("Checking pipeline for {project}...");
-    println!("Event: {}", response.event_id);
-    println!();
-
-    // Stream events until we see pipeline_checked (if passing) or
-    // remediation_completed (if it went to remediation).
-    while let Some(event) = stream.message().await? {
-        let status = extract_status(&event.payload_json);
-        println!("[{}] {} {}", event.project, event.event_type, status);
-
-        if event.event_type == "pipeline_checked" {
-            // Check if passing -- if so, we're done
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
-                if v.get("passing").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-                    break;
-                }
-            }
-        }
-
-        if event.event_type == "remediation_completed" {
-            break;
-        }
-    }
-
-    // Show the trace for full visibility
-    let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let trace_resp = trace_client
-        .trace(TraceRequest {
-            event_id: response.event_id.clone(),
+    let runner = WorkflowRunner::new(addr, project);
+    let (event_id, events) = runner
+        .run_workflow("pipeline_check_requested", serde_json::Value::Null, |t, p| {
+            (t == "pipeline_checked"
+                && serde_json::from_str::<serde_json::Value>(p)
+                    .ok()
+                    .and_then(|v| v.get("passing").and_then(serde_json::Value::as_bool))
+                    .unwrap_or(false))
+                || t == "remediation_completed"
         })
-        .await?
-        .into_inner();
-    if trace_resp.found {
-        render_trace(&trace_resp, false);
-        println!("---");
-    }
+        .await?;
 
+    println!("Checking pipeline for {project}...");
+    println!("Event: {event_id}");
+    println!();
+    print_watch_events(&events);
+
+    runner.show_trace(&event_id).await?;
     Ok(())
 }
 
@@ -579,16 +536,6 @@ fn print_scout_result(project: &str, payload_json: &str) {
     }
 }
 
-/// Resolve the traces directory from env or default.
-fn traces_dir() -> PathBuf {
-    if let Ok(p) = env::var("FOUNDRY_TRACES_DIR") {
-        PathBuf::from(p)
-    } else {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(format!("{home}/.foundry/traces"))
-    }
-}
-
 /// Read all trace index entries from a single date directory.
 fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceIndex> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -657,7 +604,7 @@ fn print_trace_table(date: &str, indices: &[TraceIndex]) {
 // though this function's current body never fails.
 #[allow(clippy::unnecessary_wraps)]
 pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
-    let base_dir = traces_dir();
+    let base_dir = foundry_core::paths::traces_dir();
 
     if let Some(date_str) = date {
         let dir = base_dir.join(date_str);
@@ -713,53 +660,24 @@ pub async fn validate(
     let mut any_failed = false;
 
     for project_name in &project_names {
-        // Subscribe to the watch stream before emitting so we don't miss events.
-        let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
-        let watch_request = WatchRequest {
-            project: project_name.clone(),
-        };
-        let mut stream = watch_client.watch(watch_request).await?.into_inner();
-
-        // Emit ValidationRequested
-        let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
-        let request = EmitRequest {
-            event_type: "validation_requested".to_string(),
-            project: project_name.clone(),
-            throttle: 0, // Full — the workflow is read-only by design
-            payload_json: String::new(),
-            trace_id: String::new(),
-        };
-
-        let response = emit_client.emit(request).await?.into_inner();
         println!("Validating {project_name}...");
+        let runner = WorkflowRunner::new(addr, project_name);
+        let (event_id, events) = runner
+            .run_workflow("validation_requested", serde_json::Value::Null, |t, _| {
+                t == "validation_completed"
+            })
+            .await?;
 
-        // Stream events until we see ValidationCompleted for this project
-        while let Some(event) = stream.message().await? {
-            if event.event_type == "validation_completed" {
-                print_validation_result(project_name, &event.payload_json);
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
-                    if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-                        any_failed = true;
-                    }
+        if let Some(terminal) = events.iter().find(|e| e.event_type == "validation_completed") {
+            print_validation_result(project_name, &terminal.payload_json);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&terminal.payload_json) {
+                if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                    any_failed = true;
                 }
-                break;
             }
         }
 
-        // Also show the trace for full visibility
-        let mut trace_client = FoundryClient::connect(addr.to_string()).await?;
-        // Small delay to let trace finalize
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let trace_resp = trace_client
-            .trace(TraceRequest {
-                event_id: response.event_id.clone(),
-            })
-            .await?
-            .into_inner();
-        if trace_resp.found {
-            render_trace(&trace_resp, false);
-            println!("---");
-        }
+        runner.show_trace(&event_id).await?;
         println!();
     }
 

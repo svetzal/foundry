@@ -1,6 +1,7 @@
 pub mod event;
 pub mod gates;
 pub mod loop_context;
+pub mod paths;
 pub mod payload;
 pub mod registry;
 pub mod task_block;

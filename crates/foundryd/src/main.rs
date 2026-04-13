@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,20 +32,14 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
-    let registry_path = env::var("FOUNDRY_REGISTRY_PATH").unwrap_or_else(|_| {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.foundry/registry.json")
-    });
-
-    let registry = match foundry_core::registry::Registry::load(std::path::Path::new(
-        &registry_path,
-    )) {
+    let registry_path = foundry_core::paths::registry_path();
+    let registry = match foundry_core::registry::Registry::load(&registry_path) {
         Ok(r) => {
-            tracing::info!(path = %registry_path, projects = r.active_projects().len(), "registry loaded");
+            tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
             Arc::new(r)
         }
         Err(e) => {
-            tracing::warn!(path = %registry_path, error = %e, "registry not found, using empty registry");
+            tracing::warn!(path = %registry_path.display(), error = %e, "registry not found, using empty registry");
             Arc::new(foundry_core::registry::Registry {
                 version: 2,
                 projects: vec![],
@@ -54,22 +47,17 @@ async fn main() -> Result<()> {
         }
     };
 
-    let events_dir = env::var("FOUNDRY_EVENTS_DIR").unwrap_or_else(|_| {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.foundry/events")
-    });
-    let event_writer = Arc::new(event_writer::EventWriter::new(&events_dir));
+    let event_writer = Arc::new(event_writer::EventWriter::new(foundry_core::paths::events_dir()));
 
-    let traces_dir = env::var("FOUNDRY_TRACES_DIR").unwrap_or_else(|_| {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.foundry/traces")
-    });
-    let trace_writer = Arc::new(trace_writer::TraceWriter::new(&traces_dir));
+    let traces_dir = foundry_core::paths::traces_dir();
+    let trace_writer = Arc::new(trace_writer::TraceWriter::new(
+        traces_dir.to_str().expect("FOUNDRY_TRACES_DIR must be valid UTF-8"),
+    ));
 
-    let audits_dir = env::var("FOUNDRY_AUDITS_DIR").unwrap_or_else(|_| {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.foundry/audits")
-    });
+    let audits_dir = foundry_core::paths::audits_dir()
+        .to_str()
+        .expect("FOUNDRY_AUDITS_DIR must be valid UTF-8")
+        .to_string();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 

@@ -14,13 +14,7 @@ use foundry_core::throttle::Throttle;
 
 use crate::blocks::test_helpers;
 use crate::engine::Engine;
-use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
-use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
-use crate::shell::CommandResult;
-
-fn test_registry(project_path: &str) -> Arc<Registry> {
-    test_helpers::registry_with_project("test-project", project_path)
-}
+use crate::gateway::{AgentGateway, ShellGateway};
 
 /// Build the full strategic loop engine with inner iterate chain.
 fn strategic_engine(
@@ -76,31 +70,6 @@ fn non_strategic_iteration_requested() -> Event {
     )
 }
 
-/// Agent that returns responses in sequence. Used to simulate the strategic
-/// assessment, then inner iterate blocks, then the continue check.
-fn sequenced_agent(responses: Vec<&str>) -> Arc<dyn AgentGateway> {
-    let agent_responses: Vec<AgentResponse> = responses
-        .into_iter()
-        .map(|s| AgentResponse {
-            stdout: s.to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-        .collect();
-    FakeAgentGateway::sequence(agent_responses)
-}
-
-/// Shell that always passes gates.
-fn passing_shell() -> Arc<dyn ShellGateway> {
-    FakeShellGateway::always(CommandResult {
-        stdout: String::new(),
-        stderr: String::new(),
-        exit_code: 0,
-        success: true,
-    })
-}
-
 #[tokio::test]
 async fn strategic_loop_runs_one_iteration_then_stops() {
     let dir = tempfile::tempdir().unwrap();
@@ -111,7 +80,8 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // Agent responses in order:
     // 1. StrategicAssessor: returns areas
@@ -123,7 +93,7 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
     // 7. SummarizeResult (for InnerIterationCompleted — skipped because terminal guard)
     // 8. StrategicLoopController: continue check → false
     // 9. SummarizeResult: final summary
-    let agent = sequenced_agent(vec![
+    let agent = test_helpers::sequenced_agent(vec![
         // 1: Strategic assessment
         r#"{"areas": [{"area": "test coverage", "severity": 8, "category": "testing"}]}"#,
         // 2: Assess project
@@ -142,7 +112,7 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
         "HEADLINE: Improve test coverage\nSUMMARY: Added tests.",
     ]);
 
-    let engine = strategic_engine(passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
     let result = engine.process(strategic_iteration_requested()).await;
 
     // Collect event types
@@ -188,7 +158,8 @@ async fn strategic_loop_stops_at_max_iterations() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // With max_iterations=1, should run one inner loop then complete regardless
     // of continue check.
@@ -203,7 +174,7 @@ async fn strategic_loop_stops_at_max_iterations() {
         }),
     );
 
-    let agent = sequenced_agent(vec![
+    let agent = test_helpers::sequenced_agent(vec![
         // Strategic assessment
         r#"{"areas": [{"area": "naming", "severity": 5, "category": "naming"}]}"#,
         // Assess
@@ -220,7 +191,7 @@ async fn strategic_loop_stops_at_max_iterations() {
         "HEADLINE: Fix naming\nSUMMARY: Renamed.",
     ]);
 
-    let engine = strategic_engine(passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
     let result = engine.process(trigger).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
@@ -254,9 +225,10 @@ async fn non_strategic_iteration_still_works() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
-    let agent = sequenced_agent(vec![
+    let agent = test_helpers::sequenced_agent(vec![
         // Assess
         r#"{"severity": 7, "principle": "clarity", "category": "clarity", "assessment": "unclear"}"#,
         // Audit name
@@ -271,7 +243,7 @@ async fn non_strategic_iteration_still_works() {
         "HEADLINE: Improve clarity\nSUMMARY: Clarified.",
     ]);
 
-    let engine = strategic_engine(passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
     let result = engine.process(non_strategic_iteration_requested()).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();

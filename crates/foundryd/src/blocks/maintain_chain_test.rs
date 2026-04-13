@@ -17,10 +17,6 @@ use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 use crate::gateway::{AgentGateway, ShellGateway};
 use crate::shell::CommandResult;
 
-fn test_registry(project_path: &str) -> Arc<Registry> {
-    test_helpers::registry_with_project("test-project", project_path)
-}
-
 fn maintenance_requested_event() -> Event {
     Event::new(
         EventType::MaintenanceRequested,
@@ -61,7 +57,8 @@ async fn happy_path_maintain_chain() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // All gates pass
     let shell = FakeShellGateway::success();
     // Agent succeeds for both ExecuteMaintain and SummarizeResult
@@ -117,7 +114,8 @@ async fn retry_loop_on_gate_failure_then_success() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // First gate verification fails, second succeeds
     let shell = FakeShellGateway::sequence(vec![
@@ -197,7 +195,8 @@ async fn retries_exhausted_emits_failure() {
     )
     .unwrap();
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
     // All gate verifications fail
     let shell = FakeShellGateway::failure("tests keep failing");
@@ -238,7 +237,8 @@ async fn no_gates_file_still_completes() {
     let dir = tempfile::tempdir().unwrap();
     // No .hone-gates.json written
 
-    let registry = test_registry(dir.path().to_str().unwrap());
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
     let agent = FakeAgentGateway::success_with("HEADLINE: Maintain\nSUMMARY: Done.");
 
