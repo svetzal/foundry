@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
 
@@ -98,8 +98,7 @@ fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoRelea
         .map(|e| {
             let new_tag =
                 e.payload.get("new_tag").and_then(|v| v.as_str()).map(ToString::to_string);
-            let success =
-                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let success = e.payload.bool_or("success", false);
             AutoReleaseEntry {
                 name: project.to_string(),
                 new_tag,
@@ -116,14 +115,8 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .iter()
         .filter(|e| e.event_type == EventType::LocalInstallCompleted)
         .map(|e| {
-            let method = e
-                .payload
-                .get("method")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            let success =
-                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let method = e.payload.str_or("method", "unknown").to_string();
+            let success = e.payload.bool_or("success", false);
             LocalInstallEntry {
                 name: project.to_string(),
                 method,

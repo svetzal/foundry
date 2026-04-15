@@ -2,7 +2,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -170,8 +170,7 @@ impl TaskBlock for CleanupBranches {
 
         Box::pin(async move {
             // Self-filter: only act on successful validations.
-            let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            if status != "ok" {
+            if payload.str_or("status", "") != "ok" {
                 return Ok(TaskBlockResult::success("Skipped: validation not ok", vec![]));
             }
 

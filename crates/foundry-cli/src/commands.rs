@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table};
 
+use foundry_core::event::PayloadExt;
 use foundry_core::trace::{ProcessResult, TraceIndex};
 
 use crate::proto::{
@@ -407,10 +408,8 @@ pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<
         .run_workflow("release_requested", payload, |t, p| {
             t == "local_install_completed"
                 || (t == "release_completed"
-                    && !serde_json::from_str::<serde_json::Value>(p)
-                        .ok()
-                        .and_then(|v| v.get("success").and_then(serde_json::Value::as_bool))
-                        .unwrap_or(true))
+                    && serde_json::from_str::<serde_json::Value>(p)
+                        .is_ok_and(|v| !v.bool_or("success", true)))
         })
         .await?;
 
@@ -449,9 +448,7 @@ pub async fn pipeline(addr: &str, project: &str) -> Result<()> {
         .run_workflow("pipeline_check_requested", serde_json::Value::Null, |t, p| {
             (t == "pipeline_checked"
                 && serde_json::from_str::<serde_json::Value>(p)
-                    .ok()
-                    .and_then(|v| v.get("passing").and_then(serde_json::Value::as_bool))
-                    .unwrap_or(false))
+                    .is_ok_and(|v| v.bool_or("passing", false)))
                 || t == "remediation_completed"
         })
         .await?;
@@ -472,9 +469,8 @@ fn print_scout_result(project: &str, payload_json: &str) {
         return;
     };
 
-    let candidate_count = v.get("candidate_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    let high_value_count =
-        v.get("high_value_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let candidate_count = v.u64_or("candidate_count", 0);
+    let high_value_count = v.u64_or("high_value_count", 0);
 
     println!("{project}: {candidate_count} candidates found, {high_value_count} high-value");
     println!();
@@ -486,39 +482,21 @@ fn print_scout_result(project: &str, payload_json: &str) {
 
     if let Some(candidates) = v.get("candidates").and_then(serde_json::Value::as_array) {
         for candidate in candidates {
-            let rank = candidate.get("rank").and_then(serde_json::Value::as_u64).unwrap_or(0);
-            let summary = candidate
-                .get("summary")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("(no summary)");
-            let divergence = candidate
-                .get("divergence_type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let high_value = candidate
-                .get("high_value")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let confidence = candidate
-                .get("confidence")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let next_step = candidate
-                .get("suggested_next_step")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
+            let rank = candidate.u64_or("rank", 0);
+            let summary = candidate.str_or("summary", "(no summary)");
+            let divergence = candidate.str_or("divergence_type", "unknown");
+            let high_value = candidate.bool_or("high_value", false);
+            let confidence = candidate.str_or("confidence", "unknown");
+            let next_step = candidate.str_or("suggested_next_step", "unknown");
 
             let marker = if high_value { " ***" } else { "" };
             println!("  #{rank} [{divergence}] {summary}{marker}");
 
             // Impact line
             if let Some(impact) = candidate.get("impact") {
-                let severity =
-                    impact.get("severity").and_then(serde_json::Value::as_str).unwrap_or("?");
-                let frequency =
-                    impact.get("frequency").and_then(serde_json::Value::as_str).unwrap_or("?");
-                let risk_type =
-                    impact.get("risk_type").and_then(serde_json::Value::as_str).unwrap_or("?");
+                let severity = impact.str_or("severity", "?");
+                let frequency = impact.str_or("frequency", "?");
+                let risk_type = impact.str_or("risk_type", "?");
                 println!("     severity={severity} frequency={frequency} risk={risk_type}");
             }
 
@@ -671,7 +649,7 @@ pub async fn validate(
         if let Some(terminal) = events.iter().find(|e| e.event_type == "validation_completed") {
             print_validation_result(project_name, &terminal.payload_json);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&terminal.payload_json) {
-                if !v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                if !v.bool_or("success", false) {
                     any_failed = true;
                 }
             }
@@ -695,16 +673,15 @@ fn print_validation_result(project: &str, payload_json: &str) {
         return;
     };
 
-    let success = v.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let success = v.bool_or("success", false);
     let status = if success { "PASS" } else { "FAIL" };
     println!("  {project}: {status}");
 
     if let Some(results) = v.get("results").and_then(serde_json::Value::as_array) {
         for gate in results {
-            let name = gate.get("name").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let passed = gate.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
-            let required =
-                gate.get("required").and_then(serde_json::Value::as_bool).unwrap_or(true);
+            let name = gate.str_or("name", "unknown");
+            let passed = gate.bool_or("passed", false);
+            let required = gate.bool_or("required", true);
             let marker = if passed { "ok" } else { "FAILED" };
             let req = if required { "required" } else { "optional" };
             print!("    {name}: {marker} ({req})");

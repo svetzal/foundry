@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -50,16 +50,13 @@ impl TaskBlock for ResolveGates {
 
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
-            if event_type == EventType::CharterCheckCompleted {
-                let success =
-                    payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if !success {
-                    tracing::info!(project = %project, "charter check failed, skipping gate resolution");
-                    return Ok(TaskBlockResult::success(
-                        format!("{project}: charter check failed, no gates to resolve"),
-                        vec![],
-                    ));
-                }
+            if event_type == EventType::CharterCheckCompleted && !payload.bool_or("success", false)
+            {
+                tracing::info!(project = %project, "charter check failed, skipping gate resolution");
+                return Ok(TaskBlockResult::success(
+                    format!("{project}: charter check failed, no gates to resolve"),
+                    vec![],
+                ));
             }
 
             // Payload workflow overrides the event-type default — this allows

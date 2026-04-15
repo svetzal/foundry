@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::loop_context::{forward_chain_context, has_loop_context};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -43,12 +43,8 @@ impl TaskBlock for RouteGateResult {
         } = TriggerContext::from_trigger(trigger);
 
         Box::pin(async move {
-            let required_passed = payload
-                .get("required_passed")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let retry_count =
-                payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let required_passed = payload.bool_or("required_passed", false);
+            let retry_count = payload.u64_or("retry_count", 0);
             let workflow = WorkflowType::from_payload(&payload);
             let in_loop = has_loop_context(&payload);
 
@@ -216,10 +212,10 @@ fn build_failure_context(payload: &serde_json::Value) -> String {
 
     let failures: Vec<String> = results
         .iter()
-        .filter(|r| !r.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(true))
+        .filter(|r| !r.bool_or("passed", true))
         .map(|r| {
-            let name = r.get("name").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let output = r.get("output").and_then(serde_json::Value::as_str).unwrap_or("");
+            let name = r.str_or("name", "unknown");
+            let output = r.str_or("output", "");
             if output.is_empty() {
                 name.to_string()
             } else {

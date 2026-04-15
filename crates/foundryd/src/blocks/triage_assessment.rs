@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, PayloadExt};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -55,15 +55,10 @@ impl TaskBlock for TriageAssessment {
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
-            let severity = payload.get("severity").and_then(serde_json::Value::as_i64).unwrap_or(0);
-            let principle = payload
-                .get("principle")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let category =
-                payload.get("category").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let assessment =
-                payload.get("assessment").and_then(serde_json::Value::as_str).unwrap_or("");
+            let severity = payload.i64_or("severity", 0);
+            let principle = payload.str_or("principle", "unknown");
+            let category = payload.str_or("category", "unknown");
+            let assessment = payload.str_or("assessment", "");
 
             let prompt = format!(
                 "You are triaging an assessment for project '{project}'.\n\n\
@@ -148,12 +143,8 @@ impl TaskBlock for TriageAssessment {
 fn parse_triage(output: &str) -> (bool, String) {
     let json_str = super::assess_project::extract_json(output);
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-        let accepted = json.get("accepted").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        let reason = json
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("no reason given")
-            .to_string();
+        let accepted = json.bool_or("accepted", true);
+        let reason = json.str_or("reason", "no reason given").to_string();
         (accepted, reason)
     } else {
         // Default to accept if we can't parse
