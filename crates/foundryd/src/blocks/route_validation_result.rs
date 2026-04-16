@@ -35,7 +35,10 @@ impl TaskBlock for RouteValidationResult {
             payload,
         } = TriggerContext::from_trigger(trigger);
         let workflow = WorkflowType::from_payload(&payload);
-        let required_passed = trigger.payload_bool_or("required_passed", false);
+        let required_passed = payload
+            .get("required_passed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let results = trigger.payload.get("results").cloned().unwrap_or(serde_json::json!([]));
 
         Box::pin(async move {

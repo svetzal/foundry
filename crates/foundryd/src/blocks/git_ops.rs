@@ -164,7 +164,12 @@ impl TaskBlock for CommitAndPush {
 
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let cve = trigger.payload_str_or("cve", "unknown").to_string();
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
 
         let mut events = vec![Event::new(
             EventType::ProjectChangesCommitted,
@@ -225,7 +230,12 @@ impl TaskBlock for CommitAndPush {
             });
         }
 
-        let cve = trigger.payload_str_or("cve", "unknown").to_string();
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
 
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);

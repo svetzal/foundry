@@ -2,7 +2,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -116,9 +116,17 @@ async fn run_check(
         ));
     };
 
-    let conclusion = run.str_or("conclusion", "unknown").to_string();
-    let run_id = run.u64_or("databaseId", 0);
-    let run_name = run.str_or("name", "unknown").to_string();
+    let conclusion = run
+        .get("conclusion")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let run_id = run.get("databaseId").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let run_name = run
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
 
     let passing = conclusion == "success";
 

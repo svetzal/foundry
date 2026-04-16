@@ -50,7 +50,8 @@ impl TaskBlock for RunVerifyGates {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let retry_count = trigger.payload_u64_or("retry_count", 0);
+        let retry_count =
+            payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
 
         let workflow = WorkflowType::from_payload(&payload);
 

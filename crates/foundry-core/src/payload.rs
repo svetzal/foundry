@@ -9,7 +9,7 @@
 //! Constructing an event payload:
 //! ```rust,ignore
 //! let payload = GreetingComposedPayload { greeting: "Hello, world!".to_string() };
-//! let event = trigger.with_payload(EventType::GreetingComposed, payload)?;
+//! let event = trigger.with_payload(EventType::GreetingComposed, &payload)?;
 //! ```
 //!
 //! Reading a typed payload from an incoming trigger:
@@ -700,5 +700,87 @@ mod tests {
         assert_eq!(json["loop_context"]["strategic"]["iteration"], 1);
         assert_eq!(json["actions"]["maintain"], true);
         assert!(json.get("context").is_none(), "context should not appear as a key");
+    }
+
+    #[test]
+    fn vulnerability_detected_payload_round_trips() {
+        let p = VulnerabilityDetectedPayload {
+            cve: "CVE-2024-1234".to_string(),
+            vulnerable: true,
+            dirty: false,
+            package: "openssl".to_string(),
+            severity: "high".to_string(),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["cve"], "CVE-2024-1234");
+        assert_eq!(json["vulnerable"], true);
+        assert_eq!(json["dirty"], false);
+        assert_eq!(json["package"], "openssl");
+        assert_eq!(json["severity"], "high");
+        let p2: VulnerabilityDetectedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p2.cve, "CVE-2024-1234");
+        assert_eq!(p2.severity, "high");
+    }
+
+    #[test]
+    fn main_branch_audited_payload_round_trips() {
+        let p = MainBranchAuditedPayload {
+            project: "my-project".to_string(),
+            cve: "CVE-2024-5678".to_string(),
+            vulnerable: true,
+            dirty: true,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["project"], "my-project");
+        assert_eq!(json["cve"], "CVE-2024-5678");
+        assert_eq!(json["vulnerable"], true);
+        assert_eq!(json["dirty"], true);
+        let p2: MainBranchAuditedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p2.project, "my-project");
+        assert_eq!(p2.dirty, true);
+    }
+
+    #[test]
+    fn greet_requested_payload_optional_name_round_trips() {
+        let with_name = GreetRequestedPayload {
+            name: Some("Alice".to_string()),
+        };
+        let json = serde_json::to_value(&with_name).unwrap();
+        assert_eq!(json["name"], "Alice");
+        let restored: GreetRequestedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.name.as_deref(), Some("Alice"));
+
+        let without_name = GreetRequestedPayload { name: None };
+        let json = serde_json::to_value(&without_name).unwrap();
+        assert!(json.get("name").is_none(), "name must be absent when None");
+    }
+
+    #[test]
+    fn iteration_requested_payload_flattens_chain() {
+        let chain = ChainContext {
+            actions: Some(serde_json::json!({"maintain": true})),
+            ..ChainContext::default()
+        };
+        let p = IterationRequestedPayload {
+            project: "my-project".to_string(),
+            workflow: "iterate".to_string(),
+            strategic: Some(true),
+            max_iterations: Some(3),
+            strategic_prompt: None,
+            chain,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["project"], "my-project");
+        assert_eq!(json["workflow"], "iterate");
+        assert_eq!(json["strategic"], true);
+        assert_eq!(json["max_iterations"], 3);
+        assert!(json.get("strategic_prompt").is_none());
+        // Chain flattened: actions at top level
+        assert_eq!(json["actions"]["maintain"], true);
+        assert!(json.get("chain").is_none(), "chain must not appear as a key");
+        let p2: IterationRequestedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p2.project, "my-project");
+        assert_eq!(p2.strategic, Some(true));
+        assert_eq!(p2.chain.actions.unwrap()["maintain"], true);
     }
 }

@@ -22,7 +22,11 @@ impl TaskBlock for ComposeGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let name = trigger.payload_str_or("name", "world");
+        let name = trigger
+            .payload
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("world");
         let greeting = format!("Hello, {name}!");
 
         tracing::info!(%greeting, "composed greeting");
@@ -60,7 +64,12 @@ impl TaskBlock for DeliverGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let greeting = trigger.payload_str_or("greeting", "(no greeting)").to_string();
+        let greeting = trigger
+            .payload
+            .get("greeting")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(no greeting)")
+            .to_string();
 
         tracing::info!(%greeting, "delivering greeting");
 
@@ -82,13 +91,18 @@ impl TaskBlock for DeliverGreeting {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let greeting = trigger.payload_str_or("greeting", "(no greeting)").to_string();
+        let greeting = trigger
+            .payload
+            .get("greeting")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(no greeting)")
+            .to_string();
         let payload = Event::serialize_payload(&GreetingDeliveredPayload {
             delivered: true,
             greeting,
             dry_run: Some(true),
         })
-        .unwrap_or_else(|_| serde_json::json!({}));
+        .expect("GreetingDeliveredPayload is infallibly serializable");
         vec![Event::new(
             EventType::GreetingDelivered,
             trigger.project.clone(),

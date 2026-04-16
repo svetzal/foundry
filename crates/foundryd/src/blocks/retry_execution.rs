@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
+use foundry_core::payload::RetryRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -36,13 +37,15 @@ impl TaskBlock for RetryExecution {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let p = trigger
+            .parse_payload::<RetryRequestedPayload>()
+            .expect("dry_run_events called with invalid RetryRequested payload");
         let workflow = WorkflowType::from_payload(&trigger.payload);
-        let retry_count = trigger.payload_u64_or("retry_count", 1);
 
         let mut payload = serde_json::json!({
             "project": trigger.project,
             "workflow": workflow,
-            "retry_count": retry_count,
+            "retry_count": p.retry_count,
             "success": true,
             "dry_run": true,
         });
@@ -68,13 +71,14 @@ impl TaskBlock for RetryExecution {
 
         let workflow = WorkflowType::from_payload(&payload);
 
-        let retry_count = trigger.payload_u64_or("retry_count", 1);
+        let p = match trigger.parse_payload::<RetryRequestedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
-        let failure_context = trigger
-            .payload_str_or("failure_context", "no failure context available")
-            .to_string();
-
-        let prior_output = trigger.payload_str_or("prior_execution_output", "").to_string();
+        let retry_count = p.retry_count;
+        let failure_context = p.failure_context.clone();
+        let prior_output = p.prior_execution_output.unwrap_or_default();
 
         let entry = match super::require_project(&self.registry, &project) {
             Ok(e) => e,

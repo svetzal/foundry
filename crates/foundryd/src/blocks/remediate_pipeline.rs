@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::PipelineCheckedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -45,8 +46,10 @@ impl TaskBlock for RemediatePipeline {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: only remediate when failing.
-        let passing = trigger.payload_bool_or("passing", true);
-        if passing {
+        let p = trigger
+            .parse_payload::<PipelineCheckedPayload>()
+            .expect("dry_run_events called with invalid PipelineChecked payload");
+        if p.passing {
             return vec![];
         }
 
@@ -71,17 +74,20 @@ impl TaskBlock for RemediatePipeline {
         let throttle = trigger.throttle;
 
         // Self-filter: only remediate when pipeline is failing.
-        let passing = trigger.payload_bool_or("passing", true);
+        let p = match trigger.parse_payload::<PipelineCheckedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
-        if passing {
+        if p.passing {
             tracing::info!("pipeline is passing, no remediation needed");
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Pipeline is passing, no remediation needed", vec![]))
             });
         }
 
-        let failure_logs = trigger.payload_str_or("failure_logs", "").to_string();
-        let run_name = trigger.payload_str_or("run_name", "unknown").to_string();
+        let failure_logs = p.failure_logs.unwrap_or_default();
+        let run_name = p.run_name.clone();
 
         let entry = match super::require_project(&self.registry, &project) {
             Ok(e) => e,

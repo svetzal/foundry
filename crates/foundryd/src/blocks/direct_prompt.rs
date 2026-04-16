@@ -46,7 +46,8 @@ impl TaskBlock for DirectPrompt {
             });
         }
 
-        let all_passed = trigger.payload_bool_or("all_passed", false);
+        let all_passed =
+            payload.get("all_passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
         if !all_passed {
             return Box::pin(async {

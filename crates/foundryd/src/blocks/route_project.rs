@@ -30,7 +30,12 @@ impl TaskBlock for RouteProjectWorkflow {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let status = trigger.payload_str_or("status", "").to_string();
+        let status = trigger
+            .payload
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
         let iterate = trigger
             .payload

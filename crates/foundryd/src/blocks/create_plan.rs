@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -47,7 +47,11 @@ impl TaskBlock for CreatePlan {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only create plan for accepted triages
-        let accepted = trigger.payload_bool_or("accepted", false);
+        let accepted = trigger
+            .payload
+            .get("accepted")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         if !accepted {
             return Box::pin(async {
@@ -64,9 +68,14 @@ impl TaskBlock for CreatePlan {
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
-            let principle = payload.str_or("principle", "unknown");
-            let category = payload.str_or("category", "unknown");
-            let assessment = payload.str_or("assessment", "");
+            let principle = payload
+                .get("principle")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let category =
+                payload.get("category").and_then(serde_json::Value::as_str).unwrap_or("unknown");
+            let assessment =
+                payload.get("assessment").and_then(serde_json::Value::as_str).unwrap_or("");
 
             let prompt = format!(
                 "You are creating a correction plan for project '{project}'.\n\n\

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_payload_fields;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -95,7 +95,7 @@ fn handle_assessment_completed(
         .unwrap_or_else(|| serde_json::json!({"strategic": {"iteration": 0, "max": 5}}));
 
     let area = &areas[0];
-    let area_name = area.str_or("area", "unknown");
+    let area_name = area.get("area").and_then(serde_json::Value::as_str).unwrap_or("unknown");
     tracing::info!(
         project = %project,
         area = %area_name,
@@ -146,7 +146,8 @@ async fn handle_inner_completed(
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(5);
 
-    let inner_success = payload.bool_or("success", false);
+    let inner_success =
+        payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
     // Max iterations reached — complete the loop
     if iteration >= max {
@@ -277,8 +278,10 @@ async fn assess_continue(
         Ok(r) if r.success => {
             let trimmed = r.stdout.trim();
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                let should_continue = parsed.bool_or("continue", false);
-                let reason = parsed.str_or("reason", "no reason");
+                let should_continue =
+                    parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let reason =
+                    parsed.get("reason").and_then(serde_json::Value::as_str).unwrap_or("no reason");
                 tracing::info!(
                     project = %project,
                     should_continue = should_continue,
@@ -293,7 +296,10 @@ async fn assess_continue(
                     if let Ok(parsed) =
                         serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
                     {
-                        return parsed.bool_or("continue", false);
+                        return parsed
+                            .get("continue")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
                     }
                 }
             }

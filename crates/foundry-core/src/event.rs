@@ -117,6 +117,24 @@ impl Event {
             .map_err(|e| anyhow::anyhow!("failed to serialize payload: {e}"))
     }
 
+    /// Construct a new event derived from this event's `project` and `throttle`,
+    /// with a different event type and a typed payload.
+    ///
+    /// Convenience over calling
+    /// `Event::new(ty, self.project.clone(), self.throttle, Event::serialize_payload(&payload)?)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if serialization fails (extremely rare in practice).
+    pub fn with_payload<T: Serialize>(
+        &self,
+        event_type: EventType,
+        payload: &T,
+    ) -> anyhow::Result<Event> {
+        let payload = Self::serialize_payload(payload)?;
+        Ok(Event::new(event_type, self.project.clone(), self.throttle, payload))
+    }
+
     fn compute_id(
         event_type: &EventType,
         project: &str,

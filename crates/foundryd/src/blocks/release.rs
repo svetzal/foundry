@@ -159,14 +159,23 @@ impl VulnReleaseAdapter {
 
 impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
     fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
-        let dirty = trigger.payload_bool_or("dirty", true);
+        let dirty = trigger
+            .payload
+            .get("dirty")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
         if dirty {
             tracing::info!("main branch is dirty, skipping release");
             return None;
         }
 
         let project = &trigger.project;
-        let cve = trigger.payload_str_or("cve", "unknown").to_string();
+        let cve = trigger
+            .payload
+            .get("cve")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
 
         let entry = self.registry.find_project(project)?;
         let project_path = PathBuf::from(&entry.path);
@@ -218,7 +227,11 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
         }
 
         let project_path = PathBuf::from(&entry.path);
-        let bump = trigger.payload_str("bump").map(String::from);
+        let bump = trigger
+            .payload
+            .get("bump")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
 
         let bump_instruction = match &bump {
             Some(b) => format!("The version bump type is {b}."),
@@ -361,7 +374,12 @@ impl VulnReleaseMapper {
     pub fn new() -> Self {
         Self {
             inner: ReleaseOutputMapper::new("patch").with_extra_payload(|trigger| {
-                let cve = trigger.payload_str_or("cve", "unknown").to_string();
+                let cve = trigger
+                    .payload
+                    .get("cve")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
                 serde_json::json!({ "cve": cve })
             }),
         }
@@ -375,7 +393,11 @@ impl OutputMapper<ReleaseOutput> for VulnReleaseMapper {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: skip when dirty.
-        let dirty = trigger.payload_bool_or("dirty", true);
+        let dirty = trigger
+            .payload
+            .get("dirty")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
         if dirty {
             return vec![];
         }

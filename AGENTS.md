@@ -79,6 +79,43 @@ Rules:
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
+## Payload Conventions
+
+Task blocks in `foundryd` use typed `*Payload` structs from `foundry_core::payload` rather than untyped `serde_json` access.
+
+**Reading a trigger payload:**
+
+```rust
+let p = trigger.parse_payload::<PreflightCompletedPayload>()?;
+let all_passed = p.all_passed;
+```
+
+Use `.ok()` when parsing is best-effort (e.g., a block that sinks on multiple event types):
+
+```rust
+let strategic = trigger.parse_payload::<IterationRequestedPayload>().ok().and_then(|p| p.strategic).unwrap_or(false);
+```
+
+**Writing an output payload:**
+
+```rust
+let event_payload = Event::serialize_payload(&MyPayload { ... })?;
+Event::new(EventType::SomethingCompleted, project, throttle, event_payload)
+```
+
+Or use the convenience method when deriving from the trigger event:
+
+```rust
+trigger.with_payload(EventType::SomethingCompleted, &MyPayload { ... })?
+```
+
+**Rules:**
+
+- Do NOT invent new `*Payload` structs without a clear typed consumer — if you only need one or two fields, use direct `.get().and_then().unwrap_or()` Value access.
+- Do NOT use `PayloadExt` (`.str_or`, `.bool_or`, etc.) or `Event::payload_str_or` etc. in task block production code. Those helpers are reserved for `foundry-cli` display logic.
+- Wire format must remain byte-for-byte identical — typed structs serialize to the same JSON shape as the untyped `json!({})` they replace.
+- `dry_run_events` serialization failures must use `.expect("... is infallibly serializable")`, not `.unwrap_or_else(|_| json!({}))`.
+
 ## Key Conventions
 
 - Edition 2024, Rust 1.85+, `unsafe_code` is denied

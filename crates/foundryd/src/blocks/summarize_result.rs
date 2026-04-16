@@ -60,7 +60,7 @@ impl TaskBlock for SummarizeResult {
         }
 
         // Self-filter: only summarize successful completions
-        let success = trigger.payload_bool_or("success", false);
+        let success = payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
         if !success {
             return Box::pin(async {

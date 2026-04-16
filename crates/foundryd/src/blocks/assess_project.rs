@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType, PayloadExt};
+use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -49,7 +49,8 @@ impl TaskBlock for AssessProject {
 
         // Self-filter: only run for iterate workflow with passed preflight
         let workflow = WorkflowType::from_payload(&payload);
-        let all_passed = trigger.payload_bool_or("all_passed", false);
+        let all_passed =
+            payload.get("all_passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
         if workflow != WorkflowType::Iterate || !all_passed {
             return Box::pin(async {
@@ -208,10 +209,22 @@ fn parse_assessment(output: &str) -> (i64, String, String, String) {
     // Try to find JSON in the output (agent may include extra text)
     let json_str = extract_json(output);
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-        let severity = json.i64_or("severity", 5);
-        let principle = json.str_or("principle", "unknown").to_string();
-        let category = json.str_or("category", "conventions").to_string();
-        let assessment = json.str_or("assessment", "").to_string();
+        let severity = json.get("severity").and_then(serde_json::Value::as_i64).unwrap_or(5);
+        let principle = json
+            .get("principle")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let category = json
+            .get("category")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("conventions")
+            .to_string();
+        let assessment = json
+            .get("assessment")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
         (severity, principle, category, assessment)
     } else {
         // Fallback: use first line as assessment

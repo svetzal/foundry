@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::VulnerabilityDetectedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -132,9 +133,25 @@ impl AuditReleaseTag {
         // Payload fallback fields used when the project is not in the registry
         // or when no release tags exist — preserves backward compatibility with
         // integration tests that drive the block via synthetic payloads.
-        let payload_cve = trigger.payload_str_or("cve", "unknown").to_string();
-        let payload_vulnerable = trigger.payload_bool_or("vulnerable", true);
-        let payload_dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
+        let (payload_cve, payload_vulnerable, payload_dirty) =
+            if let Ok(p) = trigger.parse_payload::<VulnerabilityDetectedPayload>() {
+                (p.cve, p.vulnerable, Some(p.dirty))
+            } else {
+                // Synthetic payload without all fields — fall back to direct access.
+                let cve = trigger
+                    .payload
+                    .get("cve")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let vulnerable = trigger
+                    .payload
+                    .get("vulnerable")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                let dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
+                (cve, vulnerable, dirty)
+            };
 
         // Look up the project entry in the registry.
         let entry = self.registry.find_project(&project).cloned();
@@ -351,7 +368,12 @@ impl TaskBlock for AuditMainBranch {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let vulnerable = trigger.payload_bool_or("vulnerable", false);
+        // Use direct Value access — test payloads may omit required typed fields.
+        let vulnerable = trigger
+            .payload
+            .get("vulnerable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
 
         if !vulnerable {
             tracing::info!("release tag not vulnerable, skipping main branch audit");
@@ -362,8 +384,17 @@ impl TaskBlock for AuditMainBranch {
 
         // Payload fallback values — used when the project is not in the registry,
         // or when the scanner cannot run (no lockfile / tooling not installed).
-        let cve_from_payload = trigger.payload_str_or("cve", "unknown").to_string();
-        let dirty_from_payload = trigger.payload_bool_or("dirty", true);
+        let cve_from_payload = trigger
+            .payload
+            .get("cve")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let dirty_from_payload = trigger
+            .payload
+            .get("dirty")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
 
         // Look up the project entry in the registry.
         let entry = self.registry.find_project(&project).cloned();

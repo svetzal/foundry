@@ -43,7 +43,10 @@ impl TaskBlock for CheckCharter {
         let event_type = trigger.event_type.clone();
 
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
-        let strategic = trigger.payload_bool_or("strategic", false);
+        // Use direct Value access — this block sinks on multiple event types with
+        // different payload shapes (IterationRequested and PromptExecutionRequested).
+        let strategic =
+            payload.get("strategic").and_then(serde_json::Value::as_bool).unwrap_or(false);
         if strategic {
             return Box::pin(async {
                 Ok(TaskBlockResult::success(
