@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
+use foundry_core::payload::IterationRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -43,10 +44,10 @@ impl TaskBlock for CheckCharter {
         let event_type = trigger.event_type.clone();
 
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
-        // Use direct Value access — this block sinks on multiple event types with
-        // different payload shapes (IterationRequested and PromptExecutionRequested).
-        let strategic =
-            payload.get("strategic").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        // Use .ok() — this block sinks on multiple event types with different payload
+        // shapes (IterationRequested and PromptExecutionRequested).
+        let iter_payload = trigger.parse_payload::<IterationRequestedPayload>().ok();
+        let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
         if strategic {
             return Box::pin(async {
                 Ok(TaskBlockResult::success(
@@ -55,6 +56,15 @@ impl TaskBlock for CheckCharter {
                 ))
             });
         }
+
+        // Derive workflow from typed payload if available; fall back to event type.
+        let workflow = iter_payload.as_ref().map_or_else(
+            || match event_type {
+                EventType::PromptExecutionRequested => "prompt".to_string(),
+                _ => "iterate".to_string(),
+            },
+            |p| p.workflow.clone(),
+        );
 
         let entry = match super::require_project(&self.registry, &project) {
             Ok(e) => e,
@@ -78,13 +88,6 @@ impl TaskBlock for CheckCharter {
                 "sources": result.sources,
                 "guidance": result.guidance,
             });
-            // Derive workflow from trigger event type, with payload override.
-            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
-                match event_type {
-                    EventType::PromptExecutionRequested => "prompt",
-                    _ => "iterate",
-                },
-            );
             event_payload["workflow"] = serde_json::json!(workflow);
             forward_chain_context(&payload, &mut event_payload);
 

@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::IterationRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -51,15 +52,20 @@ impl TaskBlock for StrategicAssessor {
 
         // Self-filter: only run when strategic mode is requested.
         // When strategic=false or absent, the existing CheckCharter path handles it.
-        // Use direct Value access — this block may receive minimal payloads in tests.
-        let strategic =
-            payload.get("strategic").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let p = match trigger.parse_payload::<IterationRequestedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let strategic = p.strategic.unwrap_or(false);
 
         if !strategic {
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Skipped: not a strategic iteration", vec![]))
             });
         }
+
+        let max_iterations = p.max_iterations.unwrap_or(5);
+        let strategic_prompt = p.strategic_prompt.clone();
 
         let entry = match super::require_project(&self.registry, &project) {
             Ok(e) => e,
@@ -70,14 +76,6 @@ impl TaskBlock for StrategicAssessor {
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
-
-            let max_iterations =
-                payload.get("max_iterations").and_then(serde_json::Value::as_u64).unwrap_or(5);
-
-            let strategic_prompt = payload
-                .get("strategic_prompt")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
 
             let prompt = build_strategic_prompt(
                 &project,
@@ -271,7 +269,7 @@ mod tests {
             EventType::IterationRequested,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({}),
+            serde_json::json!({"project": "my-project", "workflow": "iterate"}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -294,7 +292,7 @@ mod tests {
             EventType::IterationRequested,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"strategic": true}),
+            serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true}),
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -325,7 +323,7 @@ mod tests {
             EventType::IterationRequested,
             "my-project".to_string(),
             Throttle::Full,
-            serde_json::json!({"strategic": true, "actions": {"maintain": true}}),
+            serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true, "actions": {"maintain": true}}),
         );
 
         let result = block.execute(&trigger).await.unwrap();

@@ -191,9 +191,9 @@ fn build_retry_result(
     let mut event_payload = serde_json::json!({
         "project": project,
         "workflow": workflow,
-        "retry_count": retry_count,
         "success": success,
         "summary": summary,
+        "retry_count": retry_count,
     });
     if let Some(ref output) = raw_output {
         let lines: Vec<&str> = output.lines().collect();

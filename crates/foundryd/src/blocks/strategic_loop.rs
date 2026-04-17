@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_payload_fields;
+use foundry_core::payload::{InnerIterationCompletedPayload, StrategicAssessmentCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -55,16 +56,36 @@ impl TaskBlock for StrategicLoopController {
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
+        // Parse typed payload before entering the async block.
+        let assessment_payload = if event_type == EventType::StrategicAssessmentCompleted {
+            match trigger.parse_payload::<StrategicAssessmentCompletedPayload>() {
+                Ok(p) => Some(p),
+                Err(e) => return Box::pin(async move { Err(e) }),
+            }
+        } else {
+            None
+        };
+        let inner_payload = if event_type == EventType::InnerIterationCompleted {
+            match trigger.parse_payload::<InnerIterationCompletedPayload>() {
+                Ok(p) => Some(p),
+                Err(e) => return Box::pin(async move { Err(e) }),
+            }
+        } else {
+            None
+        };
+
         let entry = self.registry.find_project(&project).cloned();
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
             match event_type {
                 EventType::StrategicAssessmentCompleted => {
-                    Ok(handle_assessment_completed(&project, throttle, &payload))
+                    let p = assessment_payload.expect("parsed above");
+                    Ok(handle_assessment_completed(&project, throttle, &payload, &p))
                 }
                 EventType::InnerIterationCompleted => {
-                    handle_inner_completed(&project, throttle, &payload, entry, agent).await
+                    let p = inner_payload.expect("parsed above");
+                    handle_inner_completed(&project, throttle, &payload, &p, entry, agent).await
                 }
                 _ => Ok(TaskBlockResult::success("Skipped: unexpected event type", vec![])),
             }
@@ -77,22 +98,16 @@ fn handle_assessment_completed(
     project: &str,
     throttle: foundry_core::throttle::Throttle,
     payload: &serde_json::Value,
+    p: &StrategicAssessmentCompletedPayload,
 ) -> TaskBlockResult {
-    let areas = payload
-        .get("areas")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let areas = p.areas.clone();
 
     if areas.is_empty() {
         tracing::info!(project = %project, "no areas to improve, completing");
         return complete_loop(project, throttle, payload);
     }
 
-    let loop_context = payload
-        .get("loop_context")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({"strategic": {"iteration": 0, "max": 5}}));
+    let loop_context = p.loop_context.clone();
 
     let area = &areas[0];
     let area_name = area.get("area").and_then(serde_json::Value::as_str).unwrap_or("unknown");
@@ -129,13 +144,11 @@ async fn handle_inner_completed(
     project: &str,
     throttle: foundry_core::throttle::Throttle,
     payload: &serde_json::Value,
+    p: &InnerIterationCompletedPayload,
     entry: Option<foundry_core::registry::ProjectEntry>,
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
-    let loop_context = payload
-        .get("loop_context")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({"strategic": {"iteration": 1, "max": 5}}));
+    let loop_context = p.loop_context.clone();
 
     let iteration = loop_context["strategic"]
         .get("iteration")
@@ -146,8 +159,7 @@ async fn handle_inner_completed(
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(5);
 
-    let inner_success =
-        payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let inner_success = p.success;
 
     // Max iterations reached — complete the loop
     if iteration >= max {
@@ -419,6 +431,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "loop_context": {
                     "strategic": { "iteration": 5, "max": 5 }
                 },
@@ -444,6 +458,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": false,
+                "summary": "",
+                "workflow": "iterate",
                 "loop_context": {
                     "strategic": { "iteration": 1, "max": 5 }
                 },
@@ -472,6 +488,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "loop_context": {
                     "strategic": { "iteration": 1, "max": 5 }
                 },
@@ -502,6 +520,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "loop_context": {
                     "strategic": { "iteration": 1, "max": 5 }
                 },
@@ -529,6 +549,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "actions": {"maintain": true},
                 "loop_context": {
                     "strategic": { "iteration": 1, "max": 5 }
@@ -552,6 +574,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "actions": {"maintain": true},
                 "loop_context": {
                     "strategic": { "iteration": 5, "max": 5 }

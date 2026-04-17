@@ -276,6 +276,8 @@ pub struct ExecutionCompletedPayload {
     pub execution_output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<u64>,
     #[serde(flatten)]
     pub context: LoopContext,
 }
@@ -326,6 +328,7 @@ pub struct ProjectCompletedPayload {
     pub project: String,
     pub success: bool,
     pub summary: String,
+    #[serde(default)]
     pub workflow: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<serde_json::Value>,
@@ -500,7 +503,9 @@ pub struct StrategicAssessmentCompletedPayload {
 pub struct InnerIterationCompletedPayload {
     pub project: String,
     pub success: bool,
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub workflow: String,
     pub loop_context: serde_json::Value,
 }
@@ -694,6 +699,7 @@ mod tests {
             summary: "done".to_string(),
             execution_output: None,
             dry_run: None,
+            retry_count: None,
             context,
         };
         let json = serde_json::to_value(&p).unwrap();

@@ -5,6 +5,7 @@ use std::time::Duration;
 use foundry_core::event::{Event, EventType};
 use foundry_core::gates::GateDefinition;
 use foundry_core::loop_context::forward_chain_context;
+use foundry_core::payload::GateResolutionCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -52,6 +53,10 @@ impl TaskBlock for RunPreflightGates {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
+        let p = match trigger.parse_payload::<GateResolutionCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let workflow = WorkflowType::from_payload(&payload);
 
         let registry = Arc::clone(&self.registry);
@@ -83,8 +88,8 @@ impl TaskBlock for RunPreflightGates {
                 ));
             }
 
-            // Parse gate definitions from payload
-            let gates = parse_gates_from_payload(&payload);
+            // Parse gate definitions from typed payload
+            let gates = parse_gates_from_value(p.gates.as_array());
 
             // No gates defined — emit success
             if gates.is_empty() {
@@ -145,9 +150,9 @@ fn build_preflight_result(
     )
 }
 
-/// Parse gate definitions from a `GateResolutionCompleted` event payload.
-fn parse_gates_from_payload(payload: &serde_json::Value) -> Vec<GateDefinition> {
-    let Some(gates_array) = payload.get("gates").and_then(serde_json::Value::as_array) else {
+/// Parse gate definitions from a gates array value.
+fn parse_gates_from_value(gates_array: Option<&Vec<serde_json::Value>>) -> Vec<GateDefinition> {
+    let Some(gates_array) = gates_array else {
         return vec![];
     };
 

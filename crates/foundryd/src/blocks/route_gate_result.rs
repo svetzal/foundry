@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::{forward_chain_context, has_loop_context};
+use foundry_core::payload::GateVerificationCompletedPayload;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
@@ -42,13 +43,14 @@ impl TaskBlock for RouteGateResult {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
+        let p = match trigger.parse_payload::<GateVerificationCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let required_passed = p.required_passed;
+        let retry_count = p.retry_count;
+
         Box::pin(async move {
-            let required_passed = payload
-                .get("required_passed")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let retry_count =
-                payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
             let workflow = WorkflowType::from_payload(&payload);
             let in_loop = has_loop_context(&payload);
 

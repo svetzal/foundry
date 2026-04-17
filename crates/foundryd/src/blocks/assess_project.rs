@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
+use foundry_core::payload::PreflightCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -48,9 +49,12 @@ impl TaskBlock for AssessProject {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only run for iterate workflow with passed preflight
+        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let workflow = WorkflowType::from_payload(&payload);
-        let all_passed =
-            payload.get("all_passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let all_passed = p.all_passed;
 
         if workflow != WorkflowType::Iterate || !all_passed {
             return Box::pin(async {
@@ -268,6 +272,7 @@ mod tests {
                 "workflow": "iterate",
                 "all_passed": true,
                 "required_passed": true,
+                "results": [],
             }),
         )
     }
@@ -311,6 +316,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "maintain",
                 "all_passed": true,
+                "required_passed": true,
+                "results": [],
             }),
         );
 
@@ -334,6 +341,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "iterate",
                 "all_passed": false,
+                "required_passed": false,
+                "results": [],
             }),
         );
 

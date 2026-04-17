@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::ProjectValidationCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -164,13 +165,18 @@ impl TaskBlock for CleanupBranches {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
         let project = trigger.project.clone();
-        let payload = trigger.payload.clone();
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
+        let p = match trigger.parse_payload::<ProjectValidationCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let status_ok = p.status == "ok";
+
         Box::pin(async move {
             // Self-filter: only act on successful validations.
-            if payload.get("status").and_then(serde_json::Value::as_str).unwrap_or("") != "ok" {
+            if !status_ok {
                 return Ok(TaskBlockResult::success("Skipped: validation not ok", vec![]));
             }
 
@@ -238,7 +244,7 @@ mod tests {
             EventType::ProjectValidationCompleted,
             project.to_string(),
             Throttle::Full,
-            serde_json::json!({"status": "ok"}),
+            serde_json::json!({"project": project, "status": "ok", "has_gates": true}),
         )
     }
 
@@ -247,7 +253,7 @@ mod tests {
             EventType::ProjectValidationCompleted,
             project.to_string(),
             Throttle::Full,
-            serde_json::json!({"status": "error", "reason": "wrong branch"}),
+            serde_json::json!({"project": project, "status": "error", "has_gates": false}),
         )
     }
 
@@ -256,7 +262,7 @@ mod tests {
             EventType::ProjectValidationCompleted,
             project.to_string(),
             Throttle::Full,
-            serde_json::json!({"status": "skipped"}),
+            serde_json::json!({"project": project, "status": "skipped", "has_gates": false}),
         )
     }
 

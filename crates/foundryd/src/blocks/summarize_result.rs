@@ -3,10 +3,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::loop_context::has_loop_context;
+use foundry_core::payload::ProjectCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-
-use foundry_core::loop_context::has_loop_context;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
@@ -60,7 +60,11 @@ impl TaskBlock for SummarizeResult {
         }
 
         // Self-filter: only summarize successful completions
-        let success = payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let p = match trigger.parse_payload::<ProjectCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let success = p.success;
 
         if !success {
             return Box::pin(async {
@@ -194,6 +198,8 @@ mod tests {
             serde_json::json!({
                 "project": project,
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
             }),
         )
     }
@@ -206,6 +212,8 @@ mod tests {
             serde_json::json!({
                 "project": project,
                 "success": false,
+                "summary": "",
+                "workflow": "iterate",
             }),
         )
     }
@@ -250,6 +258,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "success": true,
+                "summary": "",
+                "workflow": "iterate",
                 "loop_context": { "strategic": { "iteration": 1 } }
             }),
         );

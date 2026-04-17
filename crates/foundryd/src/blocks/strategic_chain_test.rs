@@ -52,6 +52,7 @@ fn strategic_iteration_requested() -> Event {
         Throttle::Full,
         serde_json::json!({
             "project": "test-project",
+            "workflow": "iterate",
             "strategic": true,
             "max_iterations": 2,
         }),
@@ -65,6 +66,7 @@ fn non_strategic_iteration_requested() -> Event {
         Throttle::Full,
         serde_json::json!({
             "project": "test-project",
+            "workflow": "iterate",
             "actions": { "iterate": true, "maintain": false },
         }),
     )
@@ -169,6 +171,7 @@ async fn strategic_loop_stops_at_max_iterations() {
         Throttle::Full,
         serde_json::json!({
             "project": "test-project",
+            "workflow": "iterate",
             "strategic": true,
             "max_iterations": 1,
         }),

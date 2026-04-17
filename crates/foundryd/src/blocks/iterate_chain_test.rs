@@ -30,6 +30,7 @@ fn iteration_requested_event(maintain: bool) -> Event {
         Throttle::Full,
         serde_json::json!({
             "project": "test-project",
+            "workflow": "iterate",
             "actions": { "iterate": true, "maintain": maintain },
         }),
     )

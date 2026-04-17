@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
+use foundry_core::payload::ExecutionCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -50,8 +51,11 @@ impl TaskBlock for RunVerifyGates {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let retry_count =
-            payload.get("retry_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let p = match trigger.parse_payload::<ExecutionCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let retry_count = p.retry_count.unwrap_or(0);
 
         let workflow = WorkflowType::from_payload(&payload);
 
@@ -170,6 +174,8 @@ mod tests {
                 "project": project,
                 "retry_count": retry_count,
                 "workflow": workflow,
+                "success": true,
+                "summary": "",
             }),
         )
     }

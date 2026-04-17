@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_chain_context;
+use foundry_core::payload::TriageCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -47,13 +48,12 @@ impl TaskBlock for CreatePlan {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only create plan for accepted triages
-        let accepted = trigger
-            .payload
-            .get("accepted")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let p = match trigger.parse_payload::<TriageCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
-        if !accepted {
+        if !p.accepted {
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Skipped: triage was rejected", vec![]))
             });
@@ -65,17 +65,16 @@ impl TaskBlock for CreatePlan {
         };
         let agent = Arc::clone(&self.agent);
 
+        let principle = p.principle.clone();
+        let category = p.category.clone();
+        let assessment = p.assessment.clone();
+
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
-            let principle = payload
-                .get("principle")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let category =
-                payload.get("category").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let assessment =
-                payload.get("assessment").and_then(serde_json::Value::as_str).unwrap_or("");
+            let principle = principle.as_str();
+            let category = category.as_str();
+            let assessment = assessment.as_str();
 
             let prompt = format!(
                 "You are creating a correction plan for project '{project}'.\n\n\
@@ -169,6 +168,8 @@ mod tests {
             serde_json::json!({
                 "project": project,
                 "accepted": true,
+                "reason": "violation is significant",
+                "severity": 7,
                 "principle": "DRY",
                 "category": "duplication",
                 "assessment": "Duplicate validation logic.",
@@ -187,6 +188,10 @@ mod tests {
                 "project": project,
                 "accepted": false,
                 "reason": "too trivial",
+                "severity": 2,
+                "principle": "unknown",
+                "category": "conventions",
+                "assessment": "",
                 "workflow": "iterate",
             }),
         )
@@ -271,6 +276,8 @@ mod tests {
             serde_json::json!({
                 "project": "my-project",
                 "accepted": true,
+                "reason": "violation is significant",
+                "severity": 7,
                 "principle": "SRP",
                 "category": "architecture",
                 "assessment": "Too many responsibilities.",

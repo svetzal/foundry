@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::forward_loop_context;
+use foundry_core::payload::PreflightCompletedPayload;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
@@ -46,8 +47,11 @@ impl TaskBlock for DirectPrompt {
             });
         }
 
-        let all_passed =
-            payload.get("all_passed").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let all_passed = p.all_passed;
 
         if !all_passed {
             return Box::pin(async {
@@ -128,6 +132,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "iterate",
                 "all_passed": true,
+                "required_passed": true,
+                "results": [],
             }),
         );
 
@@ -147,6 +153,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "prompt",
                 "all_passed": false,
+                "required_passed": false,
+                "results": [],
                 "prompt": "do something",
             }),
         );
@@ -167,6 +175,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "prompt",
                 "all_passed": true,
+                "required_passed": true,
+                "results": [],
             }),
         );
 
@@ -186,6 +196,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "prompt",
                 "all_passed": true,
+                "required_passed": true,
+                "results": [],
                 "prompt": "Pick the highest priority interaction from et and implement it.",
                 "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
             }),
@@ -215,6 +227,8 @@ mod tests {
                 "project": "my-project",
                 "workflow": "prompt",
                 "all_passed": true,
+                "required_passed": true,
+                "results": [],
                 "prompt": "do the thing",
                 "actions": {"push": true},
             }),
