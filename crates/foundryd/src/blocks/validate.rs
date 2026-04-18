@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::ProjectValidationCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -82,12 +83,19 @@ fn error_result(
     throttle: foundry_core::throttle::Throttle,
     reason: &str,
 ) -> TaskBlockResult {
+    let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
+        project: project.to_string(),
+        status: "error".to_string(),
+        reason: Some(reason.to_string()),
+        ..Default::default()
+    })
+    .expect("ProjectValidationCompletedPayload is infallibly serializable");
     TaskBlockResult {
         events: vec![Event::new(
             EventType::ProjectValidationCompleted,
             project.to_string(),
             throttle,
-            serde_json::json!({"status": "error", "reason": reason}),
+            payload,
         )],
         success: false,
         summary: format!("Validation failed for {project}: {reason}"),
@@ -119,16 +127,20 @@ impl TaskBlock for ValidateProject {
             let Some(entry) = registry.active_projects().into_iter().find(|p| p.name == project)
             else {
                 tracing::info!(%project, "project skipped or not in registry, skipping validation");
+                let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
+                    project: project.clone(),
+                    status: "skipped".to_string(),
+                    reason: Some("project skipped or not in registry".to_string()),
+                    ..Default::default()
+                })
+                .expect("ProjectValidationCompletedPayload is infallibly serializable");
                 return Ok(TaskBlockResult::success(
                     format!("Project {project} skipped"),
                     vec![Event::new(
                         EventType::ProjectValidationCompleted,
                         project.clone(),
                         throttle,
-                        serde_json::json!({
-                            "status": "skipped",
-                            "reason": "project skipped or not in registry"
-                        }),
+                        payload,
                     )],
                 ));
             };
@@ -156,17 +168,24 @@ impl TaskBlock for ValidateProject {
             }
 
             tracing::info!(%project, %has_gates, "project validated successfully");
+            let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
+                project: project.clone(),
+                status: "ok".to_string(),
+                has_gates,
+                actions: Some(
+                    serde_json::to_value(&entry.actions)
+                        .expect("ActionFlags is infallibly serializable"),
+                ),
+                ..Default::default()
+            })
+            .expect("ProjectValidationCompletedPayload is infallibly serializable");
             Ok(TaskBlockResult::success(
                 format!("Project {project} validated"),
                 vec![Event::new(
                     EventType::ProjectValidationCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({
-                        "status": "ok",
-                        "has_gates": has_gates,
-                        "actions": entry.actions,
-                    }),
+                    payload,
                 )],
             ))
         })

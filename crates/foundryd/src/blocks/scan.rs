@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::VulnerabilityDetectedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -63,19 +64,16 @@ impl TaskBlock for ScanDependencies {
                 .vulnerabilities
                 .iter()
                 .map(|vuln| {
-                    let cve = vuln.cve.as_deref().unwrap_or("unknown");
-                    Event::new(
-                        EventType::VulnerabilityDetected,
-                        project.clone(),
-                        throttle,
-                        serde_json::json!({
-                            "cve": cve,
-                            "vulnerable": true,
-                            "dirty": true,
-                            "package": vuln.package,
-                            "severity": vuln.severity,
-                        }),
-                    )
+                    let cve = vuln.cve.as_deref().unwrap_or("unknown").to_string();
+                    let payload = Event::serialize_payload(&VulnerabilityDetectedPayload {
+                        cve,
+                        vulnerable: true,
+                        dirty: true,
+                        package: vuln.package.clone(),
+                        severity: vuln.severity.clone().unwrap_or_default(),
+                    })
+                    .expect("VulnerabilityDetectedPayload is infallibly serializable");
+                    Event::new(EventType::VulnerabilityDetected, project.clone(), throttle, payload)
                 })
                 .collect();
 

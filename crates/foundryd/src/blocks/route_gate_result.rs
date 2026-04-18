@@ -1,8 +1,11 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::{forward_chain_context, has_loop_context};
-use foundry_core::payload::GateVerificationCompletedPayload;
+use foundry_core::loop_context::has_loop_context;
+use foundry_core::payload::{
+    ChainContext, GateVerificationCompletedPayload, MaintenanceRequestedPayload,
+    ProjectCompletedPayload, RetryRequestedPayload,
+};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
@@ -98,18 +101,23 @@ fn handle_gates_passed(
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
     tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
-    let mut event_payload = serde_json::json!({
-        "project": project,
-        "success": true,
-        "summary": "all required gates passed",
-    });
-    forward_chain_context(payload, &mut event_payload);
+
+    // Carry loop_context forward into the completion event so downstream blocks can see it
+    let loop_context = payload.get("loop_context").cloned();
+    let completion_payload = Event::serialize_payload(&ProjectCompletedPayload {
+        project: project.to_string(),
+        success: true,
+        summary: "all required gates passed".to_string(),
+        workflow: workflow.to_string(),
+        loop_context,
+    })
+    .expect("ProjectCompletedPayload is infallibly serializable");
 
     let mut events = vec![Event::new(
         completion_event_type,
         project.to_string(),
         throttle,
-        event_payload,
+        completion_payload,
     )];
 
     // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
@@ -123,11 +131,17 @@ fn handle_gates_passed(
             .unwrap_or(false);
         if maintain {
             tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
+            let maintenance_payload = Event::serialize_payload(&MaintenanceRequestedPayload {
+                project: project.to_string(),
+                workflow: WorkflowType::Maintain.to_string(),
+                chain: ChainContext::default(),
+            })
+            .expect("MaintenanceRequestedPayload is infallibly serializable");
             events.push(Event::new(
                 EventType::MaintenanceRequested,
                 project.to_string(),
                 throttle,
-                serde_json::json!({ "project": project }),
+                maintenance_payload,
             ));
         }
     }
@@ -152,16 +166,20 @@ fn handle_retry_or_exhaustion(
             "gates failed, requesting retry"
         );
 
-        let mut event_payload = serde_json::json!({
-            "project": project,
-            "workflow": workflow,
-            "retry_count": retry_count + 1,
-            "failure_context": failure_context,
-        });
-        if let Some(exec_output) = payload.get("execution_output") {
-            event_payload["prior_execution_output"] = exec_output.clone();
-        }
-        forward_chain_context(payload, &mut event_payload);
+        let prior_execution_output = payload
+            .get("execution_output")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let context = foundry_core::payload::LoopContext::extract_from(payload);
+        let event_payload = Event::serialize_payload(&RetryRequestedPayload {
+            project: project.to_string(),
+            workflow: workflow.to_string(),
+            retry_count: retry_count + 1,
+            failure_context,
+            prior_execution_output,
+            context,
+        })
+        .expect("RetryRequestedPayload is infallibly serializable");
 
         return TaskBlockResult {
             events: vec![Event::new(
@@ -188,12 +206,15 @@ fn handle_retry_or_exhaustion(
         "gates failed, retries exhausted"
     );
 
-    let mut event_payload = serde_json::json!({
-        "project": project,
-        "success": false,
-        "summary": format!("gates failed after {retry_count} retries"),
-    });
-    forward_chain_context(payload, &mut event_payload);
+    let loop_context = payload.get("loop_context").cloned();
+    let event_payload = Event::serialize_payload(&ProjectCompletedPayload {
+        project: project.to_string(),
+        success: false,
+        summary: format!("gates failed after {retry_count} retries"),
+        workflow: workflow.to_string(),
+        loop_context,
+    })
+    .expect("ProjectCompletedPayload is infallibly serializable");
 
     TaskBlockResult {
         events: vec![Event::new(

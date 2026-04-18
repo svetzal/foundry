@@ -1,7 +1,9 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{GreetingComposedPayload, GreetingDeliveredPayload};
+use foundry_core::payload::{
+    GreetRequestedPayload, GreetingComposedPayload, GreetingDeliveredPayload,
+};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Composes a greeting message from a greet request.
@@ -22,11 +24,8 @@ impl TaskBlock for ComposeGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let name = trigger
-            .payload
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("world");
+        let name_owned = trigger.parse_payload::<GreetRequestedPayload>().ok().and_then(|p| p.name);
+        let name = name_owned.as_deref().unwrap_or("world");
         let greeting = format!("Hello, {name}!");
 
         tracing::info!(%greeting, "composed greeting");
@@ -64,12 +63,10 @@ impl TaskBlock for DeliverGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let greeting = trigger
-            .payload
-            .get("greeting")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("(no greeting)")
-            .to_string();
+        let greeting = match trigger.parse_payload::<GreetingComposedPayload>() {
+            Ok(p) => p.greeting,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
         tracing::info!(%greeting, "delivering greeting");
 
@@ -92,11 +89,8 @@ impl TaskBlock for DeliverGreeting {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         let greeting = trigger
-            .payload
-            .get("greeting")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("(no greeting)")
-            .to_string();
+            .parse_payload::<GreetingComposedPayload>()
+            .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
         let payload = Event::serialize_payload(&GreetingDeliveredPayload {
             delivered: true,
             greeting,

@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::gates::GateDefinition;
-use foundry_core::loop_context::forward_chain_context;
-use foundry_core::payload::GateResolutionCompletedPayload;
+use foundry_core::payload::{
+    ChainContext, GateResolutionCompletedPayload, PreflightCompletedPayload,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -63,19 +64,21 @@ impl TaskBlock for RunPreflightGates {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
+            let chain = ChainContext::extract_from(&payload);
+
             // Maintain workflows skip preflight; iterate and validate run gates
             if workflow != WorkflowType::Iterate && workflow != WorkflowType::Validate {
                 tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate/validate workflow");
 
-                let mut event_payload = serde_json::json!({
-                    "project": project,
-                    "workflow": workflow,
-                    "all_passed": true,
-                    "required_passed": true,
-                    "skipped": true,
-                    "results": [],
-                });
-                forward_chain_context(&payload, &mut event_payload);
+                let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
+                    project: project.clone(),
+                    workflow: workflow.to_string(),
+                    all_passed: true,
+                    required_passed: true,
+                    skipped: Some(true),
+                    results: vec![],
+                    chain,
+                })?;
 
                 return Ok(TaskBlockResult::success(
                     format!("{project}: preflight skipped for {workflow} workflow"),
@@ -95,14 +98,15 @@ impl TaskBlock for RunPreflightGates {
             if gates.is_empty() {
                 tracing::info!(project = %project, "no gates defined, preflight passes");
 
-                let mut event_payload = serde_json::json!({
-                    "project": project,
-                    "workflow": workflow,
-                    "all_passed": true,
-                    "required_passed": true,
-                    "results": [],
-                });
-                forward_chain_context(&payload, &mut event_payload);
+                let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
+                    project: project.clone(),
+                    workflow: workflow.to_string(),
+                    all_passed: true,
+                    required_passed: true,
+                    skipped: None,
+                    results: vec![],
+                    chain,
+                })?;
 
                 return Ok(TaskBlockResult::success(
                     format!("{project}: no gates defined, preflight passes"),
@@ -124,7 +128,7 @@ impl TaskBlock for RunPreflightGates {
             let run_result =
                 crate::gate_runner::run_gates(&gates, &working_dir, shell.as_ref()).await?;
 
-            Ok(build_preflight_result(&project, workflow, &run_result, &payload, throttle))
+            Ok(build_preflight_result(&project, workflow, &run_result, chain, throttle))
         })
     }
 }
@@ -133,11 +137,20 @@ fn build_preflight_result(
     project: &str,
     workflow: WorkflowType,
     run_result: &foundry_core::gates::GatesRunResult,
-    payload: &serde_json::Value,
+    chain: ChainContext,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let mut event_payload = super::build_gate_run_payload(project, workflow, run_result);
-    forward_chain_context(payload, &mut event_payload);
+    let results = super::gate_results_to_json(&run_result.results);
+    let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
+        project: project.to_string(),
+        workflow: workflow.to_string(),
+        all_passed: run_result.all_passed,
+        required_passed: run_result.required_passed,
+        skipped: None,
+        results,
+        chain,
+    })
+    .expect("PreflightCompletedPayload is infallibly serializable");
 
     let success = run_result.required_passed;
     super::build_gate_block_result(

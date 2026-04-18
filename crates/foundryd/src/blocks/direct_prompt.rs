@@ -1,8 +1,7 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_loop_context;
-use foundry_core::payload::PreflightCompletedPayload;
+use foundry_core::payload::{ChainContext, PlanCompletedPayload, PreflightCompletedPayload};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
@@ -78,18 +77,17 @@ impl TaskBlock for DirectPrompt {
                 "forwarding prompt directly to execution"
             );
 
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "plan": prompt,
-                "workflow": WorkflowType::Prompt,
-            });
-            if let Some(actions) = payload.get("actions") {
-                event_payload["actions"] = actions.clone();
-            }
-            if let Some(gates) = payload.get("gates") {
-                event_payload["gates"] = gates.clone();
-            }
-            forward_loop_context(&payload, &mut event_payload);
+            let chain = ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&PlanCompletedPayload {
+                project: project.clone(),
+                plan: prompt.clone(),
+                // prompt workflow doesn't have a principle/category/assessment
+                principle: String::new(),
+                category: String::new(),
+                assessment: String::new(),
+                workflow: WorkflowType::Prompt.to_string(),
+                chain,
+            })?;
 
             Ok(TaskBlockResult::success(
                 format!("{project}: prompt forwarded to execution"),

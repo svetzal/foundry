@@ -4,7 +4,6 @@ mod macros;
 use foundry_core::event::{Event, EventType};
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
-use foundry_core::workflow::WorkflowType;
 
 /// Bundles the three fields every block `execute()` extracts from the trigger event.
 ///
@@ -43,23 +42,10 @@ fn require_project(
 }
 
 /// Serialize a slice of gate results to JSON values using the `Serialize` derive.
-fn gate_results_to_json(results: &[foundry_core::gates::GateResult]) -> Vec<serde_json::Value> {
+pub(super) fn gate_results_to_json(
+    results: &[foundry_core::gates::GateResult],
+) -> Vec<serde_json::Value> {
     results.iter().filter_map(|r| serde_json::to_value(r).ok()).collect()
-}
-
-/// Build the shared base payload for any gate-run event.
-fn build_gate_run_payload(
-    project: &str,
-    workflow: WorkflowType,
-    run_result: &foundry_core::gates::GatesRunResult,
-) -> serde_json::Value {
-    serde_json::json!({
-        "project": project,
-        "workflow": workflow,
-        "all_passed": run_result.all_passed,
-        "required_passed": run_result.required_passed,
-        "results": gate_results_to_json(&run_result.results),
-    })
 }
 
 /// Construct a `TaskBlockResult` for a gate-run event.

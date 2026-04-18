@@ -3,8 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_chain_context;
-use foundry_core::payload::AssessmentCompletedPayload;
+use foundry_core::payload::{AssessmentCompletedPayload, ChainContext, TriageCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -116,17 +115,20 @@ impl TaskBlock for TriageAssessment {
                 "triage completed"
             );
 
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "accepted": accepted,
-                "reason": reason,
-                "severity": severity,
-                "principle": principle,
-                "category": category,
-                "assessment": assessment,
-                "workflow": WorkflowType::Iterate,
-            });
-            forward_chain_context(&payload, &mut event_payload);
+            let chain = ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&TriageCompletedPayload {
+                project: project.clone(),
+                accepted,
+                reason: reason.clone(),
+                // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
+                #[allow(clippy::cast_sign_loss)]
+                severity: severity.max(0) as u64,
+                principle: principle.clone(),
+                category: category.clone(),
+                assessment: assessment.clone(),
+                workflow: WorkflowType::Iterate.to_string(),
+                chain,
+            })?;
 
             Ok(TaskBlockResult::success(
                 if accepted {

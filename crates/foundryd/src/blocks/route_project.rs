@@ -1,6 +1,10 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{
+    ChainContext, IterationRequestedPayload, MaintenanceRequestedPayload,
+    ProjectValidationCompletedPayload,
+};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes a validated project to the correct maintenance sub-workflow.
@@ -30,23 +34,20 @@ impl TaskBlock for RouteProjectWorkflow {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let status = trigger
-            .payload
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        let iterate = trigger
-            .payload
-            .get("actions")
+        let p = match trigger.parse_payload::<ProjectValidationCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let status = p.status.clone();
+        let iterate = p
+            .actions
+            .as_ref()
             .and_then(|a| a.get("iterate"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-
-        let maintain = trigger
-            .payload
-            .get("actions")
+        let maintain = p
+            .actions
+            .as_ref()
             .and_then(|a| a.get("maintain"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
@@ -62,27 +63,38 @@ impl TaskBlock for RouteProjectWorkflow {
 
             if iterate {
                 tracing::info!(%project, "routing to iteration workflow");
+                let event_payload = Event::serialize_payload(&IterationRequestedPayload {
+                    project: project.clone(),
+                    workflow: "iterate".to_string(),
+                    chain: ChainContext {
+                        actions: Some(serde_json::json!({ "maintain": maintain })),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })?;
                 Ok(TaskBlockResult::success(
                     format!("{project}: routing to iteration workflow"),
                     vec![Event::new(
                         EventType::IterationRequested,
                         project.clone(),
                         throttle,
-                        serde_json::json!({
-                            "project": project,
-                            "actions": { "maintain": maintain },
-                        }),
+                        event_payload,
                     )],
                 ))
             } else if maintain {
                 tracing::info!(%project, "routing to maintenance workflow");
+                let event_payload = Event::serialize_payload(&MaintenanceRequestedPayload {
+                    project: project.clone(),
+                    workflow: "maintain".to_string(),
+                    chain: ChainContext::default(),
+                })?;
                 Ok(TaskBlockResult::success(
                     format!("{project}: routing to maintenance workflow"),
                     vec![Event::new(
                         EventType::MaintenanceRequested,
                         project.clone(),
                         throttle,
-                        serde_json::json!({ "project": project }),
+                        event_payload,
                     )],
                 ))
             } else {

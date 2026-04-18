@@ -2,8 +2,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_chain_context;
-use foundry_core::payload::IterationRequestedPayload;
+use foundry_core::payload::{
+    ChainContext, CharterCheckCompletedPayload, IterationRequestedPayload,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -82,14 +83,17 @@ impl TaskBlock for CheckCharter {
                 "charter check completed"
             );
 
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "success": result.passed,
-                "sources": result.sources,
-                "guidance": result.guidance,
-            });
-            event_payload["workflow"] = serde_json::json!(workflow);
-            forward_chain_context(&payload, &mut event_payload);
+            let sources_json: Vec<serde_json::Value> =
+                result.sources.iter().map(|s| serde_json::json!(s)).collect();
+            let chain = ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&CharterCheckCompletedPayload {
+                project: project.clone(),
+                success: result.passed,
+                sources: sources_json,
+                guidance: result.guidance.clone(),
+                workflow,
+                chain,
+            })?;
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

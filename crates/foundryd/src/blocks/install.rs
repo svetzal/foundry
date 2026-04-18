@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::LocalInstallCompletedPayload;
 use foundry_core::registry::{InstallConfig, Registry};
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -41,11 +42,17 @@ impl TaskBlock for InstallLocally {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
+            success: true,
+            dry_run: Some(true),
+            ..Default::default()
+        })
+        .expect("LocalInstallCompletedPayload is infallibly serializable");
         vec![Event::new(
             EventType::LocalInstallCompleted,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({ "success": true, "dry_run": true }),
+            payload,
         )]
     }
 
@@ -64,26 +71,40 @@ impl TaskBlock for InstallLocally {
         Box::pin(async move {
             let Some(entry) = entry else {
                 tracing::warn!(project = %project, "project not found in registry, skipping install");
+                let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
+                    success: true,
+                    status: Some("skipped".to_string()),
+                    reason: Some("project not found in registry".to_string()),
+                    ..Default::default()
+                })
+                .expect("LocalInstallCompletedPayload is infallibly serializable");
                 return Ok(TaskBlockResult::success(
                     "Skipped: project not found in registry",
                     vec![Event::new(
                         EventType::LocalInstallCompleted,
                         project,
                         throttle,
-                        serde_json::json!({ "status": "skipped", "reason": "project not found in registry" }),
+                        payload,
                     )],
                 ));
             };
 
             let Some(install_config) = entry.install else {
                 tracing::info!(project = %project, "no install config, skipping");
+                let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
+                    success: true,
+                    status: Some("skipped".to_string()),
+                    reason: Some("no install config".to_string()),
+                    ..Default::default()
+                })
+                .expect("LocalInstallCompletedPayload is infallibly serializable");
                 return Ok(TaskBlockResult::success(
                     "Skipped: no install config defined",
                     vec![Event::new(
                         EventType::LocalInstallCompleted,
                         project,
                         throttle,
-                        serde_json::json!({ "status": "skipped", "reason": "no install config" }),
+                        payload,
                     )],
                 ));
             };
@@ -123,16 +144,20 @@ impl TaskBlock for InstallLocally {
                 "install completed"
             );
 
+            let event_payload = Event::serialize_payload(&LocalInstallCompletedPayload {
+                method: Some(method_name.to_string()),
+                success,
+                details: Some(details.clone()),
+                ..Default::default()
+            })
+            .expect("LocalInstallCompletedPayload is infallibly serializable");
+
             Ok(TaskBlockResult {
                 events: vec![Event::new(
                     EventType::LocalInstallCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({
-                        "method": method_name,
-                        "success": success,
-                        "details": details,
-                    }),
+                    event_payload,
                 )],
                 success,
                 summary: if success {

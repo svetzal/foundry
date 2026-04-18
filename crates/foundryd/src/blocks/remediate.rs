@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{MainBranchAuditedPayload, RemediationCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -36,31 +37,27 @@ impl TaskBlock for RemediateVulnerability {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: only remediate when dirty.
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok();
+        let dirty = p.as_ref().is_none_or(|p| p.dirty);
         if !dirty {
             return vec![];
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = p.as_ref().map_or("unknown", |p| p.cve.as_str()).to_string();
+        let payload = Event::serialize_payload(&RemediationCompletedPayload {
+            cve: Some(cve),
+            success: true,
+            summary: Some(String::new()),
+            dry_run: Some(true),
+            pipeline_fix: None,
+        })
+        .expect("RemediationCompletedPayload is infallibly serializable");
 
         vec![Event::new(
             EventType::RemediationCompleted,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({
-                "cve": cve,
-                "success": true,
-                "dry_run": true,
-            }),
+            payload,
         )]
     }
 
@@ -72,26 +69,20 @@ impl TaskBlock for RemediateVulnerability {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // Self-filter: only remediate when main branch is dirty.
-        let dirty = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let audit_payload = match trigger.parse_payload::<MainBranchAuditedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
-        if !dirty {
+        // Self-filter: only remediate when main branch is dirty.
+        if !audit_payload.dirty {
             tracing::info!("main branch is clean, skipping remediation");
             return Box::pin(async {
                 Ok(TaskBlockResult::success("Skipped: main branch is clean", vec![]))
             });
         }
 
-        let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let cve = audit_payload.cve.clone();
 
         // Resolve project agent and path from registry.
         let entry = match super::require_project(&self.registry, &project) {
@@ -167,16 +158,21 @@ fn build_remediation_result(
         "remediation completed"
     );
 
+    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
+        cve: Some(cve.to_string()),
+        success,
+        summary: Some(summary.clone()),
+        dry_run: None,
+        pipeline_fix: None,
+    })
+    .expect("RemediationCompletedPayload is infallibly serializable");
+
     TaskBlockResult {
         events: vec![Event::new(
             EventType::RemediationCompleted,
             project.to_string(),
             throttle,
-            serde_json::json!({
-                "cve": cve,
-                "success": success,
-                "summary": summary,
-            }),
+            event_payload,
         )],
         success,
         summary: if success {

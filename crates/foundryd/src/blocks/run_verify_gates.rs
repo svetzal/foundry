@@ -2,8 +2,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_loop_context;
-use foundry_core::payload::ExecutionCompletedPayload;
+use foundry_core::payload::{
+    ExecutionCompletedPayload, GateVerificationCompletedPayload, LoopContext,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -74,18 +75,17 @@ impl TaskBlock for RunVerifyGates {
             if gates.is_empty() {
                 tracing::info!(project = %project, "no gates defined, verification passes");
 
-                let mut event_payload = serde_json::json!({
-                    "project": project,
-                    "workflow": workflow,
-                    "all_passed": true,
-                    "required_passed": true,
-                    "retry_count": retry_count,
-                    "results": [],
-                });
-                if let Some(actions) = payload.get("actions") {
-                    event_payload["actions"] = actions.clone();
-                }
-                forward_loop_context(&payload, &mut event_payload);
+                let context = LoopContext::extract_from(&payload);
+                let event_payload = Event::serialize_payload(&GateVerificationCompletedPayload {
+                    project: project.clone(),
+                    workflow: workflow.to_string(),
+                    all_passed: true,
+                    required_passed: true,
+                    retry_count,
+                    results: vec![],
+                    execution_output: None,
+                    context,
+                })?;
 
                 return Ok(TaskBlockResult::success(
                     format!("{project}: no gates defined, verification passes"),
@@ -131,15 +131,23 @@ fn build_verification_result(
         "gate verification completed"
     );
 
-    let mut event_payload = super::build_gate_run_payload(project, workflow, run_result);
-    event_payload["retry_count"] = serde_json::json!(retry_count);
-    if let Some(exec_output) = payload.get("execution_output") {
-        event_payload["execution_output"] = exec_output.clone();
-    }
-    if let Some(actions) = payload.get("actions") {
-        event_payload["actions"] = actions.clone();
-    }
-    forward_loop_context(payload, &mut event_payload);
+    let results = super::gate_results_to_json(&run_result.results);
+    let execution_output = payload
+        .get("execution_output")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let context = LoopContext::extract_from(payload);
+    let event_payload = Event::serialize_payload(&GateVerificationCompletedPayload {
+        project: project.to_string(),
+        workflow: workflow.to_string(),
+        all_passed: run_result.all_passed,
+        required_passed: run_result.required_passed,
+        retry_count,
+        results,
+        execution_output,
+        context,
+    })
+    .expect("GateVerificationCompletedPayload is infallibly serializable");
 
     super::build_gate_block_result(
         project,

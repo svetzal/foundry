@@ -3,8 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_chain_context;
-use foundry_core::payload::PreflightCompletedPayload;
+use foundry_core::payload::{AssessmentCompletedPayload, ChainContext, PreflightCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -103,16 +102,19 @@ impl TaskBlock for AssessProject {
                 "assessment completed"
             );
 
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "severity": severity,
-                "principle": principle,
-                "category": category,
-                "assessment": assessment,
-                "audit_name": audit_name,
-                "workflow": WorkflowType::Iterate,
-            });
-            forward_chain_context(&payload, &mut event_payload);
+            let chain = ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&AssessmentCompletedPayload {
+                project: project.clone(),
+                // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
+                #[allow(clippy::cast_sign_loss)]
+                severity: severity.max(0) as u64,
+                principle: principle.clone(),
+                category: category.clone(),
+                assessment: assessment.clone(),
+                audit_name: Some(audit_name.clone()),
+                workflow: WorkflowType::Iterate.to_string(),
+                chain,
+            })?;
 
             Ok(TaskBlockResult::success(
                 format!("{project}: assessed — severity {severity}, {principle}"),

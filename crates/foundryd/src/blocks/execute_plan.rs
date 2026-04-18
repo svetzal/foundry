@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_loop_context;
+use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, PlanCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -36,13 +36,18 @@ impl TaskBlock for ExecutePlan {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let mut payload = serde_json::json!({
-            "project": trigger.project,
-            "workflow": WorkflowType::Iterate,
-            "success": true,
-            "dry_run": true,
-        });
-        forward_loop_context(&trigger.payload, &mut payload);
+        let context = LoopContext::extract_from(&trigger.payload);
+        let payload = Event::serialize_payload(&ExecutionCompletedPayload {
+            project: trigger.project.clone(),
+            workflow: WorkflowType::Iterate.to_string(),
+            success: true,
+            summary: String::new(),
+            execution_output: None,
+            dry_run: Some(true),
+            retry_count: None,
+            context,
+        })
+        .expect("ExecutionCompletedPayload is infallibly serializable");
         vec![Event::new(
             EventType::ExecutionCompleted,
             trigger.project.clone(),
@@ -68,19 +73,19 @@ impl TaskBlock for ExecutePlan {
         };
         let agent = Arc::clone(&self.agent);
 
+        let plan_payload = match trigger.parse_payload::<PlanCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
-            let plan = payload
-                .get("plan")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("No plan provided");
-            let principle = payload
-                .get("principle")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
+            let plan = &plan_payload.plan;
+            let principle = &plan_payload.principle;
+            let gates = plan_payload.chain.gates.as_ref();
 
-            let prompt = build_execution_prompt(&project, plan, principle, payload.get("gates"));
+            let prompt = build_execution_prompt(&project, plan, principle, gates);
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
@@ -131,7 +136,7 @@ fn build_execution_result(
     payload: &serde_json::Value,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary) = match response {
+    let (raw_output, exit_code, success, summary, execution_output) = match response {
         Ok(r) => {
             let s = r.success;
             let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
@@ -141,31 +146,36 @@ fn build_execution_result(
                 let first_line = r.stderr.lines().next().unwrap_or("agent failed");
                 format!("plan execution failed: {first_line}")
             };
-            (Some(out), Some(r.exit_code), s, summary)
+            let lines: Vec<&str> = out.lines().collect();
+            let start = lines.len().saturating_sub(200);
+            let trimmed_output = lines[start..].join("\n");
+            let exec_out = if trimmed_output.is_empty() {
+                None
+            } else {
+                Some(trimmed_output)
+            };
+            (Some(out), Some(r.exit_code), s, summary, exec_out)
         }
         Err(err) => {
             tracing::warn!(error = %err, "agent invocation failed");
-            (None, None, false, format!("agent unavailable: {err}"))
+            (None, None, false, format!("agent unavailable: {err}"), None)
         }
     };
 
     tracing::info!(project = %project, success = success, "plan execution completed");
 
-    let mut event_payload = serde_json::json!({
-        "project": project,
-        "workflow": WorkflowType::Iterate,
-        "success": success,
-        "summary": summary,
-    });
-    if let Some(ref output) = raw_output {
-        let lines: Vec<&str> = output.lines().collect();
-        let start = lines.len().saturating_sub(200);
-        event_payload["execution_output"] = serde_json::Value::String(lines[start..].join("\n"));
-    }
-    if let Some(actions) = payload.get("actions") {
-        event_payload["actions"] = actions.clone();
-    }
-    forward_loop_context(payload, &mut event_payload);
+    let context = LoopContext::extract_from(payload);
+    let event_payload = Event::serialize_payload(&ExecutionCompletedPayload {
+        project: project.to_string(),
+        workflow: WorkflowType::Iterate.to_string(),
+        success,
+        summary: summary.clone(),
+        execution_output,
+        dry_run: None,
+        retry_count: None,
+        context,
+    })
+    .expect("ExecutionCompletedPayload is infallibly serializable");
 
     TaskBlockResult {
         events: vec![Event::new(

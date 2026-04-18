@@ -2,11 +2,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_chain_context;
+use foundry_core::payload::GateResolutionCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use super::TriggerContext;
+
+/// Extract the `success` field from a `CharterCheckCompleted` payload.
+fn trigger_payload_success_field(payload: &serde_json::Value) -> bool {
+    payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false)
+}
 
 /// Reads `.hone-gates.json` from the project directory and emits `GateResolutionCompleted`
 /// with the gate definitions and workflow type.
@@ -50,14 +55,15 @@ impl TaskBlock for ResolveGates {
 
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
-            if event_type == EventType::CharterCheckCompleted
-                && !payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false)
-            {
-                tracing::info!(project = %project, "charter check failed, skipping gate resolution");
-                return Ok(TaskBlockResult::success(
-                    format!("{project}: charter check failed, no gates to resolve"),
-                    vec![],
-                ));
+            if event_type == EventType::CharterCheckCompleted {
+                let charter_success = trigger_payload_success_field(&payload);
+                if !charter_success {
+                    tracing::info!(project = %project, "charter check failed, skipping gate resolution");
+                    return Ok(TaskBlockResult::success(
+                        format!("{project}: charter check failed, no gates to resolve"),
+                        vec![],
+                    ));
+                }
             }
 
             // Payload workflow overrides the event-type default — this allows
@@ -96,14 +102,13 @@ impl TaskBlock for ResolveGates {
                 "gates resolved"
             );
 
-            // Forward the original trigger payload fields (e.g., actions.maintain)
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "workflow": workflow,
-                "gates": gates_json,
-            });
-            // Merge forwarded fields from trigger payload
-            forward_chain_context(&payload, &mut event_payload);
+            let chain = foundry_core::payload::ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&GateResolutionCompletedPayload {
+                project: project.clone(),
+                workflow: workflow.to_string(),
+                gates: serde_json::json!(gates_json),
+                chain,
+            })?;
 
             Ok(TaskBlockResult::success(
                 format!("{project}: resolved {} gates for {workflow} workflow", gates.len()),

@@ -175,9 +175,13 @@ pub struct RemediationStartedPayload {
 /// Payload for `RemediationCompleted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemediationCompletedPayload {
-    pub cve: String,
+    /// CVE identifier. Present for vulnerability remediations; absent for pipeline remediations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cve: Option<String>,
     pub success: bool,
-    pub summary: String,
+    /// Human-readable summary. Omitted when empty (e.g. dry-run pipeline path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
     /// Set to `true` when this is a pipeline remediation (not CVE).
@@ -186,11 +190,15 @@ pub struct RemediationCompletedPayload {
 }
 
 /// Payload for `MainBranchAudited`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MainBranchAuditedPayload {
+    #[serde(default)]
     pub project: String,
+    #[serde(default)]
     pub cve: String,
+    #[serde(default)]
     pub vulnerable: bool,
+    #[serde(default)]
     pub dirty: bool,
 }
 
@@ -230,11 +238,21 @@ pub struct ReleasePipelineCompletedPayload {
 }
 
 /// Payload for `LocalInstallCompleted`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalInstallCompletedPayload {
-    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
     pub success: bool,
-    pub details: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    /// Set to `"skipped"` when no install was performed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Human-readable explanation when `status` is `"skipped"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -351,13 +369,19 @@ pub struct ProjectChangesPushedPayload {
 }
 
 /// Payload for `ProjectValidationCompleted`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectValidationCompletedPayload {
+    #[serde(default)]
     pub project: String,
+    #[serde(default)]
     pub status: String,
+    #[serde(default)]
     pub has_gates: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<serde_json::Value>,
+    /// Human-readable explanation when `status` is `"error"` or `"skipped"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +460,9 @@ pub struct PlanCompletedPayload {
     pub project: String,
     pub plan: String,
     pub principle: String,
+    #[serde(default)]
     pub category: String,
+    #[serde(default)]
     pub assessment: String,
     pub workflow: String,
     #[serde(flatten)]
@@ -475,13 +501,15 @@ pub struct ValidationRequestedPayload {
 }
 
 /// Payload for `ValidationCompleted`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ValidationCompletedPayload {
     pub project: String,
     pub success: bool,
     pub workflow: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

@@ -3,8 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_chain_context;
-use foundry_core::payload::TriageCompletedPayload;
+use foundry_core::payload::{ChainContext, PlanCompletedPayload, TriageCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -118,15 +117,16 @@ impl TaskBlock for CreatePlan {
 
             tracing::info!(project = %project, success = success, "plan created");
 
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "plan": plan,
-                "principle": principle,
-                "category": category,
-                "assessment": assessment,
-                "workflow": WorkflowType::Iterate,
-            });
-            forward_chain_context(&payload, &mut event_payload);
+            let chain = ChainContext::extract_from(&payload);
+            let event_payload = Event::serialize_payload(&PlanCompletedPayload {
+                project: project.clone(),
+                plan: plan.clone(),
+                principle: principle.to_string(),
+                category: category.to_string(),
+                assessment: assessment.to_string(),
+                workflow: WorkflowType::Iterate.to_string(),
+                chain,
+            })?;
 
             Ok(TaskBlockResult {
                 events: vec![Event::new(

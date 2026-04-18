@@ -1,10 +1,9 @@
 use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{PreflightCompletedPayload, ValidationCompletedPayload};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
-
-use super::TriggerContext;
 
 /// Routes preflight results for the validation workflow to `ValidationCompleted`.
 ///
@@ -29,17 +28,16 @@ impl TaskBlock for RouteValidationResult {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let TriggerContext {
-            project,
-            throttle,
-            payload,
-        } = TriggerContext::from_trigger(trigger);
-        let workflow = WorkflowType::from_payload(&payload);
-        let required_passed = payload
-            .get("required_passed")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let results = trigger.payload.get("results").cloned().unwrap_or(serde_json::json!([]));
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+
+        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let workflow = p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown);
+        let required_passed = p.required_passed;
+        let results = serde_json::json!(p.results);
 
         Box::pin(async move {
             // Self-filter: only handle validation workflow
@@ -50,11 +48,13 @@ impl TaskBlock for RouteValidationResult {
                 ));
             }
 
-            let event_payload = serde_json::json!({
-                "project": project,
-                "success": required_passed,
-                "results": results,
-            });
+            let event_payload = Event::serialize_payload(&ValidationCompletedPayload {
+                project: project.clone(),
+                success: required_passed,
+                workflow: WorkflowType::Validate.to_string(),
+                results: Some(results),
+                ..Default::default()
+            })?;
 
             let summary = if required_passed {
                 format!("{project}: validation passed")

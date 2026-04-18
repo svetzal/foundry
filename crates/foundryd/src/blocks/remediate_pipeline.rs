@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::PipelineCheckedPayload;
+use foundry_core::payload::{PipelineCheckedPayload, RemediationCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -53,15 +53,20 @@ impl TaskBlock for RemediatePipeline {
             return vec![];
         }
 
+        let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
+            cve: None,
+            success: true,
+            summary: None,
+            dry_run: Some(true),
+            pipeline_fix: Some(true),
+        })
+        .expect("RemediationCompletedPayload is infallibly serializable");
+
         vec![Event::new(
             EventType::RemediationCompleted,
             trigger.project.clone(),
             trigger.throttle,
-            serde_json::json!({
-                "pipeline_fix": true,
-                "success": true,
-                "dry_run": true,
-            }),
+            event_payload,
         )]
     }
 
@@ -171,16 +176,21 @@ async fn run_remediation(
         "pipeline remediation completed"
     );
 
+    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
+        cve: None,
+        success,
+        summary: Some(summary.clone()),
+        dry_run: None,
+        pipeline_fix: Some(true),
+    })
+    .expect("RemediationCompletedPayload is infallibly serializable");
+
     Ok(TaskBlockResult {
         events: vec![Event::new(
             EventType::RemediationCompleted,
             project,
             throttle,
-            serde_json::json!({
-                "pipeline_fix": true,
-                "success": success,
-                "summary": summary,
-            }),
+            event_payload,
         )],
         success,
         summary: if success {
