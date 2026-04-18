@@ -17,6 +17,7 @@ allow = [
     "Unlicense",
     "BSL-1.0",
     "MPL-2.0",
+    "Zlib",
 ]
 confidence-threshold = 0.8
 
