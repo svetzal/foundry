@@ -73,5 +73,8 @@ strum = { version = "0.28", features = ["derive"] }
 # Macro utilities
 pastey = "0.2"
 
+# Semver parsing
+semver = "1"
+
 # Testing
 tempfile = "3"

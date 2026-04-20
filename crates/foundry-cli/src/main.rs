@@ -134,6 +134,14 @@ enum Commands {
         /// Install globally (~/.claude/skills/) instead of locally (.claude/skills/)
         #[arg(long)]
         global: bool,
+
+        /// Overwrite files even if an installed version is newer
+        #[arg(long)]
+        force: bool,
+
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show or derive quality gates for a project
@@ -413,7 +421,11 @@ async fn main() -> Result<()> {
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())
         }
-        Commands::Init { global } => init_commands::run(global),
+        Commands::Init {
+            global,
+            force,
+            json,
+        } => init_commands::run(global, force, json),
         Commands::Gates { project, dir, init } => {
             let project_dir = gates_commands::resolve_project_dir(
                 project.as_deref(),

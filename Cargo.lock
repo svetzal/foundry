@@ -420,6 +420,7 @@ dependencies = [
  "foundry-core",
  "prost",
  "prost-types",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
