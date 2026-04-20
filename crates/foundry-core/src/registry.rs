@@ -82,6 +82,13 @@ pub struct ProjectEntry {
     pub actions: ActionFlags,
     /// Optional local installation configuration.
     pub install: Option<InstallConfig>,
+    /// Whether to run a skill-install command after the binary install step.
+    ///
+    /// `None` or `Default(false)` → no skill install (current behaviour unchanged).
+    /// `Default(true)` → derive `<binary> init --global --force`.
+    /// `Custom { command }` → run the specified command verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installs_skill: Option<InstallsSkill>,
     /// Human-readable notes about the project.
     pub notes: Option<String>,
     /// Per-project timeout in seconds for long-running commands.
@@ -143,6 +150,25 @@ pub enum InstallConfig {
     Command(String),
     /// Install via a Homebrew formula.
     Brew(String),
+}
+
+/// Whether and how to run a skill-install command after the binary install step.
+///
+/// # JSON forms
+///
+/// - `true` — use the default derived command: `<binary> init --global --force`
+/// - `false` — no skill install (same as absent)
+/// - `{ "command": "..." }` — run this exact shell command
+///
+/// `false` and absent both resolve to "skip". Only `true` and the object form
+/// trigger an actual invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InstallsSkill {
+    /// Boolean shorthand: `true` derives the default command; `false` disables.
+    Default(bool),
+    /// Object form: run the specified command verbatim.
+    Custom { command: String },
 }
 
 impl std::fmt::Display for Stack {
@@ -394,6 +420,108 @@ mod tests {
     fn find_project_returns_none_for_unknown_name() {
         let registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
         assert!(registry.find_project("nonexistent").is_none());
+    }
+
+    #[test]
+    fn installs_skill_bool_true_deserializes() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main",
+                "installs_skill": true
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            registry.projects[0].installs_skill,
+            Some(InstallsSkill::Default(true))
+        ));
+    }
+
+    #[test]
+    fn installs_skill_bool_false_deserializes() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main",
+                "installs_skill": false
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            registry.projects[0].installs_skill,
+            Some(InstallsSkill::Default(false))
+        ));
+    }
+
+    #[test]
+    fn installs_skill_object_form_deserializes() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main",
+                "installs_skill": { "command": "gilt skill-init --global --force" }
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            &registry.projects[0].installs_skill,
+            Some(InstallsSkill::Custom { command }) if command == "gilt skill-init --global --force"
+        ));
+    }
+
+    #[test]
+    fn installs_skill_absent_deserializes_as_none() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main"
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        assert!(registry.projects[0].installs_skill.is_none());
+    }
+
+    #[test]
+    fn installs_skill_round_trips_bool_true() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main",
+                "installs_skill": true
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        let serialized = serde_json::to_string(&registry).unwrap();
+        let restored: Registry = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(
+            restored.projects[0].installs_skill,
+            Some(InstallsSkill::Default(true))
+        ));
+    }
+
+    #[test]
+    fn installs_skill_round_trips_object_form() {
+        let json = r#"{
+            "version": 2,
+            "projects": [{
+                "name": "p", "path": "/p", "stack": "rust",
+                "agent": "claude", "repo": "o/p", "branch": "main",
+                "installs_skill": { "command": "mytool init" }
+            }]
+        }"#;
+        let registry: Registry = serde_json::from_str(json).unwrap();
+        let serialized = serde_json::to_string(&registry).unwrap();
+        let restored: Registry = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(
+            &restored.projects[0].installs_skill,
+            Some(InstallsSkill::Custom { command }) if command == "mytool init"
+        ));
     }
 
     #[test]

@@ -39,6 +39,7 @@ fn test_registry(project_path: &str) -> Arc<Registry> {
             notes: None,
             actions: release_actions(),
             install: None, // no install config — InstallLocally skips gracefully
+            installs_skill: None,
             timeout_secs: None,
         }],
     })
@@ -139,6 +140,7 @@ async fn action_flag_guard_stops_chain() {
             notes: None,
             actions: ActionFlags::default(), // release=false
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }],
     });
@@ -184,6 +186,7 @@ async fn missing_agents_md_fails_gracefully() {
             notes: None,
             actions: release_actions(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }],
     });

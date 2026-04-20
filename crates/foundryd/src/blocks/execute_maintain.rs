@@ -236,6 +236,7 @@ mod tests {
                 notes: None,
                 actions: ActionFlags::default(),
                 install: None,
+                installs_skill: None,
                 timeout_secs: None,
             }],
         })

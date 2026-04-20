@@ -211,6 +211,7 @@ pub enum EventType {
     ReleaseCompleted,
     ReleasePipelineCompleted,
     LocalInstallCompleted,
+    LocalSkillInstallCompleted,
 
     // Project lifecycle (used across workflows)
     ProjectValidationCompleted,
@@ -324,6 +325,7 @@ mod tests {
             (EventType::ReleaseCompleted, "release_completed"),
             (EventType::ReleasePipelineCompleted, "release_pipeline_completed"),
             (EventType::LocalInstallCompleted, "local_install_completed"),
+            (EventType::LocalSkillInstallCompleted, "local_skill_install_completed"),
             (EventType::ProjectValidationCompleted, "project_validation_completed"),
             (EventType::ProjectIterationCompleted, "project_iteration_completed"),
             (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),
@@ -381,6 +383,7 @@ mod tests {
             (EventType::ReleaseCompleted, "release_completed"),
             (EventType::ReleasePipelineCompleted, "release_pipeline_completed"),
             (EventType::LocalInstallCompleted, "local_install_completed"),
+            (EventType::LocalSkillInstallCompleted, "local_skill_install_completed"),
             (EventType::ProjectValidationCompleted, "project_validation_completed"),
             (EventType::ProjectIterationCompleted, "project_iteration_completed"),
             (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),

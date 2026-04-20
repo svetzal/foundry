@@ -255,6 +255,22 @@ pub struct LocalInstallCompletedPayload {
     pub dry_run: Option<bool>,
 }
 
+/// Payload for `LocalSkillInstallCompleted`.
+///
+/// Emitted after `LocalInstallCompleted` when the project registry has an
+/// `installs_skill` entry. Failure is soft: a failed skill install does not
+/// fail the parent block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalSkillInstallCompletedPayload {
+    pub project: String,
+    pub command: String,
+    pub success: bool,
+    /// Last few lines of stdout, for display in traces.
+    pub stdout_tail: String,
+    /// Last few lines of stderr, for display in traces.
+    pub stderr_tail: String,
+}
+
 // ---------------------------------------------------------------------------
 // Gate orchestration workflow
 // ---------------------------------------------------------------------------
@@ -787,6 +803,44 @@ mod tests {
         let without_name = GreetRequestedPayload { name: None };
         let json = serde_json::to_value(&without_name).unwrap();
         assert!(json.get("name").is_none(), "name must be absent when None");
+    }
+
+    #[test]
+    fn local_skill_install_completed_payload_round_trips() {
+        let p = LocalSkillInstallCompletedPayload {
+            project: "my-project".to_string(),
+            command: "mytool init --global --force".to_string(),
+            success: true,
+            stdout_tail: "Skill installed.".to_string(),
+            stderr_tail: String::new(),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["project"], "my-project");
+        assert_eq!(json["command"], "mytool init --global --force");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["stdout_tail"], "Skill installed.");
+        assert_eq!(json["stderr_tail"], "");
+        let p2: LocalSkillInstallCompletedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(p2.project, "my-project");
+        assert_eq!(p2.command, "mytool init --global --force");
+        assert!(p2.success);
+    }
+
+    #[test]
+    fn local_skill_install_completed_payload_failure_round_trips() {
+        let p = LocalSkillInstallCompletedPayload {
+            project: "my-project".to_string(),
+            command: "mytool init --global --force".to_string(),
+            success: false,
+            stdout_tail: String::new(),
+            stderr_tail: "error: command not found".to_string(),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["stderr_tail"], "error: command not found");
+        let p2: LocalSkillInstallCompletedPayload = serde_json::from_value(json).unwrap();
+        assert!(!p2.success);
+        assert_eq!(p2.stderr_tail, "error: command not found");
     }
 
     #[test]

@@ -232,6 +232,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }
     }
@@ -248,6 +249,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }
     }
@@ -364,6 +366,7 @@ mod tests {
                 release: false,
             },
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
 
@@ -397,6 +400,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
 
@@ -427,6 +431,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
 
@@ -464,6 +469,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
 
@@ -502,6 +508,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
 
@@ -540,6 +547,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
         let block = ValidateProject::new(registry);
@@ -575,6 +583,7 @@ mod tests {
             notes: None,
             actions: foundry_core::registry::ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }]);
         let block = ValidateProject::new(registry);

@@ -31,6 +31,7 @@ pub fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
             notes: None,
             actions: ActionFlags::default(),
             install: None,
+            installs_skill: None,
             timeout_secs: None,
         }],
     })
@@ -57,6 +58,29 @@ pub fn project_entry(name: &str, path: &str) -> ProjectEntry {
         notes: None,
         actions: ActionFlags::default(),
         install: None,
+        installs_skill: None,
+        timeout_secs: None,
+    }
+}
+
+/// Build a standard test project entry with custom install config.
+pub fn project_entry_with_install(
+    name: &str,
+    path: &str,
+    install: Option<foundry_core::registry::InstallConfig>,
+) -> foundry_core::registry::ProjectEntry {
+    foundry_core::registry::ProjectEntry {
+        name: name.to_string(),
+        path: path.to_string(),
+        stack: foundry_core::registry::Stack::Rust,
+        agent: "claude".to_string(),
+        repo: String::new(),
+        branch: "main".to_string(),
+        skip: None,
+        notes: None,
+        actions: foundry_core::registry::ActionFlags::default(),
+        install,
+        installs_skill: None,
         timeout_secs: None,
     }
 }

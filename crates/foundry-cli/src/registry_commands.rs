@@ -137,6 +137,7 @@ pub fn add(
             release,
         },
         install,
+        installs_skill: None,
         timeout_secs,
     });
 

@@ -245,12 +245,22 @@ fn render_trace(response: &TraceResponse, verbose: bool) {
             .push(block);
     }
 
+    // Build a lookup: emitted_event_id -> payload_json (index-correlated from block executions).
+    let mut event_payloads: HashMap<&str, &str> = HashMap::new();
+    for block in &response.block_executions {
+        for (i, event_id) in block.emitted_event_ids.iter().enumerate() {
+            if let Some(payload) = block.emitted_payload_jsons.get(i) {
+                event_payloads.insert(event_id.as_str(), payload.as_str());
+            }
+        }
+    }
+
     // Start with the root event (first in the list)
     if let Some(root) = response.events.first() {
         if !root.trace_id.is_empty() {
             println!("trace: {}", root.trace_id);
         }
-        print_event_tree(root, &events, &blocks_by_trigger, 0, verbose);
+        print_event_tree(root, &events, &blocks_by_trigger, &event_payloads, 0, verbose);
     }
 }
 
@@ -258,10 +268,19 @@ fn print_event_tree(
     event: &crate::proto::TraceEvent,
     events: &HashMap<&str, &crate::proto::TraceEvent>,
     blocks_by_trigger: &HashMap<&str, Vec<&crate::proto::TraceBlockExecution>>,
+    event_payloads: &HashMap<&str, &str>,
     depth: usize,
     verbose: bool,
 ) {
     let indent = "  ".repeat(depth);
+
+    // Special rendering for skill-install results: compact inline format.
+    if event.event_type == "local_skill_install_completed" {
+        let payload = event_payloads.get(event.event_id.as_str()).copied().unwrap_or("{}");
+        print_skill_install_event(payload, &indent);
+        return;
+    }
+
     println!("{}{} ({}) project={}", indent, event.event_type, event.event_id, event.project);
 
     if let Some(blocks) = blocks_by_trigger.get(event.event_id.as_str()) {
@@ -300,7 +319,14 @@ fn print_event_tree(
             // Recurse into emitted events
             for emitted_id in &block.emitted_event_ids {
                 if let Some(emitted_event) = events.get(emitted_id.as_str()) {
-                    print_event_tree(emitted_event, events, blocks_by_trigger, depth + 2, verbose);
+                    print_event_tree(
+                        emitted_event,
+                        events,
+                        blocks_by_trigger,
+                        event_payloads,
+                        depth + 2,
+                        verbose,
+                    );
                 }
             }
         }
@@ -695,6 +721,30 @@ fn print_validation_result(project: &str, payload_json: &str) {
             }
             println!();
         }
+    }
+}
+
+/// Render a `local_skill_install_completed` event in compact inline format.
+///
+/// Success:  `  → Install Skill: ok — <command>`
+/// Failure:  `  → Install Skill: warn — command failed: <stderr_tail>`
+fn print_skill_install_event(payload_json: &str, indent: &str) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
+        let success = v.bool_or("success", false);
+        let command = v.str_or("command", "(unknown command)");
+        if success {
+            println!("{indent}  \u{2192} Install Skill: ok \u{2014} {command}");
+        } else {
+            let stderr = v.str_or("stderr_tail", "(no output)");
+            let detail = if stderr.is_empty() {
+                "(no output)"
+            } else {
+                stderr
+            };
+            println!("{indent}  \u{2192} Install Skill: warn \u{2014} command failed: {detail}");
+        }
+    } else {
+        println!("{indent}  \u{2192} Install Skill: (unparseable payload)");
     }
 }
 

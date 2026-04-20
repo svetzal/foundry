@@ -546,6 +546,7 @@ mod tests {
                     release: false,
                 },
                 install: None,
+                installs_skill: None,
                 timeout_secs: None,
             }],
         });
