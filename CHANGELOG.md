@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-04-20
+
+### Added
+
+- `foundry init` brought up to the canonical Mojility skill-install spec: new `--force` and `--json` flags, version-guard that refuses to overwrite when the installed skill version is newer than this binary (override with `--force`), version-stamping (`foundry-version: <X>` written into installed file frontmatter), and per-file action reporting (`Created` / `Updated` / `UpToDate` / `Skipped`). Exit code is non-zero when any file is skipped. With this change, `installs_skill: true` can safely be set on foundry's own registry entry.
+
 ## [0.11.0] - 2026-04-20
 
 ### Added
