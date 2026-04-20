@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-04-20
+
+### Added
+
+- `installs_skill` registry field — when set, the `InstallLocally` block automatically runs a per-tool skill installer after the binary install step of a release, so `~/.claude/skills/<name>/SKILL.md` is refreshed without a manual `<tool> init`. Accepts `true` (runs `<binary> init --global --force`) or `{ command: "..." }` for tools whose skill-install verb differs (e.g. `gilt skill-init --global --force`). Absent field preserves current behavior. New `LocalSkillInstallCompleted` event is emitted on success or failure; skill-install failure is a soft warning and does not fail the parent `InstallLocally` block.
+
 ## [0.10.0] - 2026-04-10
 
 ### Added
