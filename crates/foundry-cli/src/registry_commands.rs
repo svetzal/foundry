@@ -2,7 +2,10 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use comfy_table::{ContentArrangement, Table};
-use foundry_core::registry::{ActionFlags, InstallConfig, ProjectEntry, Registry, Stack};
+use foundry_core::registry::{
+    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, Registry, Stack,
+    derive_default_skill_install_command,
+};
 
 pub fn init(registry_path: &Path) -> Result<()> {
     if registry_path.exists() {
@@ -29,15 +32,16 @@ pub fn list(registry_path: &Path) -> Result<()> {
 
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Name", "Stack", "Skip", "Actions"]);
+    table.set_header(vec!["Name", "Stack", "Skip", "Actions", "Skill"]);
 
     for p in &registry.projects {
         let skip = if p.skip.is_some() { "yes" } else { "no" };
         table.add_row(vec![
-            &p.name,
-            &p.stack.to_string(),
+            p.name.as_str(),
+            p.stack.to_string().as_str(),
             skip,
-            &format_actions(&p.actions),
+            format_actions(&p.actions).as_str(),
+            format_installs_skill_cell(p.installs_skill.as_ref()),
         ]);
     }
 
@@ -74,6 +78,9 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
             InstallConfig::Command(cmd) => println!("Install:   command: {cmd}"),
             InstallConfig::Brew(formula) => println!("Install:   brew: {formula}"),
         }
+    }
+    if let Some(ref is) = project.installs_skill {
+        println!("{}", format_installs_skill_line(is, project.install.as_ref(), &project.name));
     }
 
     if let Some(timeout) = project.timeout_secs {
@@ -248,6 +255,34 @@ pub fn edit(
     Ok(())
 }
 
+/// Format the full "Installs skill: ..." display line for `foundry registry show`.
+fn format_installs_skill_line(
+    installs_skill: &InstallsSkill,
+    install: Option<&InstallConfig>,
+    project_name: &str,
+) -> String {
+    match installs_skill {
+        InstallsSkill::Default(true) => {
+            let cmd = derive_default_skill_install_command(install, project_name);
+            format!("Installs skill: yes (default -- runs {cmd})")
+        }
+        InstallsSkill::Default(false) => "Installs skill: no (explicitly disabled)".to_string(),
+        InstallsSkill::Custom { command } => format!("Installs skill: command: {command}"),
+    }
+}
+
+/// Format the short cell label for the "Skill" column in `foundry registry list`.
+///
+/// Returns `"auto"`, `"cmd"`, `"off"`, or `""`.
+fn format_installs_skill_cell(installs_skill: Option<&InstallsSkill>) -> &'static str {
+    match installs_skill {
+        Some(InstallsSkill::Default(true)) => "auto",
+        Some(InstallsSkill::Custom { .. }) => "cmd",
+        Some(InstallsSkill::Default(false)) => "off",
+        None => "",
+    }
+}
+
 fn format_actions(actions: &ActionFlags) -> String {
     let mut flags = vec![];
     if actions.iterate {
@@ -281,5 +316,75 @@ fn load_or_init(path: &Path) -> Result<Registry> {
             version: 2,
             projects: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use foundry_core::registry::{InstallConfig, InstallsSkill};
+
+    use super::{format_installs_skill_cell, format_installs_skill_line};
+
+    // --- format_installs_skill_line ---
+
+    #[test]
+    fn line_default_true_with_brew_formula() {
+        let line = format_installs_skill_line(
+            &InstallsSkill::Default(true),
+            Some(&InstallConfig::Brew("gilt".to_string())),
+            "my-project",
+        );
+        assert_eq!(line, "Installs skill: yes (default -- runs gilt init --global --force)");
+    }
+
+    #[test]
+    fn line_default_true_with_no_install_falls_back_to_project_name() {
+        let line = format_installs_skill_line(&InstallsSkill::Default(true), None, "my-project");
+        assert_eq!(line, "Installs skill: yes (default -- runs my-project init --global --force)");
+    }
+
+    #[test]
+    fn line_default_false() {
+        let line = format_installs_skill_line(&InstallsSkill::Default(false), None, "my-project");
+        assert_eq!(line, "Installs skill: no (explicitly disabled)");
+    }
+
+    #[test]
+    fn line_custom_command() {
+        let line = format_installs_skill_line(
+            &InstallsSkill::Custom {
+                command: "gilt skill-init --global --force".to_string(),
+            },
+            None,
+            "my-project",
+        );
+        assert_eq!(line, "Installs skill: command: gilt skill-init --global --force");
+    }
+
+    // --- format_installs_skill_cell ---
+
+    #[test]
+    fn cell_default_true_returns_auto() {
+        assert_eq!(format_installs_skill_cell(Some(&InstallsSkill::Default(true))), "auto");
+    }
+
+    #[test]
+    fn cell_custom_returns_cmd() {
+        assert_eq!(
+            format_installs_skill_cell(Some(&InstallsSkill::Custom {
+                command: "anything".to_string()
+            })),
+            "cmd"
+        );
+    }
+
+    #[test]
+    fn cell_default_false_returns_off() {
+        assert_eq!(format_installs_skill_cell(Some(&InstallsSkill::Default(false))), "off");
+    }
+
+    #[test]
+    fn cell_none_returns_empty_string() {
+        assert_eq!(format_installs_skill_cell(None), "");
     }
 }

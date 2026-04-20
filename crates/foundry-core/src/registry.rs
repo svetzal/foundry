@@ -171,6 +171,37 @@ pub enum InstallsSkill {
     Custom { command: String },
 }
 
+/// Derive the default skill-install command for a project.
+///
+/// If the project uses a Homebrew install with a non-empty formula, the formula
+/// name is used as the binary; otherwise the project name is used. The suffix
+/// ` init --global --force` is always appended.
+///
+/// # Examples
+///
+/// ```
+/// use foundry_core::registry::{InstallConfig, derive_default_skill_install_command};
+///
+/// let cmd = derive_default_skill_install_command(
+///     Some(&InstallConfig::Brew("gilt".to_string())),
+///     "my-project",
+/// );
+/// assert_eq!(cmd, "gilt init --global --force");
+///
+/// let cmd = derive_default_skill_install_command(None, "my-project");
+/// assert_eq!(cmd, "my-project init --global --force");
+/// ```
+pub fn derive_default_skill_install_command(
+    install: Option<&InstallConfig>,
+    project_name: &str,
+) -> String {
+    let binary = match install {
+        Some(InstallConfig::Brew(formula)) if !formula.is_empty() => formula.as_str(),
+        _ => project_name,
+    };
+    format!("{binary} init --global --force")
+}
+
 impl std::fmt::Display for Stack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -522,6 +553,39 @@ mod tests {
             &restored.projects[0].installs_skill,
             Some(InstallsSkill::Custom { command }) if command == "mytool init"
         ));
+    }
+
+    #[test]
+    fn derive_default_skill_install_command_brew_formula() {
+        let cmd = derive_default_skill_install_command(
+            Some(&InstallConfig::Brew("gilt".to_string())),
+            "my-project",
+        );
+        assert_eq!(cmd, "gilt init --global --force");
+    }
+
+    #[test]
+    fn derive_default_skill_install_command_brew_empty_formula_falls_back_to_project_name() {
+        let cmd = derive_default_skill_install_command(
+            Some(&InstallConfig::Brew(String::new())),
+            "my-project",
+        );
+        assert_eq!(cmd, "my-project init --global --force");
+    }
+
+    #[test]
+    fn derive_default_skill_install_command_non_brew_install_uses_project_name() {
+        let cmd = derive_default_skill_install_command(
+            Some(&InstallConfig::Command("cargo install --path .".to_string())),
+            "my-project",
+        );
+        assert_eq!(cmd, "my-project init --global --force");
+    }
+
+    #[test]
+    fn derive_default_skill_install_command_no_install_uses_project_name() {
+        let cmd = derive_default_skill_install_command(None, "my-project");
+        assert_eq!(cmd, "my-project init --global --force");
     }
 
     #[test]

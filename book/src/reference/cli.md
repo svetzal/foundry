@@ -289,13 +289,15 @@ foundry registry list
 **Output example:**
 
 ```text
-┌──────────┬───────┬──────┬──────────────────────────┐
-│ Name     │ Stack │ Skip │ Actions                  │
-╞══════════╪═══════╪══════╪══════════════════════════╡
-│ my-tool  │ rust  │ no   │ iterate, maintain, push  │
-│ frontend │ typescript │ yes  │ maintain, push      │
-└──────────┴───────┴──────┴──────────────────────────┘
+┌──────────┬────────────┬──────┬──────────────────────────┬───────┐
+│ Name     │ Stack      │ Skip │ Actions                  │ Skill │
+╞══════════╪════════════╪══════╪══════════════════════════╪═══════╡
+│ my-tool  │ rust       │ no   │ iterate, maintain, push  │ auto  │
+│ frontend │ typescript │ yes  │ maintain, push           │       │
+└──────────┴────────────┴──────┴──────────────────────────┴───────┘
 ```
+
+The `Skill` column shows `auto` (default derived command), `cmd` (custom command), `off` (explicitly disabled), or blank (not configured).
 
 ### `foundry registry show <name>`
 
@@ -303,6 +305,22 @@ Show all details for a single project.
 
 ```bash
 foundry registry show my-tool
+```
+
+**Output example:**
+
+```text
+Name:      my-tool
+Path:      /Users/alice/projects/my-tool
+Stack:     rust
+Agent:     claude
+Repo:      alice/my-tool
+Branch:    main
+Skip:      no
+Actions:   iterate, maintain, push
+Install:   brew: my-tool
+Installs skill: yes (default -- runs my-tool init --global --force)
+Timeout:   3600s (default)
 ```
 
 ### `foundry registry add`

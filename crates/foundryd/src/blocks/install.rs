@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{LocalInstallCompletedPayload, LocalSkillInstallCompletedPayload};
-use foundry_core::registry::{InstallConfig, InstallsSkill, Registry};
+use foundry_core::registry::{
+    InstallConfig, InstallsSkill, Registry, derive_default_skill_install_command,
+};
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
@@ -219,12 +221,7 @@ async fn run_skill_install(
     let cmd = match installs_skill {
         InstallsSkill::Default(false) => return None,
         InstallsSkill::Default(true) => {
-            // Derive the binary name from the install config.
-            let binary = match install_config {
-                InstallConfig::Brew(formula) if !formula.is_empty() => formula.clone(),
-                _ => entry.name.clone(),
-            };
-            format!("{binary} init --global --force")
+            derive_default_skill_install_command(Some(install_config), &entry.name)
         }
         InstallsSkill::Custom { command } => command.clone(),
     };
