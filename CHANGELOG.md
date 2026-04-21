@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] - 2026-04-20
+
+### Added
+
+- `foundry registry show <project>` now displays an `Installs skill:` line summarizing the `installs_skill` field — `yes (default -- runs <derived-command>)`, `command: <command>`, or `no (explicitly disabled)`. The displayed default command comes from the same derivation function `InstallLocally` uses, so what's shown is always what would actually run.
+- `foundry registry list` adds a narrow `Skill` column showing `auto` / `cmd` / `off` / blank per project.
+
 ## [0.11.1] - 2026-04-20
 
 ### Added
