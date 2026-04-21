@@ -30,7 +30,7 @@ that the rest of the system speaks.
 
 ## foundryd
 
-The daemon process. Listens on gRPC (`[::1]:50051` by default) and runs
+The daemon process. Listens on gRPC (`127.0.0.1:50051` by default) and runs
 the workflow engine.
 
 ### Core engine

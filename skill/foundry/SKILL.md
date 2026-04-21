@@ -12,9 +12,9 @@ description: >
   Even if the user doesn't say "foundry" explicitly, use this skill when they ask
   about automated iterate/maintain cycles, gate health checks, or agent-driven releases.
 license: MIT
-compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on [::1]:50051)
+compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.10.2"
+  version: "0.12.0"
   author: Stacey Vetzal
 ---
 

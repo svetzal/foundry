@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
         registry,
     );
 
-    let addr = "[::1]:50051".parse()?;
+    let addr = "127.0.0.1:50051".parse()?;
     tracing::info!("foundryd listening on {addr}");
 
     Server::builder()

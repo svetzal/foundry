@@ -52,7 +52,7 @@ INFO foundryd::engine: registered task block block="Commit and Push" sinks=[Reme
 INFO foundryd::engine: registered task block block="Cut Release" sinks=[MainBranchAudited]
 INFO foundryd::engine: registered task block block="Watch Pipeline" sinks=[ReleaseCompleted]
 INFO foundryd::engine: registered task block block="Install Locally" sinks=[ProjectChangesPushed, ReleasePipelineCompleted]
-INFO foundryd: foundryd listening on [::1]:50051
+INFO foundryd: foundryd listening on 127.0.0.1:50051
 ```
 
 ## Send Your First Event

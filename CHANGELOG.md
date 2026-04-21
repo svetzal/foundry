@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-04-20
+
+### Changed
+
+- **Breaking**: `foundryd` now binds to `127.0.0.1:50051` (IPv4 loopback) instead of `[::1]:50051` (IPv6 loopback). The CLI default `--addr` tracks this change (`http://127.0.0.1:50051`). Motivation: several client HTTP/2 stacks (notably Elixir's `:grpc`/Gun adapter) can't pass the `:inet6` transport option needed to dial an IPv6-only listener through their `transport_opts` plumbing, so pure-IPv6 binding blocked off legitimate localhost clients. IPv4 loopback is still localhost-only and works for every stack. No change is needed for users who rely on the CLI default; anyone who passed `--addr http://[::1]:50051` explicitly must update to `http://127.0.0.1:50051`.
+
 ## [0.11.2] - 2026-04-20
 
 ### Added

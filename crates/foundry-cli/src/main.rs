@@ -16,7 +16,7 @@ pub mod proto {
 #[command(version)]
 struct Cli {
     /// Daemon address to connect to
-    #[arg(long, default_value = "http://[::1]:50051", global = true)]
+    #[arg(long, default_value = "http://127.0.0.1:50051", global = true)]
     addr: String,
 
     #[command(subcommand)]
