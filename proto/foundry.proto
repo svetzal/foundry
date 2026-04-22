@@ -29,6 +29,7 @@ message WorkflowStatus {
     string started_at = 5;
     string completed_at = 6;
     repeated TaskBlockStatus task_blocks = 7;
+    string trace_id = 8;      // Groups all events belonging to this workflow
 }
 
 message TaskBlockStatus {

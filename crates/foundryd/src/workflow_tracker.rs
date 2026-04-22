@@ -9,6 +9,7 @@ pub struct ActiveWorkflow {
     pub event_id: String,
     pub event_type: String,
     pub project: String,
+    pub trace_id: String,
     pub started_at: DateTime<Utc>,
 }
 
@@ -75,6 +76,7 @@ mod tests {
             event_id: id.to_string(),
             event_type: "test_event".to_string(),
             project: "test-project".to_string(),
+            trace_id: format!("trc_{id}"),
             started_at: Utc::now(),
         }
     }

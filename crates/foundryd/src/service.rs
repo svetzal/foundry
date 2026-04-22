@@ -192,8 +192,8 @@ impl Foundry for FoundryService {
         } else {
             req.trace_id
         };
-        let event =
-            Event::new(event_type, req.project, throttle, payload).with_trace_id(Some(trace_id));
+        let event = Event::new(event_type, req.project, throttle, payload)
+            .with_trace_id(Some(trace_id.clone()));
         let event_id = event.id.clone();
 
         tracing::info!(
@@ -209,6 +209,7 @@ impl Foundry for FoundryService {
             event_id: event_id.clone(),
             event_type: event.event_type.to_string(),
             project: event.project.clone(),
+            trace_id,
             started_at: chrono::Utc::now(),
         });
 
@@ -310,6 +311,7 @@ impl Foundry for FoundryService {
                 started_at: w.started_at.to_rfc3339(),
                 completed_at: String::new(),
                 task_blocks: vec![],
+                trace_id: w.trace_id,
             })
             .collect();
 
