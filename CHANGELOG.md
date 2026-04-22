@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-04-21
+
+### Added
+
+- `WorkflowStatus.trace_id` on the `Status` gRPC response. The root event's `trace_id` is now tracked on `ActiveWorkflow` and surfaced through `Status`, letting dashboards and external tools group the live `Watch` stream events by the workflow they belong to. Additive proto field (tag 8), backward-compatible for existing clients.
+
 ## [0.12.0] - 2026-04-20
 
 ### Changed
