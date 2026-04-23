@@ -52,6 +52,9 @@ impl TaskBlock for RouteGateResult {
         };
         let required_passed = p.required_passed;
         let retry_count = p.retry_count;
+        let results = p.results;
+        let execution_output = p.execution_output;
+        let context = p.context;
 
         Box::pin(async move {
             let workflow = WorkflowType::from_payload(&payload);
@@ -82,7 +85,9 @@ impl TaskBlock for RouteGateResult {
                     workflow,
                     completion_event_type,
                     retry_count,
-                    &payload,
+                    &results,
+                    execution_output,
+                    context,
                     throttle,
                 )
             };
@@ -149,34 +154,32 @@ fn handle_gates_passed(
     TaskBlockResult::success(format!("{project}: all required gates passed"), events)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_retry_or_exhaustion(
     project: &str,
     workflow: WorkflowType,
     completion_event_type: foundry_core::event::EventType,
     retry_count: u64,
-    payload: &serde_json::Value,
+    results: &[serde_json::Value],
+    execution_output: Option<String>,
+    context: foundry_core::payload::LoopContext,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
     let max_retries: u64 = 3;
     if retry_count < max_retries {
-        let failure_context = build_failure_context(payload);
+        let failure_context = build_failure_context(results);
         tracing::info!(
             project = %project,
             retry_count = retry_count,
             "gates failed, requesting retry"
         );
 
-        let prior_execution_output = payload
-            .get("execution_output")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        let context = foundry_core::payload::LoopContext::extract_from(payload);
         let event_payload = Event::serialize_payload(&RetryRequestedPayload {
             project: project.to_string(),
             workflow: workflow.to_string(),
             retry_count: retry_count + 1,
             failure_context,
-            prior_execution_output,
+            prior_execution_output: execution_output,
             context,
         })
         .expect("RetryRequestedPayload is infallibly serializable");
@@ -206,7 +209,7 @@ fn handle_retry_or_exhaustion(
         "gates failed, retries exhausted"
     );
 
-    let loop_context = payload.get("loop_context").cloned();
+    let loop_context = context.loop_context;
     let event_payload = Event::serialize_payload(&ProjectCompletedPayload {
         project: project.to_string(),
         success: false,
@@ -231,12 +234,8 @@ fn handle_retry_or_exhaustion(
     }
 }
 
-/// Build a summary of gate failures from the verification payload.
-fn build_failure_context(payload: &serde_json::Value) -> String {
-    let Some(results) = payload.get("results").and_then(serde_json::Value::as_array) else {
-        return "no gate results available".to_string();
-    };
-
+/// Build a summary of gate failures from the gate results slice.
+fn build_failure_context(results: &[serde_json::Value]) -> String {
     let failures: Vec<String> = results
         .iter()
         .filter(|r| !r.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(true))

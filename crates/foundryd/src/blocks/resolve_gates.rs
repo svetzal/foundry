@@ -2,16 +2,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::GateResolutionCompletedPayload;
+use foundry_core::payload::{CharterCheckCompletedPayload, GateResolutionCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use super::TriggerContext;
-
-/// Extract the `success` field from a `CharterCheckCompleted` payload.
-fn trigger_payload_success_field(payload: &serde_json::Value) -> bool {
-    payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false)
-}
 
 /// Reads `.hone-gates.json` from the project directory and emits `GateResolutionCompleted`
 /// with the gate definitions and workflow type.
@@ -48,6 +43,13 @@ impl TaskBlock for ResolveGates {
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
+        // Parse typed payload for CharterCheckCompleted before entering the async block.
+        let charter_payload = if event_type == EventType::CharterCheckCompleted {
+            trigger.parse_payload::<CharterCheckCompletedPayload>().ok()
+        } else {
+            None
+        };
+
         let entry = match super::require_project(&self.registry, &project) {
             Ok(e) => e,
             Err(result) => return Box::pin(async { Ok(result) }),
@@ -56,7 +58,7 @@ impl TaskBlock for ResolveGates {
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
             if event_type == EventType::CharterCheckCompleted {
-                let charter_success = trigger_payload_success_field(&payload);
+                let charter_success = charter_payload.as_ref().is_some_and(|p| p.success);
                 if !charter_success {
                     tracing::info!(project = %project, "charter check failed, skipping gate resolution");
                     return Ok(TaskBlockResult::success(
@@ -68,14 +70,15 @@ impl TaskBlock for ResolveGates {
 
             // Payload workflow overrides the event-type default — this allows
             // the prompt formation to carry workflow="prompt" through CharterCheckCompleted.
-            let workflow = payload.get("workflow").and_then(serde_json::Value::as_str).unwrap_or(
+            let workflow = if event_type == EventType::CharterCheckCompleted {
+                charter_payload.map_or_else(|| "iterate".to_string(), |p| p.workflow)
+            } else {
                 match event_type {
-                    EventType::CharterCheckCompleted => "iterate",
-                    EventType::MaintenanceRequested => "maintain",
-                    EventType::ValidationRequested => "validate",
-                    _ => "unknown",
-                },
-            );
+                    EventType::MaintenanceRequested => "maintain".to_string(),
+                    EventType::ValidationRequested => "validate".to_string(),
+                    _ => "unknown".to_string(),
+                }
+            };
 
             let project_path = std::path::Path::new(&entry.path);
             let gates = crate::gate_file::read_gates(project_path)?;
@@ -105,7 +108,7 @@ impl TaskBlock for ResolveGates {
             let chain = foundry_core::payload::ChainContext::extract_from(&payload);
             let event_payload = Event::serialize_payload(&GateResolutionCompletedPayload {
                 project: project.clone(),
-                workflow: workflow.to_string(),
+                workflow: workflow.clone(),
                 gates: serde_json::json!(gates_json),
                 chain,
             })?;

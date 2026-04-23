@@ -58,8 +58,10 @@ impl TaskBlock for DirectPrompt {
             });
         }
 
-        let prompt = payload
-            .get("prompt")
+        let prompt = p
+            .chain
+            .prompt
+            .as_ref()
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();

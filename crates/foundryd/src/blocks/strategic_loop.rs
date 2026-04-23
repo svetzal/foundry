@@ -100,31 +100,34 @@ fn handle_assessment_completed(
     payload: &serde_json::Value,
     p: &StrategicAssessmentCompletedPayload,
 ) -> TaskBlockResult {
-    let areas = p.areas.clone();
+    let areas = &p.areas;
 
     if areas.is_empty() {
         tracing::info!(project = %project, "no areas to improve, completing");
         return complete_loop(project, throttle, payload);
     }
 
-    let loop_context = p.loop_context.clone();
-
     let area = &areas[0];
-    let area_name = area.get("area").and_then(serde_json::Value::as_str).unwrap_or("unknown");
+    let area_name = &area.area;
     tracing::info!(
         project = %project,
         area = %area_name,
         "entering inner loop for first area"
     );
 
-    let mut updated_context = loop_context.clone();
-    updated_context["strategic"]["iteration"] = serde_json::json!(1);
-    updated_context["strategic"]["current_area"] = area.clone();
+    let area_value = serde_json::to_value(area).expect("AreaEntry is infallibly serializable");
+
+    let mut updated_context = p.loop_context.clone();
+    updated_context.strategic.iteration = 1;
+    updated_context.strategic.current_area = Some(area_value.clone());
+
+    let loop_ctx_value = serde_json::to_value(&updated_context)
+        .expect("StrategicLoopContext is infallibly serializable");
 
     let mut event_payload = serde_json::json!({
         "project": project,
-        "loop_context": updated_context,
-        "strategic_area": area,
+        "loop_context": loop_ctx_value,
+        "strategic_area": area_value,
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
@@ -149,15 +152,9 @@ async fn handle_inner_completed(
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let loop_context = p.loop_context.clone();
-
-    let iteration = loop_context["strategic"]
-        .get("iteration")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
-    let max = loop_context["strategic"]
-        .get("max")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(5);
+    let iteration = loop_context.strategic.iteration;
+    let max = loop_context.strategic.max;
+    let custom_prompt = loop_context.strategic.prompt.as_deref();
 
     let inner_success = p.success;
 
@@ -183,7 +180,6 @@ async fn handle_inner_completed(
     }
 
     // Use AI to decide whether to continue
-    let custom_prompt = loop_context["strategic"].get("prompt").and_then(serde_json::Value::as_str);
     let should_continue = assess_continue(project, entry.as_ref(), &agent, custom_prompt).await;
 
     if !should_continue {
@@ -204,11 +200,14 @@ async fn handle_inner_completed(
     );
 
     let mut updated_context = loop_context;
-    updated_context["strategic"]["iteration"] = serde_json::json!(next_iteration);
+    updated_context.strategic.iteration = next_iteration;
+
+    let loop_ctx_value = serde_json::to_value(&updated_context)
+        .expect("StrategicLoopContext is infallibly serializable");
 
     let mut event_payload = serde_json::json!({
         "project": project,
-        "loop_context": updated_context,
+        "loop_context": loop_ctx_value,
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 

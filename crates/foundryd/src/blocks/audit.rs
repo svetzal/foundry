@@ -130,28 +130,13 @@ impl AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // Payload fallback fields used when the project is not in the registry
-        // or when no release tags exist — preserves backward compatibility with
-        // integration tests that drive the block via synthetic payloads.
-        let (payload_cve, payload_vulnerable, payload_dirty) =
-            if let Ok(p) = trigger.parse_payload::<VulnerabilityDetectedPayload>() {
-                (p.cve, p.vulnerable, Some(p.dirty))
-            } else {
-                // Synthetic payload without all fields — fall back to direct access.
-                let cve = trigger
-                    .payload
-                    .get("cve")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string();
-                let vulnerable = trigger
-                    .payload
-                    .get("vulnerable")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-                let dirty = trigger.payload.get("dirty").and_then(serde_json::Value::as_bool);
-                (cve, vulnerable, dirty)
-            };
+        let p = match trigger.parse_payload::<VulnerabilityDetectedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let payload_cve = p.cve;
+        let payload_vulnerable = p.vulnerable;
+        let payload_dirty = Some(p.dirty);
 
         // Look up the project entry in the registry.
         let entry = self.registry.find_project(&project).cloned();

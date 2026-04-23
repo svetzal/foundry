@@ -160,8 +160,11 @@ pub struct GreetingDeliveredPayload {
 pub struct VulnerabilityDetectedPayload {
     pub cve: String,
     pub vulnerable: bool,
+    #[serde(default)]
     pub dirty: bool,
+    #[serde(default)]
     pub package: String,
+    #[serde(default)]
     pub severity: String,
 }
 
@@ -223,9 +226,12 @@ pub struct ReleaseRequestedPayload {
 /// Payload for `ReleaseCompleted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseCompletedPayload {
+    #[serde(default)]
     pub cve: String,
+    #[serde(default)]
     pub release: String,
-    pub new_tag: String,
+    #[serde(default)]
+    pub new_tag: Option<String>,
     pub success: bool,
 }
 
@@ -433,11 +439,18 @@ pub struct MaintenanceRequestedPayload {
 pub struct CharterCheckCompletedPayload {
     pub project: String,
     pub success: bool,
+    #[serde(default)]
     pub sources: Vec<serde_json::Value>,
+    #[serde(default)]
     pub guidance: String,
+    #[serde(default = "default_iterate_workflow")]
     pub workflow: String,
     #[serde(flatten)]
     pub chain: ChainContext,
+}
+
+fn default_iterate_workflow() -> String {
+    "iterate".to_string()
 }
 
 /// Payload for `AssessmentCompleted`.
@@ -495,13 +508,17 @@ pub struct MaintenanceRunStartedPayload {
     pub project_count: u64,
 }
 
-/// Payload for `MaintenanceRunCompleted`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Payload for `MaintenanceRunCompleted` (system-level, synthesised by the service layer).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MaintenanceRunCompletedPayload {
-    pub project_count: u64,
-    pub success_count: u64,
-    pub failure_count: u64,
-    pub duration_ms: u64,
+    #[serde(default)]
+    pub project_trace_ids: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub skipped_projects: Vec<String>,
+    #[serde(default)]
+    pub total_duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -532,12 +549,50 @@ pub struct ValidationCompletedPayload {
 // Strategic loop workflow
 // ---------------------------------------------------------------------------
 
+fn default_strategic_max() -> u64 {
+    5
+}
+
+/// Typed sub-fields of `loop_context.strategic`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategicContext {
+    #[serde(default)]
+    pub iteration: u64,
+    #[serde(default = "default_strategic_max")]
+    pub max: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_area: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_areas: Option<u64>,
+}
+
+/// Typed `loop_context` payload used by the strategic loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategicLoopContext {
+    pub strategic: StrategicContext,
+}
+
+/// A single improvement area from a strategic assessment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaEntry {
+    pub area: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Captures any additional fields the AI assessment may include.
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
 /// Payload for `StrategicAssessmentCompleted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategicAssessmentCompletedPayload {
     pub project: String,
-    pub areas: Vec<serde_json::Value>,
-    pub loop_context: serde_json::Value,
+    pub areas: Vec<AreaEntry>,
+    pub loop_context: StrategicLoopContext,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<serde_json::Value>,
 }
@@ -551,7 +606,7 @@ pub struct InnerIterationCompletedPayload {
     pub summary: String,
     #[serde(default)]
     pub workflow: String,
-    pub loop_context: serde_json::Value,
+    pub loop_context: StrategicLoopContext,
 }
 
 /// Payload for `StrategicCycleCompleted` (terminal event from strategic loop).

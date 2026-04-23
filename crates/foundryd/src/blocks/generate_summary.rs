@@ -5,6 +5,9 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{
+    LocalInstallCompletedPayload, MaintenanceRunCompletedPayload, ReleaseCompletedPayload,
+};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
 
@@ -96,14 +99,11 @@ fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoRelea
         .iter()
         .filter(|e| e.event_type == EventType::ReleaseCompleted)
         .map(|e| {
-            let new_tag =
-                e.payload.get("new_tag").and_then(|v| v.as_str()).map(ToString::to_string);
-            let success =
-                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let p = e.parse_payload::<ReleaseCompletedPayload>().ok();
             AutoReleaseEntry {
                 name: project.to_string(),
-                new_tag,
-                success,
+                new_tag: p.as_ref().and_then(|p| p.new_tag.clone()),
+                success: p.is_some_and(|p| p.success),
             }
         })
         .collect()
@@ -116,18 +116,14 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .iter()
         .filter(|e| e.event_type == EventType::LocalInstallCompleted)
         .map(|e| {
-            let method = e
-                .payload
-                .get("method")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            let success =
-                e.payload.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let p = e.parse_payload::<LocalInstallCompletedPayload>().ok();
             LocalInstallEntry {
                 name: project.to_string(),
-                method,
-                success,
+                method: p
+                    .as_ref()
+                    .and_then(|p| p.method.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                success: p.is_some_and(|p| p.success),
             }
         })
         .collect()
@@ -145,26 +141,17 @@ impl TaskBlock for GenerateSummary {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let payload = trigger.payload.clone();
+        let p = match trigger.parse_payload::<MaintenanceRunCompletedPayload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();
 
         Box::pin(async move {
-            // Extract per-project trace IDs from the payload.
-            let project_trace_ids: std::collections::HashMap<String, String> = payload
-                .get("project_trace_ids")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
-
-            let skipped_projects: Vec<String> = payload
-                .get("skipped_projects")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
-
-            let total_duration_ms: u64 = payload
-                .get("total_duration_ms")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
+            let project_trace_ids = p.project_trace_ids;
+            let skipped_projects = p.skipped_projects;
+            let total_duration_ms = p.total_duration_ms;
 
             let mut projects = Vec::new();
             let mut release_audits = Vec::new();
