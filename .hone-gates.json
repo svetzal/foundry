@@ -16,6 +16,11 @@
       "required": true
     },
     {
+      "name": "coverage",
+      "command": "cargo tarpaulin --workspace --fail-under 61",
+      "required": true
+    },
+    {
       "name": "deny",
       "command": "cargo deny check",
       "required": true

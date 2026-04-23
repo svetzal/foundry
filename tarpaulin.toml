@@ -4,6 +4,8 @@
 [report]
 # Output formats
 out-type = ["Html", "Lcov"]
+# Write coverage artifacts into a gitignored directory
+output-dir = "coverage"
 
 [run]
 # Timeout for test execution (in seconds)
