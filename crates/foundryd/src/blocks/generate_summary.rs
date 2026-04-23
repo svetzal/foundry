@@ -44,14 +44,58 @@ impl GenerateSummary {
     }
 }
 
-/// Extract per-project status from a trace's `ProcessResult`.
-fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
-    let failed_block = result.block_executions.iter().find(|b| !b.success);
+/// Terminal completion event types whose `success` payload field determines
+/// overall project outcome in a maintenance run trace.
+///
+/// When a trace contains one of these events, its `success` field is
+/// authoritative — intermediate block failures (e.g. partial plan creation,
+/// retry requests) are irrelevant to the overall project status.
+const PROJECT_TERMINAL_EVENTS: &[EventType] = &[
+    EventType::ProjectIterationCompleted,
+    EventType::ProjectMaintenanceCompleted,
+];
 
-    let status = if let Some(block) = failed_block {
-        ProjectStatus::Failed(block.summary.clone())
+/// Extract per-project status from a trace's `ProcessResult`.
+///
+/// Terminal completion events (`ProjectIterationCompleted`,
+/// `ProjectMaintenanceCompleted`) are checked first — their `success` payload
+/// field is authoritative. An iterate run that concludes with
+/// `project_iteration_completed.success=true` (e.g. "no changes needed")
+/// renders as `Success` even when intermediate blocks had `success=false`.
+///
+/// Falls back to scanning `block_executions` only when no terminal event is
+/// present (workflow never reached completion).
+fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
+    let terminal_event =
+        result.events.iter().find(|e| PROJECT_TERMINAL_EVENTS.contains(&e.event_type));
+
+    let status = if let Some(event) = terminal_event {
+        let success = event.payload_bool_or("success", false);
+        if success {
+            ProjectStatus::Success
+        } else {
+            // Use the payload's summary field as the failure reason.
+            // Fall back to the first failed block's summary if the event
+            // summary is absent or empty.
+            let reason = event
+                .payload_str("summary")
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| {
+                    result.block_executions.iter().find(|b| !b.success).map(|b| b.summary.clone())
+                })
+                .unwrap_or_else(|| "workflow failed".to_string());
+            ProjectStatus::Failed(reason)
+        }
     } else {
-        ProjectStatus::Success
+        // No terminal event — workflow did not complete normally.
+        // Fall back to looking for a failed block execution.
+        let failed_block = result.block_executions.iter().find(|b| !b.success);
+        if let Some(block) = failed_block {
+            ProjectStatus::Failed(block.summary.clone())
+        } else {
+            ProjectStatus::Success
+        }
     };
 
     ProjectResult {
@@ -253,6 +297,94 @@ mod tests {
     use foundry_core::event::{Event, EventType};
     use foundry_core::throttle::Throttle;
     use foundry_core::trace::{BlockExecution, ProcessResult};
+
+    fn block_execution(name: &str, success: bool, summary: &str) -> BlockExecution {
+        BlockExecution {
+            block_name: name.to_string(),
+            trigger_event_id: "evt_root".to_string(),
+            success,
+            summary: summary.to_string(),
+            emitted_event_ids: vec![],
+            duration_ms: 1000,
+            raw_output: None,
+            exit_code: None,
+            trigger_payload: serde_json::json!({}),
+            emitted_payloads: vec![],
+            audit_artifacts: vec![],
+        }
+    }
+
+    /// Simulate the "no changes needed" iterate scenario (the context-mixer2 2026-04-23 incident):
+    /// - A `Create Plan` block with `success=false` at the block level (plan agent returned
+    ///   `AgentFailed` but still emitted `PlanCompleted`, allowing the chain to continue)
+    /// - The execute agent concluded "no changes needed" — success=true
+    /// - `project_iteration_completed.success=true` (authoritative outcome)
+    fn iterate_no_changes_needed_trace(project: &str) -> ProcessResult {
+        let root = Event::new(
+            EventType::IterationRequested,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": project, "workflow": "iterate"}),
+        );
+        let completion = Event::new(
+            EventType::ProjectIterationCompleted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": project,
+                "success": true,
+                "summary": "all required gates passed",
+                "workflow": "iterate",
+            }),
+        );
+        ProcessResult {
+            events: vec![root, completion],
+            block_executions: vec![
+                block_execution(
+                    "Create Plan",
+                    false, // plan agent returned AgentFailed at block level
+                    &format!("{project}: plan created for unknown violation"),
+                ),
+                block_execution("Execute Plan", true, "plan execution completed"),
+                block_execution(
+                    "Route Gate Result",
+                    true,
+                    &format!("{project}: all required gates passed"),
+                ),
+            ],
+            total_duration_ms: 20_000,
+        }
+    }
+
+    /// Simulate a genuinely failed iterate: retries exhausted, terminal event has success=false.
+    fn iterate_genuinely_failed_trace(project: &str) -> ProcessResult {
+        let root = Event::new(
+            EventType::IterationRequested,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": project, "workflow": "iterate"}),
+        );
+        let completion = Event::new(
+            EventType::ProjectIterationCompleted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": project,
+                "success": false,
+                "summary": "gates failed after 3 retries",
+                "workflow": "iterate",
+            }),
+        );
+        ProcessResult {
+            events: vec![root, completion],
+            block_executions: vec![block_execution(
+                "Route Gate Result",
+                false,
+                &format!("{project}: gates failed after 3 retries"),
+            )],
+            total_duration_ms: 60_000,
+        }
+    }
 
     fn make_trace_writer(dir: &std::path::Path) -> Arc<TraceWriter> {
         Arc::new(TraceWriter::new(dir.to_str().unwrap()))
@@ -537,6 +669,71 @@ mod tests {
         assert!(md.contains("- Total projects: 0"));
     }
 
+    /// Regression test for the context-mixer2 2026-04-23 incident.
+    ///
+    /// A project whose iterate workflow concludes "no changes needed"
+    /// (project_iteration_completed.success=true) must NOT appear in the
+    /// Failures section of the generated summary, even when intermediate
+    /// blocks (e.g. Create Plan) had success=false at the block level.
+    #[tokio::test]
+    async fn iterate_no_changes_needed_does_not_appear_in_failures() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+
+        tw.write("evt_proj", &iterate_no_changes_needed_trace("context-mixer2"))
+            .unwrap();
+
+        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+
+        let trigger = make_trigger(serde_json::json!({
+            "project_trace_ids": {"context-mixer2": "evt_proj"},
+            "total_duration_ms": 20000
+        }));
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let md = result.raw_output.unwrap();
+        assert!(md.contains("context-mixer2"), "project must appear in the status table");
+        assert!(!md.contains("## Failures"), "Failures section must NOT be present");
+        assert!(
+            md.contains("\u{2705} success"),
+            "project must render as success in the status table"
+        );
+    }
+
+    /// Companion test: a genuinely failed iterate must still appear in Failures.
+    #[tokio::test]
+    async fn iterate_genuinely_failed_appears_in_failures() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+
+        tw.write("evt_proj", &iterate_genuinely_failed_trace("bad-project")).unwrap();
+
+        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+
+        let trigger = make_trigger(serde_json::json!({
+            "project_trace_ids": {"bad-project": "evt_proj"},
+            "total_duration_ms": 60000
+        }));
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let md = result.raw_output.unwrap();
+        assert!(
+            md.contains("## Failures"),
+            "Failures section must be present for a genuine failure"
+        );
+        assert!(md.contains("bad-project"), "failed project must appear in Failures");
+        assert!(
+            md.contains("gates failed after 3 retries"),
+            "failure reason from terminal event summary must appear"
+        );
+    }
+
     // -- Extract function unit tests --
 
     #[test]
@@ -557,6 +754,35 @@ mod tests {
         if let ProjectStatus::Failed(reason) = &result.status {
             assert!(reason.contains("cargo clippy failed"));
         }
+    }
+
+    /// Regression test for the context-mixer2 2026-04-23 incident.
+    ///
+    /// An iterate workflow where the execute phase concluded "no changes needed"
+    /// has `project_iteration_completed.success=true`, even when an intermediate
+    /// block (e.g. Create Plan) had `success=false` at the block level. The
+    /// terminal event's success field must take precedence.
+    #[test]
+    fn extract_project_result_terminal_success_overrides_failed_intermediate_block() {
+        let trace = iterate_no_changes_needed_trace("context-mixer2");
+        let result = extract_project_result("context-mixer2", &trace);
+        assert_eq!(result.name, "context-mixer2");
+        assert_eq!(
+            result.status,
+            ProjectStatus::Success,
+            "project_iteration_completed.success=true must override a failed Create Plan block"
+        );
+    }
+
+    #[test]
+    fn extract_project_result_terminal_failure_uses_event_summary() {
+        let trace = iterate_genuinely_failed_trace("my-project");
+        let result = extract_project_result("my-project", &trace);
+        assert_eq!(result.name, "my-project");
+        assert!(
+            matches!(&result.status, ProjectStatus::Failed(r) if r.contains("gates failed after 3 retries")),
+            "failure reason should come from the terminal event's summary field"
+        );
     }
 
     #[test]

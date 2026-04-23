@@ -103,11 +103,16 @@ impl TaskBlock for CreatePlan {
 
             let response = agent.invoke(&request).await;
 
-            let (plan, success) = match AgentOutcome::from_response(response) {
-                AgentOutcome::Success { stdout } => (stdout.trim().to_string(), true),
+            let (plan, success, block_summary) = match AgentOutcome::from_response(response) {
+                AgentOutcome::Success { stdout } => {
+                    let summary = format!("{project}: plan created ({principle})");
+                    (stdout.trim().to_string(), true, summary)
+                }
                 AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(project = %project, stderr = %stderr, "plan agent failed");
-                    (format!("Plan generation failed: {stderr}"), false)
+                    let first_line = stderr.lines().next().unwrap_or("agent failed");
+                    let summary = format!("{project}: plan generation failed: {first_line}");
+                    (format!("Plan generation failed: {stderr}"), false, summary)
                 }
                 AgentOutcome::Unavailable { error } => {
                     tracing::warn!(error = %error, "agent invocation failed for plan");
@@ -115,7 +120,7 @@ impl TaskBlock for CreatePlan {
                 }
             };
 
-            tracing::info!(project = %project, success = success, "plan created");
+            tracing::info!(project = %project, success = success, "plan creation complete");
 
             let chain = ChainContext::extract_from(&payload);
             let event_payload = Event::serialize_payload(&PlanCompletedPayload {
@@ -136,7 +141,7 @@ impl TaskBlock for CreatePlan {
                     event_payload,
                 )],
                 success,
-                summary: format!("{project}: plan created for {principle} violation"),
+                summary: block_summary,
                 raw_output: None,
                 exit_code: None,
                 audit_artifacts: vec![],
