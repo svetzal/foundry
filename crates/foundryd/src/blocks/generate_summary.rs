@@ -6,7 +6,8 @@ use chrono::Utc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    LocalInstallCompletedPayload, MaintenanceRunCompletedPayload, ReleaseCompletedPayload,
+    LocalInstallCompletedPayload, MaintenanceRunCompletedPayload, ProjectCompletedPayload,
+    ReleaseCompletedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
@@ -47,14 +48,54 @@ impl GenerateSummary {
     }
 }
 
-/// Extract per-project status from a trace's `ProcessResult`.
-fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
-    let failed_block = result.block_executions.iter().find(|b| !b.success);
+/// Terminal completion event types whose `success` payload field determines
+/// overall chain outcome — mirrors `TERMINAL_EVENT_TYPES` in `foundry_core::trace`.
+const TERMINAL_EVENT_TYPES: &[EventType] = &[
+    EventType::ProjectIterationCompleted,
+    EventType::ProjectMaintenanceCompleted,
+    EventType::InnerIterationCompleted,
+];
 
-    let status = if let Some(block) = failed_block {
-        ProjectStatus::Failed(block.summary.clone())
+/// Extract per-project status from a trace's `ProcessResult`.
+///
+/// When the trace contains terminal completion events (e.g.
+/// `ProjectIterationCompleted`), their `success` payload field is authoritative.
+/// Intermediate retry failures are irrelevant — a retry-recovered iteration must
+/// be classified as `Success` when the terminal event reports `success: true`.
+/// Falls back to inspecting block executions when no terminal event is present.
+fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
+    let terminal_events: Vec<&Event> = result
+        .events
+        .iter()
+        .filter(|e| TERMINAL_EVENT_TYPES.contains(&e.event_type))
+        .collect();
+
+    let status = if terminal_events.is_empty() {
+        // Fallback: no terminal events, inspect block results directly.
+        match result.block_executions.iter().find(|b| !b.success) {
+            None => ProjectStatus::Success,
+            Some(block) => ProjectStatus::Failed(block.summary.clone()),
+        }
     } else {
-        ProjectStatus::Success
+        // Terminal events are authoritative: success iff ALL report success=true.
+        let all_success = terminal_events
+            .iter()
+            .all(|e| e.parse_payload::<ProjectCompletedPayload>().is_ok_and(|p| p.success));
+        if all_success {
+            ProjectStatus::Success
+        } else {
+            // Use the summary from the first failed terminal event.
+            let summary = terminal_events
+                .iter()
+                .find_map(|e| {
+                    e.parse_payload::<ProjectCompletedPayload>()
+                        .ok()
+                        .filter(|p| !p.success)
+                        .map(|p| p.summary)
+                })
+                .unwrap_or_else(|| "iteration failed".to_string());
+            ProjectStatus::Failed(summary)
+        }
     };
 
     ProjectResult {
@@ -238,6 +279,7 @@ impl TaskBlock for GenerateSummary {
 mod tests {
     use super::*;
     use foundry_core::event::{Event, EventType};
+    use foundry_core::payload::ProjectCompletedPayload;
     use foundry_core::throttle::Throttle;
     use foundry_core::trace::{BlockExecution, ProcessResult};
 
@@ -571,5 +613,133 @@ mod tests {
         assert_eq!(installs.len(), 1);
         assert_eq!(installs[0].method, "brew");
         assert!(installs[0].success);
+    }
+
+    // -- extract_project_result regression tests --
+
+    fn failed_block_execution(name: &str, summary: &str) -> BlockExecution {
+        BlockExecution {
+            block_name: name.to_string(),
+            trigger_event_id: "evt_root".to_string(),
+            success: false,
+            summary: summary.to_string(),
+            emitted_event_ids: vec![],
+            duration_ms: 1000,
+            raw_output: None,
+            exit_code: Some(1),
+            trigger_payload: serde_json::json!({}),
+            emitted_payloads: vec![],
+            audit_artifacts: vec![],
+        }
+    }
+
+    fn terminal_event(project: &str, event_type: EventType, success: bool, summary: &str) -> Event {
+        let payload = serde_json::to_value(ProjectCompletedPayload {
+            project: project.to_string(),
+            success,
+            summary: summary.to_string(),
+            workflow: "iterate".to_string(),
+            loop_context: None,
+        })
+        .expect("ProjectCompletedPayload is infallibly serializable");
+        Event::new(event_type, project.to_string(), Throttle::Full, payload)
+    }
+
+    /// A trace where multiple blocks failed but the terminal event reports success —
+    /// the classic retry-recovered scenario.
+    fn retry_recovered_trace(project: &str) -> ProcessResult {
+        let root = Event::new(
+            EventType::MaintenanceRunStarted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let terminal = terminal_event(
+            project,
+            EventType::ProjectIterationCompleted,
+            true,
+            "iteration complete",
+        );
+        ProcessResult {
+            events: vec![root, terminal],
+            block_executions: vec![
+                failed_block_execution("Create Plan", "plan creation failed"),
+                failed_block_execution("Retry Execution 1", "retry 1 failed: agent failed"),
+                failed_block_execution("Retry Execution 2", "retry 2 failed: agent failed"),
+                BlockExecution {
+                    block_name: "Retry Execution 3".to_string(),
+                    trigger_event_id: "evt_root".to_string(),
+                    success: true,
+                    summary: "retry 3 succeeded".to_string(),
+                    emitted_event_ids: vec![],
+                    duration_ms: 5000,
+                    raw_output: None,
+                    exit_code: None,
+                    trigger_payload: serde_json::json!({}),
+                    emitted_payloads: vec![],
+                    audit_artifacts: vec![],
+                },
+            ],
+            total_duration_ms: 30000,
+        }
+    }
+
+    #[test]
+    fn extract_project_result_retry_recovered() {
+        let result = retry_recovered_trace("evt-cli");
+        let project_result = extract_project_result("evt-cli", &result);
+        assert_eq!(project_result.status, ProjectStatus::Success);
+    }
+
+    #[test]
+    fn extract_project_result_terminal_failure_overrides_block_success() {
+        let root = Event::new(
+            EventType::MaintenanceRunStarted,
+            "proj".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let terminal = terminal_event(
+            "proj",
+            EventType::ProjectIterationCompleted,
+            false,
+            "some failure reason",
+        );
+        let result = ProcessResult {
+            events: vec![root, terminal],
+            block_executions: vec![BlockExecution {
+                block_name: "Run Gates".to_string(),
+                trigger_event_id: "evt_root".to_string(),
+                success: true,
+                summary: "all passed".to_string(),
+                emitted_event_ids: vec![],
+                duration_ms: 500,
+                raw_output: None,
+                exit_code: None,
+                trigger_payload: serde_json::json!({}),
+                emitted_payloads: vec![],
+                audit_artifacts: vec![],
+            }],
+            total_duration_ms: 500,
+        };
+        let project_result = extract_project_result("proj", &result);
+        assert_eq!(project_result.status, ProjectStatus::Failed("some failure reason".to_string()));
+    }
+
+    #[test]
+    fn extract_project_result_falls_back_to_blocks_without_terminal() {
+        let root = Event::new(
+            EventType::MaintenanceRunStarted,
+            "proj".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = ProcessResult {
+            events: vec![root],
+            block_executions: vec![failed_block_execution("Build", "block failed reason")],
+            total_duration_ms: 2000,
+        };
+        let project_result = extract_project_result("proj", &result);
+        assert_eq!(project_result.status, ProjectStatus::Failed("block failed reason".to_string()));
     }
 }

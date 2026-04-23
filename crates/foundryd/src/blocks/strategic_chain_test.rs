@@ -19,7 +19,7 @@ use crate::gateway::{AgentGateway, ShellGateway};
 /// Build the full strategic loop engine with inner iterate chain.
 fn strategic_engine(
     shell: Arc<dyn ShellGateway>,
-    agent: Arc<dyn AgentGateway>,
+    agent: &Arc<dyn AgentGateway>,
     registry: Arc<Registry>,
 ) -> Engine {
     let mut engine = Engine::new();
@@ -114,7 +114,7 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
         "HEADLINE: Improve test coverage\nSUMMARY: Added tests.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), &agent, registry);
     let result = engine.process(strategic_iteration_requested()).await;
 
     // Collect event types
@@ -194,7 +194,7 @@ async fn strategic_loop_stops_at_max_iterations() {
         "HEADLINE: Fix naming\nSUMMARY: Renamed.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), &agent, registry);
     let result = engine.process(trigger).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
@@ -246,7 +246,7 @@ async fn non_strategic_iteration_still_works() {
         "HEADLINE: Improve clarity\nSUMMARY: Clarified.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(test_helpers::passing_shell(), &agent, registry);
     let result = engine.process(non_strategic_iteration_requested()).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();

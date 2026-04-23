@@ -1,7 +1,7 @@
 //! Integration tests for the prompt-driven workflow formation.
 //!
 //! Verifies:
-//! - Happy path: PromptExecutionRequested → charter check → gates → preflight
+//! - Happy path: `PromptExecutionRequested` → charter check → gates → preflight
 //!   → direct prompt → execute → verify → completion → summarise → commit
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
@@ -19,7 +19,7 @@ use crate::gateway::{AgentGateway, ShellGateway};
 
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
-    agent: Arc<dyn AgentGateway>,
+    agent: &Arc<dyn AgentGateway>,
     registry: Arc<Registry>,
 ) -> Engine {
     let mut engine = Engine::new();
@@ -72,7 +72,7 @@ async fn prompt_workflow_happy_path() {
         "HEADLINE: Implement feature\nSUMMARY: Implemented the requested feature.",
     ]);
 
-    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = prompt_engine(test_helpers::passing_shell(), &agent, registry);
 
     let trigger = Event::new(
         EventType::PromptExecutionRequested,
@@ -154,9 +154,9 @@ async fn prompt_workflow_charter_failure_stops_chain() {
 
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
-    let agent = FakeAgentGateway::success();
+    let agent: Arc<dyn AgentGateway> = FakeAgentGateway::success();
 
-    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = prompt_engine(test_helpers::passing_shell(), &agent, registry);
 
     let trigger = Event::new(
         EventType::PromptExecutionRequested,

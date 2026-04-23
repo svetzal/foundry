@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(json["dirty"], true);
         let p2: MainBranchAuditedPayload = serde_json::from_value(json).unwrap();
         assert_eq!(p2.project, "my-project");
-        assert_eq!(p2.dirty, true);
+        assert!(p2.dirty);
     }
 
     #[test]

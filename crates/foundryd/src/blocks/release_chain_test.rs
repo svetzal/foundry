@@ -1,11 +1,11 @@
 //! Integration tests for the manual release workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: ReleaseRequested -> ReleaseCompleted -> ReleasePipelineCompleted
-//!   -> LocalInstallCompleted
+//! - Happy path: `ReleaseRequested` -> `ReleaseCompleted` -> `ReleasePipelineCompleted`
+//!   -> `LocalInstallCompleted`
 //! - Action flag guard: release=false stops the chain
-//! - Missing AGENTS.md: ExecuteRelease fails gracefully
-//! - No install config: chain completes with LocalInstallCompleted { status: "skipped" }
+//! - Missing AGENTS.md: `ExecuteRelease` fails gracefully
+//! - No install config: chain completes with `LocalInstallCompleted` { status: "skipped" }
 //! - Dry run: synthetic events flow through the full chain
 
 use std::sync::Arc;

@@ -1,9 +1,9 @@
 //! Integration tests for the full native maintain workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: MaintenanceRequested -> GateResolutionCompleted -> ExecutionCompleted
-//!   -> GateVerificationCompleted -> ProjectMaintenanceCompleted -> SummarizeCompleted
-//! - Retry path: gate failure triggers RetryRequested -> RetryExecution -> loop
+//! - Happy path: `MaintenanceRequested` -> `GateResolutionCompleted` -> `ExecutionCompleted`
+//!   -> `GateVerificationCompleted` -> `ProjectMaintenanceCompleted` -> `SummarizeCompleted`
+//! - Retry path: gate failure triggers `RetryRequested` -> `RetryExecution` -> loop
 
 use std::sync::Arc;
 
