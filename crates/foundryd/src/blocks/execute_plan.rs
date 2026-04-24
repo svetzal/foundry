@@ -67,16 +67,10 @@ impl TaskBlock for ExecutePlan {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
-        let plan_payload = match trigger.parse_payload::<PlanCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let plan_payload = parse_payload!(trigger, PlanCompletedPayload);
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);

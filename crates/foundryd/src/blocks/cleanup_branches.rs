@@ -168,10 +168,7 @@ impl TaskBlock for CleanupBranches {
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
-        let p = match trigger.parse_payload::<ProjectValidationCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, ProjectValidationCompletedPayload);
         let status_ok = p.status == "ok";
 
         Box::pin(async move {

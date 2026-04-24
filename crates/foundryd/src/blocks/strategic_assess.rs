@@ -52,25 +52,17 @@ impl TaskBlock for StrategicAssessor {
 
         // Self-filter: only run when strategic mode is requested.
         // When strategic=false or absent, the existing CheckCharter path handles it.
-        let p = match trigger.parse_payload::<IterationRequestedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, IterationRequestedPayload);
         let strategic = p.strategic.unwrap_or(false);
 
         if !strategic {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: not a strategic iteration", vec![]))
-            });
+            return skip!("Skipped: not a strategic iteration");
         }
 
         let max_iterations = p.max_iterations.unwrap_or(5);
         let strategic_prompt = p.strategic_prompt.clone();
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

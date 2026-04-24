@@ -47,21 +47,13 @@ impl TaskBlock for CreatePlan {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only create plan for accepted triages
-        let p = match trigger.parse_payload::<TriageCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, TriageCompletedPayload);
 
         if !p.accepted {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: triage was rejected", vec![]))
-            });
+            return skip!("Skipped: triage was rejected");
         }
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         let principle = p.principle.clone();

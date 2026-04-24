@@ -30,6 +30,64 @@ macro_rules! task_block_meta {
     };
 }
 
+/// Early-return a deserialized payload from the trigger event.
+///
+/// Expands to a `match` that returns the deserialized value on success or
+/// propagates the parse error as `Err(e)` (wrapped in a `Box::pin(async move)`)
+/// on failure.  Must be called inside `execute()` before the `Box::pin(async
+/// move { … })` boundary.
+///
+/// # Usage
+///
+/// ```ignore
+/// let p = parse_payload!(trigger, MyPayload);
+/// ```
+macro_rules! parse_payload {
+    ($trigger:expr, $Payload:ty) => {
+        match $trigger.parse_payload::<$Payload>() {
+            Ok(p) => p,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        }
+    };
+}
+
+/// Early-return a project registry lookup from `self.registry`.
+///
+/// Expands to a `match` that returns the `ProjectEntry` on success or
+/// returns `Ok(result)` (a not-found failure `TaskBlockResult`) on failure.
+/// Requires `self.registry` and that the calling module has `require_project`
+/// visible as `super::require_project`.
+///
+/// # Usage
+///
+/// ```ignore
+/// let entry = require_project!(self, project);
+/// ```
+macro_rules! require_project {
+    ($self:expr, $project:expr) => {
+        match super::require_project(&$self.registry, &$project) {
+            Ok(e) => e,
+            Err(result) => return Box::pin(async { Ok(result) }),
+        }
+    };
+}
+
+/// Return a skipped-success result from `execute()`.
+///
+/// Expands to `Box::pin(async { Ok(TaskBlockResult::success(msg, vec![])) })`.
+/// Use with `return skip!(...)`.
+///
+/// # Usage
+///
+/// ```ignore
+/// return skip!("Skipped: not applicable");
+/// ```
+macro_rules! skip {
+    ($msg:expr) => {
+        Box::pin(async { Ok(foundry_core::task_block::TaskBlockResult::success($msg, vec![])) })
+    };
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

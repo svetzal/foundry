@@ -54,10 +54,7 @@ impl TaskBlock for RunPreflightGates {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let p = match trigger.parse_payload::<GateResolutionCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, GateResolutionCompletedPayload);
         let workflow = WorkflowType::from_payload(&payload);
 
         let registry = Arc::clone(&self.registry);
@@ -70,25 +67,21 @@ impl TaskBlock for RunPreflightGates {
             if workflow != WorkflowType::Iterate && workflow != WorkflowType::Validate {
                 tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate/validate workflow");
 
-                let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
-                    project: project.clone(),
-                    workflow: workflow.to_string(),
-                    all_passed: true,
-                    required_passed: true,
-                    skipped: Some(true),
-                    results: vec![],
-                    chain,
-                })?;
-
-                return Ok(TaskBlockResult::success(
+                return super::emit_result(
                     format!("{project}: preflight skipped for {workflow} workflow"),
-                    vec![Event::new(
-                        EventType::PreflightCompleted,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                ));
+                    EventType::PreflightCompleted,
+                    &project,
+                    throttle,
+                    &PreflightCompletedPayload {
+                        project: project.clone(),
+                        workflow: workflow.to_string(),
+                        all_passed: true,
+                        required_passed: true,
+                        skipped: Some(true),
+                        results: vec![],
+                        chain,
+                    },
+                );
             }
 
             // Parse gate definitions from typed payload
@@ -98,25 +91,21 @@ impl TaskBlock for RunPreflightGates {
             if gates.is_empty() {
                 tracing::info!(project = %project, "no gates defined, preflight passes");
 
-                let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
-                    project: project.clone(),
-                    workflow: workflow.to_string(),
-                    all_passed: true,
-                    required_passed: true,
-                    skipped: None,
-                    results: vec![],
-                    chain,
-                })?;
-
-                return Ok(TaskBlockResult::success(
+                return super::emit_result(
                     format!("{project}: no gates defined, preflight passes"),
-                    vec![Event::new(
-                        EventType::PreflightCompleted,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                ));
+                    EventType::PreflightCompleted,
+                    &project,
+                    throttle,
+                    &PreflightCompletedPayload {
+                        project: project.clone(),
+                        workflow: workflow.to_string(),
+                        all_passed: true,
+                        required_passed: true,
+                        skipped: None,
+                        results: vec![],
+                        chain,
+                    },
+                );
             }
 
             let entry = match super::require_project(&registry, &project) {

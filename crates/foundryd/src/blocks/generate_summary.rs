@@ -141,10 +141,7 @@ impl TaskBlock for GenerateSummary {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let p = match trigger.parse_payload::<MaintenanceRunCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, MaintenanceRunCompletedPayload);
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();
 

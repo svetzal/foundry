@@ -34,10 +34,7 @@ impl TaskBlock for CheckPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let shell = Arc::clone(&self.shell);
 
         Box::pin(run_check(project, throttle, entry, shell))

@@ -213,21 +213,14 @@ impl TaskBlock for CommitAndPush {
         );
         if is_completion_event && has_loop_context(&trigger.payload) {
             tracing::info!(%project, "inside nested loop, skipping commit on intermediate completion");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success(
-                    "Skipped: inside nested loop (intermediate completion)",
-                    vec![],
-                ))
-            });
+            return skip!("Skipped: inside nested loop (intermediate completion)");
         }
 
         // Self-filter: when the payload explicitly signals no changes were made, skip early.
         let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
         if changes_flag == Some(false) {
             tracing::info!(%project, "payload indicates no changes, skipping commit");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("No changes to commit", vec![]))
-            });
+            return skip!("No changes to commit");
         }
 
         let cve = trigger

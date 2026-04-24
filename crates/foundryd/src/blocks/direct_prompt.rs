@@ -41,21 +41,14 @@ impl TaskBlock for DirectPrompt {
 
         // Self-filter: only run for prompt workflow
         if workflow != WorkflowType::Prompt {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: not a prompt workflow", vec![]))
-            });
+            return skip!("Skipped: not a prompt workflow");
         }
 
-        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, PreflightCompletedPayload);
         let all_passed = p.all_passed;
 
         if !all_passed {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: preflight gates did not pass", vec![]))
-            });
+            return skip!("Skipped: preflight gates did not pass");
         }
 
         let prompt = p
@@ -80,26 +73,22 @@ impl TaskBlock for DirectPrompt {
             );
 
             let chain = ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&PlanCompletedPayload {
-                project: project.clone(),
-                plan: prompt.clone(),
-                // prompt workflow doesn't have a principle/category/assessment
-                principle: String::new(),
-                category: String::new(),
-                assessment: String::new(),
-                workflow: WorkflowType::Prompt.to_string(),
-                chain,
-            })?;
-
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("{project}: prompt forwarded to execution"),
-                vec![Event::new(
-                    EventType::PlanCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-            ))
+                EventType::PlanCompleted,
+                &project,
+                throttle,
+                &PlanCompletedPayload {
+                    project: project.clone(),
+                    plan: prompt.clone(),
+                    // prompt workflow doesn't have a principle/category/assessment
+                    principle: String::new(),
+                    category: String::new(),
+                    assessment: String::new(),
+                    workflow: WorkflowType::Prompt.to_string(),
+                    chain,
+                },
+            )
         })
     }
 }

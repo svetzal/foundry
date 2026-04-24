@@ -34,10 +34,7 @@ impl TaskBlock for RouteProjectWorkflow {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let p = match trigger.parse_payload::<ProjectValidationCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, ProjectValidationCompletedPayload);
         let status = p.status.clone();
         let iterate = p
             .actions

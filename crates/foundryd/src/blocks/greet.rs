@@ -63,10 +63,7 @@ impl TaskBlock for DeliverGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let greeting = match trigger.parse_payload::<GreetingComposedPayload>() {
-            Ok(p) => p.greeting,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let greeting = parse_payload!(trigger, GreetingComposedPayload).greeting;
 
         tracing::info!(%greeting, "delivering greeting");
 

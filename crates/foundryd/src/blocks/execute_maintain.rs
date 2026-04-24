@@ -92,15 +92,10 @@ impl TaskBlock for ExecuteMaintain {
         let workflow = WorkflowType::from_payload(&payload);
 
         if workflow != WorkflowType::Maintain {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: not a maintain workflow", vec![]))
-            });
+            return skip!("Skipped: not a maintain workflow");
         }
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

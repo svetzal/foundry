@@ -52,18 +52,12 @@ impl TaskBlock for RunVerifyGates {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let p = match trigger.parse_payload::<ExecutionCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, ExecutionCompletedPayload);
         let retry_count = p.retry_count.unwrap_or(0);
 
         let workflow = WorkflowType::from_payload(&payload);
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
@@ -76,26 +70,22 @@ impl TaskBlock for RunVerifyGates {
                 tracing::info!(project = %project, "no gates defined, verification passes");
 
                 let context = LoopContext::extract_from(&payload);
-                let event_payload = Event::serialize_payload(&GateVerificationCompletedPayload {
-                    project: project.clone(),
-                    workflow: workflow.to_string(),
-                    all_passed: true,
-                    required_passed: true,
-                    retry_count,
-                    results: vec![],
-                    execution_output: None,
-                    context,
-                })?;
-
-                return Ok(TaskBlockResult::success(
+                return super::emit_result(
                     format!("{project}: no gates defined, verification passes"),
-                    vec![Event::new(
-                        EventType::GateVerificationCompleted,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                ));
+                    EventType::GateVerificationCompleted,
+                    &project,
+                    throttle,
+                    &GateVerificationCompletedPayload {
+                        project: project.clone(),
+                        workflow: workflow.to_string(),
+                        all_passed: true,
+                        required_passed: true,
+                        retry_count,
+                        results: vec![],
+                        execution_output: None,
+                        context,
+                    },
+                );
             }
 
             let run_result =

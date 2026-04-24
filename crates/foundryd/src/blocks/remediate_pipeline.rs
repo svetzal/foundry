@@ -79,25 +79,17 @@ impl TaskBlock for RemediatePipeline {
         let throttle = trigger.throttle;
 
         // Self-filter: only remediate when pipeline is failing.
-        let p = match trigger.parse_payload::<PipelineCheckedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, PipelineCheckedPayload);
 
         if p.passing {
             tracing::info!("pipeline is passing, no remediation needed");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Pipeline is passing, no remediation needed", vec![]))
-            });
+            return skip!("Pipeline is passing, no remediation needed");
         }
 
         let failure_logs = p.failure_logs.unwrap_or_default();
         let run_name = p.run_name.clone();
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%project, %run_name, "remediating pipeline failure");

@@ -74,19 +74,13 @@ impl TaskBlock for RetryExecution {
 
         let workflow = WorkflowType::from_payload(&payload);
 
-        let p = match trigger.parse_payload::<RetryRequestedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, RetryRequestedPayload);
 
         let retry_count = p.retry_count;
         let failure_context = p.failure_context.clone();
         let prior_output = p.prior_execution_output.unwrap_or_default();
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

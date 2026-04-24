@@ -50,12 +50,7 @@ impl TaskBlock for CheckCharter {
         let iter_payload = trigger.parse_payload::<IterationRequestedPayload>().ok();
         let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
         if strategic {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success(
-                    "Skipped: strategic iteration handled by StrategicAssessor",
-                    vec![],
-                ))
-            });
+            return skip!("Skipped: strategic iteration handled by StrategicAssessor");
         }
 
         // Derive workflow from typed payload if available; fall back to event type.
@@ -67,10 +62,7 @@ impl TaskBlock for CheckCharter {
             |p| p.workflow.clone(),
         );
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
 
         Box::pin(async move {
             let project_path = std::path::Path::new(&entry.path);

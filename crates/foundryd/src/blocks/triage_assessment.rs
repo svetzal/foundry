@@ -46,16 +46,10 @@ impl TaskBlock for TriageAssessment {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
-        let assessment_payload = match trigger.parse_payload::<AssessmentCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let assessment_payload = parse_payload!(trigger, AssessmentCompletedPayload);
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
@@ -116,33 +110,29 @@ impl TaskBlock for TriageAssessment {
             );
 
             let chain = ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&TriageCompletedPayload {
-                project: project.clone(),
-                accepted,
-                reason: reason.clone(),
-                // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
-                #[allow(clippy::cast_sign_loss)]
-                severity: severity.max(0) as u64,
-                principle: principle.clone(),
-                category: category.clone(),
-                assessment: assessment.clone(),
-                workflow: WorkflowType::Iterate.to_string(),
-                chain,
-            })?;
-
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 if accepted {
                     format!("{project}: triage accepted — {reason}")
                 } else {
                     format!("{project}: triage rejected — {reason}")
                 },
-                vec![Event::new(
-                    EventType::TriageCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-            ))
+                EventType::TriageCompleted,
+                &project,
+                throttle,
+                &TriageCompletedPayload {
+                    project: project.clone(),
+                    accepted,
+                    reason: reason.clone(),
+                    // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
+                    #[allow(clippy::cast_sign_loss)]
+                    severity: severity.max(0) as u64,
+                    principle: principle.clone(),
+                    category: category.clone(),
+                    assessment: assessment.clone(),
+                    workflow: WorkflowType::Iterate.to_string(),
+                    chain,
+                },
+            )
         })
     }
 }

@@ -82,9 +82,7 @@ impl AuditReleaseTag {
 
         let Some(entry) = entry else {
             tracing::info!(%project, "project not in registry, skipping post-push audit");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: project not in registry", vec![]))
-            });
+            return skip!("Skipped: project not in registry");
         };
 
         tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
@@ -130,10 +128,7 @@ impl AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let p = match trigger.parse_payload::<VulnerabilityDetectedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, VulnerabilityDetectedPayload);
         let payload_cve = p.cve;
         let payload_vulnerable = p.vulnerable;
         let payload_dirty = Some(p.dirty);
@@ -362,9 +357,7 @@ impl TaskBlock for AuditMainBranch {
 
         if !vulnerable {
             tracing::info!("release tag not vulnerable, skipping main branch audit");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: release tag not vulnerable", vec![]))
-            });
+            return skip!("Skipped: release tag not vulnerable");
         }
 
         // Payload fallback values — used when the project is not in the registry,

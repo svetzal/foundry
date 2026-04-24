@@ -35,10 +35,7 @@ impl TaskBlock for ScanDependencies {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {

@@ -51,31 +51,18 @@ impl TaskBlock for SummarizeResult {
         // The outermost loop controller emits the terminal completion without
         // loop_context, which is when we should summarize.
         if has_loop_context(&payload) {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success(
-                    "Skipped: inside nested loop (intermediate completion)",
-                    vec![],
-                ))
-            });
+            return skip!("Skipped: inside nested loop (intermediate completion)");
         }
 
         // Self-filter: only summarize successful completions
-        let p = match trigger.parse_payload::<ProjectCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, ProjectCompletedPayload);
         let success = p.success;
 
         if !success {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: workflow did not succeed", vec![]))
-            });
+            return skip!("Skipped: workflow did not succeed");
         }
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

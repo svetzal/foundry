@@ -50,10 +50,7 @@ impl TaskBlock for ResolveGates {
             None
         };
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
 
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed
@@ -106,22 +103,18 @@ impl TaskBlock for ResolveGates {
             );
 
             let chain = foundry_core::payload::ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&GateResolutionCompletedPayload {
-                project: project.clone(),
-                workflow: workflow.clone(),
-                gates: serde_json::json!(gates_json),
-                chain,
-            })?;
-
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("{project}: resolved {} gates for {workflow} workflow", gates.len()),
-                vec![Event::new(
-                    EventType::GateResolutionCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-            ))
+                EventType::GateResolutionCompleted,
+                &project,
+                throttle,
+                &GateResolutionCompletedPayload {
+                    project: project.clone(),
+                    workflow: workflow.clone(),
+                    gates: serde_json::json!(gates_json),
+                    chain,
+                },
+            )
         })
     }
 }

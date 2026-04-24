@@ -31,10 +31,7 @@ impl TaskBlock for RouteValidationResult {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, PreflightCompletedPayload);
         let workflow = p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown);
         let required_passed = p.required_passed;
         let results = serde_json::json!(p.results);

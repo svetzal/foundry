@@ -69,26 +69,18 @@ impl TaskBlock for RemediateVulnerability {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let audit_payload = match trigger.parse_payload::<MainBranchAuditedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let audit_payload = parse_payload!(trigger, MainBranchAuditedPayload);
 
         // Self-filter: only remediate when main branch is dirty.
         if !audit_payload.dirty {
             tracing::info!("main branch is clean, skipping remediation");
-            return Box::pin(async {
-                Ok(TaskBlockResult::success("Skipped: main branch is clean", vec![]))
-            });
+            return skip!("Skipped: main branch is clean");
         }
 
         let cve = audit_payload.cve.clone();
 
         // Resolve project agent and path from registry.
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%cve, "remediating vulnerability");

@@ -41,6 +41,30 @@ fn require_project(
     })
 }
 
+/// Emit a single-event success result with a serialized payload.
+///
+/// Eliminates the three-line boilerplate of `serialize_payload` → `Event::new` →
+/// `TaskBlockResult::success` that appears in blocks whose happy path emits
+/// exactly one event with `success = true` and no `raw_output` or `exit_code`.
+pub(super) fn emit_result(
+    summary: String,
+    event_type: EventType,
+    project: &str,
+    throttle: Throttle,
+    payload: &impl serde::Serialize,
+) -> anyhow::Result<TaskBlockResult> {
+    let event_payload = Event::serialize_payload(payload)?;
+    Ok(TaskBlockResult::success(
+        summary,
+        vec![Event::new(
+            event_type,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+    ))
+}
+
 /// Serialize a slice of gate results to JSON values using the `Serialize` derive.
 pub(super) fn gate_results_to_json(
     results: &[foundry_core::gates::GateResult],

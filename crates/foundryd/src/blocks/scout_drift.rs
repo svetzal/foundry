@@ -185,10 +185,7 @@ impl TaskBlock for ScoutDrift {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

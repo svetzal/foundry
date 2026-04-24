@@ -48,26 +48,15 @@ impl TaskBlock for AssessProject {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only run for iterate workflow with passed preflight
-        let p = match trigger.parse_payload::<PreflightCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, PreflightCompletedPayload);
         let workflow = WorkflowType::from_payload(&payload);
         let all_passed = p.all_passed;
 
         if workflow != WorkflowType::Iterate || !all_passed {
-            return Box::pin(async {
-                Ok(TaskBlockResult::success(
-                    "Skipped: not an iterate workflow or preflight failed",
-                    vec![],
-                ))
-            });
+            return skip!("Skipped: not an iterate workflow or preflight failed");
         }
 
-        let entry = match super::require_project(&self.registry, &project) {
-            Ok(e) => e,
-            Err(result) => return Box::pin(async { Ok(result) }),
-        };
+        let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
@@ -103,28 +92,24 @@ impl TaskBlock for AssessProject {
             );
 
             let chain = ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&AssessmentCompletedPayload {
-                project: project.clone(),
-                // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
-                #[allow(clippy::cast_sign_loss)]
-                severity: severity.max(0) as u64,
-                principle: principle.clone(),
-                category: category.clone(),
-                assessment: assessment.clone(),
-                audit_name: Some(audit_name.clone()),
-                workflow: WorkflowType::Iterate.to_string(),
-                chain,
-            })?;
-
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("{project}: assessed — severity {severity}, {principle}"),
-                vec![Event::new(
-                    EventType::AssessmentCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-            ))
+                EventType::AssessmentCompleted,
+                &project,
+                throttle,
+                &AssessmentCompletedPayload {
+                    project: project.clone(),
+                    // SAFETY: severity.max(0) is guaranteed non-negative; cast is lossless.
+                    #[allow(clippy::cast_sign_loss)]
+                    severity: severity.max(0) as u64,
+                    principle: principle.clone(),
+                    category: category.clone(),
+                    assessment: assessment.clone(),
+                    audit_name: Some(audit_name.clone()),
+                    workflow: WorkflowType::Iterate.to_string(),
+                    chain,
+                },
+            )
         })
     }
 }

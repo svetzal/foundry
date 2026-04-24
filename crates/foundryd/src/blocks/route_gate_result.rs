@@ -46,10 +46,7 @@ impl TaskBlock for RouteGateResult {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let p = match trigger.parse_payload::<GateVerificationCompletedPayload>() {
-            Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+        let p = parse_payload!(trigger, GateVerificationCompletedPayload);
         let required_passed = p.required_passed;
         let retry_count = p.retry_count;
         let results = p.results;
