@@ -101,7 +101,8 @@ fn build_gate_block_result(
 }
 
 mod assess_project;
-mod audit;
+mod audit_main_branch;
+mod audit_release_tag;
 mod check_charter;
 mod check_pipeline;
 mod cleanup_branches;
@@ -130,9 +131,11 @@ mod strategic_loop;
 mod summarize_result;
 mod triage_assessment;
 mod validate;
+mod watch_pipeline;
 
 pub use assess_project::AssessProject;
-pub use audit::{AuditMainBranch, AuditReleaseTag};
+pub use audit_main_branch::AuditMainBranch;
+pub use audit_release_tag::AuditReleaseTag;
 pub use check_charter::CheckCharter;
 pub use check_pipeline::CheckPipeline;
 pub use cleanup_branches::CleanupBranches;
@@ -144,7 +147,7 @@ pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use install::InstallLocally;
-pub use release::{WatchPipeline, cut_release_step, execute_release_step};
+pub use release::{cut_release_step, execute_release_step};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
 pub use resolve_gates::ResolveGates;
@@ -161,6 +164,7 @@ pub use strategic_loop::StrategicLoopController;
 pub use summarize_result::SummarizeResult;
 pub use triage_assessment::TriageAssessment;
 pub use validate::ValidateProject;
+pub use watch_pipeline::WatchPipeline;
 
 #[cfg(test)]
 mod test_helpers;

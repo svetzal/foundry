@@ -71,18 +71,7 @@ impl CommitAndPush {
         shell.run(path, "git", &["add", "-A"], None, None).await?;
 
         // Commit message varies by the event that triggered this block.
-        let commit_msg = match event_type {
-            EventType::ProjectIterationCompleted => {
-                format!("chore({project}): automated iterate")
-            }
-            EventType::ProjectMaintenanceCompleted => {
-                format!("chore({project}): automated maintenance")
-            }
-            EventType::InnerIterationCompleted => {
-                format!("chore({project}): strategic iterate cycle")
-            }
-            _ => format!("chore({project}): automated remediation"),
-        };
+        let commit_msg = commit_message(&event_type, &project);
 
         let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
         if !commit.success {
@@ -237,6 +226,18 @@ impl TaskBlock for CommitAndPush {
     }
 }
 
+/// Map a trigger event type to the appropriate `chore(project): ...` commit message.
+fn commit_message(event_type: &EventType, project: &str) -> String {
+    match event_type {
+        EventType::ProjectIterationCompleted => format!("chore({project}): automated iterate"),
+        EventType::ProjectMaintenanceCompleted => {
+            format!("chore({project}): automated maintenance")
+        }
+        EventType::InnerIterationCompleted => format!("chore({project}): strategic iterate cycle"),
+        _ => format!("chore({project}): automated remediation"),
+    }
+}
+
 /// Emit stub committed+pushed events when the project has no registry entry.
 fn stub_result(
     project: &str,
@@ -277,7 +278,7 @@ mod tests {
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
-    use super::CommitAndPush;
+    use super::{CommitAndPush, commit_message};
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -376,6 +377,40 @@ mod tests {
             exit_code: 0,
             success: true,
         })
+    }
+
+    // -- commit_message pure function tests --
+
+    #[test]
+    fn commit_message_iterate() {
+        assert_eq!(
+            commit_message(&EventType::ProjectIterationCompleted, "my-project"),
+            "chore(my-project): automated iterate"
+        );
+    }
+
+    #[test]
+    fn commit_message_maintenance() {
+        assert_eq!(
+            commit_message(&EventType::ProjectMaintenanceCompleted, "my-project"),
+            "chore(my-project): automated maintenance"
+        );
+    }
+
+    #[test]
+    fn commit_message_strategic() {
+        assert_eq!(
+            commit_message(&EventType::InnerIterationCompleted, "my-project"),
+            "chore(my-project): strategic iterate cycle"
+        );
+    }
+
+    #[test]
+    fn commit_message_remediation_default() {
+        assert_eq!(
+            commit_message(&EventType::RemediationCompleted, "my-project"),
+            "chore(my-project): automated remediation"
+        );
     }
 
     #[tokio::test]
