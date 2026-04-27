@@ -114,67 +114,18 @@ impl TaskBlock for RemediateVulnerability {
 
             let response = agent.invoke(&request).await;
 
-            Ok(build_remediation_result(&project, &cve, response, throttle))
+            let success_label = format!("Remediated {cve}");
+            let failure_label = format!("Remediation of {cve} failed");
+            Ok(super::build_agent_remediation_result(
+                &project,
+                throttle,
+                response,
+                Some(cve),
+                None,
+                &success_label,
+                &failure_label,
+            ))
         })
-    }
-}
-
-fn build_remediation_result(
-    project: &str,
-    cve: &str,
-    response: anyhow::Result<crate::gateway::AgentResponse>,
-    throttle: foundry_core::throttle::Throttle,
-) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                "remediation completed".to_string()
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("remediation failed: {first_line}")
-            };
-            (Some(out), Some(r.exit_code), s, summary)
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent not available or failed to spawn");
-            (None, None, false, format!("agent unavailable: {err}"))
-        }
-    };
-
-    tracing::info!(
-        project = %project,
-        success = success,
-        summary = %summary,
-        "remediation completed"
-    );
-
-    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
-        cve: Some(cve.to_string()),
-        success,
-        summary: Some(summary.clone()),
-        dry_run: None,
-        pipeline_fix: None,
-    })
-    .expect("RemediationCompletedPayload is infallibly serializable");
-
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::RemediationCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
-        success,
-        summary: if success {
-            format!("Remediated {cve}: {summary}")
-        } else {
-            format!("Remediation of {cve} failed: {summary}")
-        },
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
     }
 }
 

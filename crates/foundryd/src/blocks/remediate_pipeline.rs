@@ -143,57 +143,15 @@ async fn run_remediation(
 
     let response = agent.invoke(&request).await;
 
-    let (raw_output, exit_code, success, summary) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                "pipeline remediation completed".to_string()
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("pipeline remediation failed: {first_line}")
-            };
-            (Some(out), Some(r.exit_code), s, summary)
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent not available or failed to spawn");
-            (None, None, false, format!("agent unavailable: {err}"))
-        }
-    };
-
-    tracing::info!(
-        project = %project,
-        success = success,
-        summary = %summary,
-        "pipeline remediation completed"
-    );
-
-    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
-        cve: None,
-        success,
-        summary: Some(summary.clone()),
-        dry_run: None,
-        pipeline_fix: Some(true),
-    })
-    .expect("RemediationCompletedPayload is infallibly serializable");
-
-    Ok(TaskBlockResult {
-        events: vec![Event::new(
-            EventType::RemediationCompleted,
-            project,
-            throttle,
-            event_payload,
-        )],
-        success,
-        summary: if success {
-            format!("Pipeline fixed: {summary}")
-        } else {
-            format!("Pipeline fix failed: {summary}")
-        },
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
-    })
+    Ok(super::build_agent_remediation_result(
+        &project,
+        throttle,
+        response,
+        None,
+        Some(true),
+        "Pipeline fixed",
+        "Pipeline fix failed",
+    ))
 }
 
 #[cfg(test)]

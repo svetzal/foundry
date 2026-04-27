@@ -130,25 +130,22 @@ fn build_preflight_result(
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
     let results = super::gate_results_to_json(&run_result.results);
-    let event_payload = Event::serialize_payload(&PreflightCompletedPayload {
-        project: project.to_string(),
-        workflow: workflow.to_string(),
-        all_passed: run_result.all_passed,
-        required_passed: run_result.required_passed,
-        skipped: None,
-        results,
-        chain,
-    })
-    .expect("PreflightCompletedPayload is infallibly serializable");
-
     let success = run_result.required_passed;
-    super::build_gate_block_result(
+    super::build_gate_result_from_payload(
         project,
         EventType::PreflightCompleted,
         success,
         "preflight gates",
         throttle,
-        event_payload,
+        &PreflightCompletedPayload {
+            project: project.to_string(),
+            workflow: workflow.to_string(),
+            all_passed: run_result.all_passed,
+            required_passed: run_result.required_passed,
+            skipped: None,
+            results,
+            chain,
+        },
     )
 }
 

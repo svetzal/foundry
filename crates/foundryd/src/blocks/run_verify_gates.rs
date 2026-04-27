@@ -127,25 +127,22 @@ fn build_verification_result(
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
     let context = LoopContext::extract_from(payload);
-    let event_payload = Event::serialize_payload(&GateVerificationCompletedPayload {
-        project: project.to_string(),
-        workflow: workflow.to_string(),
-        all_passed: run_result.all_passed,
-        required_passed: run_result.required_passed,
-        retry_count,
-        results,
-        execution_output,
-        context,
-    })
-    .expect("GateVerificationCompletedPayload is infallibly serializable");
-
-    super::build_gate_block_result(
+    super::build_gate_result_from_payload(
         project,
         EventType::GateVerificationCompleted,
         success,
         "gate verification",
         throttle,
-        event_payload,
+        &GateVerificationCompletedPayload {
+            project: project.to_string(),
+            workflow: workflow.to_string(),
+            all_passed: run_result.all_passed,
+            required_passed: run_result.required_passed,
+            retry_count,
+            results,
+            execution_output,
+            context,
+        },
     )
 }
 

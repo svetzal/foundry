@@ -2,8 +2,11 @@
 mod macros;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::RemediationCompletedPayload;
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
+
+use crate::gateway::AgentResponse;
 
 /// Bundles the three fields every block `execute()` extracts from the trigger event.
 ///
@@ -70,6 +73,90 @@ pub(super) fn gate_results_to_json(
     results: &[foundry_core::gates::GateResult],
 ) -> Vec<serde_json::Value> {
     results.iter().filter_map(|r| serde_json::to_value(r).ok()).collect()
+}
+
+/// Build a `TaskBlockResult` for an agent-driven remediation, handling the
+/// response match, tracing, payload serialization, and summary formatting.
+///
+/// `success_label` and `failure_label` are the prefix for `TaskBlockResult.summary`
+/// (e.g. "Remediated CVE-2026-1234" / "Remediation of CVE-2026-1234 failed").
+pub(super) fn build_agent_remediation_result(
+    project: &str,
+    throttle: Throttle,
+    response: anyhow::Result<AgentResponse>,
+    cve: Option<String>,
+    pipeline_fix: Option<bool>,
+    success_label: &str,
+    failure_label: &str,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                "remediation completed".to_string()
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("remediation failed: {first_line}")
+            };
+            (Some(out), Some(r.exit_code), s, summary)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent not available or failed to spawn");
+            (None, None, false, format!("agent unavailable: {err}"))
+        }
+    };
+
+    tracing::info!(
+        project = %project,
+        success = success,
+        summary = %summary,
+        "remediation completed"
+    );
+
+    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
+        cve,
+        success,
+        summary: Some(summary.clone()),
+        dry_run: None,
+        pipeline_fix,
+    })
+    .expect("RemediationCompletedPayload is infallibly serializable");
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::RemediationCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: if success {
+            format!("{success_label}: {summary}")
+        } else {
+            format!("{failure_label}: {summary}")
+        },
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
+    }
+}
+
+/// Serialize `payload` and construct a `TaskBlockResult` for a gate-run event.
+///
+/// Absorbs the `serialize_payload().expect(...)` boilerplate shared by every
+/// gate result builder, delegating final construction to [`build_gate_block_result`].
+fn build_gate_result_from_payload(
+    project: &str,
+    event_type: EventType,
+    success: bool,
+    label: &str,
+    throttle: Throttle,
+    payload: &impl serde::Serialize,
+) -> TaskBlockResult {
+    let event_payload =
+        Event::serialize_payload(payload).expect("gate result payload is infallibly serializable");
+    build_gate_block_result(project, event_type, success, label, throttle, event_payload)
 }
 
 /// Construct a `TaskBlockResult` for a gate-run event.
