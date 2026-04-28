@@ -91,39 +91,20 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;
 
+    use super::super::test_helpers;
     use super::ScanDependencies;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
             version: 2,
             projects: vec![],
-        })
-    }
-
-    fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
         })
     }
 
@@ -160,7 +141,11 @@ mod tests {
 
     #[tokio::test]
     async fn clean_project_emits_no_events() {
-        let registry = registry_with_project("my-project", "/tmp");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            "/tmp",
+            "",
+        ));
         let scanner = FakeScannerGateway::clean();
         let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");
@@ -174,7 +159,11 @@ mod tests {
 
     #[tokio::test]
     async fn vulnerabilities_emitted_correctly() {
-        let registry = registry_with_project("my-project", "/tmp");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            "/tmp",
+            "",
+        ));
         let vulns = vec![Vulnerability {
             cve: Some("CVE-2026-1234".to_string()),
             severity: Some("high".to_string()),
@@ -198,7 +187,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_vulnerabilities_emit_one_event_each() {
-        let registry = registry_with_project("my-project", "/tmp");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            "/tmp",
+            "",
+        ));
         let vulns = vec![
             Vulnerability {
                 cve: Some("CVE-2026-0001".to_string()),
@@ -226,7 +219,11 @@ mod tests {
 
     #[tokio::test]
     async fn scanner_error_handled_gracefully() {
-        let registry = registry_with_project("my-project", "/tmp");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            "/tmp",
+            "",
+        ));
         let scanner = FakeScannerGateway::with_error("cargo audit not installed");
         let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = scan_trigger("my-project");

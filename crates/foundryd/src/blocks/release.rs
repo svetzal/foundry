@@ -492,62 +492,19 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::{ActionFlags, Registry};
     use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
-    use tempfile::TempDir;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::*;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
             version: 2,
             projects: vec![],
-        })
-    }
-
-    fn registry_with_project(name: &str, path: &str, has_agents_md: bool) -> Arc<Registry> {
-        registry_with_project_flags(name, path, has_agents_md, ActionFlags::default())
-    }
-
-    fn registry_with_project_flags(
-        name: &str,
-        path: &str,
-        has_agents_md: bool,
-        actions: ActionFlags,
-    ) -> Arc<Registry> {
-        // Create a real temp dir when has_agents_md is requested.
-        // The path parameter is ignored in that case so tests are hermetic.
-        let project_path = if has_agents_md {
-            let dir = TempDir::new().unwrap();
-            let agents_path = dir.path().join("AGENTS.md");
-            std::fs::write(&agents_path, "# Agent guidance").unwrap();
-            // Leak the TempDir so it persists for the test lifetime.
-            let p = dir.path().to_str().unwrap().to_string();
-            std::mem::forget(dir);
-            p
-        } else {
-            path.to_string()
-        };
-
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: project_path,
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions,
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
         })
     }
 
@@ -589,7 +546,8 @@ mod tests {
     #[tokio::test]
     async fn fails_when_agents_md_missing() {
         // Use a path that definitely doesn't have AGENTS.md.
-        let registry = registry_with_project("my-project", "/nonexistent/path", false);
+        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", false);
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success();
         let block = cut_release_step_with_agent(agent, registry);
         let trigger = Event::new(
@@ -609,7 +567,8 @@ mod tests {
 
     #[tokio::test]
     async fn successful_release_emits_release_completed() {
-        let registry = registry_with_project("my-project", "/unused", true);
+        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        let registry = test_helpers::registry_with_entry(entry);
         let agent =
             FakeAgentGateway::success_with("Release complete! Tagged as v1.2.3 and pushed.");
         let block = cut_release_step_with_agent(agent.clone(), registry);
@@ -638,7 +597,8 @@ mod tests {
 
     #[tokio::test]
     async fn release_failure_emits_release_completed_with_success_false() {
-        let registry = registry_with_project("my-project", "/unused", true);
+        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::failure("Claude CLI failed");
         let block = cut_release_step_with_agent(agent, registry);
         let trigger = Event::new(
@@ -683,7 +643,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_release_skips_when_action_disabled() {
-        let registry = registry_with_project("my-project", "/unused", true);
+        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success();
         let block = execute_release_step(agent, registry);
         let trigger = Event::new(
@@ -718,12 +679,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_release_fails_when_agents_md_missing() {
-        let registry = registry_with_project_flags(
-            "my-project",
-            "/nonexistent/path",
-            false,
-            release_actions(),
-        );
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", false);
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success();
         let block = execute_release_step(agent, registry);
         let trigger = Event::new(
@@ -743,8 +701,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_release_success_emits_release_completed() {
-        let registry =
-            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success_with("Release complete!\nv2.0.0\nAll steps done.");
         let block = execute_release_step(agent.clone(), registry);
         let trigger = Event::new(
@@ -774,8 +733,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_release_auto_bump_when_no_bump_specified() {
-        let registry =
-            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success_with("v1.3.0");
         let block = execute_release_step(agent.clone(), registry);
         let trigger = Event::new(
@@ -795,8 +755,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_release_failure_emits_release_completed_with_success_false() {
-        let registry =
-            registry_with_project_flags("my-project", "/unused", true, release_actions());
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::failure("release failed");
         let block = execute_release_step(agent, registry);
         let trigger = Event::new(

@@ -326,43 +326,15 @@ fn emit_payload_result(
 mod tests {
     use std::sync::Arc;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::throttle::Throttle;
+    use foundry_core::event::EventType;
+    use foundry_core::registry::Registry;
 
     use crate::gateway::fakes::{FakeScannerGateway, FakeShellGateway};
     use crate::scanner::Vulnerability;
     use crate::shell::CommandResult;
 
+    use super::super::test_helpers;
     use super::*;
-
-    fn make_trigger(event_type: EventType, payload: serde_json::Value) -> Event {
-        Event::new(event_type, "test-project".to_string(), Throttle::Full, payload)
-    }
-
-    fn make_project_entry(name: &str, path: &str) -> ProjectEntry {
-        ProjectEntry {
-            name: name.to_string(),
-            path: path.to_string(),
-            stack: Stack::Rust,
-            agent: "claude".to_string(),
-            repo: String::new(),
-            branch: "main".to_string(),
-            skip: None,
-            notes: None,
-            actions: ActionFlags::default(),
-            install: None,
-            installs_skill: None,
-            timeout_secs: None,
-        }
-    }
-
-    fn registry_with(entry: ProjectEntry) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![entry],
-        })
-    }
 
     // -- sinks_on --
 
@@ -379,8 +351,9 @@ mod tests {
     #[tokio::test]
     async fn vulnerability_detected_path_emits_release_tag_audited() {
         let block = AuditReleaseTag::new();
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::VulnerabilityDetected,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -395,8 +368,9 @@ mod tests {
     #[tokio::test]
     async fn vulnerability_detected_path_not_vulnerable() {
         let block = AuditReleaseTag::new();
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::VulnerabilityDetected,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": false}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -410,8 +384,10 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_no_tags_falls_back_to_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry =
-            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
 
         // rev-parse returns "main"; fetch --tags succeeds; tag list is empty.
         let shell = FakeShellGateway::sequence(vec![
@@ -437,8 +413,9 @@ mod tests {
         let scanner = FakeScannerGateway::clean();
         let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
 
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::VulnerabilityDetected,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -455,8 +432,10 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_with_vulnerabilities_emits_vulnerable_true() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry =
-            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
 
         // Sequence: rev-parse → fetch --tags → tag list → checkout → cleanup restore
         let shell = FakeShellGateway::sequence(vec![
@@ -505,8 +484,9 @@ mod tests {
         }]);
         let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
 
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::VulnerabilityDetected,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": true, "dirty": true}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -522,8 +502,9 @@ mod tests {
     #[tokio::test]
     async fn project_changes_pushed_project_not_in_registry_emits_nothing() {
         let block = AuditReleaseTag::new(); // empty registry
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ProjectChangesPushed,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-1234"}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -534,13 +515,16 @@ mod tests {
     #[tokio::test]
     async fn project_changes_pushed_known_clean_project_emits_clean_audit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry =
-            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
         let scanner = FakeScannerGateway::clean();
         let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
 
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ProjectChangesPushed,
+            "test-project",
             serde_json::json!({"cve": "CVE-2026-1234"}),
         );
         let result = block.execute(&trigger).await.unwrap();

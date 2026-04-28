@@ -238,17 +238,10 @@ mod tests {
     use foundry_core::throttle::Throttle;
     use foundry_core::trace::{BlockExecution, ProcessResult};
 
+    use super::super::test_helpers;
+
     fn make_trace_writer(dir: &std::path::Path) -> Arc<TraceWriter> {
         Arc::new(TraceWriter::new(dir.to_str().unwrap()))
-    }
-
-    fn make_trigger(payload: serde_json::Value) -> Event {
-        Event::new(
-            EventType::MaintenanceRunCompleted,
-            "_system".to_string(),
-            Throttle::Full,
-            payload,
-        )
     }
 
     fn successful_trace(project: &str) -> ProcessResult {
@@ -383,11 +376,15 @@ mod tests {
 
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({
-            "project_trace_ids": {"alpha": "evt_alpha", "beta": "evt_beta"},
-            "skipped_projects": [],
-            "total_duration_ms": 10000
-        }));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": {"alpha": "evt_alpha", "beta": "evt_beta"},
+                "skipped_projects": [],
+                "total_duration_ms": 10000
+            }),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -414,10 +411,14 @@ mod tests {
 
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({
-            "project_trace_ids": {"good-project": "evt_good", "bad-project": "evt_bad"},
-            "total_duration_ms": 17000
-        }));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": {"good-project": "evt_good", "bad-project": "evt_bad"},
+                "total_duration_ms": 17000
+            }),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -439,11 +440,15 @@ mod tests {
 
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({
-            "project_trace_ids": {"alpha": "evt_alpha"},
-            "skipped_projects": ["gamma"],
-            "total_duration_ms": 5000
-        }));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": {"alpha": "evt_alpha"},
+                "skipped_projects": ["gamma"],
+                "total_duration_ms": 5000
+            }),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -462,10 +467,14 @@ mod tests {
         // Don't write any trace — evt_missing won't be found.
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({
-            "project_trace_ids": {"missing-project": "evt_missing"},
-            "total_duration_ms": 0
-        }));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": {"missing-project": "evt_missing"},
+                "total_duration_ms": 0
+            }),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -486,10 +495,14 @@ mod tests {
 
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({
-            "project_trace_ids": {"my-project": "evt_proj"},
-            "total_duration_ms": 8000
-        }));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": {"my-project": "evt_proj"},
+                "total_duration_ms": 8000
+            }),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -511,7 +524,11 @@ mod tests {
 
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
-        let trigger = make_trigger(serde_json::json!({}));
+        let trigger = test_helpers::make_trigger(
+            EventType::MaintenanceRunCompleted,
+            "_system",
+            serde_json::json!({}),
+        );
 
         let result = block.execute(&trigger).await.unwrap();
 

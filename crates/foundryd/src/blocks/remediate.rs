@@ -134,34 +134,15 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::AgentCapability;
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::RemediateVulnerability;
-
-    fn registry_with_project(name: &str, path: &str, agent: &str) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: agent.to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
-        })
-    }
 
     fn dirty_trigger(project: &str, cve: &str) -> Event {
         Event::new(
@@ -220,7 +201,11 @@ mod tests {
     #[tokio::test]
     async fn emits_remediation_completed_on_agent_success() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "claude",
+        ));
         let agent = FakeAgentGateway::success_with("Fixed dependency");
         let block = RemediateVulnerability::new(agent, registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-9999");
@@ -237,7 +222,11 @@ mod tests {
     #[tokio::test]
     async fn emits_remediation_completed_on_agent_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "claude",
+        ));
         let agent = FakeAgentGateway::failure("agent exited with code 1");
         let block = RemediateVulnerability::new(agent, registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-1234");
@@ -255,7 +244,11 @@ mod tests {
     #[tokio::test]
     async fn records_agent_invocation() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = registry_with_project("my-project", dir.path().to_str().unwrap(), "claude");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "claude",
+        ));
         let agent = FakeAgentGateway::success();
         let block = RemediateVulnerability::new(agent.clone(), registry);
         let trigger = dirty_trigger("my-project", "CVE-2026-0001");

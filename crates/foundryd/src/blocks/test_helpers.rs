@@ -8,6 +8,7 @@ use std::sync::Arc;
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::throttle::Throttle;
+use tempfile;
 
 use crate::engine::Engine;
 use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
@@ -113,6 +114,43 @@ pub fn sequenced_agent(responses: Vec<&str>) -> Arc<dyn AgentGateway> {
         })
         .collect();
     FakeAgentGateway::sequence(agent_responses)
+}
+
+/// Build a standard test project entry with a custom agent.
+pub fn project_entry_with_agent(name: &str, path: &str, agent: &str) -> ProjectEntry {
+    ProjectEntry {
+        agent: agent.to_string(),
+        ..project_entry(name, path)
+    }
+}
+
+/// Build a standard test project entry with a custom repo.
+pub fn project_entry_with_repo(name: &str, path: &str, repo: &str) -> ProjectEntry {
+    ProjectEntry {
+        repo: repo.to_string(),
+        ..project_entry(name, path)
+    }
+}
+
+/// Build a project entry with optional AGENTS.md in a temporary directory.
+///
+/// Returns `(ProjectEntry, Option<TempDir>)`. The caller must hold the `TempDir`
+/// for the duration of the test to keep the directory alive.
+pub fn project_entry_with_agents_md(
+    name: &str,
+    has_agents_md: bool,
+) -> (ProjectEntry, Option<tempfile::TempDir>) {
+    if has_agents_md {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agent guidance").unwrap();
+        let entry = ProjectEntry {
+            path: dir.path().to_str().unwrap().to_string(),
+            ..project_entry(name, "/nonexistent")
+        };
+        (entry, Some(dir))
+    } else {
+        (project_entry(name, "/nonexistent/path"), None)
+    }
 }
 
 /// Register the standard iterate-chain blocks into `engine`.

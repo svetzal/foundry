@@ -119,42 +119,14 @@ impl TaskBlock for AuditMainBranch {
 mod tests {
     use std::sync::Arc;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::throttle::Throttle;
+    use foundry_core::event::EventType;
+    use foundry_core::registry::Registry;
 
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;
 
+    use super::super::test_helpers;
     use super::*;
-
-    fn make_trigger(event_type: EventType, payload: serde_json::Value) -> Event {
-        Event::new(event_type, "test-project".to_string(), Throttle::Full, payload)
-    }
-
-    fn make_project_entry(name: &str, path: &str) -> ProjectEntry {
-        ProjectEntry {
-            name: name.to_string(),
-            path: path.to_string(),
-            stack: Stack::Rust,
-            agent: "claude".to_string(),
-            repo: String::new(),
-            branch: "main".to_string(),
-            skip: None,
-            notes: None,
-            actions: ActionFlags::default(),
-            install: None,
-            installs_skill: None,
-            timeout_secs: None,
-        }
-    }
-
-    fn registry_with(entry: ProjectEntry) -> Arc<Registry> {
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![entry],
-        })
-    }
 
     #[test]
     fn main_branch_sinks_on_release_tag_audited() {
@@ -171,8 +143,9 @@ mod tests {
             version: 2,
             projects: vec![],
         }));
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
+            "test-project",
             serde_json::json!({"vulnerable": false, "cve": "CVE-2026-1234"}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -186,8 +159,9 @@ mod tests {
             version: 2,
             projects: vec![],
         }));
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
+            "test-project",
             serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": true}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -200,8 +174,10 @@ mod tests {
     #[tokio::test]
     async fn main_branch_scanner_finds_same_cve_marks_dirty() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry =
-            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
         let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
             cve: Some("CVE-2026-1234".to_string()),
             severity: Some("high".to_string()),
@@ -210,8 +186,9 @@ mod tests {
         }]);
         let block = AuditMainBranch::with_gateways(registry, scanner);
 
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
+            "test-project",
             serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": true}),
         );
         let result = block.execute(&trigger).await.unwrap();
@@ -224,13 +201,16 @@ mod tests {
     #[tokio::test]
     async fn main_branch_scanner_clean_falls_back_to_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry =
-            registry_with(make_project_entry("test-project", dir.path().to_str().unwrap()));
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
         let scanner = FakeScannerGateway::clean();
         let block = AuditMainBranch::with_gateways(registry, scanner);
 
-        let trigger = make_trigger(
+        let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
+            "test-project",
             serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": false}),
         );
         let result = block.execute(&trigger).await.unwrap();

@@ -159,50 +159,19 @@ mod tests {
     use std::sync::Arc;
 
     use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_core::registry::Registry;
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
-    use tempfile::TempDir;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
+    use super::super::test_helpers;
     use super::RemediatePipeline;
 
     fn empty_registry() -> Arc<Registry> {
         Arc::new(Registry {
             version: 2,
             projects: vec![],
-        })
-    }
-
-    fn registry_with_project(name: &str, has_agents_md: bool) -> Arc<Registry> {
-        let project_path = if has_agents_md {
-            let dir = TempDir::new().unwrap();
-            let agents_path = dir.path().join("AGENTS.md");
-            std::fs::write(&agents_path, "# Agent guidance").unwrap();
-            let p = dir.path().to_str().unwrap().to_string();
-            std::mem::forget(dir);
-            p
-        } else {
-            "/nonexistent/path".to_string()
-        };
-
-        Arc::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: project_path,
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: "owner/repo".to_string(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
         })
     }
 
@@ -268,7 +237,9 @@ mod tests {
 
     #[tokio::test]
     async fn successful_remediation_emits_remediation_completed() {
-        let registry = registry_with_project("my-project", true);
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.repo = "owner/repo".to_string();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success_with("Fixed the CI pipeline");
         let block = RemediatePipeline::with_agent(registry, agent);
         let t = failing_trigger("my-project");
@@ -284,7 +255,9 @@ mod tests {
 
     #[tokio::test]
     async fn failed_remediation_still_emits_event() {
-        let registry = registry_with_project("my-project", true);
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.repo = "owner/repo".to_string();
+        let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::failure("agent exited with code 1");
         let block = RemediatePipeline::with_agent(registry, agent);
         let t = failing_trigger("my-project");
