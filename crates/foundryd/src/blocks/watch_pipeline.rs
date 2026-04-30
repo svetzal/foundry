@@ -42,6 +42,12 @@ impl WatchPipeline {
             shell: Arc::new(crate::gateway::ProcessShellGateway),
         }
     }
+
+    /// Create a `WatchPipeline` with injected registry and shell gateway (for tests).
+    #[cfg(test)]
+    fn with_gateways(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { registry, shell }
+    }
 }
 
 impl TaskBlock for WatchPipeline {
@@ -234,7 +240,49 @@ mod tests {
     use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
     use super::*;
+
+    fn registry_with_repo(name: &str, repo: &str) -> Arc<Registry> {
+        Arc::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: name.to_string(),
+                path: String::new(),
+                stack: Stack::Rust,
+                agent: String::new(),
+                repo: repo.to_string(),
+                branch: "main".to_string(),
+                skip: None,
+                notes: None,
+                actions: ActionFlags::default(),
+                install: None,
+                installs_skill: None,
+                timeout_secs: None,
+            }],
+        })
+    }
+
+    fn trigger() -> Event {
+        Event::new(
+            EventType::ReleaseCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "success": true }),
+        )
+    }
+
+    fn completed_run(conclusion: &str) -> CommandResult {
+        CommandResult {
+            stdout: serde_json::json!([{"status": "completed", "conclusion": conclusion}])
+                .to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
 
     #[tokio::test]
     async fn watch_pipeline_stubs_when_project_not_in_registry() {
@@ -285,5 +333,92 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
         assert_eq!(result.events[0].payload["status"], "success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pipeline_completed_success() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let shell = FakeShellGateway::always(completed_run("success"));
+        let block = WatchPipeline::with_gateways(registry, shell);
+
+        let result = block.execute(&trigger()).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
+        assert_eq!(result.events[0].payload["status"], "success");
+        assert_eq!(result.events[0].payload["conclusion"], "success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pipeline_completed_failure() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let shell = FakeShellGateway::always(completed_run("failure"));
+        let block = WatchPipeline::with_gateways(registry, shell);
+
+        let result = block.execute(&trigger()).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
+        assert_eq!(result.events[0].payload["status"], "failure");
+        assert_eq!(result.events[0].payload["conclusion"], "failure");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_workflow_runs_retries_then_completes() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let shell = FakeShellGateway::sequence(vec![
+            // First poll: no runs yet
+            CommandResult {
+                stdout: "[]".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // Second poll: completed successfully
+            completed_run("success"),
+        ]);
+        let block = WatchPipeline::with_gateways(registry, shell);
+
+        let result = block.execute(&trigger()).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["status"], "success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gh_cli_error_is_non_fatal() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let shell = FakeShellGateway::sequence(vec![
+            // First poll: gh CLI fails
+            CommandResult {
+                stdout: String::new(),
+                stderr: "gh: not authenticated".to_string(),
+                exit_code: 1,
+                success: false,
+            },
+            // Second poll: succeeds
+            completed_run("success"),
+        ]);
+        let block = WatchPipeline::with_gateways(registry, shell);
+
+        let result = block.execute(&trigger()).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["status"], "success");
+    }
+
+    #[test]
+    fn dry_run_events_returns_success_stub() {
+        let block = WatchPipeline::stub();
+        let t = trigger();
+
+        let events = block.dry_run_events(&t);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ReleasePipelineCompleted);
+        assert_eq!(events[0].payload["status"], "success");
+        assert_eq!(events[0].payload["dry_run"], true);
     }
 }

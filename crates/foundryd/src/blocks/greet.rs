@@ -49,6 +49,109 @@ impl TaskBlock for ComposeGreeting {
 /// simulated success at `dry_run`.
 pub struct DeliverGreeting;
 
+#[cfg(test)]
+mod tests {
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::payload::{GreetRequestedPayload, GreetingComposedPayload};
+    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::throttle::Throttle;
+
+    use super::{ComposeGreeting, DeliverGreeting};
+
+    fn greet_requested(name: Option<&str>) -> Event {
+        let payload = Event::serialize_payload(&GreetRequestedPayload {
+            name: name.map(str::to_string),
+        })
+        .unwrap();
+        Event::new(EventType::GreetRequested, "test-project".to_string(), Throttle::Full, payload)
+    }
+
+    fn greeting_composed(greeting: &str) -> Event {
+        let payload = Event::serialize_payload(&GreetingComposedPayload {
+            greeting: greeting.to_string(),
+        })
+        .unwrap();
+        Event::new(EventType::GreetingComposed, "test-project".to_string(), Throttle::Full, payload)
+    }
+
+    #[tokio::test]
+    async fn compose_greeting_with_name() {
+        let block = ComposeGreeting;
+        let trigger = greet_requested(Some("Alice"));
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GreetingComposed);
+        assert_eq!(result.events[0].payload["greeting"], "Hello, Alice!");
+    }
+
+    #[tokio::test]
+    async fn compose_greeting_without_name_defaults_to_world() {
+        let block = ComposeGreeting;
+        let trigger = greet_requested(None);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["greeting"], "Hello, world!");
+    }
+
+    #[test]
+    fn compose_greeting_metadata() {
+        let block = ComposeGreeting;
+        assert_eq!(block.kind(), BlockKind::Observer);
+        assert_eq!(block.sinks_on(), &[EventType::GreetRequested]);
+    }
+
+    #[tokio::test]
+    async fn deliver_greeting_emits_delivered_event() {
+        let block = DeliverGreeting;
+        let trigger = greeting_composed("Hello, Bob!");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GreetingDelivered);
+        assert_eq!(result.events[0].payload["delivered"], true);
+        assert_eq!(result.events[0].payload["greeting"], "Hello, Bob!");
+        assert!(result.events[0].payload.get("dry_run").is_none());
+    }
+
+    #[test]
+    fn deliver_greeting_dry_run_events() {
+        let block = DeliverGreeting;
+        let trigger = greeting_composed("Hello, dry run!");
+
+        let events = block.dry_run_events(&trigger);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::GreetingDelivered);
+        assert_eq!(events[0].payload["delivered"], true);
+        assert_eq!(events[0].payload["dry_run"], true);
+    }
+
+    #[test]
+    fn deliver_greeting_dry_run_with_bad_payload() {
+        let block = DeliverGreeting;
+        let trigger = Event::new(
+            EventType::GreetingComposed,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"not_a_greeting": "oops"}),
+        );
+
+        let events = block.dry_run_events(&trigger);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["greeting"], "(no greeting)");
+        assert_eq!(events[0].payload["dry_run"], true);
+    }
+}
+
 impl TaskBlock for DeliverGreeting {
     task_block_meta! {
         name: "Deliver Greeting",

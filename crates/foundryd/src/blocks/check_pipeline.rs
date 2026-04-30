@@ -385,4 +385,93 @@ mod tests {
         assert_eq!(result.events[0].payload["run_id"], 99999);
         assert_eq!(result.events[0].payload["failure_logs"], "error: test failed in src/lib.rs");
     }
+
+    #[tokio::test]
+    async fn gh_run_list_failure_returns_failure_result() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let shell = FakeShellGateway::failure("error: authentication required");
+        let block = CheckPipeline::with_gateways(registry, shell);
+        let t = trigger("my-project");
+
+        let result = block.execute(&t).await.unwrap();
+
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("gh run list failed"));
+    }
+
+    #[tokio::test]
+    async fn no_completed_runs_emits_no_runs_conclusion() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let gh_output = serde_json::json!([
+            {
+                "status": "in_progress",
+                "conclusion": null,
+                "name": "CI",
+                "databaseId": 11111
+            }
+        ]);
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: gh_output.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = CheckPipeline::with_gateways(registry, shell);
+        let t = trigger("my-project");
+
+        let result = block.execute(&t).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::PipelineChecked);
+        assert_eq!(result.events[0].payload["conclusion"], "no_runs");
+    }
+
+    #[tokio::test]
+    async fn failure_logs_truncated_at_4000_chars() {
+        let registry = registry_with_repo("my-project", "owner/my-project");
+        let gh_list_output = serde_json::json!([
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "name": "CI",
+                "databaseId": 77777
+            }
+        ]);
+        let long_logs = "x".repeat(5000);
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: gh_list_output.to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: long_logs,
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = CheckPipeline::with_gateways(registry, shell);
+        let t = trigger("my-project");
+
+        let result = block.execute(&t).await.unwrap();
+
+        let logs = result.events[0].payload["failure_logs"].as_str().unwrap();
+        assert_eq!(logs.len(), 4000);
+    }
+
+    #[tokio::test]
+    async fn unknown_project_emits_stub() {
+        let block = CheckPipeline::new(empty_registry());
+        let t = trigger("unknown-project");
+
+        let result = block.execute(&t).await.unwrap();
+
+        assert!(!result.success);
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("not found in registry"));
+    }
 }

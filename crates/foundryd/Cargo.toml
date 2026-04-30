@@ -33,6 +33,7 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
