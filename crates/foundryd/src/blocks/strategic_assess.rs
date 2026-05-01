@@ -45,9 +45,7 @@ impl TaskBlock for StrategicAssessor {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
         let TriggerContext {
-            project,
-            throttle,
-            payload,
+            project, throttle, ..
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only run when strategic mode is requested.
@@ -61,6 +59,7 @@ impl TaskBlock for StrategicAssessor {
 
         let max_iterations = p.max_iterations.unwrap_or(5);
         let strategic_prompt = p.strategic_prompt.clone();
+        let actions = p.chain.actions.clone();
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
@@ -120,7 +119,7 @@ impl TaskBlock for StrategicAssessor {
                 &areas,
                 strategic_prompt.as_deref(),
                 max_iterations,
-                &payload,
+                actions.as_ref(),
                 throttle,
             ))
         })
@@ -145,7 +144,7 @@ fn build_strategic_result(
     areas: &[serde_json::Value],
     strategic_prompt: Option<&str>,
     max_iterations: u64,
-    payload: &serde_json::Value,
+    actions: Option<&serde_json::Value>,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
     let mut strategic_context = serde_json::json!({
@@ -165,7 +164,7 @@ fn build_strategic_result(
             "strategic": strategic_context,
         },
     });
-    if let Some(actions) = payload.get("actions") {
+    if let Some(actions) = actions {
         event_payload["actions"] = actions.clone();
     }
 

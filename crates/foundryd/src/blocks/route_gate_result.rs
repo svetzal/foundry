@@ -3,7 +3,7 @@ use std::pin::Pin;
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::has_loop_context;
 use foundry_core::payload::{
-    ChainContext, GateVerificationCompletedPayload, MaintenanceRequestedPayload,
+    ChainContext, GateVerificationCompletedPayload, LoopContext, MaintenanceRequestedPayload,
     ProjectCompletedPayload, RetryRequestedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -73,7 +73,7 @@ impl TaskBlock for RouteGateResult {
                     workflow,
                     completion_event_type,
                     in_loop,
-                    &payload,
+                    &context,
                     throttle,
                 )
             } else {
@@ -99,19 +99,20 @@ fn handle_gates_passed(
     workflow: WorkflowType,
     completion_event_type: foundry_core::event::EventType,
     in_loop: bool,
-    payload: &serde_json::Value,
+    context: &LoopContext,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
     tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
 
     // Carry loop_context forward into the completion event so downstream blocks can see it
-    let loop_context = payload.get("loop_context").cloned();
+    let loop_context = context.loop_context.clone();
     let completion_payload = Event::serialize_payload(&ProjectCompletedPayload {
         project: project.to_string(),
         success: true,
         summary: "all required gates passed".to_string(),
         workflow: workflow.to_string(),
         loop_context,
+        changes: None,
     })
     .expect("ProjectCompletedPayload is infallibly serializable");
 
@@ -126,8 +127,9 @@ fn handle_gates_passed(
     // Skip chaining when inside a nested loop — the strategic loop controller
     // handles post-loop maintenance chaining.
     if workflow == WorkflowType::Iterate && !in_loop {
-        let maintain = payload
-            .get("actions")
+        let maintain = context
+            .actions
+            .as_ref()
             .and_then(|a| a.get("maintain"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
@@ -213,6 +215,7 @@ fn handle_retry_or_exhaustion(
         summary: format!("gates failed after {retry_count} retries"),
         workflow: workflow.to_string(),
         loop_context,
+        changes: None,
     })
     .expect("ProjectCompletedPayload is infallibly serializable");
 

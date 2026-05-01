@@ -208,19 +208,31 @@ pub struct MainBranchAuditedPayload {
 /// Payload for `ReleaseTagAudited`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseTagAuditedPayload {
+    #[serde(default)]
     pub project: String,
     pub cve: String,
+    #[serde(default)]
     pub tag: String,
     pub vulnerable: bool,
+    /// Fallback dirty flag forwarded from upstream payloads when the scanner
+    /// cannot run (project not in registry, no lockfile, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
 }
 
 /// Payload for `ReleaseRequested`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseRequestedPayload {
+    #[serde(default)]
     pub project: String,
+    #[serde(default)]
     pub cve: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// Optional version bump type (`patch`, `minor`, `major`). When absent
+    /// the release agent determines the bump from the changelog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bump: Option<String>,
 }
 
 /// Payload for `ReleaseCompleted`.
@@ -365,13 +377,20 @@ pub struct SummarizeCompletedPayload {
 /// Payload for `ProjectIterationCompleted` and `ProjectMaintenanceCompleted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectCompletedPayload {
+    #[serde(default)]
     pub project: String,
+    #[serde(default)]
     pub success: bool,
+    #[serde(default)]
     pub summary: String,
     #[serde(default)]
     pub workflow: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<serde_json::Value>,
+    /// When `false`, downstream blocks such as `CommitAndPush` skip the commit.
+    /// Absent (None) is interpreted as "changes may exist".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<bool>,
 }
 
 /// Payload for `ProjectChangesCommitted`.

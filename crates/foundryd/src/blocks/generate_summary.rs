@@ -7,6 +7,7 @@ use chrono::Utc;
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
     LocalInstallCompletedPayload, MaintenanceRunCompletedPayload, ReleaseCompletedPayload,
+    ReleaseTagAuditedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
@@ -71,17 +72,9 @@ fn extract_release_audits(project: &str, result: &ProcessResult) -> Vec<ReleaseA
         .iter()
         .filter(|e| e.event_type == EventType::ReleaseTagAudited)
         .map(|e| {
-            let tag = e
-                .payload
-                .get("tag")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let vulnerable = e
-                .payload
-                .get("vulnerable")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            let p = e.parse_payload::<ReleaseTagAuditedPayload>().ok();
+            let tag = p.as_ref().map(|p| p.tag.clone()).unwrap_or_default();
+            let vulnerable = p.as_ref().is_some_and(|p| p.vulnerable);
             let status = if vulnerable { "vulnerable" } else { "clean" }.to_string();
             ReleaseAuditEntry {
                 name: project.to_string(),
@@ -307,7 +300,7 @@ mod tests {
             EventType::ReleaseTagAudited,
             project.to_string(),
             Throttle::Full,
-            serde_json::json!({"tag": "v1.0.0", "vulnerable": false}),
+            serde_json::json!({"project": project, "cve": "CVE-test", "tag": "v1.0.0", "vulnerable": false}),
         );
         let auto_release = Event::new(
             EventType::ReleaseCompleted,

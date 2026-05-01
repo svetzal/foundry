@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::ReleaseTagAuditedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -33,31 +34,17 @@ impl TaskBlock for AuditMainBranch {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // Use direct Value access — test payloads may omit required typed fields.
-        let vulnerable = trigger
-            .payload
-            .get("vulnerable")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let p = parse_payload!(trigger, ReleaseTagAuditedPayload);
 
-        if !vulnerable {
+        if !p.vulnerable {
             tracing::info!("release tag not vulnerable, skipping main branch audit");
             return skip!("Skipped: release tag not vulnerable");
         }
 
         // Payload fallback values — used when the project is not in the registry,
         // or when the scanner cannot run (no lockfile / tooling not installed).
-        let cve_from_payload = trigger
-            .payload
-            .get("cve")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        let dirty_from_payload = trigger
-            .payload
-            .get("dirty")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+        let cve_from_payload = p.cve.clone();
+        let dirty_from_payload = p.dirty.unwrap_or(true);
 
         // Look up the project entry in the registry.
         let entry = self.registry.find_project(&project).cloned();

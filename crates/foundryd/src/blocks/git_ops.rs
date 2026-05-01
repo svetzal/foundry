@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::{ProjectCompletedPayload, RemediationCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -146,7 +147,8 @@ impl TaskBlock for CommitAndPush {
         }
 
         // Respect the self-filter: no events when payload says no changes.
-        let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
+        let changes_flag =
+            trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
         if changes_flag == Some(false) {
             return vec![];
         }
@@ -154,11 +156,10 @@ impl TaskBlock for CommitAndPush {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+            .parse_payload::<RemediationCompletedPayload>()
+            .ok()
+            .and_then(|p| p.cve)
+            .unwrap_or_else(|| "unknown".to_string());
 
         let mut events = vec![Event::new(
             EventType::ProjectChangesCommitted,
@@ -206,18 +207,18 @@ impl TaskBlock for CommitAndPush {
         }
 
         // Self-filter: when the payload explicitly signals no changes were made, skip early.
-        let changes_flag = trigger.payload.get("changes").and_then(serde_json::Value::as_bool);
+        let changes_flag =
+            trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
         if changes_flag == Some(false) {
             tracing::info!(%project, "payload indicates no changes, skipping commit");
             return skip!("No changes to commit");
         }
 
         let cve = trigger
-            .payload
-            .get("cve")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+            .parse_payload::<RemediationCompletedPayload>()
+            .ok()
+            .and_then(|p| p.cve)
+            .unwrap_or_else(|| "unknown".to_string());
 
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);

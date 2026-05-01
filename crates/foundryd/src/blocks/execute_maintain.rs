@@ -3,7 +3,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ExecutionCompletedPayload, LoopContext};
+use foundry_core::payload::{
+    ExecutionCompletedPayload, GateResolutionCompletedPayload, LoopContext,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -95,13 +97,16 @@ impl TaskBlock for ExecuteMaintain {
             return skip!("Skipped: not a maintain workflow");
         }
 
+        let p = parse_payload!(trigger, GateResolutionCompletedPayload);
+        let gates = p.gates;
+
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
-            let prompt = build_maintain_prompt(&project, payload.get("gates"));
+            let prompt = build_maintain_prompt(&project, Some(&gates).filter(|v| !v.is_null()));
 
             let agent_file = resolve_agent_file(&entry.agent);
 
