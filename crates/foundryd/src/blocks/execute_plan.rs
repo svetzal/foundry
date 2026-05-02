@@ -37,23 +37,23 @@ impl TaskBlock for ExecutePlan {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         let context = LoopContext::extract_from(&trigger.payload);
-        let payload = Event::serialize_payload(&ExecutionCompletedPayload {
-            project: trigger.project.clone(),
-            workflow: WorkflowType::Iterate.to_string(),
-            success: true,
-            summary: String::new(),
-            execution_output: None,
-            dry_run: Some(true),
-            retry_count: None,
-            context,
-        })
-        .expect("ExecutionCompletedPayload is infallibly serializable");
-        vec![Event::new(
-            EventType::ExecutionCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
+        vec![
+            trigger
+                .with_payload(
+                    EventType::ExecutionCompleted,
+                    &ExecutionCompletedPayload {
+                        project: trigger.project.clone(),
+                        workflow: WorkflowType::Iterate.to_string(),
+                        success: true,
+                        summary: String::new(),
+                        execution_output: None,
+                        dry_run: Some(true),
+                        retry_count: None,
+                        context,
+                    },
+                )
+                .expect("ExecutionCompletedPayload is infallibly serializable"),
+        ]
     }
 
     fn execute(
@@ -96,7 +96,15 @@ impl TaskBlock for ExecutePlan {
 
             let response = agent.invoke(&request).await;
 
-            Ok(build_execution_result(&project, response, &payload, throttle))
+            Ok(super::build_agent_execution_result(
+                &project,
+                WorkflowType::Iterate,
+                response,
+                &payload,
+                throttle,
+                "plan execution",
+                None,
+            ))
         })
     }
 }
@@ -122,68 +130,6 @@ fn build_execution_prompt(
          Execute this plan. Make only the changes described. \
          Ensure the code compiles and existing tests pass after your changes.{gates_context}"
     )
-}
-
-fn build_execution_result(
-    project: &str,
-    response: anyhow::Result<crate::gateway::AgentResponse>,
-    payload: &serde_json::Value,
-    throttle: foundry_core::throttle::Throttle,
-) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary, execution_output) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                "plan execution completed".to_string()
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("plan execution failed: {first_line}")
-            };
-            let lines: Vec<&str> = out.lines().collect();
-            let start = lines.len().saturating_sub(200);
-            let trimmed_output = lines[start..].join("\n");
-            let exec_out = if trimmed_output.is_empty() {
-                None
-            } else {
-                Some(trimmed_output)
-            };
-            (Some(out), Some(r.exit_code), s, summary, exec_out)
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent invocation failed");
-            (None, None, false, format!("agent unavailable: {err}"), None)
-        }
-    };
-
-    tracing::info!(project = %project, success = success, "plan execution completed");
-
-    let context = LoopContext::extract_from(payload);
-    let event_payload = Event::serialize_payload(&ExecutionCompletedPayload {
-        project: project.to_string(),
-        workflow: WorkflowType::Iterate.to_string(),
-        success,
-        summary: summary.clone(),
-        execution_output,
-        dry_run: None,
-        retry_count: None,
-        context,
-    })
-    .expect("ExecutionCompletedPayload is infallibly serializable");
-
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ExecutionCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
-        success,
-        summary: format!("{project}: {summary}"),
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
-    }
 }
 
 #[cfg(test)]

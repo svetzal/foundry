@@ -86,25 +86,18 @@ impl TaskBlock for WatchPipeline {
             let Some(repo) = repo else {
                 // No repository configured — stub: assume success.
                 tracing::info!("no repo configured, using stub pipeline completion");
-                return Ok(stub_success(project, throttle));
+                return Ok(super::stub_event_result(
+                    "Release pipeline completed successfully",
+                    EventType::ReleasePipelineCompleted,
+                    project,
+                    throttle,
+                    serde_json::json!({ "status": "success" }),
+                ));
             };
 
             poll_pipeline(project, throttle, &repo, shell.as_ref()).await
         })
     }
-}
-
-/// Emit a stub successful pipeline completion event.
-fn stub_success(project: String, throttle: foundry_core::throttle::Throttle) -> TaskBlockResult {
-    TaskBlockResult::success(
-        "Release pipeline completed successfully",
-        vec![Event::new(
-            EventType::ReleasePipelineCompleted,
-            project,
-            throttle,
-            serde_json::json!({ "status": "success" }),
-        )],
-    )
 }
 
 /// Poll GitHub Actions for the latest workflow run on `repo` until it

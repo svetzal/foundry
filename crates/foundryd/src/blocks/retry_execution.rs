@@ -41,24 +41,23 @@ impl TaskBlock for RetryExecution {
             .expect("dry_run_events called with invalid RetryRequested payload");
         let workflow = WorkflowType::from_payload(&trigger.payload);
         let context = LoopContext::extract_from(&trigger.payload);
-
-        let payload = Event::serialize_payload(&ExecutionCompletedPayload {
-            project: trigger.project.clone(),
-            workflow: workflow.to_string(),
-            success: true,
-            summary: String::new(),
-            execution_output: None,
-            dry_run: Some(true),
-            retry_count: Some(p.retry_count),
-            context,
-        })
-        .expect("ExecutionCompletedPayload is infallibly serializable");
-        vec![Event::new(
-            EventType::ExecutionCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
+        vec![
+            trigger
+                .with_payload(
+                    EventType::ExecutionCompleted,
+                    &ExecutionCompletedPayload {
+                        project: trigger.project.clone(),
+                        workflow: workflow.to_string(),
+                        success: true,
+                        summary: String::new(),
+                        execution_output: None,
+                        dry_run: Some(true),
+                        retry_count: Some(p.retry_count),
+                        context,
+                    },
+                )
+                .expect("ExecutionCompletedPayload is infallibly serializable"),
+        ]
     }
 
     fn execute(
@@ -113,13 +112,14 @@ impl TaskBlock for RetryExecution {
 
             let response = agent.invoke(&request).await;
 
-            Ok(build_retry_result(
+            Ok(super::build_agent_execution_result(
                 &project,
                 workflow,
-                retry_count,
                 response,
                 &payload,
                 throttle,
+                &format!("retry {retry_count}"),
+                Some(retry_count),
             ))
         })
     }
@@ -150,75 +150,6 @@ fn build_retry_prompt(
          Focus specifically on the failures listed above. \
          Make only the changes necessary to resolve these issues."
     )
-}
-
-fn build_retry_result(
-    project: &str,
-    workflow: WorkflowType,
-    retry_count: u64,
-    response: anyhow::Result<crate::gateway::AgentResponse>,
-    payload: &serde_json::Value,
-    throttle: foundry_core::throttle::Throttle,
-) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary, execution_output) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                format!("retry {retry_count} completed")
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("retry {retry_count} failed: {first_line}")
-            };
-            let lines: Vec<&str> = out.lines().collect();
-            let start = lines.len().saturating_sub(200);
-            let trimmed_output = lines[start..].join("\n");
-            let exec_out = if trimmed_output.is_empty() {
-                None
-            } else {
-                Some(trimmed_output)
-            };
-            (Some(out), Some(r.exit_code), s, summary, exec_out)
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent invocation failed during retry");
-            (None, None, false, format!("agent unavailable during retry: {err}"), None)
-        }
-    };
-
-    tracing::info!(
-        project = %project,
-        retry_count = retry_count,
-        success = success,
-        "retry execution completed"
-    );
-
-    let context = LoopContext::extract_from(payload);
-    let event_payload = Event::serialize_payload(&ExecutionCompletedPayload {
-        project: project.to_string(),
-        workflow: workflow.to_string(),
-        success,
-        summary: summary.clone(),
-        execution_output,
-        dry_run: None,
-        retry_count: Some(retry_count),
-        context,
-    })
-    .expect("ExecutionCompletedPayload is infallibly serializable");
-
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ExecutionCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
-        success,
-        summary: format!("{project}: {summary}"),
-        raw_output,
-        exit_code,
-        audit_artifacts: vec![],
-    }
 }
 
 #[cfg(test)]

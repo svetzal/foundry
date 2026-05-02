@@ -2,9 +2,10 @@
 mod macros;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::RemediationCompletedPayload;
+use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
+use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::AgentResponse;
 
@@ -140,6 +141,92 @@ pub(super) fn build_agent_remediation_result(
         exit_code,
         audit_artifacts: vec![],
     }
+}
+
+/// Build a `TaskBlockResult` for an agent-driven execution step, handling the
+/// response match, output trimming to 200 lines, tracing, `LoopContext` extraction,
+/// `ExecutionCompletedPayload` serialization, and `TaskBlockResult` construction.
+///
+/// `success_label` is the base text for the summary, e.g. "plan execution",
+/// "maintenance", or "retry 2".  `retry_count` is forwarded into the payload
+/// when present (retry flow only).
+pub(super) fn build_agent_execution_result(
+    project: &str,
+    workflow: WorkflowType,
+    response: anyhow::Result<AgentResponse>,
+    trigger_payload: &serde_json::Value,
+    throttle: Throttle,
+    success_label: &str,
+    retry_count: Option<u64>,
+) -> TaskBlockResult {
+    let (raw_output, exit_code, success, summary, execution_output) = match response {
+        Ok(r) => {
+            let s = r.success;
+            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
+            let summary = if s {
+                format!("{success_label} completed")
+            } else {
+                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
+                format!("{success_label} failed: {first_line}")
+            };
+            let lines: Vec<&str> = out.lines().collect();
+            let start = lines.len().saturating_sub(200);
+            let trimmed_output = lines[start..].join("\n");
+            let exec_out = if trimmed_output.is_empty() {
+                None
+            } else {
+                Some(trimmed_output)
+            };
+            (Some(out), Some(r.exit_code), s, summary, exec_out)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "agent invocation failed");
+            (None, None, false, format!("agent unavailable: {err}"), None)
+        }
+    };
+
+    tracing::info!(project = %project, success = success, "{success_label} completed");
+
+    let context = LoopContext::extract_from(trigger_payload);
+    let event_payload = Event::serialize_payload(&ExecutionCompletedPayload {
+        project: project.to_string(),
+        workflow: workflow.to_string(),
+        success,
+        summary: summary.clone(),
+        execution_output,
+        dry_run: None,
+        retry_count,
+        context,
+    })
+    .expect("ExecutionCompletedPayload is infallibly serializable");
+
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary: format!("{project}: {summary}"),
+        raw_output,
+        exit_code,
+        audit_artifacts: vec![],
+    }
+}
+
+/// Emit a single-event success result with a raw JSON payload, without serialization.
+///
+/// Use for stub/fallback paths that already have a `serde_json::Value` payload
+/// (e.g., no-repo results) and don't need typed payload serialization.
+pub(super) fn stub_event_result(
+    summary: impl Into<String>,
+    event_type: EventType,
+    project: String,
+    throttle: Throttle,
+    payload: serde_json::Value,
+) -> TaskBlockResult {
+    TaskBlockResult::success(summary, vec![Event::new(event_type, project, throttle, payload)])
 }
 
 /// Serialize `payload` and construct a `TaskBlockResult` for a gate-run event.

@@ -49,7 +49,18 @@ async fn run_check(
 ) -> anyhow::Result<TaskBlockResult> {
     if entry.repo.is_empty() {
         tracing::info!(project = %project, "no repo configured, skipping pipeline check");
-        return Ok(make_no_repo_result(project, throttle));
+        return Ok(super::stub_event_result(
+            "no repo configured",
+            EventType::PipelineChecked,
+            project,
+            throttle,
+            serde_json::json!({
+                "passing": true,
+                "conclusion": "skipped",
+                "run_id": null,
+                "run_name": null,
+            }),
+        ));
     }
 
     let repo = &entry.repo;
@@ -144,26 +155,6 @@ async fn run_check(
         failure_logs.as_deref(),
         throttle,
     ))
-}
-
-fn make_no_repo_result(
-    project: String,
-    throttle: foundry_core::throttle::Throttle,
-) -> TaskBlockResult {
-    TaskBlockResult::success(
-        "no repo configured",
-        vec![Event::new(
-            EventType::PipelineChecked,
-            project,
-            throttle,
-            serde_json::json!({
-                "passing": true,
-                "conclusion": "skipped",
-                "run_id": null,
-                "run_name": null,
-            }),
-        )],
-    )
 }
 
 fn build_pipeline_result(

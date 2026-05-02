@@ -60,40 +60,34 @@ impl TaskBlock for RouteProjectWorkflow {
 
             if iterate {
                 tracing::info!(%project, "routing to iteration workflow");
-                let event_payload = Event::serialize_payload(&IterationRequestedPayload {
-                    project: project.clone(),
-                    workflow: "iterate".to_string(),
-                    chain: ChainContext {
-                        actions: Some(serde_json::json!({ "maintain": maintain })),
+                super::emit_result(
+                    format!("{project}: routing to iteration workflow"),
+                    EventType::IterationRequested,
+                    &project,
+                    throttle,
+                    &IterationRequestedPayload {
+                        project: project.clone(),
+                        workflow: "iterate".to_string(),
+                        chain: ChainContext {
+                            actions: Some(serde_json::json!({ "maintain": maintain })),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                })?;
-                Ok(TaskBlockResult::success(
-                    format!("{project}: routing to iteration workflow"),
-                    vec![Event::new(
-                        EventType::IterationRequested,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                ))
+                )
             } else if maintain {
                 tracing::info!(%project, "routing to maintenance workflow");
-                let event_payload = Event::serialize_payload(&MaintenanceRequestedPayload {
-                    project: project.clone(),
-                    workflow: "maintain".to_string(),
-                    chain: ChainContext::default(),
-                })?;
-                Ok(TaskBlockResult::success(
+                super::emit_result(
                     format!("{project}: routing to maintenance workflow"),
-                    vec![Event::new(
-                        EventType::MaintenanceRequested,
-                        project.clone(),
-                        throttle,
-                        event_payload,
-                    )],
-                ))
+                    EventType::MaintenanceRequested,
+                    &project,
+                    throttle,
+                    &MaintenanceRequestedPayload {
+                        project: project.clone(),
+                        workflow: "maintain".to_string(),
+                        chain: ChainContext::default(),
+                    },
+                )
             } else {
                 tracing::info!(%project, "no automation actions enabled");
                 Ok(TaskBlockResult::success(
