@@ -8,9 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Filters assessments: rejects low-severity issues and busy-work.
 ///
@@ -76,20 +76,22 @@ impl TaskBlock for TriageAssessment {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Quick,
-                agent_file,
-                timeout: std::time::Duration::from_secs(120),
-            };
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::ReadOnly,
+                    capability: AgentCapability::Quick,
+                    agent_file,
+                    timeout: std::time::Duration::from_secs(120),
+                },
+                "triage assessment",
+                &project,
+            )
+            .await;
 
-            tracing::info!(project = %project, severity = severity, "triaging assessment via agent");
-
-            let response = agent.invoke(&request).await;
-
-            let (accepted, reason) = match AgentOutcome::from_response(response) {
+            let (accepted, reason) = match outcome {
                 AgentOutcome::Success { stdout } => parse_triage(&stdout),
                 AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
@@ -97,7 +99,6 @@ impl TaskBlock for TriageAssessment {
                     (true, "triage agent failed, defaulting to accept".to_string())
                 }
                 AgentOutcome::Unavailable { error } => {
-                    tracing::warn!(error = %error, "agent invocation failed for triage");
                     (true, format!("agent unavailable: {error}, defaulting to accept"))
                 }
             };

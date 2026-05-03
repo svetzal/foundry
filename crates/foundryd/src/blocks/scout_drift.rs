@@ -6,7 +6,9 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+
+use super::{AgentBlockSpec, invoke_agent};
 
 const DRIFT_SCOUT_PROMPT: &str = r#"You are a BUG SCOUT agent.
 
@@ -198,41 +200,40 @@ impl TaskBlock for ScoutDrift {
                  {JSON_OUTPUT_INSTRUCTIONS}"
             );
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Reasoning,
-                agent_file,
-                timeout: entry.timeout(),
-            };
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::ReadOnly,
+                    capability: AgentCapability::Reasoning,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                "scout drift",
+                &project,
+            )
+            .await;
 
-            tracing::info!(project = %project, "scouting for intent drift via agent");
-
-            let response = match agent.invoke(&request).await {
-                Ok(r) => r,
-                Err(err) => {
-                    tracing::warn!(error = %err, "agent invocation failed for drift scout");
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {err}")));
+            let result = match outcome {
+                AgentOutcome::Success { stdout } => parse_drift_assessment(&stdout),
+                AgentOutcome::AgentFailed { stderr } => {
+                    tracing::warn!(project = %project, stderr = %stderr, "drift scout agent failed");
+                    DriftAssessmentResult {
+                        candidate_count: 0,
+                        high_value_count: 0,
+                        candidates: serde_json::Value::Array(vec![]),
+                        parse_error: Some(
+                            stderr
+                                .lines()
+                                .next()
+                                .unwrap_or("agent returned non-success")
+                                .to_string(),
+                        ),
+                    }
                 }
-            };
-
-            let result = if response.success {
-                parse_drift_assessment(&response.stdout)
-            } else {
-                tracing::warn!(project = %project, stderr = %response.stderr, "drift scout agent failed");
-                DriftAssessmentResult {
-                    candidate_count: 0,
-                    high_value_count: 0,
-                    candidates: serde_json::Value::Array(vec![]),
-                    parse_error: Some(
-                        response
-                            .stderr
-                            .lines()
-                            .next()
-                            .unwrap_or("agent returned non-success")
-                            .to_string(),
-                    ),
+                AgentOutcome::Unavailable { error } => {
+                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
                 }
             };
 
@@ -264,10 +265,6 @@ impl TaskBlock for ScoutDrift {
                     throttle,
                     event_payload,
                 )],
-            )
-            .with_output(
-                Some(format!("{}\n{}", response.stdout, response.stderr)),
-                Some(response.exit_code),
             ))
         })
     }

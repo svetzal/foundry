@@ -8,7 +8,9 @@ use foundry_core::payload::{PipelineCheckedPayload, RemediationCompletedPayload}
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
+
+use super::{AgentBlockSpec, invoke_agent};
 
 /// Attempts to fix a failing GitHub Actions pipeline.
 /// Mutator -- events logged but not delivered at `audit_only`;
@@ -126,27 +128,25 @@ async fn run_remediation(
 
     let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-    let request = AgentRequest {
-        prompt,
-        working_dir: project_path,
-        access: AgentAccess::Full,
-        capability: AgentCapability::Coding,
-        agent_file,
-        timeout: RemediatePipeline::CLAUDE_TIMEOUT,
-    };
-
-    tracing::info!(
-        project = %project,
-        %run_name,
-        "invoking agent for pipeline remediation"
-    );
-
-    let response = agent.invoke(&request).await;
+    let outcome = invoke_agent(
+        &*agent,
+        AgentBlockSpec {
+            prompt,
+            working_dir: project_path,
+            access: AgentAccess::Full,
+            capability: AgentCapability::Coding,
+            agent_file,
+            timeout: RemediatePipeline::CLAUDE_TIMEOUT,
+        },
+        "remediate pipeline",
+        &project,
+    )
+    .await;
 
     Ok(super::build_agent_remediation_result(
         &project,
         throttle,
-        response,
+        outcome,
         None,
         Some(true),
         "Pipeline fixed",

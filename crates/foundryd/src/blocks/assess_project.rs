@@ -8,9 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext};
 
 /// Identifies the most-violated engineering principle in the project.
 ///
@@ -135,24 +135,28 @@ async fn run_assessment_agent(
          }}"
     );
 
-    let assess_request = AgentRequest {
-        prompt: assess_prompt,
-        working_dir: project_path,
-        access: AgentAccess::ReadOnly,
-        capability: AgentCapability::Reasoning,
-        agent_file,
-        timeout,
-    };
+    let outcome = super::invoke_agent(
+        agent.as_ref(),
+        AgentBlockSpec {
+            prompt: assess_prompt,
+            working_dir: project_path,
+            access: AgentAccess::ReadOnly,
+            capability: AgentCapability::Reasoning,
+            agent_file,
+            timeout,
+        },
+        "assess project",
+        project,
+    )
+    .await;
 
-    tracing::info!(project = %project, "assessing project via agent");
-
-    let assess_response = agent.invoke(&assess_request).await?;
-
-    if assess_response.success {
-        Ok(parse_assessment(&assess_response.stdout))
-    } else {
-        tracing::warn!(project = %project, stderr = %assess_response.stderr, "assessment agent failed");
-        Ok((5, "unknown".to_string(), "conventions".to_string(), assess_response.stderr))
+    match outcome {
+        AgentOutcome::Success { stdout } => Ok(parse_assessment(&stdout)),
+        AgentOutcome::AgentFailed { stderr } => {
+            tracing::warn!(project = %project, stderr = %stderr, "assessment agent failed");
+            Ok((5, "unknown".to_string(), "conventions".to_string(), stderr))
+        }
+        AgentOutcome::Unavailable { error } => Err(anyhow::anyhow!(error)),
     }
 }
 
@@ -170,28 +174,31 @@ async fn run_naming_agent(
          Output ONLY the kebab-case string, nothing else. Example: fix-error-handling"
     );
 
-    let name_request = AgentRequest {
-        prompt: name_prompt,
-        working_dir: project_path,
-        access: AgentAccess::ReadOnly,
-        capability: AgentCapability::Quick,
-        agent_file,
-        timeout: std::time::Duration::from_secs(60),
-    };
+    let outcome = super::invoke_agent(
+        agent.as_ref(),
+        AgentBlockSpec {
+            prompt: name_prompt,
+            working_dir: project_path,
+            access: AgentAccess::ReadOnly,
+            capability: AgentCapability::Quick,
+            agent_file,
+            timeout: std::time::Duration::from_secs(60),
+        },
+        "name assessment",
+        project,
+    )
+    .await;
 
-    match agent.invoke(&name_request).await {
-        Ok(r) if r.success => {
-            let name = r.stdout.trim().to_string();
-            if name.is_empty() {
-                format!("assess-{category}")
-            } else {
-                name
-            }
-        }
-        _ => {
-            tracing::warn!(project = %project, "naming agent failed, using fallback");
+    if let AgentOutcome::Success { stdout } = outcome {
+        let name = stdout.trim().to_string();
+        if name.is_empty() {
             format!("assess-{category}")
+        } else {
+            name
         }
+    } else {
+        tracing::warn!(project = %project, "naming agent failed, using fallback");
+        format!("assess-{category}")
     }
 }
 

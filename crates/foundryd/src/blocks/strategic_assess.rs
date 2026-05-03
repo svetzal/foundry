@@ -7,9 +7,9 @@ use foundry_core::payload::IterationRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Performs a strategic assessment of the project to identify multiple areas
 /// for improvement, then emits a plan for the strategic loop controller.
@@ -79,20 +79,22 @@ impl TaskBlock for StrategicAssessor {
                 ),
             );
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Reasoning,
-                agent_file,
-                timeout: entry.timeout(),
-            };
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::ReadOnly,
+                    capability: AgentCapability::Reasoning,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                "strategic assessment",
+                &project,
+            )
+            .await;
 
-            tracing::info!(project = %project, "performing strategic assessment via agent");
-
-            let response = agent.invoke(&request).await;
-
-            let areas = match AgentOutcome::from_response(response) {
+            let areas = match outcome {
                 AgentOutcome::Success { stdout } => parse_strategic_assessment(&stdout),
                 AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(project = %project, stderr = %stderr, "strategic assessment agent failed");
@@ -103,7 +105,6 @@ impl TaskBlock for StrategicAssessor {
                     })]
                 }
                 AgentOutcome::Unavailable { error } => {
-                    tracing::warn!(error = %error, "agent invocation failed for strategic assessment");
                     return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
                 }
             };

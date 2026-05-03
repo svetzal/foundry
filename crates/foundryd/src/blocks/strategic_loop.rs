@@ -8,9 +8,9 @@ use foundry_core::payload::{InnerIterationCompletedPayload, StrategicAssessmentC
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext};
 
 /// Controls the strategic iteration loop: picks the next area to improve
 /// and decides when the loop is done.
@@ -276,50 +276,52 @@ async fn assess_continue(
          Output ONLY valid JSON: {{\"continue\": true/false, \"reason\": \"<brief explanation>\"}}"
     );
 
-    let request = AgentRequest {
-        prompt,
-        working_dir: project_path,
-        access: AgentAccess::ReadOnly,
-        capability: AgentCapability::Quick,
-        agent_file,
-        timeout: std::time::Duration::from_secs(120),
-    };
+    let outcome = super::invoke_agent(
+        agent.as_ref(),
+        AgentBlockSpec {
+            prompt,
+            working_dir: project_path,
+            access: AgentAccess::ReadOnly,
+            capability: AgentCapability::Quick,
+            agent_file,
+            timeout: std::time::Duration::from_secs(120),
+        },
+        "strategic continue assessment",
+        project,
+    )
+    .await;
 
-    match agent.invoke(&request).await {
-        Ok(r) if r.success => {
-            let trimmed = r.stdout.trim();
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                let should_continue =
-                    parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                let reason =
-                    parsed.get("reason").and_then(serde_json::Value::as_str).unwrap_or("no reason");
-                tracing::info!(
-                    project = %project,
-                    should_continue = should_continue,
-                    reason = %reason,
-                    "strategic continue assessment"
-                );
-                return should_continue;
-            }
-            // Try to extract JSON from output
-            if let Some(start) = trimmed.find('{') {
-                if let Some(end) = trimmed.rfind('}') {
-                    if let Ok(parsed) =
-                        serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
-                    {
-                        return parsed
-                            .get("continue")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                    }
+    if let AgentOutcome::Success { stdout } = outcome {
+        let trimmed = stdout.trim();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let should_continue =
+                parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let reason =
+                parsed.get("reason").and_then(serde_json::Value::as_str).unwrap_or("no reason");
+            tracing::info!(
+                project = %project,
+                should_continue = should_continue,
+                reason = %reason,
+                "strategic continue assessment"
+            );
+            return should_continue;
+        }
+        // Try to extract JSON from output
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
+                {
+                    return parsed
+                        .get("continue")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
                 }
             }
-            false
         }
-        _ => {
-            tracing::warn!(project = %project, "continue assessment failed, stopping loop");
-            false
-        }
+        false
+    } else {
+        tracing::warn!(project = %project, "continue assessment failed, stopping loop");
+        false
     }
 }
 

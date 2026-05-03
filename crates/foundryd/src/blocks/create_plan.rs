@@ -8,9 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Creates a step-by-step correction plan for an accepted assessment.
 ///
@@ -82,27 +82,28 @@ impl TaskBlock for CreatePlan {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Reasoning,
-                agent_file,
-                timeout: entry.timeout(),
-            };
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::ReadOnly,
+                    capability: AgentCapability::Reasoning,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                "create plan",
+                &project,
+            )
+            .await;
 
-            tracing::info!(project = %project, principle = %principle, "creating plan via agent");
-
-            let response = agent.invoke(&request).await;
-
-            let (plan, success) = match AgentOutcome::from_response(response) {
+            let (plan, success) = match outcome {
                 AgentOutcome::Success { stdout } => (stdout.trim().to_string(), true),
                 AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(project = %project, stderr = %stderr, "plan agent failed");
                     (format!("Plan generation failed: {stderr}"), false)
                 }
                 AgentOutcome::Unavailable { error } => {
-                    tracing::warn!(error = %error, "agent invocation failed for plan");
                     return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
                 }
             };

@@ -7,7 +7,9 @@ use foundry_core::payload::{MainBranchAuditedPayload, RemediationCompletedPayloa
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
+
+use super::{AgentBlockSpec, invoke_agent};
 
 /// Attempts to fix a vulnerability on the main branch.
 /// Mutator — events logged but not delivered at `audit_only`;
@@ -97,29 +99,27 @@ impl TaskBlock for RemediateVulnerability {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::Full,
-                capability: AgentCapability::Coding,
-                agent_file,
-                timeout: entry.timeout(),
-            };
-
-            tracing::info!(
-                project = %project,
-                %cve,
-                "invoking agent for remediation"
-            );
-
-            let response = agent.invoke(&request).await;
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::Full,
+                    capability: AgentCapability::Coding,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                &format!("remediate {cve}"),
+                &project,
+            )
+            .await;
 
             let success_label = format!("Remediated {cve}");
             let failure_label = format!("Remediation of {cve} failed");
             Ok(super::build_agent_remediation_result(
                 &project,
                 throttle,
-                response,
+                outcome,
                 Some(cve),
                 None,
                 &success_label,

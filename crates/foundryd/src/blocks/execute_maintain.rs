@@ -10,9 +10,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
 /// and resolves quality gate failures.
@@ -109,23 +109,25 @@ impl TaskBlock for ExecuteMaintain {
 
             let agent_file = resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::Full,
-                capability: AgentCapability::Coding,
-                agent_file,
-                timeout: entry.timeout(),
-            };
-
-            tracing::info!(project = %project, "executing maintain via agent");
-
-            let response = agent.invoke(&request).await;
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::Full,
+                    capability: AgentCapability::Coding,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                "maintain",
+                &project,
+            )
+            .await;
 
             Ok(super::build_agent_execution_result(
                 &project,
                 WorkflowType::Maintain,
-                response,
+                outcome,
                 &payload,
                 throttle,
                 "maintenance",

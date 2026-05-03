@@ -8,9 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Applies the correction plan to the project.
 ///
@@ -83,23 +83,25 @@ impl TaskBlock for ExecutePlan {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::Full,
-                capability: AgentCapability::Coding,
-                agent_file,
-                timeout: entry.timeout(),
-            };
-
-            tracing::info!(project = %project, principle = %principle, "executing plan via agent");
-
-            let response = agent.invoke(&request).await;
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::Full,
+                    capability: AgentCapability::Coding,
+                    agent_file,
+                    timeout: entry.timeout(),
+                },
+                "plan execution",
+                &project,
+            )
+            .await;
 
             Ok(super::build_agent_execution_result(
                 &project,
                 WorkflowType::Iterate,
-                response,
+                outcome,
                 &payload,
                 throttle,
                 "plan execution",

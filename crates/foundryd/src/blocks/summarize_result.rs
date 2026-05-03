@@ -8,9 +8,9 @@ use foundry_core::payload::ProjectCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
-use super::TriggerContext;
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 /// Generates a commit headline and summary after a successful workflow.
 ///
@@ -80,20 +80,22 @@ impl TaskBlock for SummarizeResult {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let request = AgentRequest {
-                prompt,
-                working_dir: project_path,
-                access: AgentAccess::ReadOnly,
-                capability: AgentCapability::Quick,
-                agent_file,
-                timeout: std::time::Duration::from_secs(120),
-            };
+            let outcome = invoke_agent(
+                &*agent,
+                AgentBlockSpec {
+                    prompt,
+                    working_dir: project_path,
+                    access: AgentAccess::ReadOnly,
+                    capability: AgentCapability::Quick,
+                    agent_file,
+                    timeout: std::time::Duration::from_secs(120),
+                },
+                "summarize result",
+                &project,
+            )
+            .await;
 
-            tracing::info!(project = %project, "generating summary via agent");
-
-            let response = agent.invoke(&request).await;
-
-            let (headline, summary) = match AgentOutcome::from_response(response) {
+            let (headline, summary) = match outcome {
                 AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
                 AgentOutcome::AgentFailed { stderr } => {
                     tracing::warn!(

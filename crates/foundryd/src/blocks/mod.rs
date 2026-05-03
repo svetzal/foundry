@@ -1,13 +1,16 @@
 #[macro_use]
 mod macros;
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::AgentResponse;
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
 
 /// Bundles the three fields every block `execute()` extracts from the trigger event.
 ///
@@ -29,6 +32,46 @@ impl TriggerContext {
             payload: trigger.payload.clone(),
         }
     }
+}
+
+/// Configuration for an agent invocation within a task block.
+///
+/// Pass to [`invoke_agent`] to handle request construction, invocation,
+/// outcome conversion, and tracing.
+pub(super) struct AgentBlockSpec {
+    pub prompt: String,
+    pub working_dir: PathBuf,
+    pub access: AgentAccess,
+    pub capability: AgentCapability,
+    pub agent_file: Option<PathBuf>,
+    pub timeout: Duration,
+}
+
+/// Invoke an agent with the given spec, returning the outcome.
+///
+/// Encapsulates `AgentRequest` construction, `AgentGateway::invoke`,
+/// `AgentOutcome::from_response`, and tracing.
+pub(super) async fn invoke_agent(
+    agent: &dyn AgentGateway,
+    spec: AgentBlockSpec,
+    trace_label: &str,
+    project: &str,
+) -> AgentOutcome {
+    let request = AgentRequest {
+        prompt: spec.prompt,
+        working_dir: spec.working_dir,
+        access: spec.access,
+        capability: spec.capability,
+        agent_file: spec.agent_file,
+        timeout: spec.timeout,
+    };
+    tracing::info!(project = %project, "{trace_label}: invoking agent");
+    let response = agent.invoke(&request).await;
+    let outcome = AgentOutcome::from_response(response);
+    if let AgentOutcome::Unavailable { ref error } = outcome {
+        tracing::warn!(project = %project, error = %error, "{trace_label}: agent unavailable");
+    }
+    outcome
 }
 
 /// Look up a project in the registry, returning the entry or a not-found failure result.
@@ -84,28 +127,23 @@ pub(super) fn gate_results_to_json(
 pub(super) fn build_agent_remediation_result(
     project: &str,
     throttle: Throttle,
-    response: anyhow::Result<AgentResponse>,
+    outcome: AgentOutcome,
     cve: Option<String>,
     pipeline_fix: Option<bool>,
     success_label: &str,
     failure_label: &str,
 ) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                "remediation completed".to_string()
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("remediation failed: {first_line}")
-            };
-            (Some(out), Some(r.exit_code), s, summary)
+    let (raw_output, success, summary) = match outcome {
+        AgentOutcome::Success { stdout } => {
+            let out = stdout.trim().to_string();
+            (Some(out), true, "remediation completed".to_string())
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent not available or failed to spawn");
-            (None, None, false, format!("agent unavailable: {err}"))
+        AgentOutcome::AgentFailed { stderr } => {
+            let first_line = stderr.lines().next().unwrap_or("agent failed");
+            let summary = format!("remediation failed: {first_line}");
+            (Some(stderr), false, summary)
         }
+        AgentOutcome::Unavailable { error } => (None, false, format!("agent unavailable: {error}")),
     };
 
     tracing::info!(
@@ -138,7 +176,7 @@ pub(super) fn build_agent_remediation_result(
             format!("{failure_label}: {summary}")
         },
         raw_output,
-        exit_code,
+        exit_code: None,
         audit_artifacts: vec![],
     }
 }
@@ -153,22 +191,15 @@ pub(super) fn build_agent_remediation_result(
 pub(super) fn build_agent_execution_result(
     project: &str,
     workflow: WorkflowType,
-    response: anyhow::Result<AgentResponse>,
+    outcome: AgentOutcome,
     trigger_payload: &serde_json::Value,
     throttle: Throttle,
     success_label: &str,
     retry_count: Option<u64>,
 ) -> TaskBlockResult {
-    let (raw_output, exit_code, success, summary, execution_output) = match response {
-        Ok(r) => {
-            let s = r.success;
-            let out = format!("{}\n{}", r.stdout, r.stderr).trim().to_string();
-            let summary = if s {
-                format!("{success_label} completed")
-            } else {
-                let first_line = r.stderr.lines().next().unwrap_or("agent failed");
-                format!("{success_label} failed: {first_line}")
-            };
+    let (raw_output, success, summary, execution_output) = match outcome {
+        AgentOutcome::Success { stdout } => {
+            let out = stdout.trim().to_string();
             let lines: Vec<&str> = out.lines().collect();
             let start = lines.len().saturating_sub(200);
             let trimmed_output = lines[start..].join("\n");
@@ -177,11 +208,14 @@ pub(super) fn build_agent_execution_result(
             } else {
                 Some(trimmed_output)
             };
-            (Some(out), Some(r.exit_code), s, summary, exec_out)
+            (Some(out), true, format!("{success_label} completed"), exec_out)
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "agent invocation failed");
-            (None, None, false, format!("agent unavailable: {err}"), None)
+        AgentOutcome::AgentFailed { stderr } => {
+            let first_line = stderr.lines().next().unwrap_or("agent failed").to_string();
+            (Some(stderr), false, format!("{success_label} failed: {first_line}"), None)
+        }
+        AgentOutcome::Unavailable { error } => {
+            (None, false, format!("agent unavailable: {error}"), None)
         }
     };
 
@@ -210,7 +244,7 @@ pub(super) fn build_agent_execution_result(
         success,
         summary: format!("{project}: {summary}"),
         raw_output,
-        exit_code,
+        exit_code: None,
         audit_artifacts: vec![],
     }
 }
