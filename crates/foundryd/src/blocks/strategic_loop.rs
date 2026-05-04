@@ -12,30 +12,23 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext};
 
-/// Controls the strategic iteration loop: picks the next area to improve
-/// and decides when the loop is done.
-///
-/// Observer — sinks on `StrategicAssessmentCompleted` and `InnerIterationCompleted`.
-///
-/// On `StrategicAssessmentCompleted`: picks the first area from the ranked
-/// list and emits `IterationRequested` with `loop_context` (entering the
-/// inner iterate formation).
-///
-/// On `InnerIterationCompleted`: uses an AI agent to re-assess whether
-/// further improvement is warranted. If yes and iterations remain, picks
-/// the next area and emits another `IterationRequested`. If no (or max
-/// iterations reached), emits `ProjectIterationCompleted` **without**
-/// `loop_context`, which triggers `SummarizeResult` and `CommitAndPush`.
-pub struct StrategicLoopController {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl StrategicLoopController {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Controls the strategic iteration loop: picks the next area to improve
+    /// and decides when the loop is done.
+    ///
+    /// Observer — sinks on `StrategicAssessmentCompleted` and `InnerIterationCompleted`.
+    ///
+    /// On `StrategicAssessmentCompleted`: picks the first area from the ranked
+    /// list and emits `IterationRequested` with `loop_context` (entering the
+    /// inner iterate formation).
+    ///
+    /// On `InnerIterationCompleted`: uses an AI agent to re-assess whether
+    /// further improvement is warranted. If yes and iterations remain, picks
+    /// the next area and emits another `IterationRequested`. If no (or max
+    /// iterations reached), emits `ProjectIterationCompleted` **without**
+    /// `loop_context`, which triggers `SummarizeResult` and `CommitAndPush`.
+    pub struct StrategicLoopController
+);
 
 impl TaskBlock for StrategicLoopController {
     task_block_meta! {

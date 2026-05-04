@@ -88,6 +88,40 @@ macro_rules! skip {
     };
 }
 
+/// Generates a struct definition with `registry` and `agent` fields, and a
+/// `pub fn new(agent, registry)` constructor for the common "registry + injected
+/// agent" pattern used by blocks that call an `AgentGateway`.
+///
+/// # Usage
+///
+/// ```ignore
+/// agent_block_new!(pub struct MyBlock);
+/// ```
+///
+/// Expands to:
+/// - `pub struct MyBlock { registry: Arc<Registry>, agent: Arc<dyn AgentGateway> }`
+/// - `impl MyBlock { pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self }`
+///
+/// Requires `Registry` and `AgentGateway` to be in scope at the call site.
+macro_rules! agent_block_new {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
+        $(#[$meta])*
+        $vis struct $name {
+            registry: ::std::sync::Arc<Registry>,
+            agent: ::std::sync::Arc<dyn AgentGateway>,
+        }
+
+        impl $name {
+            pub fn new(
+                agent: ::std::sync::Arc<dyn AgentGateway>,
+                registry: ::std::sync::Arc<Registry>,
+            ) -> Self {
+                Self { registry, agent }
+            }
+        }
+    };
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

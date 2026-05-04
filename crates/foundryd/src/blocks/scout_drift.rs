@@ -155,22 +155,15 @@ Constraints:
 - Do not inflate trivial inconsistencies into bugs
 - Do not ignore missing intent — it is a first-class signal"#;
 
-/// Detects intent drift in a codebase by identifying mismatches between intent and behavior.
-///
-/// Observer — sinks on `DriftAssessmentRequested`.
-/// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access to scan the
-/// codebase for bug candidates where signals disagree.
-/// Emits `DriftAssessmentCompleted` with ranked candidates and divergence types.
-pub struct ScoutDrift {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl ScoutDrift {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Detects intent drift in a codebase by identifying mismatches between intent and behavior.
+    ///
+    /// Observer — sinks on `DriftAssessmentRequested`.
+    /// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access to scan the
+    /// codebase for bug candidates where signals disagree.
+    /// Emits `DriftAssessmentCompleted` with ranked candidates and divergence types.
+    pub struct ScoutDrift
+);
 
 impl TaskBlock for ScoutDrift {
     task_block_meta! {

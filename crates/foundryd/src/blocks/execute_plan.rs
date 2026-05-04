@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, PlanCompletedPayload};
+use foundry_core::payload::PlanCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -12,21 +12,14 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Applies the correction plan to the project.
-///
-/// Mutator — sinks on `PlanCompleted`.
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` with success status.
-pub struct ExecutePlan {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl ExecutePlan {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Applies the correction plan to the project.
+    ///
+    /// Mutator — sinks on `PlanCompleted`.
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` with success status.
+    pub struct ExecutePlan
+);
 
 impl TaskBlock for ExecutePlan {
     task_block_meta! {
@@ -36,24 +29,7 @@ impl TaskBlock for ExecutePlan {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let context = LoopContext::extract_from(&trigger.payload);
-        vec![
-            trigger
-                .with_payload(
-                    EventType::ExecutionCompleted,
-                    &ExecutionCompletedPayload {
-                        project: trigger.project.clone(),
-                        workflow: WorkflowType::Iterate.to_string(),
-                        success: true,
-                        summary: String::new(),
-                        execution_output: None,
-                        dry_run: Some(true),
-                        retry_count: None,
-                        context,
-                    },
-                )
-                .expect("ExecutionCompletedPayload is infallibly serializable"),
-        ]
+        super::dry_run_execution_event(trigger, WorkflowType::Iterate, None)
     }
 
     fn execute(

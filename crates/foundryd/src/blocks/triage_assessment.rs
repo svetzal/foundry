@@ -12,21 +12,14 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Filters assessments: rejects low-severity issues and busy-work.
-///
-/// Observer — sinks on `AssessmentCompleted`.
-/// Uses `AgentGateway` with `Quick` capability and `ReadOnly` access.
-/// Emits `TriageCompleted` with `accepted: true/false` and a reason.
-pub struct TriageAssessment {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl TriageAssessment {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Filters assessments: rejects low-severity issues and busy-work.
+    ///
+    /// Observer — sinks on `AssessmentCompleted`.
+    /// Uses `AgentGateway` with `Quick` capability and `ReadOnly` access.
+    /// Emits `TriageCompleted` with `accepted: true/false` and a reason.
+    pub struct TriageAssessment
+);
 
 impl TaskBlock for TriageAssessment {
     task_block_meta! {

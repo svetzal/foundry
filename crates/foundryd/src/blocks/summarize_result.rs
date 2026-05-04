@@ -12,22 +12,15 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Generates a commit headline and summary after a successful workflow.
-///
-/// Observer — sinks on `ProjectIterationCompleted` and `ProjectMaintenanceCompleted`
-/// (filters for `success=true` only).
-/// Uses `AgentGateway` with `Quick` capability and `ReadOnly` access.
-/// Emits `SummarizeCompleted` with headline and summary.
-pub struct SummarizeResult {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl SummarizeResult {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Generates a commit headline and summary after a successful workflow.
+    ///
+    /// Observer — sinks on `ProjectIterationCompleted` and `ProjectMaintenanceCompleted`
+    /// (filters for `success=true` only).
+    /// Uses `AgentGateway` with `Quick` capability and `ReadOnly` access.
+    /// Emits `SummarizeCompleted` with headline and summary.
+    pub struct SummarizeResult
+);
 
 impl TaskBlock for SummarizeResult {
     task_block_meta! {

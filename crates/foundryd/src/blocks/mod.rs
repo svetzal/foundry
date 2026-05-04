@@ -249,6 +249,36 @@ pub(super) fn build_agent_execution_result(
     }
 }
 
+/// Produce the single simulated-success `ExecutionCompleted` event used by
+/// `dry_run_events()` across all three execution blocks.
+///
+/// Encapsulates `LoopContext::extract_from`, `ExecutionCompletedPayload` construction,
+/// `trigger.with_payload()`, and the infallibility `.expect()`.
+pub(super) fn dry_run_execution_event(
+    trigger: &Event,
+    workflow: WorkflowType,
+    retry_count: Option<u64>,
+) -> Vec<Event> {
+    let context = LoopContext::extract_from(&trigger.payload);
+    vec![
+        trigger
+            .with_payload(
+                EventType::ExecutionCompleted,
+                &ExecutionCompletedPayload {
+                    project: trigger.project.clone(),
+                    workflow: workflow.to_string(),
+                    success: true,
+                    summary: String::new(),
+                    execution_output: None,
+                    dry_run: Some(true),
+                    retry_count,
+                    context,
+                },
+            )
+            .expect("ExecutionCompletedPayload is infallibly serializable"),
+    ]
+}
+
 /// Emit a single-event success result with a raw JSON payload, without serialization.
 ///
 /// Use for stub/fallback paths that already have a `serde_json::Value` payload

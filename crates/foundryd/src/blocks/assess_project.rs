@@ -12,22 +12,15 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext};
 
-/// Identifies the most-violated engineering principle in the project.
-///
-/// Observer — sinks on `PreflightCompleted` (filters for iterate workflow + passed only).
-/// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access for the
-/// assessment, then `Quick` capability for generating a kebab-case audit filename.
-/// Emits `AssessmentCompleted` with severity, principle, category, prose, and audit name.
-pub struct AssessProject {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl AssessProject {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Identifies the most-violated engineering principle in the project.
+    ///
+    /// Observer — sinks on `PreflightCompleted` (filters for iterate workflow + passed only).
+    /// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access for the
+    /// assessment, then `Quick` capability for generating a kebab-case audit filename.
+    /// Emits `AssessmentCompleted` with severity, principle, category, prose, and audit name.
+    pub struct AssessProject
+);
 
 impl TaskBlock for AssessProject {
     task_block_meta! {

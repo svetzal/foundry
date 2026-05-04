@@ -12,31 +12,21 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, invoke_agent};
 
-/// Attempts to fix a failing GitHub Actions pipeline.
-/// Mutator -- events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
-///
-/// Self-filters: only acts when `passing=false` in the trigger payload.
-///
-/// Uses `AgentGateway` with `Coding` capability and `Full` access to
-/// diagnose and fix the CI failure.
-pub struct RemediatePipeline {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
+agent_block_new!(
+    /// Attempts to fix a failing GitHub Actions pipeline.
+    /// Mutator -- events logged but not delivered at `audit_only`;
+    /// simulated success at `dry_run`.
+    ///
+    /// Self-filters: only acts when `passing=false` in the trigger payload.
+    ///
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access to
+    /// diagnose and fix the CI failure.
+    pub struct RemediatePipeline
+);
 
 impl RemediatePipeline {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-
     /// Generous timeout for Claude CLI -- pipeline fixes can take several minutes.
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
-
-    #[cfg(test)]
-    fn with_agent(registry: Arc<Registry>, agent: Arc<dyn AgentGateway>) -> Self {
-        Self { registry, agent }
-    }
 }
 
 impl TaskBlock for RemediatePipeline {
@@ -241,7 +231,7 @@ mod tests {
         entry.repo = "owner/repo".to_string();
         let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success_with("Fixed the CI pipeline");
-        let block = RemediatePipeline::with_agent(registry, agent);
+        let block = RemediatePipeline::new(agent, registry);
         let t = failing_trigger("my-project");
 
         let result = block.execute(&t).await.unwrap();
@@ -259,7 +249,7 @@ mod tests {
         entry.repo = "owner/repo".to_string();
         let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::failure("agent exited with code 1");
-        let block = RemediatePipeline::with_agent(registry, agent);
+        let block = RemediatePipeline::new(agent, registry);
         let t = failing_trigger("my-project");
 
         let result = block.execute(&t).await.unwrap();

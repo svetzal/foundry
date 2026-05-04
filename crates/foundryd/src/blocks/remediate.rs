@@ -11,24 +11,17 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, invoke_agent};
 
-/// Attempts to fix a vulnerability on the main branch.
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
-///
-/// Self-filters: only acts when `dirty=true` in the trigger payload.
-///
-/// Uses `AgentGateway` with `Coding` capability and `Full` access to fix
-/// the vulnerable dependency.
-pub struct RemediateVulnerability {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl RemediateVulnerability {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Attempts to fix a vulnerability on the main branch.
+    /// Mutator — events logged but not delivered at `audit_only`;
+    /// simulated success at `dry_run`.
+    ///
+    /// Self-filters: only acts when `dirty=true` in the trigger payload.
+    ///
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access to fix
+    /// the vulnerable dependency.
+    pub struct RemediateVulnerability
+);
 
 impl TaskBlock for RemediateVulnerability {
     task_block_meta! {

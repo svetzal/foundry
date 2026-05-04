@@ -3,9 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
-    ExecutionCompletedPayload, GateResolutionCompletedPayload, LoopContext,
-};
+use foundry_core::payload::GateResolutionCompletedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -14,22 +12,15 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
-/// and resolves quality gate failures.
-///
-/// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` with success status and details.
-pub struct ExecuteMaintain {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl ExecuteMaintain {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
+    /// and resolves quality gate failures.
+    ///
+    /// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` with success status and details.
+    pub struct ExecuteMaintain
+);
 
 /// Resolve the agent file path from the registry agent name.
 /// Convention: `~/.claude/agents/{agent}.md`
@@ -57,25 +48,7 @@ impl TaskBlock for ExecuteMaintain {
         if workflow != WorkflowType::Maintain {
             return vec![];
         }
-
-        let context = LoopContext::extract_from(&trigger.payload);
-        vec![
-            trigger
-                .with_payload(
-                    EventType::ExecutionCompleted,
-                    &ExecutionCompletedPayload {
-                        project: trigger.project.clone(),
-                        workflow: WorkflowType::Maintain.to_string(),
-                        success: true,
-                        summary: String::new(),
-                        execution_output: None,
-                        dry_run: Some(true),
-                        retry_count: None,
-                        context,
-                    },
-                )
-                .expect("ExecutionCompletedPayload is infallibly serializable"),
-        ]
+        super::dry_run_execution_event(trigger, WorkflowType::Maintain, None)
     }
 
     fn execute(

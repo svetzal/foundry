@@ -12,21 +12,14 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Creates a step-by-step correction plan for an accepted assessment.
-///
-/// Observer — sinks on `TriageCompleted` (filters for `accepted=true` only).
-/// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access.
-/// Emits `PlanCompleted` with the plan text.
-pub struct CreatePlan {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl CreatePlan {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Creates a step-by-step correction plan for an accepted assessment.
+    ///
+    /// Observer — sinks on `TriageCompleted` (filters for `accepted=true` only).
+    /// Uses `AgentGateway` with `Reasoning` capability and `ReadOnly` access.
+    /// Emits `PlanCompleted` with the plan text.
+    pub struct CreatePlan
+);
 
 impl TaskBlock for CreatePlan {
     task_block_meta! {

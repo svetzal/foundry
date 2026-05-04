@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, RetryRequestedPayload};
+use foundry_core::payload::RetryRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -12,21 +12,14 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Retries the execution phase with context about which gates failed.
-///
-/// Mutator — sinks on `RetryRequested`.
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
-pub struct RetryExecution {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl RetryExecution {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Retries the execution phase with context about which gates failed.
+    ///
+    /// Mutator — sinks on `RetryRequested`.
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
+    pub struct RetryExecution
+);
 
 impl TaskBlock for RetryExecution {
     task_block_meta! {
@@ -40,24 +33,7 @@ impl TaskBlock for RetryExecution {
             .parse_payload::<RetryRequestedPayload>()
             .expect("dry_run_events called with invalid RetryRequested payload");
         let workflow = WorkflowType::from_payload(&trigger.payload);
-        let context = LoopContext::extract_from(&trigger.payload);
-        vec![
-            trigger
-                .with_payload(
-                    EventType::ExecutionCompleted,
-                    &ExecutionCompletedPayload {
-                        project: trigger.project.clone(),
-                        workflow: workflow.to_string(),
-                        success: true,
-                        summary: String::new(),
-                        execution_output: None,
-                        dry_run: Some(true),
-                        retry_count: Some(p.retry_count),
-                        context,
-                    },
-                )
-                .expect("ExecutionCompletedPayload is infallibly serializable"),
-        ]
+        super::dry_run_execution_event(trigger, workflow, Some(p.retry_count))
     }
 
     fn execute(

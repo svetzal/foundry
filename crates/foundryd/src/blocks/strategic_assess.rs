@@ -11,26 +11,19 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-/// Performs a strategic assessment of the project to identify multiple areas
-/// for improvement, then emits a plan for the strategic loop controller.
-///
-/// Observer — sinks on `IterationRequested`.
-/// Self-filters: only runs when the payload contains `strategic: true`.
-/// Without that flag, the existing `CheckCharter` block handles the event
-/// instead (standalone iterate).
-///
-/// Emits `StrategicAssessmentCompleted` with a ranked list of improvement
-/// areas and an initialized `loop_context`.
-pub struct StrategicAssessor {
-    registry: Arc<Registry>,
-    agent: Arc<dyn AgentGateway>,
-}
-
-impl StrategicAssessor {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
-        Self { registry, agent }
-    }
-}
+agent_block_new!(
+    /// Performs a strategic assessment of the project to identify multiple areas
+    /// for improvement, then emits a plan for the strategic loop controller.
+    ///
+    /// Observer — sinks on `IterationRequested`.
+    /// Self-filters: only runs when the payload contains `strategic: true`.
+    /// Without that flag, the existing `CheckCharter` block handles the event
+    /// instead (standalone iterate).
+    ///
+    /// Emits `StrategicAssessmentCompleted` with a ranked list of improvement
+    /// areas and an initialized `loop_context`.
+    pub struct StrategicAssessor
+);
 
 impl TaskBlock for StrategicAssessor {
     task_block_meta! {
