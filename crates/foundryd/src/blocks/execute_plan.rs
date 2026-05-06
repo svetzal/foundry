@@ -93,14 +93,7 @@ fn build_execution_prompt(
     principle: &str,
     gates: Option<&serde_json::Value>,
 ) -> String {
-    let gates_context = if let Some(gates) = gates {
-        format!(
-            "\n\nThe following quality gates must pass after your changes:\n{}",
-            serde_json::to_string_pretty(gates).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let gates_context = super::format_gates_context(gates);
     format!(
         "You are executing a correction plan for project '{project}'.\n\n\
          Principle being addressed: {principle}\n\n\

@@ -8,7 +8,7 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -90,16 +90,11 @@ impl TaskBlock for CreatePlan {
             )
             .await;
 
-            let (plan, success) = match outcome {
-                AgentOutcome::Success { stdout } => (stdout.trim().to_string(), true),
-                AgentOutcome::AgentFailed { stderr } => {
-                    tracing::warn!(project = %project, stderr = %stderr, "plan agent failed");
-                    (format!("Plan generation failed: {stderr}"), false)
-                }
-                AgentOutcome::Unavailable { error } => {
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
-                }
-            };
+            let (plan, success) =
+                match super::match_agent_text_outcome(outcome, &project, "plan agent") {
+                    Ok(pair) => pair,
+                    Err(result) => return Ok(result),
+                };
 
             tracing::info!(project = %project, success = success, "plan created");
 

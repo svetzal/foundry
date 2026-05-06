@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{PipelineCheckedPayload, RemediationCompletedPayload};
+use foundry_core::payload::PipelineCheckedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -45,21 +45,7 @@ impl TaskBlock for RemediatePipeline {
             return vec![];
         }
 
-        let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
-            cve: None,
-            success: true,
-            summary: None,
-            dry_run: Some(true),
-            pipeline_fix: Some(true),
-        })
-        .expect("RemediationCompletedPayload is infallibly serializable");
-
-        vec![Event::new(
-            EventType::RemediationCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            event_payload,
-        )]
+        super::dry_run_remediation_event(trigger, None, Some(true))
     }
 
     fn execute(

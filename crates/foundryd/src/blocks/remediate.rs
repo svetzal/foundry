@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{MainBranchAuditedPayload, RemediationCompletedPayload};
+use foundry_core::payload::MainBranchAuditedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -39,21 +39,7 @@ impl TaskBlock for RemediateVulnerability {
         }
 
         let cve = p.as_ref().map_or("unknown", |p| p.cve.as_str()).to_string();
-        let payload = Event::serialize_payload(&RemediationCompletedPayload {
-            cve: Some(cve),
-            success: true,
-            summary: Some(String::new()),
-            dry_run: Some(true),
-            pipeline_fix: None,
-        })
-        .expect("RemediationCompletedPayload is infallibly serializable");
-
-        vec![Event::new(
-            EventType::RemediationCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
+        super::dry_run_remediation_event(trigger, Some(cve), None)
     }
 
     fn execute(

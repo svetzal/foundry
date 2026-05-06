@@ -111,14 +111,7 @@ impl TaskBlock for ExecuteMaintain {
 }
 
 fn build_maintain_prompt(project: &str, gates: Option<&serde_json::Value>) -> String {
-    let gates_context = if let Some(gates) = gates {
-        format!(
-            "\n\nThe following quality gates must pass after your changes:\n{}",
-            serde_json::to_string_pretty(gates).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let gates_context = super::format_gates_context(gates);
     format!(
         "You are maintaining the project '{project}'. \
          Update dependencies to their latest compatible versions, \

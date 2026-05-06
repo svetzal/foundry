@@ -279,6 +279,66 @@ pub(super) fn dry_run_execution_event(
     ]
 }
 
+/// Build the quality-gates context paragraph included in agent prompts.
+///
+/// Returns a formatted section if `gates` is `Some`, otherwise an empty string.
+pub(super) fn format_gates_context(gates: Option<&serde_json::Value>) -> String {
+    if let Some(gates) = gates {
+        format!(
+            "\n\nThe following quality gates must pass after your changes:\n{}",
+            serde_json::to_string_pretty(gates).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// Produce the single simulated-success `RemediationCompleted` event used by
+/// `dry_run_events()` in `remediate` and `remediate_pipeline`.
+pub(super) fn dry_run_remediation_event(
+    trigger: &Event,
+    cve: Option<String>,
+    pipeline_fix: Option<bool>,
+) -> Vec<Event> {
+    let summary = cve.as_ref().map(|_| String::new());
+    let payload = Event::serialize_payload(&RemediationCompletedPayload {
+        cve,
+        success: true,
+        summary,
+        dry_run: Some(true),
+        pipeline_fix,
+    })
+    .expect("RemediationCompletedPayload is infallibly serializable");
+    vec![Event::new(
+        EventType::RemediationCompleted,
+        trigger.project.clone(),
+        trigger.throttle,
+        payload,
+    )]
+}
+
+/// Match an agent outcome into text output plus a success flag, or return a failure result.
+///
+/// On `Unavailable`, returns `Err(TaskBlockResult::failure(...))`.
+/// On `AgentFailed`, logs a warning and returns `Ok((fallback_text, false))`.
+/// On `Success`, returns `Ok((trimmed_stdout, true))`.
+pub(super) fn match_agent_text_outcome(
+    outcome: AgentOutcome,
+    project: &str,
+    trace_label: &str,
+) -> Result<(String, bool), TaskBlockResult> {
+    match outcome {
+        AgentOutcome::Success { stdout } => Ok((stdout.trim().to_string(), true)),
+        AgentOutcome::AgentFailed { stderr } => {
+            tracing::warn!(project = %project, stderr = %stderr, "{trace_label} failed");
+            Ok((format!("{trace_label} failed: {stderr}"), false))
+        }
+        AgentOutcome::Unavailable { error } => {
+            Err(TaskBlockResult::failure(format!("agent unavailable: {error}")))
+        }
+    }
+}
+
 /// Emit a single-event success result with a raw JSON payload, without serialization.
 ///
 /// Use for stub/fallback paths that already have a `serde_json::Value` payload
