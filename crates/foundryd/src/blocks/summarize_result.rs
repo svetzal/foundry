@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::has_loop_context;
-use foundry_core::payload::ProjectCompletedPayload;
+use foundry_core::payload::{ProjectCompletedPayload, SummarizeCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -116,11 +116,11 @@ impl TaskBlock for SummarizeResult {
                     EventType::SummarizeCompleted,
                     project.clone(),
                     throttle,
-                    serde_json::json!({
-                        "project": project,
-                        "headline": headline,
-                        "summary": summary,
-                    }),
+                    Event::serialize_payload(&SummarizeCompletedPayload {
+                        project: project.clone(),
+                        headline,
+                        summary,
+                    })?,
                 )],
             ))
         })

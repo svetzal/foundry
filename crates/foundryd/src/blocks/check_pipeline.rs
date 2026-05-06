@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::payload::PipelineCheckedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -41,6 +42,17 @@ impl TaskBlock for CheckPipeline {
     }
 }
 
+fn passing_payload(conclusion: &str) -> serde_json::Value {
+    Event::serialize_payload(&PipelineCheckedPayload {
+        passing: true,
+        conclusion: conclusion.into(),
+        run_id: None,
+        run_name: None,
+        failure_logs: None,
+    })
+    .expect("PipelineCheckedPayload is infallibly serializable")
+}
+
 async fn run_check(
     project: String,
     throttle: foundry_core::throttle::Throttle,
@@ -54,12 +66,7 @@ async fn run_check(
             EventType::PipelineChecked,
             project,
             throttle,
-            serde_json::json!({
-                "passing": true,
-                "conclusion": "skipped",
-                "run_id": null,
-                "run_name": null,
-            }),
+            passing_payload("skipped"),
         ));
     }
 
@@ -114,12 +121,7 @@ async fn run_check(
                 EventType::PipelineChecked,
                 project,
                 throttle,
-                serde_json::json!({
-                    "passing": true,
-                    "conclusion": "no_runs",
-                    "run_id": null,
-                    "run_name": null,
-                }),
+                passing_payload("no_runs"),
             )],
         ));
     };
@@ -166,16 +168,14 @@ fn build_pipeline_result(
     failure_logs: Option<&str>,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let mut payload = serde_json::json!({
-        "passing": passing,
-        "conclusion": conclusion,
-        "run_id": run_id,
-        "run_name": run_name,
-    });
-
-    if let Some(logs) = failure_logs {
-        payload["failure_logs"] = serde_json::Value::String(logs.to_string());
-    }
+    let payload = Event::serialize_payload(&PipelineCheckedPayload {
+        passing,
+        conclusion: conclusion.to_string(),
+        run_id: Some(run_id),
+        run_name: Some(run_name.to_string()),
+        failure_logs: failure_logs.map(str::to_string),
+    })
+    .expect("PipelineCheckedPayload is infallibly serializable");
 
     let summary = if passing {
         format!("Pipeline passing: {run_name} (#{run_id})")

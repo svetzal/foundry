@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ProjectCompletedPayload, RemediationCompletedPayload};
+use foundry_core::payload::{
+    ProjectChangesCommittedPayload, ProjectChangesPushedPayload, ProjectCompletedPayload,
+    RemediationCompletedPayload,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
@@ -94,10 +97,13 @@ impl CommitAndPush {
             EventType::ProjectChangesCommitted,
             project.clone(),
             throttle,
-            serde_json::json!({
-                "cve": cve,
-                "message": commit_msg,
-            }),
+            Event::serialize_payload(&ProjectChangesCommittedPayload {
+                project: project.clone(),
+                cve: cve.clone(),
+                message: commit_msg.clone(),
+                dry_run: None,
+                stub: None,
+            })?,
         )];
 
         // Push if permitted.
@@ -109,7 +115,13 @@ impl CommitAndPush {
                     EventType::ProjectChangesPushed,
                     project.clone(),
                     throttle,
-                    serde_json::json!({ "cve": cve }),
+                    Event::serialize_payload(&ProjectChangesPushedPayload {
+                        project: project.clone(),
+                        cve: cve.clone(),
+                        message: None,
+                        dry_run: None,
+                        stub: None,
+                    })?,
                 ));
             } else {
                 tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
@@ -165,7 +177,14 @@ impl TaskBlock for CommitAndPush {
             EventType::ProjectChangesCommitted,
             project.clone(),
             throttle,
-            serde_json::json!({ "cve": cve, "dry_run": true }),
+            Event::serialize_payload(&ProjectChangesCommittedPayload {
+                project: project.clone(),
+                cve: cve.clone(),
+                message: commit_message(&trigger.event_type, &project),
+                dry_run: Some(true),
+                stub: None,
+            })
+            .expect("ProjectChangesCommittedPayload is infallibly serializable"),
         )];
 
         // Simulate push if the project has push enabled, or if unknown (stub path).
@@ -174,9 +193,16 @@ impl TaskBlock for CommitAndPush {
         if push_enabled {
             events.push(Event::new(
                 EventType::ProjectChangesPushed,
-                project,
+                project.clone(),
                 throttle,
-                serde_json::json!({ "cve": cve, "dry_run": true }),
+                Event::serialize_payload(&ProjectChangesPushedPayload {
+                    project: project.clone(),
+                    cve: cve.clone(),
+                    message: None,
+                    dry_run: Some(true),
+                    stub: None,
+                })
+                .expect("ProjectChangesPushedPayload is infallibly serializable"),
             ));
         }
 
@@ -252,13 +278,27 @@ fn stub_result(
                 EventType::ProjectChangesCommitted,
                 project.to_string(),
                 throttle,
-                serde_json::json!({ "cve": cve, "stub": true }),
+                Event::serialize_payload(&ProjectChangesCommittedPayload {
+                    project: project.to_string(),
+                    cve: cve.to_string(),
+                    message: format!("chore({project}): automated remediation"),
+                    dry_run: None,
+                    stub: Some(true),
+                })
+                .expect("ProjectChangesCommittedPayload is infallibly serializable"),
             ),
             Event::new(
                 EventType::ProjectChangesPushed,
                 project.to_string(),
                 throttle,
-                serde_json::json!({ "cve": cve, "stub": true }),
+                Event::serialize_payload(&ProjectChangesPushedPayload {
+                    project: project.to_string(),
+                    cve: cve.to_string(),
+                    message: None,
+                    dry_run: None,
+                    stub: Some(true),
+                })
+                .expect("ProjectChangesPushedPayload is infallibly serializable"),
             ),
         ],
     )

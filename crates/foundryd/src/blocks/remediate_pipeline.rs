@@ -79,7 +79,7 @@ impl TaskBlock for RemediatePipeline {
         }
 
         let failure_logs = p.failure_logs.unwrap_or_default();
-        let run_name = p.run_name.clone();
+        let run_name = p.run_name.clone().unwrap_or_default();
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);

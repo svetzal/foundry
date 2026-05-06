@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::ReleaseTagAuditedPayload;
+use foundry_core::payload::{MainBranchAuditedPayload, ReleaseTagAuditedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -93,9 +93,14 @@ impl TaskBlock for AuditMainBranch {
                 format!("Main branch audited: {cve} dirty={dirty}"),
                 vec![Event::new(
                     EventType::MainBranchAudited,
-                    project,
+                    project.clone(),
                     throttle,
-                    serde_json::json!({ "cve": cve, "dirty": dirty }),
+                    Event::serialize_payload(&MainBranchAuditedPayload {
+                        project,
+                        cve,
+                        vulnerable: true,
+                        dirty,
+                    })?,
                 )],
             ))
         })

@@ -399,6 +399,10 @@ pub struct ProjectChangesCommittedPayload {
     pub project: String,
     pub cve: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stub: Option<bool>,
 }
 
 /// Payload for `ProjectChangesPushed`.
@@ -406,7 +410,12 @@ pub struct ProjectChangesCommittedPayload {
 pub struct ProjectChangesPushedPayload {
     pub project: String,
     pub cve: String,
-    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stub: Option<bool>,
 }
 
 /// Payload for `ProjectValidationCompleted`.
@@ -672,8 +681,10 @@ pub struct PipelineCheckRequestedPayload {
 pub struct PipelineCheckedPayload {
     pub passing: bool,
     pub conclusion: String,
-    pub run_id: u64,
-    pub run_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_logs: Option<String>,
 }
