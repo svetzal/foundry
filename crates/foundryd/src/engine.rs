@@ -149,18 +149,18 @@ impl Engine {
                 queue,
                 true,
             );
+            let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
             return BlockExecution {
-                block_name: block.name().to_string(),
-                trigger_event_id: current.id.clone(),
                 success: true,
                 summary: "dry-run (simulated)".to_string(),
                 emitted_event_ids: emitted_ids,
-                duration_ms: u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                raw_output: None,
-                exit_code: None,
-                trigger_payload: current.payload.clone(),
                 emitted_payloads,
-                audit_artifacts: vec![],
+                ..BlockExecution::new(
+                    block.name(),
+                    &current.id,
+                    duration_ms,
+                    current.payload.clone(),
+                )
             };
         }
 
@@ -168,18 +168,16 @@ impl Engine {
         // semantics, but kept as a safety net).
         if !block.should_execute(current.throttle) {
             tracing::info!("skipped (throttle)");
+            let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
             return BlockExecution {
-                block_name: block.name().to_string(),
-                trigger_event_id: current.id.clone(),
                 success: true,
                 summary: "skipped (throttle)".to_string(),
-                emitted_event_ids: vec![],
-                duration_ms: u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                raw_output: None,
-                exit_code: None,
-                trigger_payload: current.payload.clone(),
-                emitted_payloads: vec![],
-                audit_artifacts: vec![],
+                ..BlockExecution::new(
+                    block.name(),
+                    &current.id,
+                    duration_ms,
+                    current.payload.clone(),
+                )
             };
         }
 
@@ -199,36 +197,36 @@ impl Engine {
                     queue,
                     deliver,
                 );
+                let duration_ms =
+                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 BlockExecution {
-                    block_name: block.name().to_string(),
-                    trigger_event_id: current.id.clone(),
                     success: result.success,
                     summary: result.summary,
                     emitted_event_ids: emitted_ids,
-                    duration_ms: u64::try_from(block_start.elapsed().as_millis())
-                        .unwrap_or(u64::MAX),
                     raw_output: result.raw_output,
                     exit_code: result.exit_code,
-                    trigger_payload: current.payload.clone(),
                     emitted_payloads,
                     audit_artifacts: result.audit_artifacts,
+                    ..BlockExecution::new(
+                        block.name(),
+                        &current.id,
+                        duration_ms,
+                        current.payload.clone(),
+                    )
                 }
             }
             Err(err) => {
                 tracing::error!(error = %err, "failed");
+                let duration_ms =
+                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 BlockExecution {
-                    block_name: block.name().to_string(),
-                    trigger_event_id: current.id.clone(),
-                    success: false,
                     summary: format!("error: {err}"),
-                    emitted_event_ids: vec![],
-                    duration_ms: u64::try_from(block_start.elapsed().as_millis())
-                        .unwrap_or(u64::MAX),
-                    raw_output: None,
-                    exit_code: None,
-                    trigger_payload: current.payload.clone(),
-                    emitted_payloads: vec![],
-                    audit_artifacts: vec![],
+                    ..BlockExecution::new(
+                        block.name(),
+                        &current.id,
+                        duration_ms,
+                        current.payload.clone(),
+                    )
                 }
             }
         }

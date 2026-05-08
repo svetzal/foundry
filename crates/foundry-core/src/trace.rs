@@ -43,6 +43,29 @@ pub struct BlockExecution {
     pub audit_artifacts: Vec<String>,
 }
 
+impl BlockExecution {
+    pub fn new(
+        block_name: &str,
+        trigger_event_id: &str,
+        duration_ms: u64,
+        trigger_payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            block_name: block_name.to_string(),
+            trigger_event_id: trigger_event_id.to_string(),
+            success: false,
+            summary: String::new(),
+            emitted_event_ids: vec![],
+            duration_ms,
+            raw_output: None,
+            exit_code: None,
+            trigger_payload,
+            emitted_payloads: vec![],
+            audit_artifacts: vec![],
+        }
+    }
+}
+
 /// The full result of processing an event chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessResult {
