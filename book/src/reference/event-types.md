@@ -263,3 +263,40 @@ Every event carries these common fields:
 | Type | Description |
 |------|-------------|
 | `release_tag_audited` | Latest release tag scanned (see payload above) |
+
+## Agent Session Lifecycle
+
+Emitted by `foundryd` whenever a Foundry-launched Claude Code agent session
+begins or ends. Used by visualisation tools (e.g. `ops-visualizer`) to show
+in-flight and historical agent activity, and to locate the per-session
+stream-json transcript on disk.
+
+| Type | Description |
+|------|-------------|
+| `agent_session_started` | An agent session has begun; transcript file path is included |
+| `agent_session_ended` | The agent session has finished (success, failure, or unavailable) |
+
+**`agent_session_started` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | UUID identifying this session; matches the transcript file basename |
+| `agent_type` | string | Agent runtime (currently always `claude-code`) |
+| `project` | string | Project name (may be empty in v1) |
+| `working_dir` | string | Absolute path of the working directory the agent ran in |
+| `source_log_path` | string | Absolute path to the per-session JSONL transcript (`~/.foundry/agent-sessions/<session_id>.jsonl`) |
+| `capability` | string | Capability label: `reasoning`, `coding`, or `quick` |
+| `access` | string | Tool access level: `read_only` or `full` |
+| `started_at` | RFC 3339 timestamp | When the session was launched |
+| `trace_id` | string | Correlating trace ID (may be empty in v1) |
+
+**`agent_session_ended` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | UUID identifying this session (matches `agent_session_started`) |
+| `status` | string | Outcome: `ok`, `agent_failed`, or `unavailable` |
+| `exit_code` | number | Process exit code (omitted when the agent could not be invoked) |
+| `ended_at` | RFC 3339 timestamp | When the session finished |
+| `bytes_written` | number | Total bytes streamed to the transcript file |
+| `error` | string | Error message when `status = unavailable` (omitted otherwise) |
