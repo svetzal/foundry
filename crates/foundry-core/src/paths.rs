@@ -55,3 +55,22 @@ pub fn audits_dir() -> PathBuf {
         foundry_home().join("audits")
     }
 }
+
+/// Returns the directory holding per-session agent transcript JSONL files.
+///
+/// Defaults to `$HOME/.foundry/agent-sessions`.
+pub fn agent_sessions_dir() -> PathBuf {
+    foundry_home().join("agent-sessions")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_sessions_dir_is_under_foundry_home() {
+        let dir = agent_sessions_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with(".foundry/agent-sessions"), "got: {s}");
+    }
+}
