@@ -84,8 +84,7 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 }
             }
 
-            let mut child =
-                cmd.spawn().with_context(|| format!("failed to spawn {command}"))?;
+            let mut child = cmd.spawn().with_context(|| format!("failed to spawn {command}"))?;
 
             let stdout = child.stdout.take().context("missing stdout pipe")?;
             let stderr = child.stderr.take().context("missing stderr pipe")?;
@@ -120,9 +119,8 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 Ok::<(std::process::ExitStatus, String), anyhow::Error>((exit, stderr_text))
             };
 
-            let (exit_status, stderr_text) = tokio::time::timeout(timeout, combined)
-                .await
-                .with_context(|| {
+            let (exit_status, stderr_text) =
+                tokio::time::timeout(timeout, combined).await.with_context(|| {
                     format!("agent stream timed out after {:.1}s", timeout.as_secs_f64())
                 })??;
 

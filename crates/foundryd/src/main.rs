@@ -62,13 +62,8 @@ async fn main() -> Result<()> {
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
-    let engine = register_blocks(
-        &registry,
-        event_writer,
-        event_tx.clone(),
-        trace_writer.clone(),
-        audits_dir,
-    );
+    let engine =
+        register_blocks(&registry, event_writer, &event_tx, trace_writer.clone(), audits_dir);
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
@@ -99,7 +94,7 @@ async fn main() -> Result<()> {
 fn register_blocks(
     registry: &Arc<foundry_core::registry::Registry>,
     event_writer: Arc<event_writer::EventWriter>,
-    event_tx: tokio::sync::broadcast::Sender<foundry_core::event::Event>,
+    event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
     trace_writer: Arc<trace_writer::TraceWriter>,
     audits_dir: String,
 ) -> engine::Engine {
@@ -115,12 +110,13 @@ fn register_blocks(
     engine.register(Box::new(blocks::AuditMainBranch::new(registry.clone())));
     // Agent gateway for blocks that invoke Claude CLI
     let shell_for_agent: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
-    let agent: Arc<dyn gateway::AgentGateway> = Arc::new(gateway::ClaudeAgentGateway::new_with_streaming(
-        shell_for_agent,
-        Arc::new(agent_stream::ProcessAgentStreamRunner),
-        foundry_core::paths::agent_sessions_dir(),
-        event_tx.clone(),
-    ));
+    let agent: Arc<dyn gateway::AgentGateway> =
+        Arc::new(gateway::ClaudeAgentGateway::new_with_streaming(
+            shell_for_agent,
+            Arc::new(agent_stream::ProcessAgentStreamRunner),
+            foundry_core::paths::agent_sessions_dir(),
+            event_tx.clone(),
+        ));
     engine.register(Box::new(blocks::RemediateVulnerability::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::cut_release_step(registry.clone())));

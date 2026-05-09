@@ -295,14 +295,9 @@ impl AgentGateway for ClaudeAgentGateway {
                     let status = if o.success { "ok" } else { "agent_failed" };
                     (status, Some(o.exit_code), o.stderr, o.bytes_written, None, extracted)
                 }
-                Err(e) => (
-                    "unavailable",
-                    None,
-                    String::new(),
-                    0u64,
-                    Some(e.to_string()),
-                    String::new(),
-                ),
+                Err(e) => {
+                    ("unavailable", None, String::new(), 0u64, Some(e.to_string()), String::new())
+                }
             };
 
             let ended_payload = AgentSessionEndedPayload {
@@ -667,9 +662,10 @@ mod claude_agent_gateway_streaming_tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::broadcast;
 
-    /// Test fake: returns canned outcome and writes a canned transcript to log_path.
+    /// Test fake: returns canned outcome and writes a canned transcript to `log_path`.
     struct FakeAgentStreamRunner {
         transcript: Vec<String>,
         outcome_template: AgentStreamOutcome,
@@ -684,8 +680,9 @@ mod claude_agent_gateway_streaming_tests {
             _env: Option<&'a [(String, String)]>,
             _timeout: Option<Duration>,
             log_path: &'a Path,
-        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>>
-        {
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
+        > {
             let transcript = self.transcript.clone();
             let mut template = self.outcome_template.clone();
             Box::pin(async move {
@@ -693,7 +690,6 @@ mod claude_agent_gateway_streaming_tests {
                     tokio::fs::create_dir_all(parent).await?;
                 }
                 let mut file = tokio::fs::File::create(log_path).await?;
-                use tokio::io::AsyncWriteExt;
                 let mut bytes: u64 = 0;
                 let mut lines = Vec::new();
                 for line in transcript {
@@ -740,12 +736,8 @@ mod claude_agent_gateway_streaming_tests {
         });
 
         let shell = FakeShellGateway::success();
-        let gateway = ClaudeAgentGateway::new_with_streaming(
-            shell,
-            runner,
-            session_log_dir.clone(),
-            tx,
-        );
+        let gateway =
+            ClaudeAgentGateway::new_with_streaming(shell, runner, session_log_dir.clone(), tx);
 
         let request = AgentRequest {
             prompt: "say hi".to_string(),
@@ -769,7 +761,11 @@ mod claude_agent_gateway_streaming_tests {
         let session_id = started.payload["session_id"].as_str().unwrap().to_string();
         assert!(!session_id.is_empty());
         let log_path = started.payload["source_log_path"].as_str().unwrap();
-        assert!(log_path.ends_with(".jsonl"));
+        assert!(
+            std::path::Path::new(log_path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+        );
 
         let ended = rx.recv().await.expect("ended event");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
@@ -779,7 +775,11 @@ mod claude_agent_gateway_streaming_tests {
         assert!(ended.payload["bytes_written"].as_u64().unwrap() > 0);
 
         let written = tokio::fs::read_to_string(log_path).await.unwrap();
-        let expected = transcript.iter().map(|l| format!("{l}\n")).collect::<String>();
+        let mut expected = String::new();
+        for line in &transcript {
+            expected.push_str(line);
+            expected.push('\n');
+        }
         assert_eq!(written, expected);
     }
 
@@ -838,7 +838,11 @@ mod claude_agent_gateway_streaming_tests {
                 _timeout: Option<Duration>,
                 log_path: &'a Path,
             ) -> Pin<
-                Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
+                Box<
+                    dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>>
+                        + Send
+                        + 'a,
+                >,
             > {
                 let recorded = self.recorded.clone();
                 let captured: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
@@ -860,7 +864,9 @@ mod claude_agent_gateway_streaming_tests {
         }
 
         let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-        let runner = Arc::new(ArgRecorder { recorded: recorded.clone() });
+        let runner = Arc::new(ArgRecorder {
+            recorded: recorded.clone(),
+        });
         let (tx, _rx) = broadcast::channel(4);
         let gateway = ClaudeAgentGateway::new_with_streaming(
             FakeShellGateway::success(),
