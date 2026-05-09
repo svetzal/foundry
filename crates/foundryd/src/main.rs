@@ -5,6 +5,7 @@ use anyhow::Result;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
+mod agent_stream;
 mod blocks;
 mod charter;
 mod engine;

@@ -27,6 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 pastey = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
