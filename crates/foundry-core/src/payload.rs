@@ -702,6 +702,37 @@ pub struct PromptExecutionRequestedPayload {
     pub chain: ChainContext,
 }
 
+// ---------------------------------------------------------------------------
+// Agent session lifecycle payloads
+// ---------------------------------------------------------------------------
+
+/// Emitted when a Foundry-launched agent session begins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionStartedPayload {
+    pub session_id: String,
+    pub agent_type: String,
+    pub project: String,
+    pub working_dir: std::path::PathBuf,
+    pub source_log_path: std::path::PathBuf,
+    pub capability: String,
+    pub access: String,
+    pub started_at: String,
+    pub trace_id: String,
+}
+
+/// Emitted when a Foundry-launched agent session ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionEndedPayload {
+    pub session_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub ended_at: String,
+    pub bytes_written: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,5 +986,68 @@ mod tests {
         assert_eq!(p2.project, "my-project");
         assert_eq!(p2.strategic, Some(true));
         assert_eq!(p2.chain.actions.unwrap()["maintain"], true);
+    }
+
+    #[test]
+    fn agent_session_started_payload_serializes_to_expected_json() {
+        use std::path::PathBuf;
+        let payload = AgentSessionStartedPayload {
+            session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            agent_type: "claude-code".to_string(),
+            project: "demo".to_string(),
+            working_dir: PathBuf::from("/tmp/demo"),
+            source_log_path: PathBuf::from("/home/u/.foundry/agent-sessions/11111111.jsonl"),
+            capability: "coding".to_string(),
+            access: "full".to_string(),
+            started_at: "2026-05-09T12:00:00Z".to_string(),
+            trace_id: "trace-abc".to_string(),
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["session_id"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(json["agent_type"], "claude-code");
+        assert_eq!(json["project"], "demo");
+        assert_eq!(json["working_dir"], "/tmp/demo");
+        assert_eq!(json["source_log_path"], "/home/u/.foundry/agent-sessions/11111111.jsonl");
+        assert_eq!(json["capability"], "coding");
+        assert_eq!(json["access"], "full");
+        assert_eq!(json["started_at"], "2026-05-09T12:00:00Z");
+        assert_eq!(json["trace_id"], "trace-abc");
+    }
+
+    #[test]
+    fn agent_session_ended_payload_serializes_to_expected_json() {
+        let payload = AgentSessionEndedPayload {
+            session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            status: "ok".to_string(),
+            exit_code: Some(0),
+            ended_at: "2026-05-09T12:01:00Z".to_string(),
+            bytes_written: 1234,
+            error: None,
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["session_id"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["ended_at"], "2026-05-09T12:01:00Z");
+        assert_eq!(json["bytes_written"], 1234);
+        assert!(json.get("error").is_none(), "error should be omitted when None");
+    }
+
+    #[test]
+    fn agent_session_ended_payload_includes_error_when_set() {
+        let payload = AgentSessionEndedPayload {
+            session_id: "id".to_string(),
+            status: "unavailable".to_string(),
+            exit_code: None,
+            ended_at: "2026-05-09T12:01:00Z".to_string(),
+            bytes_written: 0,
+            error: Some("spawn failed: claude not on PATH".to_string()),
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["error"], "spawn failed: claude not on PATH");
+        assert!(json.get("exit_code").is_none(), "exit_code should be omitted when None");
     }
 }
