@@ -34,7 +34,9 @@ crates/foundryd/src/
 book/src/reference/event-types.md # MODIFY: document new event types
 ```
 
-**Branch model (per project AGENTS.md):** work on a feature branch off `main`, open a PR against `main` when done. Commit per-task using the messages in each step.
+**Branch model (per project AGENTS.md and global trunk-based default):** integrate directly to `main`. No long-lived feature branches. No PRs. Commit per-task using the messages in each step. When dispatched via hopper, use `--branch main` so worker commits fast-forward into trunk.
+
+> **Retrospective note (2026-05-09):** This plan was executed via hopper with `--branch feat/agent-session-visibility-v1`, which was a default-violation. The work landed correctly via a subsequent ff-merge to `main`, but future plans should target `--branch main` from the outset. See `~/.claude/CLAUDE.md` "Trunk-based development" section and this repo's `AGENTS.md` "Branching model" section.
 
 ---
 
@@ -1204,34 +1206,22 @@ git commit -m "docs: document agent_session_started/ended event types"
 
 ---
 
-## Task 8: Open PR
+## Task 8: Integrate to main (trunk-based)
 
-- [ ] **Step 1: Push branch and open PR against `main`**
+Per the global trunk-based default (`~/.claude/CLAUDE.md`) and this repo's `AGENTS.md` "Branching model" — **no PR, no remote feature branch.** When this plan is dispatched via hopper with `--branch main`, the worker's commits fast-forward directly into trunk and the integration step is automatic.
+
+If for any reason the work was done on a side branch (e.g. this plan was dispatched the wrong way the first time around), integrate it trunk-style:
 
 ```bash
-git push -u origin <branch-name>
-gh pr create --title "Agent session visibility v1: lifecycle events + stream-json transcript" \
-  --body "$(cat <<'EOF'
-## Summary
-- Adds AgentSessionStarted / AgentSessionEnded event types and payloads in foundry-core.
-- ClaudeAgentGateway now invokes claude with --output-format stream-json --verbose, tees stdout to ~/.foundry/agent-sessions/<session_id>.jsonl, and emits lifecycle events on the existing broadcast channel.
-- AgentResponse.stdout contract preserved (final assistant text extracted from the stream-json result envelope).
-
-## Test plan
-- [x] cargo test -p foundry-core
-- [x] cargo test -p foundryd
-- [x] cargo clippy --all-targets --all-features -- -D warnings
-- [x] cargo fmt --check
-- [ ] Manual smoke run with a real claude invocation (optional)
-
-Spec: ~/Work/Operations/Planning/2026-05-09-foundry-agent-session-visibility-v1.md
-EOF
-)"
+git checkout main
+git fetch origin && git pull --rebase origin main
+git merge --ff-only <worker-branch>
+git push origin main
+git branch -d <worker-branch>
+git push origin --delete <worker-branch>   # if it was pushed
 ```
 
-- [ ] **Step 2: Wait for CI green; merge**
-
-Standard repo flow.
+Do NOT run `gh pr create`. Do NOT leave the branch alive for review.
 
 ---
 
