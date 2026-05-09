@@ -267,6 +267,10 @@ pub enum EventType {
     GreetRequested,
     GreetingComposed,
     GreetingDelivered,
+
+    // Agent session lifecycle (visibility for Foundry-launched agents)
+    AgentSessionStarted,
+    AgentSessionEnded,
 }
 
 impl EventType {
@@ -508,6 +512,31 @@ mod tests {
         let id1 = super::mint_trace_id();
         let id2 = super::mint_trace_id();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn agent_session_started_serializes_snake_case() {
+        let value = serde_json::to_value(EventType::AgentSessionStarted).unwrap();
+        assert_eq!(value, serde_json::json!("agent_session_started"));
+    }
+
+    #[test]
+    fn agent_session_ended_serializes_snake_case() {
+        let value = serde_json::to_value(EventType::AgentSessionEnded).unwrap();
+        assert_eq!(value, serde_json::json!("agent_session_ended"));
+    }
+
+    #[test]
+    fn agent_session_event_type_round_trips_via_strum() {
+        use std::str::FromStr;
+        assert_eq!(
+            EventType::from_str("agent_session_started").unwrap(),
+            EventType::AgentSessionStarted
+        );
+        assert_eq!(
+            EventType::from_str("agent_session_ended").unwrap(),
+            EventType::AgentSessionEnded
+        );
     }
 
     #[test]
