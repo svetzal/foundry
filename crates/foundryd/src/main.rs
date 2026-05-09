@@ -105,7 +105,7 @@ fn register_blocks(
 ) -> engine::Engine {
     let mut engine = engine::Engine::new()
         .with_event_writer(event_writer)
-        .with_event_broadcaster(event_tx);
+        .with_event_broadcaster(event_tx.clone());
     engine.register(Box::new(orchestrator::FanOutMaintenance::new(registry.clone())));
     engine.register(Box::new(blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(blocks::ComposeGreeting));
@@ -115,8 +115,12 @@ fn register_blocks(
     engine.register(Box::new(blocks::AuditMainBranch::new(registry.clone())));
     // Agent gateway for blocks that invoke Claude CLI
     let shell_for_agent: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
-    let agent: Arc<dyn gateway::AgentGateway> =
-        Arc::new(gateway::ClaudeAgentGateway::new(shell_for_agent));
+    let agent: Arc<dyn gateway::AgentGateway> = Arc::new(gateway::ClaudeAgentGateway::new_with_streaming(
+        shell_for_agent,
+        Arc::new(agent_stream::ProcessAgentStreamRunner),
+        foundry_core::paths::agent_sessions_dir(),
+        event_tx.clone(),
+    ));
     engine.register(Box::new(blocks::RemediateVulnerability::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::CommitAndPush::new(registry.clone())));
     engine.register(Box::new(blocks::cut_release_step(registry.clone())));
