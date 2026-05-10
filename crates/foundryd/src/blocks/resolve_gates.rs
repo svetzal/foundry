@@ -125,33 +125,17 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use super::super::test_helpers;
     use super::ResolveGates;
 
-    #[test]
-    fn kind_is() {
-        let block = ResolveGates::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_charter_check_maintenance_and_validation() {
-        let block = ResolveGates::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        let sinks = block.sinks_on();
-        assert!(sinks.contains(&EventType::CharterCheckCompleted));
-        assert!(sinks.contains(&EventType::MaintenanceRequested));
-        assert!(sinks.contains(&EventType::ValidationRequested));
-        assert!(!sinks.contains(&EventType::IterationRequested));
-    }
+    assert_block_meta!(
+        ResolveGates::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [CharterCheckCompleted, MaintenanceRequested, ValidationRequested],
+    );
 
     #[tokio::test]
     async fn resolves_gates_from_file_on_charter_check_completed() {

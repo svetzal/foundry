@@ -114,31 +114,17 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use super::super::test_helpers;
     use super::CheckCharter;
 
-    #[test]
-    fn kind_is() {
-        let block = CheckCharter::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_expected_events() {
-        let block = CheckCharter::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        let sinks = block.sinks_on();
-        assert!(sinks.contains(&EventType::IterationRequested));
-        assert!(sinks.contains(&EventType::PromptExecutionRequested));
-    }
+    assert_block_meta!(
+        CheckCharter::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [IterationRequested, PromptExecutionRequested],
+    );
 
     #[tokio::test]
     async fn passes_when_charter_exists() {
