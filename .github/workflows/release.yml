@@ -47,6 +47,22 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
 
+      # Re-sign with stable identifiers on macOS so TCC privacy grants
+      # (Full Disk Access, Documents, etc.) survive future rebuilds.
+      # Cargo's default ad-hoc signature uses a hash-derived identifier
+      # that changes on every build, causing macOS to treat each release
+      # as a brand-new app and re-prompt users for permissions. Must run
+      # before tarballing so the tarball SHA256 matches the signed bytes.
+      - name: Re-sign with stable identifier (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --sign - --identifier com.mojility.foundryd target/${{ matrix.target }}/release/foundryd
+          codesign --force --sign - --identifier com.mojility.foundry  target/${{ matrix.target }}/release/foundry
+          echo "--- foundryd signature ---"
+          codesign -dvv target/${{ matrix.target }}/release/foundryd 2>&1 | grep -E 'Identifier|Signature|flags'
+          echo "--- foundry signature ---"
+          codesign -dvv target/${{ matrix.target }}/release/foundry  2>&1 | grep -E 'Identifier|Signature|flags'
+
       - name: Package archive
         run: |
           cd target/${{ matrix.target }}/release

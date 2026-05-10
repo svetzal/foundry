@@ -39,14 +39,18 @@ survive future rebuilds. **Always use `./install.sh` rather than running
 `cargo install` directly on macOS** — invoking cargo bare will reset the
 identifier and re-trigger morning Allow dialogs.
 
-After the first install on a new machine, grant Full Disk Access to
-`~/.cargo/bin/foundryd` in System Settings → Privacy & Security → Full Disk
-Access. This is a one-time grant that persists across rebuilds because the
-identifier is stable.
+After the first install on a new machine, grant Full Disk Access to the
+foundryd binary path in System Settings → Privacy & Security → Full Disk
+Access. The path depends on install method:
 
-Note: the Homebrew distribution (`brew install foundry`) does **not** yet
-apply the stable-identifier re-sign — see `release.yml` and the homebrew
-formula for a future fix.
+- `~/.cargo/bin/foundryd` for `./install.sh` installs
+- `/opt/homebrew/bin/foundryd` (Apple Silicon) or `/usr/local/bin/foundryd`
+  (Intel) for `brew install foundry` installs
+
+This is a one-time grant per install path that persists across rebuilds
+because the identifier is stable. The CI release workflow (`release.yml`)
+applies the same re-sign step before tarballing, so Homebrew-distributed
+binaries inherit the stable identifier as well.
 
 Re-run after making changes to pick up the latest version.
 
