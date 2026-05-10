@@ -35,7 +35,7 @@ impl ExecutePlan {
     }
 
     #[cfg(test)]
-    fn with_gateways(
+    pub(super) fn with_gateways(
         agent: Arc<dyn AgentGateway>,
         registry: Arc<Registry>,
         shell: Arc<dyn ShellGateway>,
@@ -76,6 +76,11 @@ impl TaskBlock for ExecutePlan {
 
         let plan_payload = parse_payload!(trigger, PlanCompletedPayload);
 
+        // Read the workflow from the trigger payload so that non-iterate callers
+        // (e.g. the prompt workflow) receive the correct WorkflowType.  This is
+        // important because the silent no-op override only fires for WorkflowType::Iterate.
+        let workflow = WorkflowType::from_payload(&payload);
+
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
 
@@ -107,7 +112,7 @@ impl TaskBlock for ExecutePlan {
 
             Ok(super::build_agent_execution_result(
                 &project,
-                WorkflowType::Iterate,
+                workflow,
                 outcome,
                 &payload,
                 throttle,
@@ -198,11 +203,21 @@ mod tests {
 
     #[tokio::test]
     async fn executes_plan_successfully() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with("Changes applied successfully");
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = ExecutePlan::new(agent.clone(), registry);
+        // Simulate real file changes so the iterate override does not fire
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = ExecutePlan::with_gateways(agent.clone(), registry, shell);
         let trigger = plan_completed_event("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -343,7 +358,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
+        // Iterate + clean tree → overridden to failure (silent no-op)
+        assert!(!result.success);
         assert_eq!(result.events[0].payload["changes_detected"], false);
         // files_changed is skip_serializing_if Vec::is_empty, so absent when empty
         assert!(
@@ -352,6 +368,53 @@ mod tests {
                 .get("files_changed")
                 .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
         );
+    }
+
+    #[tokio::test]
+    async fn iterate_clean_tree_overrides_to_failure() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success(); // empty stdout → no changes
+        let block = ExecutePlan::with_gateways(agent, registry, shell);
+        let trigger = plan_completed_event("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "expected failure for iterate + clean tree");
+        assert!(
+            result.summary.contains("silent no-op"),
+            "expected 'silent no-op' in summary, got: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn iterate_aux_only_changes_treated_as_clean() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        // git status returns only a .claude/worktrees/ path
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "M  .claude/worktrees/abc/session.jsonl\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = ExecutePlan::with_gateways(agent, registry, shell);
+        let trigger = plan_completed_event("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "all-auxiliary files must be treated as a no-op");
+        assert!(result.summary.contains("silent no-op"));
     }
 
     #[tokio::test]
@@ -368,8 +431,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        // No error propagated; event still emitted with success from agent
-        assert!(result.success);
+        // Git status failure → changes_detected=false → iterate override fires
+        assert!(!result.success);
         assert_eq!(result.events[0].payload["changes_detected"], false);
     }
 

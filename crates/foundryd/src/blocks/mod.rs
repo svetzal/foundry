@@ -205,6 +205,18 @@ pub(super) async fn detect_post_execution_changes(
     }
 }
 
+/// Returns `true` if `path` is an auxiliary worktree path that should not count
+/// as a meaningful working-tree change (e.g. `.claude/worktrees/…`).
+fn is_auxiliary_path(p: &str) -> bool {
+    p.starts_with(".claude/worktrees/")
+}
+
+/// Returns `true` when the file list represents only auxiliary changes (or is
+/// empty) and therefore should be treated as a silent no-op.
+fn only_auxiliary_changes(files: &[String]) -> bool {
+    files.is_empty() || files.iter().all(|f| is_auxiliary_path(f))
+}
+
 /// Build a `TaskBlockResult` for an agent-driven execution step, handling the
 /// response match, output trimming to 200 lines, tracing, `LoopContext` extraction,
 /// `ExecutionCompletedPayload` serialization, and `TaskBlockResult` construction.
@@ -212,6 +224,10 @@ pub(super) async fn detect_post_execution_changes(
 /// `success_label` is the base text for the summary, e.g. "plan execution",
 /// "maintenance", or "retry 2".  `retry_count` is forwarded into the payload
 /// when present (retry flow only).
+///
+/// For the `Iterate` workflow only: if the agent exits 0 but produces no
+/// meaningful working-tree changes, the result is overridden to `success: false`
+/// with a "silent no-op" summary.  The `Maintain` workflow is unaffected.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_agent_execution_result(
     project: &str,
@@ -224,7 +240,7 @@ pub(super) fn build_agent_execution_result(
     changes_detected: bool,
     files_changed: Vec<String>,
 ) -> TaskBlockResult {
-    let (raw_output, success, summary, execution_output) = match outcome {
+    let (raw_output, mut success, mut summary, execution_output) = match outcome {
         AgentOutcome::Success { stdout } => {
             let out = stdout.trim().to_string();
             let lines: Vec<&str> = out.lines().collect();
@@ -245,6 +261,22 @@ pub(super) fn build_agent_execution_result(
             (None, false, format!("agent unavailable: {error}"), None)
         }
     };
+
+    // For iterate only: an agent that exits 0 but makes no meaningful changes is
+    // a silent no-op — treat it as a failure so the retry loop can fire.
+    if workflow == WorkflowType::Iterate
+        && success
+        && (!changes_detected || only_auxiliary_changes(&files_changed))
+    {
+        tracing::info!(
+            project = %project,
+            changes_detected = changes_detected,
+            files_changed = ?files_changed,
+            "iterate agent produced no meaningful changes — overriding to failure"
+        );
+        success = false;
+        summary = "agent did not modify any files (silent no-op)".to_string();
+    }
 
     tracing::info!(project = %project, success = success, "{success_label} completed");
 
@@ -275,6 +307,136 @@ pub(super) fn build_agent_execution_result(
         raw_output,
         exit_code: None,
         audit_artifacts: vec![],
+    }
+}
+
+#[cfg(test)]
+mod mod_tests {
+    use foundry_core::throttle::Throttle;
+    use foundry_core::workflow::WorkflowType;
+
+    use crate::gateway::AgentOutcome;
+
+    use super::{build_agent_execution_result, is_auxiliary_path};
+
+    fn trigger_payload() -> serde_json::Value {
+        serde_json::json!({ "project": "p", "workflow": "iterate" })
+    }
+
+    // --- is_auxiliary_path ---
+
+    #[test]
+    fn auxiliary_path_returns_true() {
+        assert!(is_auxiliary_path(".claude/worktrees/abc/foo.md"));
+        assert!(is_auxiliary_path(".claude/worktrees/"));
+    }
+
+    #[test]
+    fn non_auxiliary_path_returns_false() {
+        assert!(!is_auxiliary_path("src/main.rs"));
+        assert!(!is_auxiliary_path("Cargo.toml"));
+        assert!(!is_auxiliary_path(".claude/settings.json"));
+    }
+
+    // --- iterate: clean tree → failure override ---
+
+    #[test]
+    fn iterate_clean_tree_overrides_to_failure() {
+        let result = build_agent_execution_result(
+            "proj",
+            WorkflowType::Iterate,
+            AgentOutcome::Success {
+                stdout: "done".to_string(),
+            },
+            &trigger_payload(),
+            Throttle::Full,
+            "plan execution",
+            None,
+            false, // changes_detected = false
+            vec![],
+        );
+
+        assert!(!result.success, "expected failure but got success");
+        assert!(
+            result.summary.contains("silent no-op"),
+            "expected 'silent no-op' in summary, got: {}",
+            result.summary
+        );
+        // Payload must also reflect the override
+        assert_eq!(result.events[0].payload["success"], false);
+        assert!(
+            result.events[0].payload["summary"]
+                .as_str()
+                .unwrap_or("")
+                .contains("silent no-op")
+        );
+    }
+
+    // --- iterate: real changes → success unchanged ---
+
+    #[test]
+    fn iterate_dirty_tree_remains_success() {
+        let result = build_agent_execution_result(
+            "proj",
+            WorkflowType::Iterate,
+            AgentOutcome::Success {
+                stdout: "done".to_string(),
+            },
+            &trigger_payload(),
+            Throttle::Full,
+            "plan execution",
+            None,
+            true,
+            vec!["src/lib.rs".to_string()],
+        );
+
+        assert!(result.success, "expected success but got failure");
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    // --- maintain: clean tree → NOT overridden ---
+
+    #[test]
+    fn maintain_clean_tree_remains_success() {
+        let payload = serde_json::json!({ "project": "p", "workflow": "maintain" });
+        let result = build_agent_execution_result(
+            "proj",
+            WorkflowType::Maintain,
+            AgentOutcome::Success {
+                stdout: "done".to_string(),
+            },
+            &payload,
+            Throttle::Full,
+            "maintenance",
+            None,
+            false, // clean tree
+            vec![],
+        );
+
+        assert!(result.success, "maintain workflow must NOT override to failure on clean tree");
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    // --- iterate: only auxiliary files → treated as no-op ---
+
+    #[test]
+    fn iterate_aux_only_changes_treated_as_clean() {
+        let result = build_agent_execution_result(
+            "proj",
+            WorkflowType::Iterate,
+            AgentOutcome::Success {
+                stdout: "done".to_string(),
+            },
+            &trigger_payload(),
+            Throttle::Full,
+            "plan execution",
+            None,
+            true, // changes_detected=true but only aux files
+            vec![".claude/worktrees/abc/foo".to_string()],
+        );
+
+        assert!(!result.success, "all-auxiliary file list must trigger failure override");
+        assert!(result.summary.contains("silent no-op"));
     }
 }
 

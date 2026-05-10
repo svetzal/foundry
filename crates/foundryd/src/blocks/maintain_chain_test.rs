@@ -258,3 +258,50 @@ async fn no_gates_file_still_completes() {
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 }
+
+#[tokio::test]
+async fn maintain_clean_tree_remains_successful() {
+    // Maintain must NOT apply the iterate silent-no-op override.
+    // Even when git status is empty (no changes), maintain succeeds if gates pass.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+    )
+    .unwrap();
+
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+    // Shell always returns success with empty stdout:
+    // - ExecuteMaintain's detect_post_execution_changes → no changes (fine for maintain)
+    // - RunVerifyGates gate run → gate passes
+    let shell = FakeShellGateway::success();
+    let agent = FakeAgentGateway::success_with(
+        "HEADLINE: Update dependencies\nSUMMARY: Nothing needed updating.",
+    );
+
+    let engine = maintain_engine(shell, agent, registry);
+    let result = engine.process(maintenance_requested_event()).await;
+
+    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+    // No retry — clean tree on maintain is not a failure
+    assert!(
+        !event_types.contains(&"retry_requested"),
+        "maintain with clean tree must NOT trigger retry"
+    );
+
+    // Completion must be success
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectMaintenanceCompleted)
+        .unwrap();
+    assert_eq!(
+        completion.payload["success"], true,
+        "maintain must succeed even when agent produces no file changes"
+    );
+
+    // Summary was generated
+    assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
+}

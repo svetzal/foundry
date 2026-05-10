@@ -14,7 +14,9 @@ use foundry_core::throttle::Throttle;
 
 use crate::blocks::test_helpers;
 use crate::engine::Engine;
+use crate::gateway::fakes::FakeShellGateway;
 use crate::gateway::{AgentGateway, ShellGateway};
+use crate::shell::CommandResult;
 
 /// Build the full strategic loop engine with inner iterate chain.
 #[allow(clippy::needless_pass_by_value)]
@@ -28,17 +30,26 @@ fn strategic_engine(
     // Strategic loop blocks
     engine.register(Box::new(super::StrategicAssessor::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::StrategicLoopController::new(agent.clone(), registry.clone())));
-    // Inner iterate chain blocks
+    // Inner iterate chain blocks — share the fake shell with execution blocks so that
+    // detect_post_execution_changes does not spawn a real git process against the temp dir.
     engine.register(Box::new(super::CheckCharter::new(registry.clone())));
     engine.register(Box::new(super::ResolveGates::new(registry.clone())));
     engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
     engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::ExecutePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
+    engine.register(Box::new(super::ExecutePlan::with_gateways(
+        agent.clone(),
+        registry.clone(),
+        shell.clone(),
+    )));
+    engine.register(Box::new(super::RunVerifyGates::new(shell.clone(), registry.clone())));
     engine.register(Box::new(super::RouteGateResult));
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(super::RetryExecution::with_gateways(
+        agent.clone(),
+        registry.clone(),
+        shell.clone(),
+    )));
     // Terminal blocks
     engine.register(Box::new(super::SummarizeResult::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::CommitAndPush::new(registry)));
@@ -58,6 +69,35 @@ fn strategic_iteration_requested() -> Event {
             "max_iterations": 2,
         }),
     )
+}
+
+/// Build a shell for a single inner iterate cycle: preflight gate pass → git status with
+/// real changes → verify gate pass.  All three shell calls return `success: true`; the
+/// middle one returns a non-empty stdout so the silent no-op override does not fire.
+fn single_iterate_shell() -> Arc<dyn ShellGateway> {
+    FakeShellGateway::sequence(vec![
+        // Preflight gate command → pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git status after ExecutePlan → has real changes (prevents silent no-op override)
+        CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // Verify gate command → pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ])
 }
 
 fn non_strategic_iteration_requested() -> Event {
@@ -115,7 +155,7 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
         "HEADLINE: Improve test coverage\nSUMMARY: Added tests.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(single_iterate_shell(), agent, registry);
     let result = engine.process(strategic_iteration_requested()).await;
 
     // Collect event types
@@ -195,7 +235,7 @@ async fn strategic_loop_stops_at_max_iterations() {
         "HEADLINE: Fix naming\nSUMMARY: Renamed.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(single_iterate_shell(), agent, registry);
     let result = engine.process(trigger).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
@@ -247,7 +287,7 @@ async fn non_strategic_iteration_still_works() {
         "HEADLINE: Improve clarity\nSUMMARY: Clarified.",
     ]);
 
-    let engine = strategic_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = strategic_engine(single_iterate_shell(), agent, registry);
     let result = engine.process(non_strategic_iteration_requested()).await;
 
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();

@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
+use foundry_core::gates::{GateResult, GatesRunResult};
 use foundry_core::payload::{
     ExecutionCompletedPayload, GateVerificationCompletedPayload, LoopContext,
 };
@@ -62,6 +63,39 @@ impl TaskBlock for RunVerifyGates {
 
         Box::pin(async move {
             let project_path = std::path::Path::new(&entry.path);
+
+            // Short-circuit: if the upstream execution block already failed (e.g. a
+            // silent no-op override), skip running the real gates and emit a synthetic
+            // failed verification so the retry / route logic fires correctly.
+            if !p.success {
+                tracing::info!(
+                    project = %project,
+                    upstream_summary = %p.summary,
+                    "upstream execution failed — short-circuiting gate verification"
+                );
+                let synthetic = GateResult {
+                    name: "agent_execution".to_string(),
+                    command: String::new(),
+                    passed: false,
+                    required: true,
+                    output: p.summary.clone(),
+                    exit_code: 1,
+                    duration_ms: None,
+                };
+                let run_result = GatesRunResult {
+                    all_passed: false,
+                    required_passed: false,
+                    results: vec![synthetic],
+                };
+                return Ok(build_verification_result(
+                    &project,
+                    workflow,
+                    retry_count,
+                    &run_result,
+                    &payload,
+                    throttle,
+                ));
+            }
 
             // Re-read gates from disk (not from earlier resolution)
             let gates = crate::gate_file::read_gates(project_path)?;
@@ -175,6 +209,21 @@ mod tests {
         )
     }
 
+    fn failed_execution_completed_event(project: &str, summary: &str) -> Event {
+        Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": project,
+                "retry_count": 0,
+                "workflow": "iterate",
+                "success": false,
+                "summary": summary,
+            }),
+        )
+    }
+
     #[test]
     fn kind_is_observer() {
         let shell = FakeShellGateway::success();
@@ -282,5 +331,66 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events[0].payload["all_passed"], true);
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_short_circuits_to_failed_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        // Even with a gate file present, we should not run gates if upstream failed
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let shell = FakeShellGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunVerifyGates::with_shell(shell, registry);
+        let trigger = failed_execution_completed_event(
+            "my-project",
+            "agent did not modify any files (silent no-op)",
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::GateVerificationCompleted);
+        assert_eq!(result.events[0].payload["all_passed"], false);
+        assert_eq!(result.events[0].payload["required_passed"], false);
+
+        // Should contain the synthetic agent_execution gate result
+        let results = result.events[0].payload["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "expected exactly one synthetic gate result");
+        assert_eq!(results[0]["name"], "agent_execution");
+        assert_eq!(results[0]["passed"], false);
+        assert_eq!(results[0]["required"], true);
+    }
+
+    #[tokio::test]
+    async fn upstream_success_runs_gates_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        // Gates pass
+        let shell = FakeShellGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunVerifyGates::with_shell(shell, registry);
+        let trigger = execution_completed_event("my-project", 0, "iterate");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["all_passed"], true);
+        // Real gate should appear in results (not the synthetic one)
+        let results = result.events[0].payload["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"], "fmt");
     }
 }

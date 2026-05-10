@@ -35,7 +35,7 @@ impl RetryExecution {
     }
 
     #[cfg(test)]
-    fn with_gateways(
+    pub(super) fn with_gateways(
         agent: Arc<dyn AgentGateway>,
         registry: Arc<Registry>,
         shell: Arc<dyn ShellGateway>,
@@ -407,12 +407,53 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::failure("fatal: not a git repository");
         let block = RetryExecution::with_gateways(agent, registry, shell);
-        let trigger = retry_event("my-project", 1, "iterate");
+        // Use maintain so the iterate override doesn't fire (we're testing git failure tolerance)
+        let trigger = retry_event("my-project", 1, "maintain");
 
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
         assert_eq!(result.events[0].payload["changes_detected"], false);
+    }
+
+    #[tokio::test]
+    async fn iterate_retry_clean_tree_overrides_to_failure() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success(); // empty stdout → no changes
+        let block = RetryExecution::with_gateways(agent, registry, shell);
+        let trigger = retry_event("my-project", 1, "iterate");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "iterate retry + clean tree must override to failure");
+        assert!(
+            result.summary.contains("silent no-op"),
+            "expected 'silent no-op' in summary, got: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn maintain_retry_clean_tree_remains_success() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success(); // empty stdout → no changes
+        let block = RetryExecution::with_gateways(agent, registry, shell);
+        let trigger = retry_event("my-project", 1, "maintain");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "maintain retry must NOT override to failure on clean tree");
+        assert_eq!(result.events[0].payload["success"], true);
     }
 
     #[tokio::test]

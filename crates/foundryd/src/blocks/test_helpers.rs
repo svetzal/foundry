@@ -158,6 +158,11 @@ pub fn project_entry_with_agents_md(
 /// `AssessProject`, `TriageAssessment`, `CreatePlan`, `ExecutePlan`,
 /// `RunVerifyGates`, `RouteGateResult`, `RetryExecution`, `SummarizeResult`.
 ///
+/// The `shell` gateway is shared by ALL shell-using blocks, including the
+/// execution blocks (`ExecutePlan`, `RetryExecution`).  This ensures that
+/// `detect_post_execution_changes` uses the fake shell rather than spawning
+/// a real `git` process against the test temp directory.
+///
 /// Chain-specific blocks (e.g. `ExecuteMaintain`, `CommitAndPush`) must be
 /// registered separately by the caller after this call.
 pub fn register_iterate_chain(
@@ -172,9 +177,17 @@ pub fn register_iterate_chain(
     engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
     engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::ExecutePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
+    engine.register(Box::new(super::ExecutePlan::with_gateways(
+        agent.clone(),
+        registry.clone(),
+        shell.clone(),
+    )));
+    engine.register(Box::new(super::RunVerifyGates::new(shell.clone(), registry.clone())));
     engine.register(Box::new(super::RouteGateResult));
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(super::RetryExecution::with_gateways(
+        agent.clone(),
+        registry.clone(),
+        shell,
+    )));
     engine.register(Box::new(super::SummarizeResult::new(agent, registry)));
 }

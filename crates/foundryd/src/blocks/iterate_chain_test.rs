@@ -61,8 +61,33 @@ async fn happy_path_iterate_chain() {
 
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
-    // All gates pass
-    let shell = FakeShellGateway::success();
+    // Shell sequence:
+    // 1. RunPreflightGates — gate command passes (empty stdout)
+    // 2. ExecutePlan — git status returns changes (so iterate override does not fire)
+    // 3. RunVerifyGates — gate command passes (empty stdout)
+    let shell = FakeShellGateway::sequence(vec![
+        // Preflight gate — pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git status after ExecutePlan — non-empty to indicate real changes
+        CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // Verify gate — pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
     // Agent responses: assess (JSON), name (kebab), triage (JSON), plan (text), execute (success), summarize
     let agent = FakeAgentGateway::sequence(vec![
         // AssessProject — assessment response
@@ -316,11 +341,23 @@ async fn gate_verification_retry_loop() {
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 
-    // Shell: preflight passes, first verify fails, second verify passes
+    // Shell sequence:
+    // 1. Preflight gate — pass
+    // 2. git status after ExecutePlan — changes present (prevents silent no-op override)
+    // 3. Verify gate after ExecutePlan — FAIL (triggers retry)
+    // 4. git status after RetryExecution — changes present
+    // 5. Verify gate after RetryExecution — PASS (retry succeeds)
     let shell = FakeShellGateway::sequence(vec![
         // Preflight — pass
         CommandResult {
             stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git status after ExecutePlan — has real changes
+        CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -331,6 +368,13 @@ async fn gate_verification_retry_loop() {
             stderr: "test failed".to_string(),
             exit_code: 1,
             success: false,
+        },
+        // git status after RetryExecution — has real changes
+        CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
         },
         // Second verify (after RetryExecution) — pass
         CommandResult {
@@ -440,6 +484,7 @@ async fn gate_verification_retry_loop() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn iterate_with_maintain_chaining() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
@@ -451,7 +496,44 @@ async fn iterate_with_maintain_chaining() {
 
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
-    let shell = FakeShellGateway::success();
+    // Shell sequence:
+    // 1. Preflight gate — pass
+    // 2. git status after ExecutePlan — changes present (prevents silent no-op override)
+    // 3. Verify gate (iterate) — pass
+    // 4. git status after ExecuteMaintain — clean tree (maintain does not override)
+    // 5. Verify gate (maintain) — pass
+    let shell = FakeShellGateway::sequence(vec![
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: "M  src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
     // Agent: assess, name, triage, plan, execute, summarize (iterate), then maintain chain agents...
     // We only verify MaintenanceRequested is emitted; the maintain chain needs its own engine blocks.
     let agent = FakeAgentGateway::sequence(vec![
@@ -542,5 +624,124 @@ async fn iterate_with_maintain_chaining() {
     assert!(
         event_types.contains(&"project_maintenance_completed"),
         "should complete the chained maintain workflow"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
+    std::fs::write(
+        dir.path().join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+    )
+    .unwrap();
+
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+
+    // All shell calls return success with empty stdout.
+    // - Call 1: RunPreflightGates (cargo fmt --check passes)
+    // - Calls 2–5: detect_post_execution_changes after each of the 4 agent runs
+    //   (git status --porcelain returns empty → no changes → silent no-op override)
+    // RunVerifyGates short-circuits on upstream failure and makes no shell calls.
+    let shell = FakeShellGateway::success();
+
+    // Agent: assess, name, triage, plan, execute, retry1, retry2, retry3
+    // (no SummarizeResult because the chain ends in failure)
+    let agent = FakeAgentGateway::sequence(vec![
+        // AssessProject — assessment
+        AgentResponse {
+            stdout: r#"{"severity": 7, "principle": "DRY", "category": "duplication", "assessment": "Duplicate validation."}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // AssessProject — name
+        AgentResponse {
+            stdout: "fix-duplication".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // TriageAssessment — accepted
+        AgentResponse {
+            stdout: r#"{"accepted": true, "reason": "severity warrants fix"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // CreatePlan
+        AgentResponse {
+            stdout: "1. Extract shared helper\n2. Update callers".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // ExecutePlan — exits 0 but makes no file changes
+        AgentResponse {
+            stdout: "I reviewed the code but no changes were needed.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // RetryExecution attempt 1 — also no changes
+        AgentResponse {
+            stdout: "Still no changes.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // RetryExecution attempt 2 — also no changes
+        AgentResponse {
+            stdout: "Nothing to do.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // RetryExecution attempt 3 — also no changes
+        AgentResponse {
+            stdout: "Still nothing.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
+
+    let engine = iterate_engine(shell, agent, registry);
+    let result = engine.process(iteration_requested_event(false)).await;
+
+    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+    // Should have gone through at least 3 RetryRequested events
+    let retry_count = result
+        .events
+        .iter()
+        .filter(|e| e.event_type == EventType::RetryRequested)
+        .count();
+    assert!(retry_count >= 3, "expected >= 3 RetryRequested events, got {retry_count}");
+
+    // Terminal event must be ProjectIterationCompleted with success=false
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(
+        completion.payload["success"], false,
+        "iterate chain should fail when agent never modifies files"
+    );
+
+    // No changes were committed
+    assert!(
+        !event_types.contains(&"project_changes_committed"),
+        "should NOT commit changes when agent never modifies files"
+    );
+
+    // No summarize — only emitted on success
+    assert!(
+        !event_types.contains(&"summarize_completed"),
+        "should NOT summarize when iteration fails"
     );
 }

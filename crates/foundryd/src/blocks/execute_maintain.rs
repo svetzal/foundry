@@ -477,6 +477,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maintain_clean_tree_remains_success() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        // Maintain workflow must NOT apply the iterate override — clean tree stays success.
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "rust-craftsperson",
+        ));
+        let shell = FakeShellGateway::success(); // empty stdout → no changes
+        let block = ExecuteMaintain::with_gateways(agent, registry, shell);
+        let trigger = gate_resolution_maintain("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "maintain workflow must NOT override to failure on clean tree");
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    #[tokio::test]
     async fn tolerates_git_status_failure() {
         use crate::gateway::fakes::FakeShellGateway;
 
