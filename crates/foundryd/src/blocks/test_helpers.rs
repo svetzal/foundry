@@ -68,20 +68,10 @@ pub fn project_entry_with_install(
     name: &str,
     path: &str,
     install: Option<foundry_core::registry::InstallConfig>,
-) -> foundry_core::registry::ProjectEntry {
-    foundry_core::registry::ProjectEntry {
-        name: name.to_string(),
-        path: path.to_string(),
-        stack: foundry_core::registry::Stack::Rust,
-        agent: "claude".to_string(),
-        repo: String::new(),
-        branch: "main".to_string(),
-        skip: None,
-        notes: None,
-        actions: foundry_core::registry::ActionFlags::default(),
+) -> ProjectEntry {
+    ProjectEntry {
         install,
-        installs_skill: None,
-        timeout_secs: None,
+        ..project_entry(name, path)
     }
 }
 

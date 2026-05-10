@@ -200,33 +200,14 @@ mod tests {
         )
     }
 
-    #[test]
-    fn kind_is() {
-        let agent = FakeAgentGateway::success();
-        let block = SummarizeResult::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), foundry_core::task_block::BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_both_completion_events() {
-        let agent = FakeAgentGateway::success();
-        let block = SummarizeResult::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        let sinks = block.sinks_on();
-        assert!(sinks.contains(&EventType::ProjectIterationCompleted));
-        assert!(sinks.contains(&EventType::ProjectMaintenanceCompleted));
-    }
+    assert_block_meta!(
+        SummarizeResult::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
+    );
 
     #[tokio::test]
     async fn skips_when_loop_context_present() {
