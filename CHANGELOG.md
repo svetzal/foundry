@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-05-09
+
+### Added
+
+- **Agent session visibility v1** — `foundryd` now emits `AgentSessionStarted` and `AgentSessionEnded` events around every Claude agent invocation, capturing session lifecycle in the event stream. New `AgentSessionStarted` / `AgentSessionEnded` payload structs in `foundry-core`, `agent_sessions_dir()` path helper, and `AgentStreamRunner` trait with `ProcessAgentStreamRunner` implementation that runs `claude` with `--print --output-format stream-json` so per-tool-call lifecycle events flow through the engine in real time. Wires `event_tx` and `ProcessAgentStreamRunner` into `ClaudeAgentGateway`.
+- **Per-gate timing** — `GateRunResult` now carries `duration_ms`, and `RunVerifyGates` / `RunPreflightGates` populate it for every gate executed. Unblocks "agent thinking vs build/test time" decomposition in event analyses.
+- **Working-tree change detection on execution** — `ExecutionCompletedPayload` carries `changes_detected: bool` and `files_changed: Vec<String>`, populated via `git status --porcelain` after agent execution. Surfaces silent no-op cases (agent claims success while leaving the tree clean) directly in events instead of requiring inference.
+- **Coverage gate** — foundry's own gate suite now runs `cargo tarpaulin --fail-under 61` as a required gate.
+- Unit tests for `greet`, `check_pipeline`, and `watch_pipeline` blocks in `foundryd`.
+
+### Changed
+
+- Internal refactor: extracted shared agent-remediation and gate-result builder helpers across `execute_plan`, `execute_maintain`, and `retry_execution` to remove duplication.
+
 ## [0.13.0] - 2026-04-21
 
 ### Added
