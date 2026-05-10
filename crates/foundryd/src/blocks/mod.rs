@@ -1,7 +1,7 @@
 #[macro_use]
 mod macros;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
@@ -10,7 +10,9 @@ use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{
+    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest, ShellGateway,
+};
 
 /// Bundles the three fields every block `execute()` extracts from the trigger event.
 ///
@@ -174,6 +176,35 @@ pub(super) fn build_agent_remediation_result(
     }
 }
 
+/// Run `git status --porcelain` in `project_path` and return whether the
+/// working tree has uncommitted changes, along with the list of affected paths.
+///
+/// On any error (non-git directory, missing git binary, etc.) logs a warning
+/// and returns `(false, vec![])` so that the calling block can still emit its
+/// event normally.
+pub(super) async fn detect_post_execution_changes(
+    shell: &dyn ShellGateway,
+    project_path: &Path,
+) -> (bool, Vec<String>) {
+    match shell.run(project_path, "git", &["status", "--porcelain"], None, None).await {
+        Ok(r) if r.success => {
+            // Porcelain v1 format: XY<space><path>. The first 3 bytes (XY + space)
+            // are always ASCII, so slicing at byte 3 is safe for any filename.
+            let files: Vec<String> =
+                r.stdout.lines().filter(|l| l.len() >= 4).map(|l| l[3..].to_string()).collect();
+            (!files.is_empty(), files)
+        }
+        Ok(r) => {
+            tracing::warn!(stderr = %r.stderr, "git status failed; reporting no changes");
+            (false, vec![])
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "git status errored; reporting no changes");
+            (false, vec![])
+        }
+    }
+}
+
 /// Build a `TaskBlockResult` for an agent-driven execution step, handling the
 /// response match, output trimming to 200 lines, tracing, `LoopContext` extraction,
 /// `ExecutionCompletedPayload` serialization, and `TaskBlockResult` construction.
@@ -181,6 +212,7 @@ pub(super) fn build_agent_remediation_result(
 /// `success_label` is the base text for the summary, e.g. "plan execution",
 /// "maintenance", or "retry 2".  `retry_count` is forwarded into the payload
 /// when present (retry flow only).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_agent_execution_result(
     project: &str,
     workflow: WorkflowType,
@@ -189,6 +221,8 @@ pub(super) fn build_agent_execution_result(
     throttle: Throttle,
     success_label: &str,
     retry_count: Option<u64>,
+    changes_detected: bool,
+    files_changed: Vec<String>,
 ) -> TaskBlockResult {
     let (raw_output, success, summary, execution_output) = match outcome {
         AgentOutcome::Success { stdout } => {
@@ -223,6 +257,8 @@ pub(super) fn build_agent_execution_result(
         execution_output,
         dry_run: None,
         retry_count,
+        changes_detected: Some(changes_detected),
+        files_changed,
         context,
     })
     .expect("ExecutionCompletedPayload is infallibly serializable");
@@ -265,6 +301,8 @@ pub(super) fn dry_run_execution_event(
                     execution_output: None,
                     dry_run: Some(true),
                     retry_count,
+                    changes_detected: None,
+                    files_changed: vec![],
                     context,
                 },
             )

@@ -310,6 +310,14 @@ pub struct ExecutionCompletedPayload {
     pub dry_run: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u64>,
+    /// Whether the working tree had uncommitted changes after agent execution.
+    /// `None` for events recorded before this field was added.
+    /// Entries in `files_changed` are raw `git status --porcelain` paths;
+    /// rename entries appear as `"old -> new"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes_detected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_changed: Vec<String>,
     #[serde(flatten)]
     pub context: LoopContext,
 }
@@ -840,6 +848,8 @@ mod tests {
             execution_output: None,
             dry_run: None,
             retry_count: None,
+            changes_detected: None,
+            files_changed: vec![],
             context,
         };
         let json = serde_json::to_value(&p).unwrap();

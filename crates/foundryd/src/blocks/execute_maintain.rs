@@ -8,19 +8,46 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
+use crate::gateway::{
+    AgentAccess, AgentCapability, AgentGateway, ProcessShellGateway, ShellGateway,
+};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
-agent_block_new!(
-    /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
-    /// and resolves quality gate failures.
-    ///
-    /// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
-    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
-    /// Emits `ExecutionCompleted` with success status and details.
-    pub struct ExecuteMaintain
-);
+/// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
+/// and resolves quality gate failures.
+///
+/// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
+/// Uses `AgentGateway` with `Coding` capability and `Full` access.
+/// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
+pub struct ExecuteMaintain {
+    registry: Arc<Registry>,
+    agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
+}
+
+impl ExecuteMaintain {
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+        Self {
+            registry,
+            agent,
+            shell: Arc::new(ProcessShellGateway),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_gateways(
+        agent: Arc<dyn AgentGateway>,
+        registry: Arc<Registry>,
+        shell: Arc<dyn ShellGateway>,
+    ) -> Self {
+        Self {
+            registry,
+            agent,
+            shell,
+        }
+    }
+}
 
 /// Resolve the agent file path from the registry agent name.
 /// Convention: `~/.claude/agents/{agent}.md`
@@ -74,6 +101,7 @@ impl TaskBlock for ExecuteMaintain {
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
@@ -86,7 +114,7 @@ impl TaskBlock for ExecuteMaintain {
                 &*agent,
                 AgentBlockSpec {
                     prompt,
-                    working_dir: project_path,
+                    working_dir: project_path.clone(),
                     access: AgentAccess::Full,
                     capability: AgentCapability::Coding,
                     agent_file,
@@ -97,6 +125,9 @@ impl TaskBlock for ExecuteMaintain {
             )
             .await;
 
+            let (changes_detected, files_changed) =
+                super::detect_post_execution_changes(&*shell, &project_path).await;
+
             Ok(super::build_agent_execution_result(
                 &project,
                 WorkflowType::Maintain,
@@ -105,6 +136,8 @@ impl TaskBlock for ExecuteMaintain {
                 throttle,
                 "maintenance",
                 None,
+                changes_detected,
+                files_changed,
             ))
         })
     }
@@ -381,5 +414,86 @@ mod tests {
         let events = block.dry_run_events(&trigger);
 
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detects_changes_when_tree_dirty() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("Dependencies updated");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "rust-craftsperson",
+        ));
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: " M Cargo.lock\n?? new-patch.txt\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let block = ExecuteMaintain::with_gateways(agent, registry, shell);
+        let trigger = gate_resolution_maintain("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["changes_detected"], true);
+        let files = result.events[0].payload["files_changed"].as_array().unwrap();
+        assert!(files.iter().any(|f| f == "Cargo.lock"), "expected Cargo.lock in {files:?}");
+        assert!(
+            files.iter().any(|f| f == "new-patch.txt"),
+            "expected new-patch.txt in {files:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_no_changes_when_tree_clean() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "rust-craftsperson",
+        ));
+        let shell = FakeShellGateway::success(); // empty stdout
+        let block = ExecuteMaintain::with_gateways(agent, registry, shell);
+        let trigger = gate_resolution_maintain("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["changes_detected"], false);
+        assert!(
+            result.events[0]
+                .payload
+                .get("files_changed")
+                .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
+        );
+    }
+
+    #[tokio::test]
+    async fn tolerates_git_status_failure() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("Dependencies updated");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "rust-craftsperson",
+        ));
+        let shell = FakeShellGateway::failure("fatal: not a git repository");
+        let block = ExecuteMaintain::with_gateways(agent, registry, shell);
+        let trigger = gate_resolution_maintain("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["changes_detected"], false);
     }
 }
