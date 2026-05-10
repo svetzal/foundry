@@ -131,8 +131,12 @@ fn build_execution_prompt(
         "You are executing a correction plan for project '{project}'.\n\n\
          Principle being addressed: {principle}\n\n\
          Plan:\n{plan}\n\n\
-         Execute this plan. Make only the changes described. \
-         Ensure the code compiles and existing tests pass after your changes.{gates_context}"
+         REQUIREMENTS:\n\
+         - The plan above describes mutations that MUST be applied to the source files. Apply them now.\n\
+         - Do NOT skip the plan because quality gates currently pass. Passing gates is necessary, not sufficient — the purpose of this run is to apply the plan, not to re-verify a clean tree.\n\
+         - After applying the plan, the working tree MUST contain modifications to the files named or implied by the plan. If `git status --porcelain` would be empty when you finish, you have not done the job and the run has failed.\n\
+         - Make only the changes the plan describes; do not expand scope.\n\
+         - Once the plan is applied, the following quality gates must still pass:{gates_context}"
     )
 }
 
@@ -367,5 +371,61 @@ mod tests {
         // No error propagated; event still emitted with success from agent
         assert!(result.success);
         assert_eq!(result.events[0].payload["changes_detected"], false);
+    }
+
+    #[test]
+    fn prompt_contains_imperative_requirements() {
+        let gates = serde_json::json!({"cargo test": "pass"});
+        let prompt = super::build_execution_prompt(
+            "my-project",
+            "1. Extract helper\n2. Update callers",
+            "DRY",
+            Some(&gates),
+        );
+
+        // Imperative: plan application is mandatory
+        assert!(
+            prompt.contains("MUST be applied"),
+            "expected imperative phrase 'MUST be applied' in:\n{prompt}"
+        );
+        // Invalidation of "gates already pass" as a stopping condition
+        assert!(
+            prompt.contains("necessary, not sufficient"),
+            "expected invalidation phrase 'necessary, not sufficient' in:\n{prompt}"
+        );
+        // Empty working tree means failure
+        assert!(
+            prompt.contains("git status --porcelain"),
+            "expected 'git status --porcelain' in:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("empty"),
+            "expected 'empty' (empty-tree-means-failure) in:\n{prompt}"
+        );
+        // Core content: principle and plan still present
+        assert!(prompt.contains("DRY"), "expected principle 'DRY' in:\n{prompt}");
+        assert!(prompt.contains("1. Extract helper"), "expected plan content in:\n{prompt}");
+        // Gates section present when gates are provided
+        assert!(
+            prompt.contains("quality gates"),
+            "expected gates section when gates are provided, in:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn prompt_without_gates_still_contains_requirements() {
+        let prompt = super::build_execution_prompt("other-project", "1. Do the thing", "SRP", None);
+
+        assert!(prompt.contains("MUST be applied"), "expected 'MUST be applied' in:\n{prompt}");
+        assert!(
+            prompt.contains("necessary, not sufficient"),
+            "expected 'necessary, not sufficient' in:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("git status --porcelain"),
+            "expected 'git status --porcelain' in:\n{prompt}"
+        );
+        assert!(prompt.contains("SRP"), "expected principle 'SRP' in:\n{prompt}");
+        assert!(prompt.contains("1. Do the thing"), "expected plan content in:\n{prompt}");
     }
 }
