@@ -7,9 +7,7 @@ use foundry_core::payload::MainBranchAuditedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
-
-use super::{AgentBlockSpec, invoke_agent};
+use crate::gateway::AgentGateway;
 
 agent_block_new!(
     /// Attempts to fix a vulnerability on the main branch.
@@ -78,18 +76,14 @@ impl TaskBlock for RemediateVulnerability {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let outcome = invoke_agent(
+            let outcome = super::invoke_coding_agent(
                 &*agent,
-                AgentBlockSpec {
-                    prompt,
-                    working_dir: project_path,
-                    access: AgentAccess::Full,
-                    capability: AgentCapability::Coding,
-                    agent_file,
-                    timeout: entry.timeout(),
-                },
-                &format!("remediate {cve}"),
                 &project,
+                project_path,
+                prompt,
+                agent_file,
+                entry.timeout(),
+                &format!("remediate {cve}"),
             )
             .await;
 

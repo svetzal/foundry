@@ -110,6 +110,7 @@ impl TaskBlock for ExecutePlan {
                 &payload,
                 throttle,
                 "plan execution",
+                None,
             )
             .await)
         })

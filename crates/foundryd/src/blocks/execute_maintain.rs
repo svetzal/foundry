@@ -128,6 +128,7 @@ impl TaskBlock for ExecuteMaintain {
                 &payload,
                 throttle,
                 "maintenance",
+                None,
             )
             .await)
         })

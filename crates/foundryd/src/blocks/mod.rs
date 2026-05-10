@@ -342,8 +342,10 @@ pub(super) fn build_agent_execution_result(
 /// Detect post-execution changes and build an `ExecutionCompleted` result.
 ///
 /// Combines [`detect_post_execution_changes`] and [`build_agent_execution_result`]
-/// into a single call, eliminating the 13-line pattern duplicated by
-/// `ExecutePlan` and `ExecuteMaintain`.
+/// into a single call, eliminating the pattern duplicated by
+/// `ExecutePlan`, `ExecuteMaintain`, and `RetryExecution`.
+///
+/// Pass `retry_count: Some(n)` for the retry flow; `None` for the initial execution.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_execution_outcome(
     shell: &dyn ShellGateway,
@@ -354,6 +356,7 @@ pub(super) async fn build_execution_outcome(
     payload: &serde_json::Value,
     throttle: foundry_core::throttle::Throttle,
     label: &str,
+    retry_count: Option<u64>,
 ) -> foundry_core::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
         detect_post_execution_changes(shell, project_path).await;
@@ -364,7 +367,7 @@ pub(super) async fn build_execution_outcome(
         payload,
         throttle,
         label,
-        None,
+        retry_count,
         changes_detected,
         files_changed,
     )

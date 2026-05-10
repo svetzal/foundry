@@ -108,10 +108,9 @@ impl TaskBlock for RetryExecution {
             )
             .await;
 
-            let (changes_detected, files_changed) =
-                super::detect_post_execution_changes(&*shell, &project_path).await;
-
-            Ok(super::build_agent_execution_result(
+            Ok(super::build_execution_outcome(
+                &*shell,
+                &project_path,
                 &project,
                 workflow,
                 outcome,
@@ -119,9 +118,8 @@ impl TaskBlock for RetryExecution {
                 throttle,
                 &format!("retry {retry_count}"),
                 Some(retry_count),
-                changes_detected,
-                files_changed,
-            ))
+            )
+            .await)
         })
     }
 }
