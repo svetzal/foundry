@@ -226,8 +226,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
+    use foundry_core::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
@@ -262,19 +261,14 @@ mod tests {
     }
 
     fn trigger(project: &str) -> Event {
-        Event::new(
-            EventType::PipelineCheckRequested,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({}),
-        )
+        test_event!(EventType::PipelineCheckRequested, project, {})
     }
 
-    #[test]
-    fn kind_is_observer() {
-        let block = CheckPipeline::new(empty_registry());
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
+    assert_block_meta!(
+        CheckPipeline::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [PipelineCheckRequested],
+    );
 
     #[tokio::test]
     async fn skips_when_no_repo_configured() {

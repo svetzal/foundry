@@ -211,7 +211,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -219,31 +219,14 @@ mod tests {
     use super::super::test_helpers;
     use super::{StrategicAssessor, parse_strategic_assessment};
 
-    #[test]
-    fn kind_is_observer() {
-        let agent = FakeAgentGateway::success();
-        let block = StrategicAssessor::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_iteration_requested() {
-        let agent = FakeAgentGateway::success();
-        let block = StrategicAssessor::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::IterationRequested]);
-    }
+    assert_block_meta!(
+        StrategicAssessor::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [IterationRequested],
+    );
 
     #[tokio::test]
     async fn skips_when_strategic_not_set() {

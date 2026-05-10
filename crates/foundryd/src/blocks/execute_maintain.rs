@@ -8,11 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, ProcessShellGateway, ShellGateway,
-};
+use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::TriggerContext;
 
 /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
 /// and resolves quality gate failures.
@@ -110,35 +108,28 @@ impl TaskBlock for ExecuteMaintain {
 
             let agent_file = resolve_agent_file(&entry.agent);
 
-            let outcome = invoke_agent(
+            let outcome = super::invoke_coding_agent(
                 &*agent,
-                AgentBlockSpec {
-                    prompt,
-                    working_dir: project_path.clone(),
-                    access: AgentAccess::Full,
-                    capability: AgentCapability::Coding,
-                    agent_file,
-                    timeout: entry.timeout(),
-                },
-                "maintain",
                 &project,
+                project_path.clone(),
+                prompt,
+                agent_file,
+                entry.timeout(),
+                "maintain",
             )
             .await;
 
-            let (changes_detected, files_changed) =
-                super::detect_post_execution_changes(&*shell, &project_path).await;
-
-            Ok(super::build_agent_execution_result(
+            Ok(super::build_execution_outcome(
+                &*shell,
+                &project_path,
                 &project,
                 WorkflowType::Maintain,
                 outcome,
                 &payload,
                 throttle,
                 "maintenance",
-                None,
-                changes_detected,
-                files_changed,
-            ))
+            )
+            .await)
         })
     }
 }
@@ -160,7 +151,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -169,59 +160,14 @@ mod tests {
     use super::super::test_helpers;
     use super::ExecuteMaintain;
 
-    fn gate_resolution_maintain(project: &str) -> Event {
-        Event::new(
-            EventType::GateResolutionCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "workflow": "maintain",
-                "gates": [
-                    {"name": "fmt", "command": "cargo fmt --check", "required": true}
-                ],
-            }),
-        )
-    }
-
-    fn gate_resolution_iterate(project: &str) -> Event {
-        Event::new(
-            EventType::GateResolutionCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "workflow": "iterate",
-                "gates": [],
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_mutator() {
-        let agent = FakeAgentGateway::success();
-        let block = ExecuteMaintain::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Mutator);
-    }
-
-    #[test]
-    fn sinks_on_gate_resolution_completed() {
-        let agent = FakeAgentGateway::success();
-        let block = ExecuteMaintain::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::GateResolutionCompleted]);
-    }
+    assert_block_meta!(
+        ExecuteMaintain::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Mutator,
+        sinks_on: [GateResolutionCompleted],
+    );
 
     #[tokio::test]
     async fn skips_iterate_workflow() {
@@ -232,7 +178,11 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gate_resolution_iterate("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "iterate",
+            "gates": [],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -252,7 +202,13 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -279,7 +235,13 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -304,7 +266,13 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         block.execute(&trigger).await.unwrap();
 
@@ -323,7 +291,13 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gate_resolution_maintain("unknown-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "unknown-project", {
+            "project": "unknown-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -342,7 +316,13 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -390,7 +370,13 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let events = block.dry_run_events(&trigger);
 
@@ -409,7 +395,11 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = gate_resolution_iterate("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "iterate",
+            "gates": [],
+        });
 
         let events = block.dry_run_events(&trigger);
 
@@ -435,7 +425,13 @@ mod tests {
             success: true,
         });
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -462,7 +458,13 @@ mod tests {
         ));
         let shell = FakeShellGateway::success(); // empty stdout
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -490,7 +492,13 @@ mod tests {
         ));
         let shell = FakeShellGateway::success(); // empty stdout → no changes
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -511,7 +519,13 @@ mod tests {
         ));
         let shell = FakeShellGateway::failure("fatal: not a git repository");
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = gate_resolution_maintain("my-project");
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [
+                {"name": "fmt", "command": "cargo fmt --check", "required": true}
+            ],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

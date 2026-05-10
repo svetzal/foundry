@@ -240,7 +240,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -249,46 +249,14 @@ mod tests {
     use super::super::test_helpers;
     use super::{AssessProject, parse_assessment};
 
-    fn preflight_passed_event(project: &str) -> Event {
-        Event::new(
-            EventType::PreflightCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "workflow": "iterate",
-                "all_passed": true,
-                "required_passed": true,
-                "results": [],
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        let agent = FakeAgentGateway::success();
-        let block = AssessProject::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_preflight_completed() {
-        let agent = FakeAgentGateway::success();
-        let block = AssessProject::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::PreflightCompleted]);
-    }
+    assert_block_meta!(
+        AssessProject::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [PreflightCompleted],
+    );
 
     #[tokio::test]
     async fn skips_non_iterate_workflow() {
@@ -361,7 +329,13 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = AssessProject::new(agent.clone(), registry);
-        let trigger = preflight_passed_event("my-project");
+        let trigger = test_event!(EventType::PreflightCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "iterate",
+            "all_passed": true,
+            "required_passed": true,
+            "results": [],
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

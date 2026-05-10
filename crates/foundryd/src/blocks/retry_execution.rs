@@ -8,11 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, ProcessShellGateway, ShellGateway,
-};
+use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::TriggerContext;
 
 /// Retries the execution phase with context about which gates failed.
 ///
@@ -99,18 +97,14 @@ impl TaskBlock for RetryExecution {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let outcome = invoke_agent(
+            let outcome = super::invoke_coding_agent(
                 &*agent,
-                AgentBlockSpec {
-                    prompt,
-                    working_dir: project_path.clone(),
-                    access: AgentAccess::Full,
-                    capability: AgentCapability::Coding,
-                    agent_file,
-                    timeout: entry.timeout(),
-                },
-                &format!("retry {retry_count}"),
                 &project,
+                project_path.clone(),
+                prompt,
+                agent_file,
+                entry.timeout(),
+                &format!("retry {retry_count}"),
             )
             .await;
 
@@ -165,7 +159,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -175,44 +169,22 @@ mod tests {
     use super::RetryExecution;
 
     fn retry_event(project: &str, retry_count: u64, workflow: &str) -> Event {
-        Event::new(
-            EventType::RetryRequested,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "workflow": workflow,
-                "retry_count": retry_count,
-                "failure_context": "fmt: formatting error\ntest: 2 tests failed",
-            }),
-        )
+        test_event!(EventType::RetryRequested, project, {
+            "project": project,
+            "workflow": workflow,
+            "retry_count": retry_count,
+            "failure_context": "fmt: formatting error\ntest: 2 tests failed",
+        })
     }
 
-    #[test]
-    fn kind_is_mutator() {
-        let agent = FakeAgentGateway::success();
-        let block = RetryExecution::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Mutator);
-    }
-
-    #[test]
-    fn sinks_on_retry_requested() {
-        let agent = FakeAgentGateway::success();
-        let block = RetryExecution::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::RetryRequested]);
-    }
+    assert_block_meta!(
+        RetryExecution::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Mutator,
+        sinks_on: [RetryRequested],
+    );
 
     #[tokio::test]
     async fn emits_execution_completed_on_success() {
@@ -273,18 +245,15 @@ mod tests {
 
     #[tokio::test]
     async fn project_not_in_registry_returns_failure() {
-        let agent = FakeAgentGateway::success();
         let block = RetryExecution::new(
-            agent,
+            FakeAgentGateway::success(),
             Arc::new(Registry {
                 version: 2,
                 projects: vec![],
             }),
         );
-        let trigger = retry_event("unknown", 1, "maintain");
-
+        let trigger = retry_event("unknown-project", 1, "maintain");
         let result = block.execute(&trigger).await.unwrap();
-
         assert!(!result.success);
         assert!(result.events.is_empty());
     }

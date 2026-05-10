@@ -132,7 +132,7 @@ mod tests {
     use super::ResolveGates;
 
     #[test]
-    fn kind_is_observer() {
+    fn kind_is() {
         let block = ResolveGates::new(Arc::new(Registry {
             version: 2,
             projects: vec![],
@@ -237,17 +237,7 @@ mod tests {
             version: 2,
             projects: vec![],
         }));
-        let trigger = Event::new(
-            EventType::CharterCheckCompleted,
-            "unknown".to_string(),
-            Throttle::Full,
-            serde_json::json!({"project": "unknown", "success": true}),
-        );
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.success);
-        assert!(result.events.is_empty());
+        test_helpers::assert_missing_project_fails(&block, EventType::CharterCheckCompleted).await;
     }
 
     #[tokio::test]

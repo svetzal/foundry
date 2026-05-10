@@ -289,17 +289,11 @@ mod tests {
 
     // -- Metadata tests (no filesystem or git) --
 
-    #[test]
-    fn sinks_on_maintenance_run_started() {
-        let block = ValidateProject::new(make_registry(vec![]));
-        assert_eq!(block.sinks_on(), &[EventType::MaintenanceRunStarted]);
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        let block = ValidateProject::new(make_registry(vec![]));
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
+    assert_block_meta!(
+        ValidateProject::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [MaintenanceRunStarted],
+    );
 
     // -- Self-filter tests --
 

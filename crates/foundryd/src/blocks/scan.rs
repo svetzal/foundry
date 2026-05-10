@@ -90,13 +90,11 @@ impl TaskBlock for ScanDependencies {
 mod tests {
     use std::sync::Arc;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
-
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;
+    use foundry_core::event::EventType;
+    use foundry_core::registry::Registry;
+    use foundry_core::task_block::TaskBlock;
 
     use super::super::test_helpers;
     use super::ScanDependencies;
@@ -108,31 +106,16 @@ mod tests {
         })
     }
 
-    fn scan_trigger(project: &str) -> Event {
-        Event::new(
-            EventType::ScanRequested,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({}),
-        )
-    }
-
-    #[test]
-    fn sinks_on_scan_requested() {
-        let block = ScanDependencies::new(empty_registry());
-        assert_eq!(block.sinks_on(), &[EventType::ScanRequested]);
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        let block = ScanDependencies::new(empty_registry());
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
+    assert_block_meta!(
+        ScanDependencies::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [ScanRequested],
+    );
 
     #[tokio::test]
     async fn fails_when_project_not_in_registry() {
         let block = ScanDependencies::new(empty_registry());
-        let trigger = scan_trigger("unknown-project");
+        let trigger = test_event!(EventType::ScanRequested, "unknown-project", {});
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
         assert!(result.events.is_empty());
@@ -148,7 +131,7 @@ mod tests {
         ));
         let scanner = FakeScannerGateway::clean();
         let block = ScanDependencies::with_gateways(registry, scanner);
-        let trigger = scan_trigger("my-project");
+        let trigger = test_event!(EventType::ScanRequested, "my-project", {});
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -172,7 +155,7 @@ mod tests {
         }];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
         let block = ScanDependencies::with_gateways(registry, scanner);
-        let trigger = scan_trigger("my-project");
+        let trigger = test_event!(EventType::ScanRequested, "my-project", {});
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -208,7 +191,7 @@ mod tests {
         ];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
         let block = ScanDependencies::with_gateways(registry, scanner);
-        let trigger = scan_trigger("my-project");
+        let trigger = test_event!(EventType::ScanRequested, "my-project", {});
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -226,7 +209,7 @@ mod tests {
         ));
         let scanner = FakeScannerGateway::with_error("cargo audit not installed");
         let block = ScanDependencies::with_gateways(registry, scanner);
-        let trigger = scan_trigger("my-project");
+        let trigger = test_event!(EventType::ScanRequested, "my-project", {});
 
         let result = block.execute(&trigger).await.unwrap();
 

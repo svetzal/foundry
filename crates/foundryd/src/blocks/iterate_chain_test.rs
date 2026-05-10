@@ -49,16 +49,7 @@ fn iterate_engine(
 
 #[tokio::test]
 async fn happy_path_iterate_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    // Charter file so CheckCharter passes
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
-    // Gates file
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Shell sequence:
@@ -180,9 +171,7 @@ async fn happy_path_iterate_chain() {
 
 #[tokio::test]
 async fn charter_failure_stops_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    // No CHARTER.md — charter check will fail
-
+    let dir = test_helpers::test_project_dir_no_charter();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
@@ -219,14 +208,7 @@ async fn charter_failure_stops_chain() {
 
 #[tokio::test]
 async fn preflight_failure_stops_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Preflight gate fails
@@ -263,14 +245,7 @@ async fn preflight_failure_stops_chain() {
 
 #[tokio::test]
 async fn triage_rejection_stops_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
@@ -486,14 +461,7 @@ async fn gate_verification_retry_loop() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn iterate_with_maintain_chaining() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Shell sequence:
@@ -630,14 +598,7 @@ async fn iterate_with_maintain_chaining() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
 

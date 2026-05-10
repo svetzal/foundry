@@ -209,7 +209,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
@@ -275,23 +275,11 @@ mod tests {
 
     // -- Metadata tests --
 
-    #[test]
-    fn kind_is_observer() {
-        let block = CleanupBranches::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_project_validation_completed() {
-        let block = CleanupBranches::new(Arc::new(Registry {
-            version: 2,
-            projects: vec![],
-        }));
-        assert_eq!(block.sinks_on(), &[EventType::ProjectValidationCompleted]);
-    }
+    assert_block_meta!(
+        CleanupBranches::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Observer,
+        sinks_on: [ProjectValidationCompleted],
+    );
 
     // -- Self-filter tests --
 

@@ -132,7 +132,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -141,75 +141,30 @@ mod tests {
     use super::super::test_helpers;
     use super::CreatePlan;
 
-    fn triage_accepted_event(project: &str) -> Event {
-        Event::new(
-            EventType::TriageCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "accepted": true,
-                "reason": "violation is significant",
-                "severity": 7,
-                "principle": "DRY",
-                "category": "duplication",
-                "assessment": "Duplicate validation logic.",
-                "audit_name": "fix-duplication",
-                "workflow": "iterate",
-            }),
-        )
-    }
-
-    fn triage_rejected_event(project: &str) -> Event {
-        Event::new(
-            EventType::TriageCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "accepted": false,
-                "reason": "too trivial",
-                "severity": 2,
-                "principle": "unknown",
-                "category": "conventions",
-                "assessment": "",
-                "workflow": "iterate",
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        let agent = FakeAgentGateway::success();
-        let block = CreatePlan::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_triage_completed() {
-        let agent = FakeAgentGateway::success();
-        let block = CreatePlan::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::TriageCompleted]);
-    }
+    assert_block_meta!(
+        CreatePlan::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [TriageCompleted],
+    );
 
     #[tokio::test]
     async fn skips_rejected_triage() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
-        let trigger = triage_rejected_event("my-project");
+        let trigger = test_event!(EventType::TriageCompleted, "my-project", {
+            "project": "my-project",
+            "accepted": false,
+            "reason": "too trivial",
+            "severity": 2,
+            "principle": "unknown",
+            "category": "conventions",
+            "assessment": "",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -227,7 +182,17 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CreatePlan::new(agent.clone(), registry);
-        let trigger = triage_accepted_event("my-project");
+        let trigger = test_event!(EventType::TriageCompleted, "my-project", {
+            "project": "my-project",
+            "accepted": true,
+            "reason": "violation is significant",
+            "severity": 7,
+            "principle": "DRY",
+            "category": "duplication",
+            "assessment": "Duplicate validation logic.",
+            "audit_name": "fix-duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

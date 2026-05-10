@@ -122,6 +122,69 @@ macro_rules! agent_block_new {
     };
 }
 
+/// Build a test `Event` with `Throttle::Full` from an inline JSON literal.
+///
+/// Replaces the 10–15-line per-module trigger factory functions.
+///
+/// # Usage
+/// ```ignore
+/// let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+///     "project": "my-project",
+///     "plan": "1. Extract helper",
+///     "principle": "DRY",
+///     "workflow": "iterate",
+/// });
+/// ```
+#[cfg(test)]
+macro_rules! test_event {
+    ($event_type:expr, $project:expr, { $($json:tt)* }) => {
+        foundry_core::event::Event::new(
+            $event_type,
+            $project.to_string(),
+            foundry_core::throttle::Throttle::Full,
+            serde_json::json!({ $($json)* }),
+        )
+    };
+}
+
+/// Generate `kind_is` and `sinks_on_expected` property tests for a `TaskBlock`.
+///
+/// Invoke at module level inside a `#[cfg(test)] mod tests { ... }` block.
+/// The `$block_expr` is evaluated once per generated test.
+///
+/// # Usage
+/// ```ignore
+/// assert_block_meta!(
+///     ExecutePlan::new(FakeAgentGateway::success(), empty_registry()),
+///     kind: Mutator,
+///     sinks_on: [PlanCompleted],
+/// );
+/// ```
+#[cfg(test)]
+macro_rules! assert_block_meta {
+    (
+        $block_expr:expr,
+        kind: $kind:ident,
+        sinks_on: [$($event:ident),+ $(,)?] $(,)?
+    ) => {
+        #[test]
+        fn kind_is() {
+            assert_eq!(
+                { $block_expr }.kind(),
+                foundry_core::task_block::BlockKind::$kind,
+            );
+        }
+
+        #[test]
+        fn sinks_on_expected() {
+            assert_eq!(
+                { $block_expr }.sinks_on(),
+                &[$(foundry_core::event::EventType::$event),+],
+            );
+        }
+    };
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

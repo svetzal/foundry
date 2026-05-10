@@ -76,6 +76,35 @@ pub(super) async fn invoke_agent(
     outcome
 }
 
+/// Invoke an agent with `Full` access and `Coding` capability.
+///
+/// Convenience wrapper around [`invoke_agent`] for the common pattern used by
+/// execution blocks (`ExecutePlan`, `ExecuteMaintain`, `RemediatePipeline`, `RetryExecution`).
+pub(super) async fn invoke_coding_agent(
+    agent: &dyn AgentGateway,
+    project: &str,
+    working_dir: std::path::PathBuf,
+    prompt: String,
+    agent_file: Option<std::path::PathBuf>,
+    timeout: std::time::Duration,
+    trace_label: &str,
+) -> AgentOutcome {
+    invoke_agent(
+        agent,
+        AgentBlockSpec {
+            prompt,
+            working_dir,
+            access: AgentAccess::Full,
+            capability: AgentCapability::Coding,
+            agent_file,
+            timeout,
+        },
+        trace_label,
+        project,
+    )
+    .await
+}
+
 /// Look up a project in the registry, returning the entry or a not-found failure result.
 ///
 /// Replaces the two-phase pattern of cloning `Option<ProjectEntry>` before `Box::pin`
@@ -308,6 +337,37 @@ pub(super) fn build_agent_execution_result(
         exit_code: None,
         audit_artifacts: vec![],
     }
+}
+
+/// Detect post-execution changes and build an `ExecutionCompleted` result.
+///
+/// Combines [`detect_post_execution_changes`] and [`build_agent_execution_result`]
+/// into a single call, eliminating the 13-line pattern duplicated by
+/// `ExecutePlan` and `ExecuteMaintain`.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn build_execution_outcome(
+    shell: &dyn ShellGateway,
+    project_path: &std::path::Path,
+    project: &str,
+    workflow: foundry_core::workflow::WorkflowType,
+    outcome: AgentOutcome,
+    payload: &serde_json::Value,
+    throttle: foundry_core::throttle::Throttle,
+    label: &str,
+) -> foundry_core::task_block::TaskBlockResult {
+    let (changes_detected, files_changed) =
+        detect_post_execution_changes(shell, project_path).await;
+    build_agent_execution_result(
+        project,
+        workflow,
+        outcome,
+        payload,
+        throttle,
+        label,
+        None,
+        changes_detected,
+        files_changed,
+    )
 }
 
 #[cfg(test)]

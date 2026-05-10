@@ -336,7 +336,7 @@ mod tests {
     // -- Metadata tests --
 
     #[test]
-    fn sinks_on_maintenance_run_completed() {
+    fn sinks_on_expected() {
         let dir = tempfile::tempdir().unwrap();
         let block = GenerateSummary::new(
             make_trace_writer(dir.path()),
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn kind_is_observer() {
+    fn kind_is() {
         let dir = tempfile::tempdir().unwrap();
         let block = GenerateSummary::new(
             make_trace_writer(dir.path()),

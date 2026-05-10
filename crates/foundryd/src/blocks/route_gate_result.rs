@@ -258,7 +258,7 @@ fn build_failure_context(results: &[foundry_core::gates::GateResult]) -> String 
 #[cfg(test)]
 mod tests {
     use foundry_core::event::{Event, EventType};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use super::RouteGateResult;
@@ -293,15 +293,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn kind_is_observer() {
-        assert_eq!(RouteGateResult.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_gate_verification_completed() {
-        assert_eq!(RouteGateResult.sinks_on(), &[EventType::GateVerificationCompleted]);
-    }
+    assert_block_meta!(
+        RouteGateResult,
+        kind: Observer,
+        sinks_on: [GateVerificationCompleted],
+    );
 
     // --- iterate workflow ---
 

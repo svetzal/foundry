@@ -152,6 +152,46 @@ pub fn project_entry_with_agents_md(
     }
 }
 
+/// Create a temporary project directory with standard files for chain tests.
+///
+/// Creates `CHARTER.md` (100 × "a") and `.hone-gates.json` with a single `fmt` gate.
+/// Caller must hold the returned `TempDir` for the test duration.
+pub fn test_project_dir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
+    std::fs::write(
+        dir.path().join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+    )
+    .unwrap();
+    dir
+}
+
+/// Create a temporary project directory without a CHARTER.md (charter check will fail).
+pub fn test_project_dir_no_charter() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+    )
+    .unwrap();
+    dir
+}
+
+/// Assert that a block returns a not-found failure when the trigger project is not in the registry.
+///
+/// Constructs a trigger with event type `event_type` and project `"unknown-project"`,
+/// executes the block, and asserts `!result.success && result.events.is_empty()`.
+pub async fn assert_missing_project_fails(
+    block: &dyn foundry_core::task_block::TaskBlock,
+    event_type: foundry_core::event::EventType,
+) {
+    let trigger = make_trigger(event_type, "unknown-project", serde_json::json!({}));
+    let result = block.execute(&trigger).await.unwrap();
+    assert!(!result.success, "expected failure for missing project");
+    assert!(result.events.is_empty(), "expected no events for missing project");
+}
+
 /// Register the standard iterate-chain blocks into `engine`.
 ///
 /// Registers: `CheckCharter`, `ResolveGates`, `RunPreflightGates`,

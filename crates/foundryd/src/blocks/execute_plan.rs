@@ -8,11 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, ProcessShellGateway, ShellGateway,
-};
+use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::TriggerContext;
 
 /// Applies the correction plan to the project.
 ///
@@ -92,35 +90,28 @@ impl TaskBlock for ExecutePlan {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-            let outcome = invoke_agent(
+            let outcome = super::invoke_coding_agent(
                 &*agent,
-                AgentBlockSpec {
-                    prompt,
-                    working_dir: project_path.clone(),
-                    access: AgentAccess::Full,
-                    capability: AgentCapability::Coding,
-                    agent_file,
-                    timeout: entry.timeout(),
-                },
-                "plan execution",
                 &project,
+                project_path.clone(),
+                prompt,
+                agent_file,
+                entry.timeout(),
+                "plan execution",
             )
             .await;
 
-            let (changes_detected, files_changed) =
-                super::detect_post_execution_changes(&*shell, &project_path).await;
-
-            Ok(super::build_agent_execution_result(
+            Ok(super::build_execution_outcome(
+                &*shell,
+                &project_path,
                 &project,
                 workflow,
                 outcome,
                 &payload,
                 throttle,
                 "plan execution",
-                None,
-                changes_detected,
-                files_changed,
-            ))
+            )
+            .await)
         })
     }
 }
@@ -151,7 +142,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -160,46 +151,14 @@ mod tests {
     use super::super::test_helpers;
     use super::ExecutePlan;
 
-    fn plan_completed_event(project: &str) -> Event {
-        Event::new(
-            EventType::PlanCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "plan": "1. Extract helper\n2. Update callers",
-                "principle": "DRY",
-                "category": "duplication",
-                "workflow": "iterate",
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_mutator() {
-        let agent = FakeAgentGateway::success();
-        let block = ExecutePlan::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Mutator);
-    }
-
-    #[test]
-    fn sinks_on_plan_completed() {
-        let agent = FakeAgentGateway::success();
-        let block = ExecutePlan::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::PlanCompleted]);
-    }
+    assert_block_meta!(
+        ExecutePlan::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Mutator,
+        sinks_on: [PlanCompleted],
+    );
 
     #[tokio::test]
     async fn executes_plan_successfully() {
@@ -218,7 +177,13 @@ mod tests {
             success: true,
         });
         let block = ExecutePlan::with_gateways(agent.clone(), registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -242,7 +207,13 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ExecutePlan::new(agent, registry);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -288,7 +259,13 @@ mod tests {
                 projects: vec![],
             }),
         );
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let events = block.dry_run_events(&trigger);
 
@@ -301,20 +278,14 @@ mod tests {
 
     #[tokio::test]
     async fn project_not_in_registry_returns_failure() {
-        let agent = FakeAgentGateway::success();
         let block = ExecutePlan::new(
-            agent,
+            FakeAgentGateway::success(),
             Arc::new(Registry {
                 version: 2,
                 projects: vec![],
             }),
         );
-        let trigger = plan_completed_event("unknown");
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.success);
-        assert!(result.events.is_empty());
+        test_helpers::assert_missing_project_fails(&block, EventType::PlanCompleted).await;
     }
 
     #[tokio::test]
@@ -333,7 +304,13 @@ mod tests {
             success: true,
         });
         let block = ExecutePlan::with_gateways(agent, registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -354,7 +331,13 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::success(); // empty stdout
         let block = ExecutePlan::with_gateways(agent, registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -380,7 +363,13 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::success(); // empty stdout → no changes
         let block = ExecutePlan::with_gateways(agent, registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -409,7 +398,13 @@ mod tests {
             success: true,
         });
         let block = ExecutePlan::with_gateways(agent, registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -427,7 +422,13 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::failure("fatal: not a git repository");
         let block = ExecutePlan::with_gateways(agent, registry, shell);
-        let trigger = plan_completed_event("my-project");
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "1. Extract helper\n2. Update callers",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

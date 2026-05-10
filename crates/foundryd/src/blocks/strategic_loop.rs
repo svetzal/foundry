@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn kind_is_observer() {
+    fn kind_is() {
         let agent = FakeAgentGateway::success();
         let block = StrategicLoopController::new(agent, empty_registry());
         assert_eq!(block.kind(), BlockKind::Observer);

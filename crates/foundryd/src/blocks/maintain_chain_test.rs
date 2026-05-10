@@ -50,13 +50,7 @@ fn maintain_engine(
 
 #[tokio::test]
 async fn happy_path_maintain_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join(".hone-gates.json"),
-        r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
-    )
-    .unwrap();
-
+    let dir = test_helpers::test_project_dir_no_charter();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // All gates pass

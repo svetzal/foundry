@@ -8,9 +8,7 @@ use foundry_core::payload::PipelineCheckedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
-
-use super::{AgentBlockSpec, invoke_agent};
+use crate::gateway::AgentGateway;
 
 agent_block_new!(
     /// Attempts to fix a failing GitHub Actions pipeline.
@@ -104,18 +102,14 @@ async fn run_remediation(
 
     let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
-    let outcome = invoke_agent(
+    let outcome = super::invoke_coding_agent(
         &*agent,
-        AgentBlockSpec {
-            prompt,
-            working_dir: project_path,
-            access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
-            agent_file,
-            timeout: RemediatePipeline::CLAUDE_TIMEOUT,
-        },
-        "remediate pipeline",
         &project,
+        project_path,
+        prompt,
+        agent_file,
+        RemediatePipeline::CLAUDE_TIMEOUT,
+        "remediate pipeline",
     )
     .await;
 
@@ -134,10 +128,9 @@ async fn run_remediation(
 mod tests {
     use std::sync::Arc;
 
-    use foundry_core::event::{Event, EventType};
+    use foundry_core::event::EventType;
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
+    use foundry_core::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
@@ -151,47 +144,22 @@ mod tests {
         })
     }
 
-    fn failing_trigger(project: &str) -> Event {
-        Event::new(
-            EventType::PipelineChecked,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "passing": false,
-                "conclusion": "failure",
-                "run_id": 99999,
-                "run_name": "CI",
-                "failure_logs": "error: test failed",
-            }),
-        )
-    }
-
-    fn passing_trigger(project: &str) -> Event {
-        Event::new(
-            EventType::PipelineChecked,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "passing": true,
-                "conclusion": "success",
-                "run_id": 12345,
-                "run_name": "CI",
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_mutator() {
-        let agent = FakeAgentGateway::success();
-        let block = RemediatePipeline::new(agent, empty_registry());
-        assert_eq!(block.kind(), BlockKind::Mutator);
-    }
+    assert_block_meta!(
+        RemediatePipeline::new(FakeAgentGateway::success(), Arc::new(Registry { version: 2, projects: vec![] })),
+        kind: Mutator,
+        sinks_on: [PipelineChecked],
+    );
 
     #[tokio::test]
     async fn skips_when_pipeline_passing() {
         let agent = FakeAgentGateway::success();
         let block = RemediatePipeline::new(agent, empty_registry());
-        let t = passing_trigger("my-project");
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": true,
+            "conclusion": "success",
+            "run_id": 12345,
+            "run_name": "CI",
+        });
 
         let result = block.execute(&t).await.unwrap();
         assert!(result.success);
@@ -203,7 +171,13 @@ mod tests {
     async fn fails_when_project_not_in_registry() {
         let agent = FakeAgentGateway::success();
         let block = RemediatePipeline::new(agent, empty_registry());
-        let t = failing_trigger("unknown-project");
+        let t = test_event!(EventType::PipelineChecked, "unknown-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 99999,
+            "run_name": "CI",
+            "failure_logs": "error: test failed",
+        });
 
         let result = block.execute(&t).await.unwrap();
         assert!(!result.success);
@@ -218,7 +192,13 @@ mod tests {
         let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::success_with("Fixed the CI pipeline");
         let block = RemediatePipeline::new(agent, registry);
-        let t = failing_trigger("my-project");
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 99999,
+            "run_name": "CI",
+            "failure_logs": "error: test failed",
+        });
 
         let result = block.execute(&t).await.unwrap();
 
@@ -236,7 +216,13 @@ mod tests {
         let registry = test_helpers::registry_with_entry(entry);
         let agent = FakeAgentGateway::failure("agent exited with code 1");
         let block = RemediatePipeline::new(agent, registry);
-        let t = failing_trigger("my-project");
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 99999,
+            "run_name": "CI",
+            "failure_logs": "error: test failed",
+        });
 
         let result = block.execute(&t).await.unwrap();
 

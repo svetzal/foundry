@@ -115,7 +115,6 @@ mod tests {
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
     use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
 
     use crate::gateway::AgentCapability;
     use crate::gateway::fakes::FakeAgentGateway;
@@ -124,21 +123,11 @@ mod tests {
     use super::RemediateVulnerability;
 
     fn dirty_trigger(project: &str, cve: &str) -> Event {
-        Event::new(
-            EventType::MainBranchAudited,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({ "dirty": true, "cve": cve }),
-        )
+        test_event!(EventType::MainBranchAudited, project, { "dirty": true, "cve": cve })
     }
 
     fn clean_trigger(project: &str) -> Event {
-        Event::new(
-            EventType::MainBranchAudited,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({ "dirty": false, "cve": "CVE-2026-9999" }),
-        )
+        test_event!(EventType::MainBranchAudited, project, { "dirty": false, "cve": "CVE-2026-9999" })
     }
 
     #[tokio::test]

@@ -186,7 +186,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
@@ -224,31 +224,14 @@ mod tests {
         )
     }
 
-    #[test]
-    fn kind_is_observer() {
-        let shell = FakeShellGateway::success();
-        let block = RunVerifyGates::new(
-            shell,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_execution_completed() {
-        let shell = FakeShellGateway::success();
-        let block = RunVerifyGates::new(
-            shell,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::ExecutionCompleted]);
-    }
+    assert_block_meta!(
+        RunVerifyGates::new(
+            FakeShellGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [ExecutionCompleted],
+    );
 
     #[tokio::test]
     async fn passes_when_all_gates_succeed() {

@@ -117,15 +117,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn sinks_on_project_validation_completed() {
-        assert_eq!(RouteProjectWorkflow.sinks_on(), &[EventType::ProjectValidationCompleted]);
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        assert_eq!(RouteProjectWorkflow.kind(), BlockKind::Observer);
-    }
+    assert_block_meta!(
+        RouteProjectWorkflow,
+        kind: Observer,
+        sinks_on: [ProjectValidationCompleted],
+    );
 
     #[tokio::test]
     async fn status_ok_iterate_true_emits_iteration_requested() {

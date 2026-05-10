@@ -163,7 +163,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn kind_is_observer() {
+    fn kind_is() {
         let agent = FakeAgentGateway::success();
         let block = SummarizeResult::new(
             agent,
@@ -210,7 +210,7 @@ mod tests {
                 projects: vec![],
             }),
         );
-        assert_eq!(block.kind(), BlockKind::Observer);
+        assert_eq!(block.kind(), foundry_core::task_block::BlockKind::Observer);
     }
 
     #[test]

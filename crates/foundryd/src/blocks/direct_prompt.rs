@@ -96,20 +96,16 @@ impl TaskBlock for DirectPrompt {
 #[cfg(test)]
 mod tests {
     use foundry_core::event::{Event, EventType};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use super::DirectPrompt;
 
-    #[test]
-    fn kind_is_observer() {
-        assert_eq!(DirectPrompt.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_preflight_completed() {
-        assert_eq!(DirectPrompt.sinks_on(), &[EventType::PreflightCompleted]);
-    }
+    assert_block_meta!(
+        DirectPrompt,
+        kind: Observer,
+        sinks_on: [PreflightCompleted],
+    );
 
     #[tokio::test]
     async fn skips_when_workflow_is_iterate() {

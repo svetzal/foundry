@@ -79,7 +79,7 @@ impl TaskBlock for RouteValidationResult {
 #[cfg(test)]
 mod tests {
     use foundry_core::event::{Event, EventType};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use super::RouteValidationResult;
@@ -105,15 +105,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn kind_is_observer() {
-        assert_eq!(RouteValidationResult.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_preflight_completed() {
-        assert_eq!(RouteValidationResult.sinks_on(), &[EventType::PreflightCompleted]);
-    }
+    assert_block_meta!(
+        RouteValidationResult,
+        kind: Observer,
+        sinks_on: [PreflightCompleted],
+    );
 
     #[tokio::test]
     async fn ignores_iterate_workflow() {

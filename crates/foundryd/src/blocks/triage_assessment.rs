@@ -152,58 +152,22 @@ fn parse_triage(output: &str) -> (bool, String) {
 mod tests {
     use std::sync::Arc;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
-
     use crate::gateway::fakes::FakeAgentGateway;
+    use foundry_core::event::EventType;
+    use foundry_core::registry::Registry;
+    use foundry_core::task_block::TaskBlock;
 
     use super::super::test_helpers;
     use super::{TriageAssessment, parse_triage};
 
-    fn assessment_event(project: &str) -> Event {
-        Event::new(
-            EventType::AssessmentCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "severity": 7,
-                "principle": "DRY",
-                "category": "duplication",
-                "assessment": "Several methods duplicate validation logic.",
-                "audit_name": "fix-duplication",
-                "workflow": "iterate",
-            }),
-        )
-    }
-
-    #[test]
-    fn kind_is_observer() {
-        let agent = FakeAgentGateway::success();
-        let block = TriageAssessment::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_assessment_completed() {
-        let agent = FakeAgentGateway::success();
-        let block = TriageAssessment::new(
-            agent,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::AssessmentCompleted]);
-    }
+    assert_block_meta!(
+        TriageAssessment::new(
+            FakeAgentGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [AssessmentCompleted],
+    );
 
     #[tokio::test]
     async fn accepts_high_severity_assessment() {
@@ -214,7 +178,15 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
-        let trigger = assessment_event("my-project");
+        let trigger = test_event!(EventType::AssessmentCompleted, "my-project", {
+            "project": "my-project",
+            "severity": 7,
+            "principle": "DRY",
+            "category": "duplication",
+            "assessment": "Several methods duplicate validation logic.",
+            "audit_name": "fix-duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -233,7 +205,15 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
-        let trigger = assessment_event("my-project");
+        let trigger = test_event!(EventType::AssessmentCompleted, "my-project", {
+            "project": "my-project",
+            "severity": 7,
+            "principle": "DRY",
+            "category": "duplication",
+            "assessment": "Several methods duplicate validation logic.",
+            "audit_name": "fix-duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -249,7 +229,15 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = TriageAssessment::new(agent, registry);
-        let trigger = assessment_event("my-project");
+        let trigger = test_event!(EventType::AssessmentCompleted, "my-project", {
+            "project": "my-project",
+            "severity": 7,
+            "principle": "DRY",
+            "category": "duplication",
+            "assessment": "Several methods duplicate validation logic.",
+            "audit_name": "fix-duplication",
+            "workflow": "iterate",
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

@@ -181,7 +181,7 @@ mod tests {
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
+    use foundry_core::task_block::TaskBlock;
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
@@ -206,31 +206,14 @@ mod tests {
         )
     }
 
-    #[test]
-    fn kind_is_observer() {
-        let shell = FakeShellGateway::success();
-        let block = RunPreflightGates::new(
-            shell,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.kind(), BlockKind::Observer);
-    }
-
-    #[test]
-    fn sinks_on_gate_resolution_completed() {
-        let shell = FakeShellGateway::success();
-        let block = RunPreflightGates::new(
-            shell,
-            Arc::new(Registry {
-                version: 2,
-                projects: vec![],
-            }),
-        );
-        assert_eq!(block.sinks_on(), &[EventType::GateResolutionCompleted]);
-    }
+    assert_block_meta!(
+        RunPreflightGates::new(
+            FakeShellGateway::success(),
+            Arc::new(Registry { version: 2, projects: vec![] }),
+        ),
+        kind: Observer,
+        sinks_on: [GateResolutionCompleted],
+    );
 
     #[tokio::test]
     async fn skips_preflight_for_maintain_workflow() {
