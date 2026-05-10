@@ -29,6 +29,25 @@ cargo install --path crates/foundryd
 cargo install --path crates/foundry-cli
 ```
 
+On macOS, `install.sh` re-signs both binaries with stable ad-hoc identifiers
+(`com.mojility.foundryd`, `com.mojility.foundry`) after the cargo install
+step. This is required because cargo's default ad-hoc signature uses a
+hash-derived identifier that changes on every rebuild, causing macOS TCC to
+treat each rebuild as a brand-new app and re-prompt for Full Disk Access,
+Documents, Desktop, OneDrive, etc. With a stable identifier, TCC grants
+survive future rebuilds. **Always use `./install.sh` rather than running
+`cargo install` directly on macOS** — invoking cargo bare will reset the
+identifier and re-trigger morning Allow dialogs.
+
+After the first install on a new machine, grant Full Disk Access to
+`~/.cargo/bin/foundryd` in System Settings → Privacy & Security → Full Disk
+Access. This is a one-time grant that persists across rebuilds because the
+identifier is stable.
+
+Note: the Homebrew distribution (`brew install foundry`) does **not** yet
+apply the stable-identifier re-sign — see `release.yml` and the homebrew
+formula for a future fix.
+
 Re-run after making changes to pick up the latest version.
 
 Start the daemon:
