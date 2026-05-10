@@ -129,7 +129,7 @@ fn build_preflight_result(
     chain: ChainContext,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let results = super::gate_results_to_json(&run_result.results);
+    let results = run_result.results.clone();
     let success = run_result.required_passed;
     super::build_gate_result_from_payload(
         project,

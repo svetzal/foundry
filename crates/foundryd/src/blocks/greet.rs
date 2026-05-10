@@ -49,6 +49,60 @@ impl TaskBlock for ComposeGreeting {
 /// simulated success at `dry_run`.
 pub struct DeliverGreeting;
 
+impl TaskBlock for DeliverGreeting {
+    task_block_meta! {
+        name: "Deliver Greeting",
+        kind: Mutator,
+        sinks_on: [GreetingComposed],
+    }
+
+    fn execute(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let greeting = parse_payload!(trigger, GreetingComposedPayload).greeting;
+
+        tracing::info!(%greeting, "delivering greeting");
+
+        Box::pin(async move {
+            Ok(TaskBlockResult::success(
+                format!("Delivered: {greeting}"),
+                vec![Event::new(
+                    EventType::GreetingDelivered,
+                    project,
+                    throttle,
+                    Event::serialize_payload(&GreetingDeliveredPayload {
+                        delivered: true,
+                        greeting,
+                        dry_run: None,
+                    })?,
+                )],
+            ))
+        })
+    }
+
+    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+        let greeting = trigger
+            .parse_payload::<GreetingComposedPayload>()
+            .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
+        let payload = Event::serialize_payload(&GreetingDeliveredPayload {
+            delivered: true,
+            greeting,
+            dry_run: Some(true),
+        })
+        .expect("GreetingDeliveredPayload is infallibly serializable");
+        vec![Event::new(
+            EventType::GreetingDelivered,
+            trigger.project.clone(),
+            trigger.throttle,
+            payload,
+        )]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use foundry_core::event::{Event, EventType};
@@ -149,59 +203,5 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["greeting"], "(no greeting)");
         assert_eq!(events[0].payload["dry_run"], true);
-    }
-}
-
-impl TaskBlock for DeliverGreeting {
-    task_block_meta! {
-        name: "Deliver Greeting",
-        kind: Mutator,
-        sinks_on: [GreetingComposed],
-    }
-
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let greeting = parse_payload!(trigger, GreetingComposedPayload).greeting;
-
-        tracing::info!(%greeting, "delivering greeting");
-
-        Box::pin(async move {
-            Ok(TaskBlockResult::success(
-                format!("Delivered: {greeting}"),
-                vec![Event::new(
-                    EventType::GreetingDelivered,
-                    project,
-                    throttle,
-                    Event::serialize_payload(&GreetingDeliveredPayload {
-                        delivered: true,
-                        greeting,
-                        dry_run: None,
-                    })?,
-                )],
-            ))
-        })
-    }
-
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let greeting = trigger
-            .parse_payload::<GreetingComposedPayload>()
-            .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
-        let payload = Event::serialize_payload(&GreetingDeliveredPayload {
-            delivered: true,
-            greeting,
-            dry_run: Some(true),
-        })
-        .expect("GreetingDeliveredPayload is infallibly serializable");
-        vec![Event::new(
-            EventType::GreetingDelivered,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
     }
 }

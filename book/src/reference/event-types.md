@@ -191,7 +191,9 @@ Every event carries these common fields:
 | `workflow` | string | Workflow that triggered the preflight |
 | `all_passed` | bool | Whether every gate passed |
 | `required_passed` | bool | Whether all required gates passed |
-| `results` | array | Per-gate results (name, passed, required, output, exit_code) |
+| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?) |
+
+Each `results[]` entry includes an optional `duration_ms` field (unsigned integer) recording how long the gate command took in milliseconds. This field is absent when loading results from events persisted before timing instrumentation was added.
 
 **`gate_verification_completed` payload**
 
@@ -202,7 +204,9 @@ Every event carries these common fields:
 | `all_passed` | bool | Whether every gate passed |
 | `required_passed` | bool | Whether all required gates passed |
 | `retry_count` | number | Current retry count (0 on first attempt) |
-| `results` | array | Per-gate results |
+| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?) |
+
+Each `results[]` entry includes an optional `duration_ms` field (unsigned integer) recording how long the gate command took in milliseconds. This field is absent when loading results from events persisted before timing instrumentation was added.
 
 **`retry_requested` payload**
 

@@ -106,26 +106,6 @@ impl LoopContext {
 }
 
 // ---------------------------------------------------------------------------
-// Gate result — shared across preflight and verification payloads
-// ---------------------------------------------------------------------------
-
-/// A single gate's execution result, nested in `results` arrays.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateResultEntry {
-    pub name: String,
-    pub passed: bool,
-    pub required: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-}
-
-// ---------------------------------------------------------------------------
 // Greet workflow
 // ---------------------------------------------------------------------------
 
@@ -310,7 +290,7 @@ pub struct PreflightCompletedPayload {
     pub workflow: String,
     pub all_passed: bool,
     pub required_passed: bool,
-    pub results: Vec<serde_json::Value>,
+    pub results: Vec<crate::gates::GateResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<bool>,
     #[serde(flatten)]
@@ -341,7 +321,7 @@ pub struct GateVerificationCompletedPayload {
     pub workflow: String,
     pub all_passed: bool,
     pub required_passed: bool,
-    pub results: Vec<serde_json::Value>,
+    pub results: Vec<crate::gates::GateResult>,
     pub retry_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_output: Option<String>,
@@ -903,7 +883,7 @@ mod tests {
         assert_eq!(json["dirty"], true);
         let p2: MainBranchAuditedPayload = serde_json::from_value(json).unwrap();
         assert_eq!(p2.project, "my-project");
-        assert_eq!(p2.dirty, true);
+        assert!(p2.dirty);
     }
 
     #[test]

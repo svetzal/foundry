@@ -92,6 +92,10 @@ pub struct GateResult {
     pub required: bool,
     pub output: String,
     pub exit_code: i32,
+    /// Wall-clock time the gate command took, in milliseconds.
+    /// Absent for results loaded from older persisted events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// Aggregated result of running all gates.
@@ -134,10 +138,33 @@ mod tests {
             required: true,
             output: "ok".to_string(),
             exit_code: 0,
+            duration_ms: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         let restored: GateResult = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.name, "clippy");
+        assert!(restored.passed);
+        assert!(restored.duration_ms.is_none());
+        // duration_ms is omitted from JSON when None
+        assert!(!json.contains("duration_ms"));
+    }
+
+    #[test]
+    fn gate_result_round_trips_with_duration() {
+        let result = GateResult {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            passed: true,
+            required: true,
+            output: String::new(),
+            exit_code: 0,
+            duration_ms: Some(1234),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"duration_ms\":1234"), "duration_ms must appear in JSON");
+        let restored: GateResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.duration_ms, Some(1234));
+        assert_eq!(restored.name, "test");
         assert!(restored.passed);
     }
 
@@ -154,6 +181,7 @@ mod tests {
                     required: true,
                     output: String::new(),
                     exit_code: 0,
+                    duration_ms: None,
                 },
                 GateResult {
                     name: "lint".to_string(),
@@ -162,6 +190,7 @@ mod tests {
                     required: false,
                     output: "warnings".to_string(),
                     exit_code: 1,
+                    duration_ms: None,
                 },
             ],
         };

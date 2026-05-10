@@ -324,10 +324,7 @@ fn emit_payload_result(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use foundry_core::event::EventType;
-    use foundry_core::registry::Registry;
 
     use crate::gateway::fakes::{FakeScannerGateway, FakeShellGateway};
     use crate::scanner::Vulnerability;

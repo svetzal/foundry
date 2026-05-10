@@ -8,7 +8,6 @@ use std::sync::Arc;
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::throttle::Throttle;
-use tempfile;
 
 use crate::engine::Engine;
 use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};

@@ -19,8 +19,10 @@ pub async fn run_gates(
     for gate in gates {
         tracing::info!(gate = %gate.name, command = %gate.command, "running gate");
 
+        let start = std::time::Instant::now();
         let cmd_result =
             shell.run(working_dir, "sh", &["-c", &gate.command], None, gate.timeout).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         let (passed, output, exit_code) = match cmd_result {
             Ok(r) => {
@@ -31,7 +33,7 @@ pub async fn run_gates(
             Err(e) => (false, format!("gate execution error: {e}"), -1),
         };
 
-        tracing::info!(gate = %gate.name, passed, exit_code, "gate completed");
+        tracing::info!(gate = %gate.name, passed, exit_code, duration_ms, "gate completed");
 
         results.push(GateResult {
             name: gate.name.clone(),
@@ -40,6 +42,7 @@ pub async fn run_gates(
             required: gate.required,
             output,
             exit_code,
+            duration_ms: Some(duration_ms),
         });
     }
 
@@ -100,6 +103,8 @@ mod tests {
         assert_eq!(result.results.len(), 2);
         assert!(result.results[0].passed);
         assert!(result.results[1].passed);
+        assert!(result.results[0].duration_ms.is_some(), "duration_ms must be recorded");
+        assert!(result.results[1].duration_ms.is_some(), "duration_ms must be recorded");
     }
 
     #[tokio::test]

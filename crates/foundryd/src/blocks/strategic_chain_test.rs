@@ -17,6 +17,7 @@ use crate::engine::Engine;
 use crate::gateway::{AgentGateway, ShellGateway};
 
 /// Build the full strategic loop engine with inner iterate chain.
+#[allow(clippy::needless_pass_by_value)]
 fn strategic_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,

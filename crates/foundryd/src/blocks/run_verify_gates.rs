@@ -121,7 +121,7 @@ fn build_verification_result(
         "gate verification completed"
     );
 
-    let results = super::gate_results_to_json(&run_result.results);
+    let results = run_result.results.clone();
     let execution_output = payload
         .get("execution_output")
         .and_then(serde_json::Value::as_str)

@@ -1,7 +1,7 @@
 //! Integration tests for the prompt-driven workflow formation.
 //!
 //! Verifies:
-//! - Happy path: PromptExecutionRequested → charter check → gates → preflight
+//! - Happy path: `PromptExecutionRequested` → charter check → gates → preflight
 //!   → direct prompt → execute → verify → completion → summarise → commit
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
@@ -17,6 +17,7 @@ use crate::engine::Engine;
 use crate::gateway::fakes::FakeAgentGateway;
 use crate::gateway::{AgentGateway, ShellGateway};
 
+#[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,

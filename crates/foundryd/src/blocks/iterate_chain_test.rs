@@ -1,10 +1,10 @@
 //! Integration tests for the full native iterate workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: IterationRequested -> CharterCheckCompleted -> GateResolutionCompleted
-//!   -> PreflightCompleted -> AssessmentCompleted -> TriageCompleted -> PlanCompleted
-//!   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectIterationCompleted
-//!   -> SummarizeCompleted
+//! - Happy path: `IterationRequested` -> `CharterCheckCompleted` -> `GateResolutionCompleted`
+//!   -> `PreflightCompleted` -> `AssessmentCompleted` -> `TriageCompleted` -> `PlanCompleted`
+//!   -> `ExecutionCompleted` -> `GateVerificationCompleted` -> `ProjectIterationCompleted`
+//!   -> `SummarizeCompleted`
 //! - Charter failure stops chain
 //! - Preflight failure stops chain
 //! - Triage rejection stops chain
@@ -303,6 +303,7 @@ async fn triage_rejection_stops_chain() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn gate_verification_retry_loop() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();

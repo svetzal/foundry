@@ -112,13 +112,6 @@ pub(super) fn emit_result(
     ))
 }
 
-/// Serialize a slice of gate results to JSON values using the `Serialize` derive.
-pub(super) fn gate_results_to_json(
-    results: &[foundry_core::gates::GateResult],
-) -> Vec<serde_json::Value> {
-    results.iter().filter_map(|r| serde_json::to_value(r).ok()).collect()
-}
-
 /// Build a `TaskBlockResult` for an agent-driven remediation, handling the
 /// response match, tracing, payload serialization, and summary formatting.
 ///

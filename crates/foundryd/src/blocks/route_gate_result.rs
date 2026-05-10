@@ -159,7 +159,7 @@ fn handle_retry_or_exhaustion(
     workflow: WorkflowType,
     completion_event_type: foundry_core::event::EventType,
     retry_count: u64,
-    results: &[serde_json::Value],
+    results: &[foundry_core::gates::GateResult],
     execution_output: Option<String>,
     context: foundry_core::payload::LoopContext,
     throttle: foundry_core::throttle::Throttle,
@@ -235,17 +235,15 @@ fn handle_retry_or_exhaustion(
 }
 
 /// Build a summary of gate failures from the gate results slice.
-fn build_failure_context(results: &[serde_json::Value]) -> String {
+fn build_failure_context(results: &[foundry_core::gates::GateResult]) -> String {
     let failures: Vec<String> = results
         .iter()
-        .filter(|r| !r.get("passed").and_then(serde_json::Value::as_bool).unwrap_or(true))
+        .filter(|r| !r.passed)
         .map(|r| {
-            let name = r.get("name").and_then(serde_json::Value::as_str).unwrap_or("unknown");
-            let output = r.get("output").and_then(serde_json::Value::as_str).unwrap_or("");
-            if output.is_empty() {
-                name.to_string()
+            if r.output.is_empty() {
+                r.name.clone()
             } else {
-                format!("{name}: {output}")
+                format!("{}: {}", r.name, r.output)
             }
         })
         .collect();
