@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-05-09
+
+### Fixed
+
+- **Iterate workflow silent no-op** — closes the failure mode where the iterate agent could exit successfully without applying its plan (302 of 382 traces over the prior 30-day window). Two complementary changes:
+  - **Execute prompt strengthened** (`crates/foundryd/src/blocks/execute_plan.rs`): `build_execution_prompt` now uses imperative requirements that explicitly invalidate "gates already pass" as a stopping condition and require the working tree to contain modifications when the plan is complete. Maintain prompt unchanged.
+  - **Block-level no-op detection** (`crates/foundryd/src/blocks/mod.rs`, `run_verify_gates.rs`): when the iterate workflow's agent exits cleanly but `changes_detected == false` (or only auxiliary paths like `.claude/worktrees/` were touched), the execution result is overridden to `success: false` with summary `"agent did not modify any files (silent no-op)"`. The downstream chain treats this as a real failure: `RunVerifyGates` short-circuits with a synthetic `agent_execution` gate, which routes through retry up to `--max-retries`, eventually surfacing `ProjectIterationCompleted { success: false }` if retries don't recover. Maintain workflow is explicitly unaffected — `changes_detected: false` remains a successful maintenance run when deps are already current.
+
 ## [0.14.0] - 2026-05-09
 
 ### Added
