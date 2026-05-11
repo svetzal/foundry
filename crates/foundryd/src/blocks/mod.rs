@@ -205,16 +205,78 @@ pub(super) fn build_agent_remediation_result(
     }
 }
 
-/// Run `git status --porcelain` in `project_path` and return whether the
-/// working tree has uncommitted changes, along with the list of affected paths.
+/// Capture the project's HEAD SHA before agent invocation so post-execution
+/// change detection can compare against a stable pre-execution snapshot.
 ///
-/// On any error (non-git directory, missing git binary, etc.) logs a warning
-/// and returns `(false, vec![])` so that the calling block can still emit its
-/// event normally.
+/// Callers should invoke this immediately before running the agent. Returns
+/// `None` for non-git directories, repositories with no commits yet, or any
+/// other failure — in which case [`detect_post_execution_changes`] falls back
+/// to working-tree-only detection via `git status --porcelain`.
+pub(super) async fn capture_pre_execution_sha(
+    shell: &dyn ShellGateway,
+    project_path: &Path,
+) -> Option<String> {
+    match shell.run(project_path, "git", &["rev-parse", "HEAD"], None, None).await {
+        Ok(r) if r.success => {
+            let sha = r.stdout.trim().to_string();
+            if sha.is_empty() { None } else { Some(sha) }
+        }
+        Ok(r) => {
+            tracing::warn!(stderr = %r.stderr, "git rev-parse HEAD failed; pre-execution sha unavailable");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "git rev-parse HEAD errored; pre-execution sha unavailable");
+            None
+        }
+    }
+}
+
+/// Detect whether agent execution produced changes in `project_path`, returning
+/// `(changes_detected, files_changed)`.
+///
+/// When `pre_execution_sha` is provided (the normal path), runs
+/// `git diff --name-only <sha>` which captures **both committed and
+/// uncommitted** changes since the agent started. This is the right signal
+/// because agents (especially Claude Code) commonly commit their work, which
+/// would leave `git status --porcelain` empty even when substantial changes
+/// have landed in HEAD.
+///
+/// On `git diff` failure (e.g. the pre-SHA was orphaned by a force-push) or
+/// when no `pre_execution_sha` is available, falls back to
+/// `git status --porcelain` (working-tree-only detection).
+///
+/// On total failure (non-git directory, missing git binary, etc.) logs a
+/// warning and returns `(false, vec![])` so the calling block can still emit
+/// its event normally.
 pub(super) async fn detect_post_execution_changes(
     shell: &dyn ShellGateway,
     project_path: &Path,
+    pre_execution_sha: Option<&str>,
 ) -> (bool, Vec<String>) {
+    if let Some(sha) = pre_execution_sha {
+        match shell.run(project_path, "git", &["diff", "--name-only", sha], None, None).await {
+            Ok(r) if r.success => {
+                let files: Vec<String> =
+                    r.stdout.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+                return (!files.is_empty(), files);
+            }
+            Ok(r) => {
+                tracing::warn!(
+                    stderr = %r.stderr,
+                    pre_sha = %sha,
+                    "git diff against pre-execution sha failed; falling back to porcelain"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    pre_sha = %sha,
+                    "git diff against pre-execution sha errored; falling back to porcelain"
+                );
+            }
+        }
+    }
     match shell.run(project_path, "git", &["status", "--porcelain"], None, None).await {
         Ok(r) if r.success => {
             // Porcelain v1 format: XY<space><path>. The first 3 bytes (XY + space)
@@ -345,7 +407,10 @@ pub(super) fn build_agent_execution_result(
 /// into a single call, eliminating the pattern duplicated by
 /// `ExecutePlan`, `ExecuteMaintain`, and `RetryExecution`.
 ///
-/// Pass `retry_count: Some(n)` for the retry flow; `None` for the initial execution.
+/// `pre_execution_sha` is the HEAD SHA captured immediately before agent
+/// invocation (via [`capture_pre_execution_sha`]); pass `None` only when no
+/// snapshot was taken. Pass `retry_count: Some(n)` for the retry flow; `None`
+/// for the initial execution.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_execution_outcome(
     shell: &dyn ShellGateway,
@@ -357,9 +422,10 @@ pub(super) async fn build_execution_outcome(
     throttle: foundry_core::throttle::Throttle,
     label: &str,
     retry_count: Option<u64>,
+    pre_execution_sha: Option<String>,
 ) -> foundry_core::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
-        detect_post_execution_changes(shell, project_path).await;
+        detect_post_execution_changes(shell, project_path, pre_execution_sha.as_deref()).await;
     build_agent_execution_result(
         project,
         workflow,
@@ -375,12 +441,19 @@ pub(super) async fn build_execution_outcome(
 
 #[cfg(test)]
 mod mod_tests {
+    use std::path::Path;
+
     use foundry_core::throttle::Throttle;
     use foundry_core::workflow::WorkflowType;
 
     use crate::gateway::AgentOutcome;
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
 
-    use super::{build_agent_execution_result, is_auxiliary_path};
+    use super::{
+        build_agent_execution_result, build_execution_outcome, capture_pre_execution_sha,
+        detect_post_execution_changes, is_auxiliary_path,
+    };
 
     fn trigger_payload() -> serde_json::Value {
         serde_json::json!({ "project": "p", "workflow": "iterate" })
@@ -500,6 +573,167 @@ mod mod_tests {
 
         assert!(!result.success, "all-auxiliary file list must trigger failure override");
         assert!(result.summary.contains("silent no-op"));
+    }
+
+    // --- capture_pre_execution_sha ---
+
+    #[tokio::test]
+    async fn capture_pre_execution_sha_returns_trimmed_sha_on_success() {
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "abc123def456\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let sha = capture_pre_execution_sha(&*shell, Path::new("/tmp")).await;
+        assert_eq!(sha.as_deref(), Some("abc123def456"));
+
+        let invs = shell.invocations();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].command, "git");
+        assert_eq!(invs[0].args, vec!["rev-parse", "HEAD"]);
+    }
+
+    #[tokio::test]
+    async fn capture_pre_execution_sha_returns_none_on_empty_stdout() {
+        let shell = FakeShellGateway::success();
+        let sha = capture_pre_execution_sha(&*shell, Path::new("/tmp")).await;
+        assert!(sha.is_none(), "empty stdout must yield None (not Some(\"\"))");
+    }
+
+    #[tokio::test]
+    async fn capture_pre_execution_sha_returns_none_on_failure() {
+        let shell = FakeShellGateway::failure("fatal: not a git repository");
+        let sha = capture_pre_execution_sha(&*shell, Path::new("/tmp")).await;
+        assert!(sha.is_none());
+    }
+
+    // --- detect_post_execution_changes: pre-SHA aware ---
+
+    #[tokio::test]
+    async fn detect_with_pre_sha_uses_git_diff_and_returns_committed_files() {
+        // This reproduces the production regression: the agent committed its work,
+        // leaving a clean working tree. `git status --porcelain` returns empty, but
+        // `git diff --name-only <pre_sha>` correctly lists the committed paths.
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "src/lib.rs\nCargo.toml\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let (changed, files) =
+            detect_post_execution_changes(&*shell, Path::new("/tmp"), Some("abc123")).await;
+
+        assert!(changed, "diff returning paths must report changes_detected=true");
+        assert_eq!(files, vec!["src/lib.rs".to_string(), "Cargo.toml".to_string()]);
+
+        let invs = shell.invocations();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].command, "git");
+        assert_eq!(invs[0].args, vec!["diff", "--name-only", "abc123"]);
+    }
+
+    #[tokio::test]
+    async fn detect_with_pre_sha_empty_diff_reports_no_changes() {
+        let shell = FakeShellGateway::success();
+        let (changed, files) =
+            detect_post_execution_changes(&*shell, Path::new("/tmp"), Some("abc123")).await;
+        assert!(!changed);
+        assert!(files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detect_with_pre_sha_falls_back_to_porcelain_on_diff_error() {
+        // git diff may fail if pre_sha is unknown (e.g. force-pushed). Fall back to
+        // working-tree-only detection so we still produce a useful signal.
+        let shell = FakeShellGateway::sequence(vec![
+            // git diff --name-only <sha> — fails (bad revision)
+            CommandResult {
+                stdout: String::new(),
+                stderr: "fatal: bad revision 'abc123'".to_string(),
+                exit_code: 128,
+                success: false,
+            },
+            // git status --porcelain — succeeds, shows uncommitted change
+            CommandResult {
+                stdout: "M  src/main.rs\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let (changed, files) =
+            detect_post_execution_changes(&*shell, Path::new("/tmp"), Some("abc123")).await;
+        assert!(changed);
+        assert_eq!(files, vec!["src/main.rs".to_string()]);
+
+        let invs = shell.invocations();
+        assert_eq!(invs.len(), 2);
+        assert_eq!(invs[0].args, vec!["diff", "--name-only", "abc123"]);
+        assert_eq!(invs[1].args, vec!["status", "--porcelain"]);
+    }
+
+    #[tokio::test]
+    async fn detect_with_none_pre_sha_uses_porcelain_directly() {
+        // When pre-sha capture earlier returned None, skip the diff attempt entirely
+        // and use porcelain (preserves legacy behaviour for non-git contexts).
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "M  src/foo.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let (changed, files) =
+            detect_post_execution_changes(&*shell, Path::new("/tmp"), None).await;
+        assert!(changed);
+        assert_eq!(files, vec!["src/foo.rs".to_string()]);
+
+        let invs = shell.invocations();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].args, vec!["status", "--porcelain"]);
+    }
+
+    // --- build_execution_outcome: regression test for the production bug ---
+
+    #[tokio::test]
+    async fn build_execution_outcome_with_committed_changes_succeeds() {
+        // Reproduces 2026-05-10 production bug: agent runs iterate, applies the plan,
+        // commits and pushes, leaving the working tree clean. Pre-fix the detector
+        // saw an empty `git status --porcelain` and mis-flagged this as a silent
+        // no-op. Post-fix `git diff --name-only <pre_sha>` finds the committed
+        // changes and the run succeeds.
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let result = build_execution_outcome(
+            &*shell,
+            Path::new("/tmp"),
+            "proj",
+            WorkflowType::Iterate,
+            AgentOutcome::Success {
+                stdout: "done; commit pushed to origin/main".to_string(),
+            },
+            &trigger_payload(),
+            Throttle::Full,
+            "plan execution",
+            None,
+            Some("abc123".to_string()),
+        )
+        .await;
+
+        assert!(
+            result.success,
+            "iterate with committed changes must succeed, not be flagged silent no-op (got summary: {})",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("silent no-op"),
+            "must not be flagged silent no-op when files changed since pre_sha"
+        );
+        assert_eq!(result.events[0].payload["changes_detected"], true);
     }
 }
 

@@ -108,6 +108,10 @@ impl TaskBlock for ExecuteMaintain {
 
             let agent_file = resolve_agent_file(&entry.agent);
 
+            // Capture HEAD before the agent runs so post-execution change
+            // detection can compare against a stable snapshot.
+            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
+
             let outcome = super::invoke_coding_agent(
                 &*agent,
                 &project,
@@ -129,6 +133,7 @@ impl TaskBlock for ExecuteMaintain {
                 throttle,
                 "maintenance",
                 None,
+                pre_sha,
             )
             .await)
         })
@@ -419,12 +424,21 @@ mod tests {
             dir.path().to_str().unwrap(),
             "rust-craftsperson",
         ));
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: " M Cargo.lock\n?? new-patch.txt\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
+        // Shell sequence: rev-parse HEAD → sha; git diff --name-only <sha> → files
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "Cargo.lock\nnew-patch.txt\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",

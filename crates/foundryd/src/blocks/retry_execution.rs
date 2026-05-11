@@ -97,6 +97,10 @@ impl TaskBlock for RetryExecution {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
+            // Capture HEAD before the agent runs so post-execution change
+            // detection can compare against a stable snapshot.
+            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
+
             let outcome = super::invoke_coding_agent(
                 &*agent,
                 &project,
@@ -118,6 +122,7 @@ impl TaskBlock for RetryExecution {
                 throttle,
                 &format!("retry {retry_count}"),
                 Some(retry_count),
+                pre_sha,
             )
             .await)
         })
@@ -322,12 +327,21 @@ mod tests {
         let agent = FakeAgentGateway::success_with("Fixed formatting");
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: " M src/main.rs\n?? fix.patch\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
+        // Shell sequence: rev-parse HEAD → sha; git diff --name-only <sha> → files
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "src/main.rs\nfix.patch\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
         let block = RetryExecution::with_gateways(agent, registry, shell);
         let trigger = retry_event("my-project", 1, "maintain");
 

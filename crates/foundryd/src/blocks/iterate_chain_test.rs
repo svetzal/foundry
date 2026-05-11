@@ -54,8 +54,9 @@ async fn happy_path_iterate_chain() {
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Shell sequence:
     // 1. RunPreflightGates — gate command passes (empty stdout)
-    // 2. ExecutePlan — git status returns changes (so iterate override does not fire)
-    // 3. RunVerifyGates — gate command passes (empty stdout)
+    // 2. ExecutePlan — `git rev-parse HEAD` before agent (pre-execution sha capture)
+    // 3. ExecutePlan — `git diff --name-only <sha>` after agent (returns changed files)
+    // 4. RunVerifyGates — gate command passes (empty stdout)
     let shell = FakeShellGateway::sequence(vec![
         // Preflight gate — pass
         CommandResult {
@@ -64,9 +65,16 @@ async fn happy_path_iterate_chain() {
             exit_code: 0,
             success: true,
         },
-        // git status after ExecutePlan — non-empty to indicate real changes
+        // git rev-parse HEAD before ExecutePlan agent — returns sha
         CommandResult {
-            stdout: "M  src/lib.rs\n".to_string(),
+            stdout: "abc123\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git diff --name-only after ExecutePlan agent — non-empty to indicate real changes
+        CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -318,10 +326,12 @@ async fn gate_verification_retry_loop() {
 
     // Shell sequence:
     // 1. Preflight gate — pass
-    // 2. git status after ExecutePlan — changes present (prevents silent no-op override)
-    // 3. Verify gate after ExecutePlan — FAIL (triggers retry)
-    // 4. git status after RetryExecution — changes present
-    // 5. Verify gate after RetryExecution — PASS (retry succeeds)
+    // 2. ExecutePlan: git rev-parse HEAD (pre-sha)
+    // 3. ExecutePlan: git diff --name-only <sha> — changes present (prevents silent no-op override)
+    // 4. Verify gate after ExecutePlan — FAIL (triggers retry)
+    // 5. RetryExecution: git rev-parse HEAD (pre-sha)
+    // 6. RetryExecution: git diff --name-only <sha> — changes present
+    // 7. Verify gate after RetryExecution — PASS (retry succeeds)
     let shell = FakeShellGateway::sequence(vec![
         // Preflight — pass
         CommandResult {
@@ -330,9 +340,16 @@ async fn gate_verification_retry_loop() {
             exit_code: 0,
             success: true,
         },
-        // git status after ExecutePlan — has real changes
+        // ExecutePlan: rev-parse HEAD
         CommandResult {
-            stdout: "M  src/lib.rs\n".to_string(),
+            stdout: "abc123\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // ExecutePlan: git diff --name-only — has real changes
+        CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -344,9 +361,16 @@ async fn gate_verification_retry_loop() {
             exit_code: 1,
             success: false,
         },
-        // git status after RetryExecution — has real changes
+        // RetryExecution: rev-parse HEAD
         CommandResult {
-            stdout: "M  src/lib.rs\n".to_string(),
+            stdout: "def456\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // RetryExecution: git diff --name-only — has real changes
+        CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -466,35 +490,56 @@ async fn iterate_with_maintain_chaining() {
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     // Shell sequence:
     // 1. Preflight gate — pass
-    // 2. git status after ExecutePlan — changes present (prevents silent no-op override)
-    // 3. Verify gate (iterate) — pass
-    // 4. git status after ExecuteMaintain — clean tree (maintain does not override)
-    // 5. Verify gate (maintain) — pass
+    // 2. ExecutePlan: rev-parse HEAD
+    // 3. ExecutePlan: git diff --name-only <sha> — changes present (prevents silent no-op override)
+    // 4. Verify gate (iterate) — pass
+    // 5. ExecuteMaintain: rev-parse HEAD
+    // 6. ExecuteMaintain: git diff --name-only <sha> — empty (maintain does not override)
+    // 7. Verify gate (maintain) — pass
     let shell = FakeShellGateway::sequence(vec![
+        // Preflight gate
         CommandResult {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
         },
+        // ExecutePlan: rev-parse HEAD
         CommandResult {
-            stdout: "M  src/lib.rs\n".to_string(),
+            stdout: "abc123\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
         },
+        // ExecutePlan: git diff --name-only — changes
+        CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // Verify gate (iterate)
         CommandResult {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
         },
+        // ExecuteMaintain: rev-parse HEAD
+        CommandResult {
+            stdout: "def456\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // ExecuteMaintain: git diff --name-only — clean (maintain does not override)
         CommandResult {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
         },
+        // Verify gate (maintain)
         CommandResult {
             stdout: String::new(),
             stderr: String::new(),
@@ -604,8 +649,9 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
 
     // All shell calls return success with empty stdout.
     // - Call 1: RunPreflightGates (cargo fmt --check passes)
-    // - Calls 2–5: detect_post_execution_changes after each of the 4 agent runs
-    //   (git status --porcelain returns empty → no changes → silent no-op override)
+    // - For each of the 4 agent runs (execute + 3 retries): two shell calls —
+    //   `git rev-parse HEAD` (returns empty → pre_sha = None) then
+    //   `git status --porcelain` (returns empty → no changes → silent no-op override).
     // RunVerifyGates short-circuits on upstream failure and makes no shell calls.
     let shell = FakeShellGateway::success();
 

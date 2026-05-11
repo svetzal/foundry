@@ -90,6 +90,11 @@ impl TaskBlock for ExecutePlan {
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
+            // Capture HEAD before the agent runs so post-execution change
+            // detection can compare against a stable snapshot — agents that
+            // commit their work would otherwise leave a clean working tree.
+            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
+
             let outcome = super::invoke_coding_agent(
                 &*agent,
                 &project,
@@ -111,6 +116,7 @@ impl TaskBlock for ExecutePlan {
                 throttle,
                 "plan execution",
                 None,
+                pre_sha,
             )
             .await)
         })
@@ -298,12 +304,23 @@ mod tests {
         let agent = FakeAgentGateway::success_with("Changes applied");
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: " M src/lib.rs\n?? new.txt\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
+        // Shell sequence:
+        // 1. `git rev-parse HEAD` (pre-execution sha capture) → returns sha
+        // 2. `git diff --name-only <sha>` (post-execution detection) → returns files
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "src/lib.rs\nnew.txt\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
         let block = ExecutePlan::with_gateways(agent, registry, shell);
         let trigger = test_event!(EventType::PlanCompleted, "my-project", {
             "project": "my-project",
@@ -391,13 +408,23 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        // git status returns only a .claude/worktrees/ path
-        let shell = FakeShellGateway::always(CommandResult {
-            stdout: "M  .claude/worktrees/abc/session.jsonl\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
+        // Shell sequence:
+        // 1. `git rev-parse HEAD` → sha
+        // 2. `git diff --name-only <sha>` → only a .claude/worktrees/ path
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: ".claude/worktrees/abc/session.jsonl\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
         let block = ExecutePlan::with_gateways(agent, registry, shell);
         let trigger = test_event!(EventType::PlanCompleted, "my-project", {
             "project": "my-project",

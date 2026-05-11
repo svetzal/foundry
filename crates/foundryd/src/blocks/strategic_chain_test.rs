@@ -71,9 +71,9 @@ fn strategic_iteration_requested() -> Event {
     )
 }
 
-/// Build a shell for a single inner iterate cycle: preflight gate pass → git status with
-/// real changes → verify gate pass.  All three shell calls return `success: true`; the
-/// middle one returns a non-empty stdout so the silent no-op override does not fire.
+/// Build a shell for a single inner iterate cycle:
+/// preflight gate pass → rev-parse HEAD → git diff with real changes → verify gate pass.
+/// The diff returns a non-empty stdout so the silent no-op override does not fire.
 fn single_iterate_shell() -> Arc<dyn ShellGateway> {
     FakeShellGateway::sequence(vec![
         // Preflight gate command → pass
@@ -83,9 +83,16 @@ fn single_iterate_shell() -> Arc<dyn ShellGateway> {
             exit_code: 0,
             success: true,
         },
-        // git status after ExecutePlan → has real changes (prevents silent no-op override)
+        // ExecutePlan: git rev-parse HEAD → sha
         CommandResult {
-            stdout: "M  src/lib.rs\n".to_string(),
+            stdout: "abc123\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // ExecutePlan: git diff --name-only <sha> → has real changes
+        CommandResult {
+            stdout: "src/lib.rs\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
