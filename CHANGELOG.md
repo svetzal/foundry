@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-11
+
 ### Added
 
 - **`correctionNeeded` flag in `PlanCompleted`** (`foundry-core`, `foundryd`): the plan
