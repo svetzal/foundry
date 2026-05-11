@@ -134,6 +134,9 @@ impl TaskBlock for ExecuteMaintain {
                 "maintenance",
                 None,
                 pre_sha,
+                // Maintain is never the iterate workflow, so correction_needed is
+                // irrelevant — the clean-tree override only fires for WorkflowType::Iterate.
+                true,
             )
             .await)
         })

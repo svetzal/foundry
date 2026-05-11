@@ -86,6 +86,9 @@ impl TaskBlock for DirectPrompt {
                     category: String::new(),
                     assessment: String::new(),
                     workflow: WorkflowType::Prompt.to_string(),
+                    // Direct prompt always implies real work is intended.
+                    correction_needed: true,
+                    correction_reason: String::new(),
                     chain,
                 },
             )

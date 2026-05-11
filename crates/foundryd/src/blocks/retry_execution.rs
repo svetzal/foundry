@@ -123,6 +123,9 @@ impl TaskBlock for RetryExecution {
                 &format!("retry {retry_count}"),
                 Some(retry_count),
                 pre_sha,
+                // Retry only fires when the initial execution was detected as a silent
+                // no-op (or a genuine failure), so correction is always required here.
+                true,
             )
             .await)
         })

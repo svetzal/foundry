@@ -85,6 +85,19 @@ access to produce a step-by-step correction plan. The plan is concrete —
 it names exact files and functions — minimal, and testable. Gate definitions
 are forwarded so the execution phase knows what must pass.
 
+The plan agent is also asked to emit a machine-readable JSON block at the
+end of its response declaring whether correction is actually needed:
+
+```json
+{ "correctionNeeded": true, "reason": "<one sentence>" }
+```
+
+Setting `correctionNeeded` to `false` signals that the agent examined the
+codebase and found the original assessment inaccurate — the codebase already
+satisfies the principle and no changes are warranted. This becomes a
+legitimate no-op (see §7). The flag defaults to `true` on any parse failure
+(fail-closed).
+
 ### 7. Execution
 
 `Execute Plan` is the only Mutator in the assessment-to-execution pipeline.
@@ -94,6 +107,18 @@ and applies the changes.
 
 Under `audit_only` or `dry_run` throttle, this block returns a simulated
 success without modifying any files.
+
+**Legitimate no-ops** — When `correctionNeeded` is `false` in the
+`PlanCompleted` payload, a clean working tree after execution is treated as a
+success rather than a flake. The downstream gate verification runs normally
+and, assuming gates pass, the iteration completes successfully. This mirrors
+hone's busy-work-containment semantics: an agent that correctly concludes
+"nothing to do" should not be penalised with retries.
+
+**Silent no-op guard** — When `correctionNeeded` is `true` (the default), an
+agent that exits successfully but makes no meaningful file changes is
+overridden to `success: false`, triggering the retry loop. This prevents
+agents that silently skip their work from consuming a passing iteration slot.
 
 ### 8. Gate Verification
 
@@ -242,3 +267,5 @@ use a fixed 120-second timeout for their lightweight Quick calls.
 | `assessment` | Assessment through plan creation | Detailed assessment text |
 | `retry_count` | Execution through gate routing | Current retry attempt (0-based) |
 | `failure_context` | Retry requested | Gate output from failed verification |
+| `correction_needed` | Plan completed through execution | `false` when plan agent concluded no changes are warranted; defaults to `true` |
+| `correction_reason` | Plan completed through execution | One-sentence explanation when `correction_needed` is `false` |

@@ -117,6 +117,7 @@ impl TaskBlock for ExecutePlan {
                 "plan execution",
                 None,
                 pre_sha,
+                plan_payload.correction_needed,
             )
             .await)
         })
@@ -387,6 +388,7 @@ mod tests {
             "principle": "DRY",
             "category": "duplication",
             "workflow": "iterate",
+            "correction_needed": true,
         });
 
         let result = block.execute(&trigger).await.unwrap();
@@ -397,6 +399,39 @@ mod tests {
             "expected 'silent no-op' in summary, got: {}",
             result.summary
         );
+    }
+
+    #[tokio::test]
+    async fn iterate_clean_tree_no_correction_needed_succeeds() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("Reviewed; no changes needed.");
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success(); // empty stdout → no changes
+        let block = ExecutePlan::with_gateways(agent, registry, shell);
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "No changes needed.",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+            "correction_needed": false,
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(
+            result.success,
+            "expected success for legitimate no-op (correction_needed=false)"
+        );
+        assert!(
+            result.summary.contains("no correction needed"),
+            "expected 'no correction needed' in summary, got: {}",
+            result.summary
+        );
+        assert_eq!(result.events[0].payload["success"], true);
     }
 
     #[tokio::test]

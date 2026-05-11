@@ -679,9 +679,10 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             exit_code: 0,
             success: true,
         },
-        // CreatePlan
+        // CreatePlan — includes correctionNeeded: true so clean tree triggers retry
         AgentResponse {
-            stdout: "1. Extract shared helper\n2. Update callers".to_string(),
+            stdout: "1. Extract shared helper\n2. Update callers\n\n\
+                     ```json\n{ \"correctionNeeded\": true, \"reason\": \"Duplicate found.\" }\n```".to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -750,5 +751,156 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
     assert!(
         !event_types.contains(&"summarize_completed"),
         "should NOT summarize when iteration fails"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn legitimate_no_op_iterate_succeeds_without_retry() {
+    // When the plan agent concludes no correction is needed (correctionNeeded: false),
+    // a clean working tree after ExecutePlan is a legitimate no-op — the run should
+    // succeed and no retry should be triggered.
+    let dir = test_helpers::test_project_dir();
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+
+    // Shell sequence:
+    // 1. RunPreflightGates — gate command passes
+    // 2. ExecutePlan — git rev-parse HEAD (pre-execution sha capture) → sha
+    // 3. ExecutePlan — git diff --name-only <sha> → empty (no file changes)
+    // 4. RunVerifyGates — but since ExecutePlan succeeds (legitimate no-op),
+    //    run_verify_gates runs but no agent_execution synthetic gate fires
+    let shell = FakeShellGateway::sequence(vec![
+        // Preflight gate — pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git rev-parse HEAD before ExecutePlan agent
+        CommandResult {
+            stdout: "abc123\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // git diff --name-only after ExecutePlan agent — empty (no file changes)
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // Verify gate — pass
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
+
+    // Agent sequence: assess, name, triage, plan (correctionNeeded: false), execute, summarize
+    let agent = FakeAgentGateway::sequence(vec![
+        // AssessProject — assessment
+        AgentResponse {
+            stdout: r#"{"severity": 3, "principle": "DRY", "category": "duplication", "assessment": "Minor duplication."}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // AssessProject — name
+        AgentResponse {
+            stdout: "fix-duplication".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // TriageAssessment — accepted
+        AgentResponse {
+            stdout: r#"{"accepted": true, "reason": "severity warrants investigation"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // CreatePlan — correctionNeeded: false (agent examined codebase and found no real violation)
+        AgentResponse {
+            stdout: "I examined the codebase and the assessment is inaccurate — the codebase \
+                     already satisfies this principle.\n\n\
+                     ```json\n{ \"correctionNeeded\": false, \"reason\": \"Codebase already satisfies DRY; assessment was overstated.\" }\n```".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // ExecutePlan — exits 0 with empty output (makes no file changes, which is expected)
+        AgentResponse {
+            stdout: "Reviewed; no changes needed.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // SummarizeResult — emitted because the run succeeded
+        AgentResponse {
+            stdout: "HEADLINE: No correction needed\nSUMMARY: Assessment was overstated; codebase already satisfies the principle.".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
+
+    let engine = iterate_engine(shell, agent, registry);
+    let result = engine.process(iteration_requested_event(false)).await;
+
+    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+    // ExecutionCompleted must be present with success=true
+    let execution_completed = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ExecutionCompleted)
+        .expect("execution_completed must be present");
+    assert_eq!(
+        execution_completed.payload["success"], true,
+        "legitimate no-op: execution_completed must be success=true"
+    );
+
+    // GateVerificationCompleted — no synthetic agent_execution gate (since execution succeeded)
+    let gate_verification = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::GateVerificationCompleted)
+        .expect("gate_verification_completed must be present");
+    let empty = vec![];
+    let gate_results = gate_verification.payload["results"].as_array().unwrap_or(&empty);
+    let has_agent_execution_gate = gate_results
+        .iter()
+        .any(|r| r.get("name").and_then(|v| v.as_str()) == Some("agent_execution"));
+    assert!(
+        !has_agent_execution_gate,
+        "should NOT have a synthetic agent_execution gate when execution succeeded"
+    );
+
+    // ProjectIterationCompleted must be success=true
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .expect("project_iteration_completed must be present");
+    assert_eq!(
+        completion.payload["success"], true,
+        "iterate chain must succeed for legitimate no-op"
+    );
+
+    // No retry — legitimate no-op does not need retrying
+    assert!(
+        !event_types.contains(&"retry_requested"),
+        "should NOT emit retry_requested for legitimate no-op"
+    );
+
+    // SummarizeCompleted — emitted on success
+    assert!(
+        event_types.contains(&"summarize_completed"),
+        "should emit summarize_completed for legitimate no-op success"
     );
 }

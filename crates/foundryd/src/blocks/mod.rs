@@ -318,7 +318,9 @@ fn only_auxiliary_changes(files: &[String]) -> bool {
 ///
 /// For the `Iterate` workflow only: if the agent exits 0 but produces no
 /// meaningful working-tree changes, the result is overridden to `success: false`
-/// with a "silent no-op" summary.  The `Maintain` workflow is unaffected.
+/// with a "silent no-op" summary — unless `correction_needed` is `false`, in
+/// which case a clean tree is a legitimate no-op (plan agent said no work needed)
+/// and the result remains `success: true`.  The `Maintain` workflow is unaffected.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_agent_execution_result(
     project: &str,
@@ -330,6 +332,7 @@ pub(super) fn build_agent_execution_result(
     retry_count: Option<u64>,
     changes_detected: bool,
     files_changed: Vec<String>,
+    correction_needed: bool,
 ) -> TaskBlockResult {
     let (raw_output, mut success, mut summary, execution_output) = match outcome {
         AgentOutcome::Success { stdout } => {
@@ -353,20 +356,29 @@ pub(super) fn build_agent_execution_result(
         }
     };
 
-    // For iterate only: an agent that exits 0 but makes no meaningful changes is
-    // a silent no-op — treat it as a failure so the retry loop can fire.
+    // For iterate only: a clean (or all-auxiliary) working tree after agent
+    // execution is either a silent flake or a legitimate no-op, depending on
+    // what the plan agent told us.
     if workflow == WorkflowType::Iterate
         && success
         && (!changes_detected || only_auxiliary_changes(&files_changed))
     {
-        tracing::info!(
-            project = %project,
-            changes_detected = changes_detected,
-            files_changed = ?files_changed,
-            "iterate agent produced no meaningful changes — overriding to failure"
-        );
-        success = false;
-        summary = "agent did not modify any files (silent no-op)".to_string();
+        if correction_needed {
+            tracing::info!(
+                project = %project,
+                changes_detected = changes_detected,
+                files_changed = ?files_changed,
+                "iterate agent produced no meaningful changes — overriding to failure"
+            );
+            success = false;
+            summary = "agent did not modify any files (silent no-op)".to_string();
+        } else {
+            tracing::info!(
+                project = %project,
+                "iterate plan concluded no correction needed; clean tree is a legitimate no-op"
+            );
+            summary = "no correction needed — codebase satisfies assessed principle".to_string();
+        }
     }
 
     tracing::info!(project = %project, success = success, "{success_label} completed");
@@ -411,6 +423,11 @@ pub(super) fn build_agent_execution_result(
 /// invocation (via [`capture_pre_execution_sha`]); pass `None` only when no
 /// snapshot was taken. Pass `retry_count: Some(n)` for the retry flow; `None`
 /// for the initial execution.
+///
+/// `correction_needed` is forwarded from `PlanCompletedPayload` and controls
+/// whether a clean working tree is treated as a flake (`true`) or a legitimate
+/// no-op (`false`). Pass `true` for callers where the plan always implies work
+/// is required (retry, maintain).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_execution_outcome(
     shell: &dyn ShellGateway,
@@ -423,6 +440,7 @@ pub(super) async fn build_execution_outcome(
     label: &str,
     retry_count: Option<u64>,
     pre_execution_sha: Option<String>,
+    correction_needed: bool,
 ) -> foundry_core::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
         detect_post_execution_changes(shell, project_path, pre_execution_sha.as_deref()).await;
@@ -436,6 +454,7 @@ pub(super) async fn build_execution_outcome(
         retry_count,
         changes_detected,
         files_changed,
+        correction_needed,
     )
 }
 
@@ -490,6 +509,7 @@ mod mod_tests {
             None,
             false, // changes_detected = false
             vec![],
+            true, // correction_needed = true → treat clean tree as flake
         );
 
         assert!(!result.success, "expected failure but got success");
@@ -508,6 +528,34 @@ mod mod_tests {
         );
     }
 
+    // --- iterate: clean tree, correction_needed=false → legitimate no-op remains success ---
+
+    #[test]
+    fn iterate_clean_tree_no_correction_needed_remains_success() {
+        let result = build_agent_execution_result(
+            "proj",
+            WorkflowType::Iterate,
+            AgentOutcome::Success {
+                stdout: "Reviewed; no changes needed.".to_string(),
+            },
+            &trigger_payload(),
+            Throttle::Full,
+            "plan execution",
+            None,
+            false, // changes_detected = false
+            vec![],
+            false, // correction_needed = false → legitimate no-op
+        );
+
+        assert!(result.success, "expected success for legitimate no-op");
+        assert!(
+            result.summary.contains("no correction needed"),
+            "expected 'no correction needed' in summary, got: {}",
+            result.summary
+        );
+        assert_eq!(result.events[0].payload["success"], true);
+    }
+
     // --- iterate: real changes → success unchanged ---
 
     #[test]
@@ -524,6 +572,7 @@ mod mod_tests {
             None,
             true,
             vec!["src/lib.rs".to_string()],
+            true,
         );
 
         assert!(result.success, "expected success but got failure");
@@ -547,6 +596,7 @@ mod mod_tests {
             None,
             false, // clean tree
             vec![],
+            true, // correction_needed irrelevant for maintain
         );
 
         assert!(result.success, "maintain workflow must NOT override to failure on clean tree");
@@ -569,6 +619,7 @@ mod mod_tests {
             None,
             true, // changes_detected=true but only aux files
             vec![".claude/worktrees/abc/foo".to_string()],
+            true, // correction_needed = true → aux-only still overrides to failure
         );
 
         assert!(!result.success, "all-auxiliary file list must trigger failure override");
@@ -721,6 +772,7 @@ mod mod_tests {
             "plan execution",
             None,
             Some("abc123".to_string()),
+            true, // correction_needed = true
         )
         .await;
 

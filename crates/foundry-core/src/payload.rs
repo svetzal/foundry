@@ -469,6 +469,10 @@ fn default_iterate_workflow() -> String {
     "iterate".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Payload for `AssessmentCompleted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssessmentCompletedPayload {
@@ -510,6 +514,21 @@ pub struct PlanCompletedPayload {
     #[serde(default)]
     pub assessment: String,
     pub workflow: String,
+    /// Whether the plan agent concluded that a code correction is actually needed.
+    ///
+    /// `true` (default) means the agent produced a plan and believes changes must
+    /// be applied.  `false` means the agent examined the codebase and determined
+    /// that the assessed violation does not in fact require correction — the
+    /// assessment was overstated or has already been addressed.
+    ///
+    /// When `false`, a subsequent clean working tree after `ExecutePlan` is treated
+    /// as a legitimate no-op (success) rather than a silent flake (failure).
+    #[serde(default = "default_true")]
+    pub correction_needed: bool,
+    /// One-sentence reason provided by the plan agent when `correction_needed` is
+    /// `false`.  Empty string when `correction_needed` is `true`.
+    #[serde(default)]
+    pub correction_reason: String,
     #[serde(flatten)]
     pub chain: ChainContext,
 }

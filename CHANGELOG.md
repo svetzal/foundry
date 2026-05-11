@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`correctionNeeded` flag in `PlanCompleted`** (`foundry-core`, `foundryd`): the plan
+  agent now emits a machine-readable fenced JSON block at the end of its response
+  declaring `{ "correctionNeeded": true|false, "reason": "..." }`.  When `false`, a
+  clean working tree after `ExecutePlan` is treated as a **legitimate no-op** (success)
+  rather than an agent flake (failure → retry).  This mirrors hone's busy-work-containment
+  semantics: an agent that correctly concludes "nothing to do" is no longer penalised
+  with up to 4 redundant retries.
+  - `PlanCompletedPayload` gains two new serde-default fields: `correction_needed: bool`
+    (defaults to `true`) and `correction_reason: String`.
+  - `build_agent_execution_result` and `build_execution_outcome` in `mod.rs` accept a
+    `correction_needed: bool` parameter; the clean-tree override branches on it.
+  - `RetryExecution` and `ExecuteMaintain` always pass `true` (correction is required
+    when retrying or maintaining).
+  - Parse is fail-closed: any output without a valid boolean `correctionNeeded` field
+    → `correction_needed = true`.
+
 ## [0.14.2] - 2026-05-10
 
 ### Fixed

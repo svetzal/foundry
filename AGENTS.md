@@ -93,7 +93,7 @@ Rules:
 
 | Command | Purpose |
 |---------|---------|
-| `foundry iterate <project>` | AI-assisted quality improvement cycle |
+| `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
 | `foundry run` | Full maintenance across registered projects |

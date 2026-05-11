@@ -70,7 +70,16 @@ impl TaskBlock for CreatePlan {
                  - Specific (name exact files and functions where possible)\n\
                  - Minimal (only changes needed to address this violation)\n\
                  - Testable (describe how to verify the step succeeded)\n\n\
-                 Output the plan as a numbered list of concrete steps."
+                 Output the plan as a numbered list of concrete steps.\n\n\
+                 At the very end of your response, after the plan, output a fenced JSON block \
+                 (``` json ... ```) containing exactly:\n\
+                 ```json\n\
+                 {{ \"correctionNeeded\": true, \"reason\": \"<one sentence>\" }}\n\
+                 ```\n\
+                 Set `correctionNeeded` to `false` ONLY if you examined the codebase and \
+                 concluded the assessment is inaccurate — the codebase already satisfies \
+                 the principle and no changes are warranted. In that case set `reason` to a \
+                 brief explanation. Otherwise leave it `true`."
             );
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
@@ -96,7 +105,14 @@ impl TaskBlock for CreatePlan {
                     Err(result) => return Ok(result),
                 };
 
-            tracing::info!(project = %project, success = success, "plan created");
+            let (correction_needed, correction_reason) = parse_correction_needed(&plan);
+
+            tracing::info!(
+                project = %project,
+                success = success,
+                correction_needed = correction_needed,
+                "plan created"
+            );
 
             let chain = ChainContext::extract_from(&payload);
             let event_payload = Event::serialize_payload(&PlanCompletedPayload {
@@ -106,6 +122,8 @@ impl TaskBlock for CreatePlan {
                 category: category.to_string(),
                 assessment: assessment.to_string(),
                 workflow: WorkflowType::Iterate.to_string(),
+                correction_needed,
+                correction_reason,
                 chain,
             })?;
 
@@ -126,6 +144,65 @@ impl TaskBlock for CreatePlan {
     }
 }
 
+/// Parse the `correctionNeeded` flag from the plan agent's output.
+///
+/// The agent is asked to append a fenced JSON block at the end of its response:
+/// ` ```json\n{ "correctionNeeded": true|false, "reason": "..." }\n``` `
+///
+/// This function splits the output on fence markers and tries every JSON candidate
+/// in order.  For each candidate it attempts to deserialise as a JSON object and
+/// checks for a boolean `correctionNeeded` field.
+///
+/// **Fail-closed**: any parse miss (missing field, wrong type, malformed JSON,
+/// no fence at all) returns `(true, <explanation>)` so that the downstream
+/// override logic treats the run as needing real work.
+fn parse_correction_needed(output: &str) -> (bool, String) {
+    // Walk every JSON-looking segment extracted from the output.
+    // We deliberately try all candidates (not just the first fenced block) in
+    // case the agent embeds reasoning prose alongside the terminal JSON block.
+    let candidates: Vec<String> = {
+        let mut acc = Vec::new();
+        // Collect content inside fenced blocks (```...```)
+        let mut remaining = output;
+        while let Some(open) = remaining.find("```") {
+            let after_open = &remaining[open + 3..];
+            // Skip optional language identifier on the same line as the opening fence
+            let content_start = after_open.find('\n').map_or(0, |n| n + 1);
+            let content = &after_open[content_start..];
+            if let Some(close) = content.find("```") {
+                acc.push(content[..close].trim().to_string());
+                remaining = &content[close + 3..];
+            } else {
+                break;
+            }
+        }
+        // Also try extracting the outermost {...} object from the whole string
+        // (handles bare JSON without fences)
+        if let Some(start) = output.find('{') {
+            if let Some(end) = output.rfind('}') {
+                acc.push(output[start..=end].to_string());
+            }
+        }
+        acc
+    };
+
+    for candidate in candidates {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            if let Some(serde_json::Value::Bool(b)) = v.get("correctionNeeded") {
+                let reason =
+                    v.get("reason").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                return (*b, reason);
+            }
+        }
+    }
+
+    (
+        true,
+        "no machine-readable correctionNeeded flag in plan output — assuming correction needed"
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -139,7 +216,7 @@ mod tests {
     use crate::gateway::{AgentAccess, AgentCapability};
 
     use super::super::test_helpers;
-    use super::CreatePlan;
+    use super::{CreatePlan, parse_correction_needed};
 
     assert_block_meta!(
         CreatePlan::new(
@@ -177,7 +254,8 @@ mod tests {
     async fn creates_plan_for_accepted_triage() {
         let dir = tempfile::tempdir().unwrap();
         let agent = FakeAgentGateway::success_with(
-            "1. Extract shared validation into a helper function\n2. Update callers\n3. Add tests",
+            "1. Extract shared validation into a helper function\n2. Update callers\n3. Add tests\n\n\
+             ```json\n{ \"correctionNeeded\": true, \"reason\": \"Duplicate validation found in three locations.\" }\n```",
         );
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
@@ -201,6 +279,7 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::PlanCompleted);
         assert!(result.events[0].payload["plan"].as_str().unwrap().contains("Extract"));
         assert_eq!(result.events[0].payload["principle"], "DRY");
+        assert_eq!(result.events[0].payload["correction_needed"], true);
 
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
@@ -237,5 +316,98 @@ mod tests {
 
         assert_eq!(result.events[0].payload["audit_name"], "fix-srp");
         assert_eq!(result.events[0].payload["actions"]["maintain"], true);
+    }
+
+    // --- parse_correction_needed unit tests ---
+
+    #[test]
+    fn well_formed_fenced_block_correction_needed_true() {
+        let output = "1. Do step one\n2. Do step two\n\n\
+                      ```json\n{ \"correctionNeeded\": true, \"reason\": \"Changes required.\" }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(needed);
+        assert_eq!(reason, "Changes required.");
+    }
+
+    #[test]
+    fn well_formed_fenced_block_correction_needed_false() {
+        let output = "The codebase already satisfies the principle.\n\n\
+                      ```json\n{ \"correctionNeeded\": false, \"reason\": \"Already clean.\" }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(!needed);
+        assert_eq!(reason, "Already clean.");
+    }
+
+    #[test]
+    fn block_embedded_in_prose() {
+        let output = "Step 1: refactor.\nStep 2: test.\n\n\
+                      Some closing remarks.\n\
+                      ```json\n{ \"correctionNeeded\": true, \"reason\": \"Refactor needed.\" }\n```\n\
+                      End of plan.";
+        let (needed, _) = parse_correction_needed(output);
+        assert!(needed);
+    }
+
+    #[test]
+    fn bare_object_without_fence() {
+        let output =
+            "Here is my plan. { \"correctionNeeded\": false, \"reason\": \"No work needed.\" }";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(!needed);
+        assert_eq!(reason, "No work needed.");
+    }
+
+    #[test]
+    fn missing_correction_needed_field_returns_true() {
+        let output = "```json\n{ \"reason\": \"something\" }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(needed);
+        assert!(
+            reason.contains("no machine-readable"),
+            "expected fail-closed message, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn malformed_json_returns_true() {
+        let output = "```json\n{ correctionNeeded: true }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(needed);
+        assert!(
+            reason.contains("no machine-readable"),
+            "expected fail-closed message, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn non_boolean_correction_needed_returns_true() {
+        let output = "```json\n{ \"correctionNeeded\": \"yes\" }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(needed);
+        assert!(
+            reason.contains("no machine-readable"),
+            "expected fail-closed message, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn two_json_blocks_only_second_has_correction_needed() {
+        let output = "```json\n{ \"severity\": 7 }\n```\n\
+                      Some prose.\n\
+                      ```json\n{ \"correctionNeeded\": false, \"reason\": \"Second block wins.\" }\n```";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(!needed);
+        assert_eq!(reason, "Second block wins.");
+    }
+
+    #[test]
+    fn no_json_at_all_returns_true() {
+        let output = "1. Extract helper\n2. Update callers\n3. Add tests";
+        let (needed, reason) = parse_correction_needed(output);
+        assert!(needed);
+        assert!(
+            reason.contains("no machine-readable"),
+            "expected fail-closed message, got: {reason}"
+        );
     }
 }
