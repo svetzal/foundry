@@ -161,3 +161,146 @@ pub trait TaskBlock: Send + Sync {
         vec![]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::event::EventType;
+    use crate::throttle::Throttle;
+
+    struct StubObserver;
+    impl TaskBlock for StubObserver {
+        fn name(&self) -> &'static str {
+            "StubObserver"
+        }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+        fn sinks_on(&self) -> &[EventType] {
+            &[]
+        }
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>> {
+            Box::pin(async { Ok(TaskBlockResult::success("ok", vec![])) })
+        }
+    }
+
+    struct StubMutator;
+    impl TaskBlock for StubMutator {
+        fn name(&self) -> &'static str {
+            "StubMutator"
+        }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Mutator
+        }
+        fn sinks_on(&self) -> &[EventType] {
+            &[]
+        }
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>> {
+            Box::pin(async { Ok(TaskBlockResult::success("ok", vec![])) })
+        }
+    }
+
+    fn make_event() -> Event {
+        Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn retry_policy_default_has_no_retries() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 0);
+        assert_eq!(policy.backoff, Duration::from_secs(0));
+    }
+
+    #[test]
+    fn observer_should_emit_under_all_throttle_levels() {
+        let block = StubObserver;
+        assert!(block.should_emit(Throttle::Full));
+        assert!(block.should_emit(Throttle::AuditOnly));
+        assert!(block.should_emit(Throttle::DryRun));
+    }
+
+    #[test]
+    fn mutator_should_emit_only_under_full_throttle() {
+        let block = StubMutator;
+        assert!(block.should_emit(Throttle::Full));
+        assert!(!block.should_emit(Throttle::AuditOnly));
+        assert!(!block.should_emit(Throttle::DryRun));
+    }
+
+    #[test]
+    fn observer_should_execute_under_all_throttle_levels() {
+        let block = StubObserver;
+        assert!(block.should_execute(Throttle::Full));
+        assert!(block.should_execute(Throttle::AuditOnly));
+        assert!(block.should_execute(Throttle::DryRun));
+    }
+
+    #[test]
+    fn mutator_should_not_execute_in_dry_run() {
+        let block = StubMutator;
+        assert!(block.should_execute(Throttle::Full));
+        assert!(block.should_execute(Throttle::AuditOnly));
+        assert!(!block.should_execute(Throttle::DryRun));
+    }
+
+    #[test]
+    fn dry_run_events_default_is_empty() {
+        let event = make_event();
+        assert!(StubObserver.dry_run_events(&event).is_empty());
+        assert!(StubMutator.dry_run_events(&event).is_empty());
+    }
+
+    #[test]
+    fn task_block_result_success_fields() {
+        let result = TaskBlockResult::success("all good", vec![]);
+        assert!(result.success);
+        assert_eq!(result.summary, "all good");
+        assert!(result.events.is_empty());
+        assert!(result.raw_output.is_none());
+        assert!(result.exit_code.is_none());
+        assert!(result.audit_artifacts.is_empty());
+    }
+
+    #[test]
+    fn task_block_result_failure_fields() {
+        let result = TaskBlockResult::failure("something broke");
+        assert!(!result.success);
+        assert_eq!(result.summary, "something broke");
+        assert!(result.events.is_empty());
+    }
+
+    #[test]
+    fn task_block_result_with_output_attaches_command_data() {
+        let result = TaskBlockResult::success("ok", vec![])
+            .with_output(Some("stdout text".to_string()), Some(0));
+        assert_eq!(result.raw_output, Some("stdout text".to_string()));
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[test]
+    fn task_block_result_with_audit_artifacts() {
+        let result = TaskBlockResult::success("ok", vec![])
+            .with_audit_artifacts(vec!["/path/to/report.json".to_string()]);
+        assert_eq!(result.audit_artifacts, vec!["/path/to/report.json"]);
+    }
+
+    #[test]
+    fn project_not_found_result_mentions_project_name() {
+        let result = TaskBlockResult::project_not_found("my-project");
+        assert!(!result.success);
+        assert!(result.summary.contains("my-project"));
+    }
+}

@@ -166,3 +166,193 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::event::EventType;
+    use crate::task_block::{RetryPolicy, TaskBlock};
+    use crate::throttle::Throttle;
+
+    fn make_trigger() -> Event {
+        Event::new(
+            EventType::GreetRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+    }
+
+    struct EchoBlock;
+    impl WorkBlock for EchoBlock {
+        type Input = String;
+        type Output = String;
+        fn name(&self) -> &'static str {
+            "Echo"
+        }
+        fn execute(
+            &self,
+            input: String,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + '_>> {
+            Box::pin(async move { Ok(input) })
+        }
+    }
+
+    struct FailBlock;
+    impl WorkBlock for FailBlock {
+        type Input = ();
+        type Output = ();
+        fn name(&self) -> &'static str {
+            "Fail"
+        }
+        fn execute(
+            &self,
+            _input: (),
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+            Box::pin(async { Err(anyhow::anyhow!("intentional failure")) })
+        }
+    }
+
+    struct FixedAdapter(String);
+    impl EventAdapter<String> for FixedAdapter {
+        fn adapt(&self, _trigger: &Event) -> Option<String> {
+            Some(self.0.clone())
+        }
+    }
+
+    struct FilterAdapter;
+    impl EventAdapter<String> for FilterAdapter {
+        fn adapt(&self, _trigger: &Event) -> Option<String> {
+            None
+        }
+    }
+
+    struct UnitAdapter;
+    impl EventAdapter<()> for UnitAdapter {
+        fn adapt(&self, _trigger: &Event) -> Option<()> {
+            Some(())
+        }
+    }
+
+    struct EchoMapper;
+    impl OutputMapper<String> for EchoMapper {
+        fn map(&self, output: String, _trigger: &Event) -> TaskBlockResult {
+            TaskBlockResult::success(output, vec![])
+        }
+    }
+
+    struct UnitMapper;
+    impl OutputMapper<()> for UnitMapper {
+        fn map(&self, _output: (), _trigger: &Event) -> TaskBlockResult {
+            TaskBlockResult::success("unit done", vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_returning_none_produces_skip_success() {
+        let step = ComposedStep::new(
+            "TestStep",
+            BlockKind::Observer,
+            vec![EventType::GreetRequested],
+            EchoBlock,
+            FilterAdapter,
+            EchoMapper,
+        );
+        let result = step.execute(&make_trigger()).await.unwrap();
+        assert!(result.success);
+        assert!(result.summary.contains("Skipped"));
+        assert!(result.summary.contains("TestStep"));
+    }
+
+    #[tokio::test]
+    async fn adapter_returning_some_runs_work_block() {
+        let step = ComposedStep::new(
+            "TestStep",
+            BlockKind::Observer,
+            vec![EventType::GreetRequested],
+            EchoBlock,
+            FixedAdapter("hello".to_string()),
+            EchoMapper,
+        );
+        let result = step.execute(&make_trigger()).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.summary, "hello");
+    }
+
+    #[tokio::test]
+    async fn failing_work_block_calls_map_error() {
+        let step = ComposedStep::new(
+            "FailStep",
+            BlockKind::Observer,
+            vec![EventType::GreetRequested],
+            FailBlock,
+            UnitAdapter,
+            UnitMapper,
+        );
+        let result = step.execute(&make_trigger()).await.unwrap();
+        assert!(!result.success);
+        assert!(result.summary.contains("intentional failure"));
+    }
+
+    #[test]
+    fn with_retry_policy_overrides_default() {
+        let step = ComposedStep::new(
+            "RetryStep",
+            BlockKind::Observer,
+            vec![],
+            EchoBlock,
+            FixedAdapter("x".to_string()),
+            EchoMapper,
+        )
+        .with_retry_policy(RetryPolicy {
+            max_retries: 3,
+            backoff: Duration::from_millis(500),
+        });
+        assert_eq!(TaskBlock::retry_policy(&step).max_retries, 3);
+    }
+
+    #[test]
+    fn dry_run_events_delegates_to_mapper() {
+        let step = ComposedStep::new(
+            "DryStep",
+            BlockKind::Mutator,
+            vec![],
+            EchoBlock,
+            FixedAdapter("x".to_string()),
+            EchoMapper,
+        );
+        assert!(TaskBlock::dry_run_events(&step, &make_trigger()).is_empty());
+    }
+
+    #[test]
+    fn observer_step_emits_under_all_throttles() {
+        let step = ComposedStep::new(
+            "ObsStep",
+            BlockKind::Observer,
+            vec![],
+            EchoBlock,
+            FixedAdapter("x".to_string()),
+            EchoMapper,
+        );
+        assert!(TaskBlock::should_emit(&step, Throttle::Full));
+        assert!(TaskBlock::should_emit(&step, Throttle::AuditOnly));
+        assert!(TaskBlock::should_emit(&step, Throttle::DryRun));
+    }
+
+    #[test]
+    fn mutator_step_emits_only_under_full_throttle() {
+        let step = ComposedStep::new(
+            "MutStep",
+            BlockKind::Mutator,
+            vec![],
+            EchoBlock,
+            FixedAdapter("x".to_string()),
+            EchoMapper,
+        );
+        assert!(TaskBlock::should_emit(&step, Throttle::Full));
+        assert!(!TaskBlock::should_emit(&step, Throttle::AuditOnly));
+        assert!(!TaskBlock::should_emit(&step, Throttle::DryRun));
+    }
+}
