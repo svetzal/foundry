@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.2] - 2026-05-10
+
+### Fixed
+
+- **Silent no-op guard misfiring on agents that commit their work** (`crates/foundryd/src/blocks/mod.rs`, `execute_plan.rs`, `execute_maintain.rs`, `retry_execution.rs`): `detect_post_execution_changes` previously ran only `git status --porcelain`, which sees uncommitted changes. Agents that commit and push their work (Claude Code's default behaviour) left a clean working tree, so the detector reported `changes_detected: false` and the 0.14.1 silent-no-op guard then incorrectly marked the run as a failure — causing 4× redundant retries each producing real, committed work. Reproduced in production on the 2026-05-10 maintenance run (10/20 projects falsely flagged). Fix: capture HEAD via `git rev-parse HEAD` immediately before agent invocation, then detect changes via `git diff --name-only <pre_sha>` which captures both committed and uncommitted changes since the snapshot. Falls back to porcelain on diff failure or when no pre-sha is available.
+
 ## [0.14.1] - 2026-05-09
 
 ### Fixed
