@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI maintenance — Node 24 action bumps** (`.github/workflows/`): bumped pinned
+  GitHub Actions ahead of the forced Node.js 24 runner cutover (2026-06-02) and the
+  Node 20 removal (2026-09-16). `actions/checkout@v4` → `@v6`, `actions/upload-artifact@v4`
+  → `@v7`, `actions/download-artifact@v4` → `@v8`, `actions/upload-pages-artifact@v3` → `@v5`,
+  `actions/deploy-pages@v4` → `@v5`. `Swatinem/rust-cache@v2` already resolves to a Node 24
+  release; `dtolnay/rust-toolchain` and `EmbarkStudios/cargo-deny-action` are composite/Docker
+  actions and unaffected. No workflow logic changed.
+
 ## [0.15.1] - 2026-05-12
 
 ### Fixed
