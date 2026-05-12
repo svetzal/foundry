@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-05-12
+
+### Fixed
+
+- **Agent session events carried an empty `project`** (`crates/foundryd/src/gateway.rs`,
+  `blocks/mod.rs`, `blocks/release.rs`): `ClaudeAgentGateway::invoke` hard-coded
+  `project: String::new()` when emitting `AgentSessionStarted`/`AgentSessionEnded`
+  events and the started payload, so ops-visualizer's `/agents` view showed every
+  session with a blank project. `AgentRequest` (and `ReleaseInput`) now carry a
+  `project` field; callers in `invoke_agent` and the release adapters thread the
+  registry project name through, and the gateway emits it on both events. No proto /
+  gRPC schema change — `WatchResponse.project` already carried the event's `project`.
+
 ## [0.15.0] - 2026-05-11
 
 ### Added
