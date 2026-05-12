@@ -61,6 +61,7 @@ pub(super) async fn invoke_agent(
 ) -> AgentOutcome {
     let request = AgentRequest {
         prompt: spec.prompt,
+        project: project.to_string(),
         working_dir: spec.working_dir,
         access: spec.access,
         capability: spec.capability,

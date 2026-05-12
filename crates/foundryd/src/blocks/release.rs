@@ -19,6 +19,7 @@ use crate::gateway::{
 
 /// Typed input for the agent release work block.
 pub struct ReleaseInput {
+    pub project: String,
     pub project_path: PathBuf,
     pub prompt: String,
 }
@@ -79,6 +80,7 @@ impl WorkBlock for AgentRelease {
 
             let request = AgentRequest {
                 prompt: input.prompt,
+                project: input.project.clone(),
                 working_dir: project_dir.clone(),
                 access: AgentAccess::Full,
                 capability: AgentCapability::Coding,
@@ -180,6 +182,7 @@ impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
         tracing::info!(%project, %cve, "cutting patch release");
 
         Some(ReleaseInput {
+            project: project.clone(),
             project_path,
             prompt,
         })
@@ -239,6 +242,7 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
         tracing::info!(%project, bump = bump.as_deref().unwrap_or("auto"), "executing release");
 
         Some(ReleaseInput {
+            project: project.clone(),
             project_path,
             prompt,
         })

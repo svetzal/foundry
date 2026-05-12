@@ -101,6 +101,8 @@ pub enum AgentCapability {
 pub struct AgentRequest {
     /// The work to perform.
     pub prompt: String,
+    /// Project name (registry key) this invocation belongs to.
+    pub project: String,
     /// Project working directory.
     pub working_dir: PathBuf,
     /// Tool access level.
@@ -259,7 +261,7 @@ impl AgentGateway for ClaudeAgentGateway {
             let started_payload = AgentSessionStartedPayload {
                 session_id: session_id.clone(),
                 agent_type: "claude-code".to_string(),
-                project: String::new(),
+                project: request.project.clone(),
                 working_dir: request.working_dir.clone(),
                 source_log_path: log_path.clone(),
                 capability: Self::capability_label(request.capability).to_string(),
@@ -269,7 +271,7 @@ impl AgentGateway for ClaudeAgentGateway {
             };
             let started_event = Event::new(
                 EventType::AgentSessionStarted,
-                String::new(),
+                request.project.clone(),
                 Throttle::Full,
                 serde_json::to_value(&started_payload)?,
             );
@@ -310,7 +312,7 @@ impl AgentGateway for ClaudeAgentGateway {
             };
             let ended_event = Event::new(
                 EventType::AgentSessionEnded,
-                String::new(),
+                request.project.clone(),
                 Throttle::Full,
                 serde_json::to_value(&ended_payload)?,
             );
@@ -544,6 +546,7 @@ pub mod fakes {
     #[allow(dead_code)]
     pub struct AgentInvocation {
         pub prompt: String,
+        pub project: String,
         pub working_dir: String,
         pub access: AgentAccess,
         pub capability: AgentCapability,
@@ -640,6 +643,7 @@ pub mod fakes {
         ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
             let inv = AgentInvocation {
                 prompt: request.prompt.clone(),
+                project: request.project.clone(),
                 working_dir: request.working_dir.display().to_string(),
                 access: request.access,
                 capability: request.capability,
@@ -741,6 +745,7 @@ mod claude_agent_gateway_streaming_tests {
 
         let request = AgentRequest {
             prompt: "say hi".to_string(),
+            project: "demo-project".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
@@ -755,9 +760,11 @@ mod claude_agent_gateway_streaming_tests {
 
         let started = rx.recv().await.expect("started event");
         assert_eq!(started.event_type, EventType::AgentSessionStarted);
+        assert_eq!(started.project, "demo-project");
         assert_eq!(started.payload["agent_type"], "claude-code");
         assert_eq!(started.payload["capability"], "coding");
         assert_eq!(started.payload["access"], "full");
+        assert_eq!(started.payload["project"], "demo-project");
         let session_id = started.payload["session_id"].as_str().unwrap().to_string();
         assert!(!session_id.is_empty());
         let log_path = started.payload["source_log_path"].as_str().unwrap();
@@ -769,6 +776,7 @@ mod claude_agent_gateway_streaming_tests {
 
         let ended = rx.recv().await.expect("ended event");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
+        assert_eq!(ended.project, "demo-project");
         assert_eq!(ended.payload["session_id"], session_id);
         assert_eq!(ended.payload["status"], "ok");
         assert_eq!(ended.payload["exit_code"], 0);
@@ -804,6 +812,7 @@ mod claude_agent_gateway_streaming_tests {
 
         let request = AgentRequest {
             prompt: "fail please".to_string(),
+            project: String::new(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
@@ -877,6 +886,7 @@ mod claude_agent_gateway_streaming_tests {
 
         let request = AgentRequest {
             prompt: "x".to_string(),
+            project: String::new(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Reasoning,
