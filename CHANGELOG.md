@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-05-13
+
 ### Added
 
 - **gRPC registry mutations** (`proto/foundry.proto`, `foundry-core`, `foundryd`,
@@ -28,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `actions/deploy-pages@v4` → `@v5`. `Swatinem/rust-cache@v2` already resolves to a Node 24
   release; `dtolnay/rust-toolchain` and `EmbarkStudios/cargo-deny-action` are composite/Docker
   actions and unaffected. No workflow logic changed.
+
+### Fixed
+
+- **`cargo doc` broke on a private intra-doc link** (`crates/foundryd/src/engine.rs`):
+  `Engine::with_event_writer`'s doc comment linked `[`EventWriter`]`, which is
+  crate-private, so `cargo doc --workspace -D warnings` (a CI gate) failed. Replaced
+  with a plain code span.
 
 ## [0.15.1] - 2026-05-12
 
