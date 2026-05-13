@@ -175,13 +175,28 @@ This project follows trunk-based development. `main` is the only long-lived bran
 - **CI** runs on push/PR to `main`: fmt, clippy, test (`.github/workflows/ci.yml`)
 - **Release** runs on tag push (`v*`): builds macOS arm64, macOS x86_64, and Linux x86_64 binaries, creates a GitHub release with tarballs and checksums (`.github/workflows/release.yml`)
 
+**Do NOT use `foundry release foundry`.** The foundry release-chain workflow hangs silently when applied to foundry itself, because `foundryd` cannot replace the running `foundryd` binary mid-release. All other registered projects release via `foundry release <project>` normally; foundry itself must be released manually.
+
 To cut a release:
 
 ```bash
-# Update version in Cargo.toml [workspace.package], update CHANGELOG.md
-git tag v0.X.0
+# 1. Update version in Cargo.toml [workspace.package] and skill/foundry/SKILL.md
+#    metadata.version (must match Cargo.toml — see "Deployable Skill" below).
+# 2. Update CHANGELOG.md — move [Unreleased] content to a new dated [vX.Y.Z] section.
+# 3. cargo build to refresh Cargo.lock.
+# 4. Commit the bump, then:
+git tag v0.X.Y
 git push origin main --tags
+
+# 5. Wait for the Release workflow to publish tarballs to the GitHub release page.
+# 6. Swap the running daemon onto the new binary:
+foundry registry show foundry --json | jq -r '.install_command'   # locate install.command
+# run the install.command, then reload the daemon so it picks up the new binary:
+launchctl unload ~/Library/LaunchAgents/com.mojility.foundryd.plist
+launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 ```
+
+Steps 5–6 are required — without them the daemon keeps serving the old binary even after the GitHub release publishes, so the fix doesn't take effect. See `launchd/README.md` for the canonical load/unload commands.
 
 The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
 
