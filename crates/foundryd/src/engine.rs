@@ -71,7 +71,7 @@ impl Engine {
         }
     }
 
-    /// Attach an [`EventWriter`] so every event in a processing chain is
+    /// Attach an `EventWriter` so every event in a processing chain is
     /// persisted to JSONL as it is produced.  Write failures are logged but
     /// never interrupt event processing.
     #[must_use]
