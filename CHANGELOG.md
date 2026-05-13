@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-05-13
+
+### Fixed
+
+- **`ExecutePlan` short-circuits when `correction_needed=false`**
+  (`crates/foundryd/src/blocks/execute_plan.rs`): when `CreatePlan` returns
+  `correctionNeeded: false` (the Reasoning agent inspected the codebase and
+  concluded the assessment was inaccurate), `ExecutePlan` now emits a synthetic
+  `ExecutionCompleted` event immediately and skips the Coding-agent invocation.
+  Previously the Coding agent was invoked unconditionally with an imperative
+  "the plan MUST be applied" prompt, burning ~48s of Full-access tokens per
+  occurrence on a plan that prescribed no changes. The new path preserves
+  `correction_reason` in `execution_output` for trace visibility, sets
+  `changes_detected: false`, and patterns on `CreatePlan`'s `accepted=false`
+  short-circuit.
+
 ### Changed
 
 - **`docs` gate added to `.hone-gates.json`**: foundry's own quality-gate suite now
