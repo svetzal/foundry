@@ -16,6 +16,11 @@
       "required": true
     },
     {
+      "name": "docs",
+      "command": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps",
+      "required": true
+    },
+    {
       "name": "coverage",
       "command": "cargo tarpaulin --workspace --fail-under 61",
       "required": true

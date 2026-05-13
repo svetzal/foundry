@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`docs` gate added to `.hone-gates.json`**: foundry's own quality-gate suite now
+  runs `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` as a required gate,
+  matching the CI "Check documentation compiles" step. `iterate`/`validate`/maintenance
+  runs previously only checked fmt/clippy/test/coverage/deny, so doc-link breakage (e.g.
+  the 0.16.0 private intra-doc link) could pass local gates and only fail in CI.
+
 ## [0.16.0] - 2026-05-13
 
 ### Added
