@@ -46,10 +46,22 @@ These are settled and not up for re-debate in implementation:
 5. **Rename `MaintenanceRunStarted` / `MaintenanceRunCompleted`**:
    split into cycle-level and project-level events. Do the rename
    now, not later.
-6. **Hard cutover, self-identifying schemas**: old events keep their
+6. **Normalize workflow `*Requested` events to noun form**:
+   `IterationRequested` → `ProjectIterationRequested`,
+   `MaintenanceRequested` → `ProjectMaintenanceRequested`,
+   `GreetRequested` → `GreetingRequested`. Each opener now pairs
+   cleanly with its `*Completed` closer (per AGENTS.md's noun-form
+   rule). No new event types — `*Requested` remains the workflow
+   span opener.
+7. **Hard cutover, self-identifying schemas**: old events keep their
    `trc_*` `trace_id` and no `span_id` — they're identifiable as
    pre-nested by ID format. No `schema_version` field, no `cycle_id`
    interim field.
+8. **Backfill historical event-type names**: a one-shot jq script
+   rewrites `maintenance_run_*` / `iteration_requested` /
+   `maintenance_requested` / `greet_requested` in archived event
+   logs and trace files. `span_id` / `parent_span_id` are *not*
+   backfilled.
 
 ## Data model
 
@@ -243,17 +255,20 @@ is the bridge between the surrounding workflow span and the
 newly-opened child workflow span.
 
 **Span-opener registry**: a small, explicit list of `EventType`
-values lives in `foundry-core`:
+values lives in `foundry-core`. Note that `*Requested` events serve
+as workflow span openers because the request *is* the entry point
+of the workflow — AGENTS.md classifies them as commands (intent),
+which is fully consistent with their role as span openers here.
 
-| Span level   | Opener event types                                            |
-|--------------|---------------------------------------------------------------|
-| Cycle        | `MaintenanceCycleStarted`                                      |
-| Project run  | `ProjectRunStarted`                                            |
-| Workflow     | `IterationRequested`, `MaintenanceRequested`,                  |
-|              | `ValidationRequested`, `DriftAssessmentRequested`,             |
-|              | `ReleaseRequested`, `PipelineCheckRequested`, `GreetRequested`,|
-|              | `RemediationStarted`                                           |
-| Nested       | `StrategicCycleStarted`, `InnerIterationStarted`               |
+| Span level   | Opener event types                                                          |
+|--------------|-----------------------------------------------------------------------------|
+| Cycle        | `MaintenanceCycleStarted`                                                    |
+| Project run  | `ProjectRunStarted`                                                          |
+| Workflow     | `ProjectIterationRequested`, `ProjectMaintenanceRequested`,                  |
+|              | `ValidationRequested`, `DriftAssessmentRequested`,                           |
+|              | `ReleaseRequested`, `PipelineCheckRequested`, `GreetingRequested`,           |
+|              | `RemediationStarted`                                                         |
+| Nested       | `StrategicCycleStarted`, `InnerIterationStarted`                             |
 
 Span closers don't need a registry — under the default rule, any
 `*Completed` event emitted from within a span naturally inherits
@@ -300,7 +315,7 @@ cycle_span                                              [from MaintenanceCycleSt
 └── bs1: FanOutMaintenance                              [BlockExecution]
     └── project_run_span_alpha                          [from ProjectRunStarted]
         └── bs2: RouteProjectWorkflow                   [BlockExecution]
-            └── iteration_span                          [from IterationRequested]
+            └── iteration_span                          [from ProjectIterationRequested]
                 ├── bs3: RunPreflightGates              [BlockExecution]
                 ├── bs4: CreatePlan                     [BlockExecution]
                 ├── bs5: ExecutePlan                    [BlockExecution]
@@ -324,8 +339,9 @@ cycle_span                                              [from MaintenanceCycleSt
   mints a *fresh trace_id* per project; that behavior is replaced
   — `trace_id` is now inherited from the cycle.)
 - **Workflow**: when any block emits a workflow opener
-  (`IterationRequested`, `MaintenanceRequested`, etc.), the
-  engine's stamping pass mints a new workflow `span_id` and
+  (`ProjectIterationRequested`, `ProjectMaintenanceRequested`,
+  etc.), the engine's stamping pass mints a new workflow `span_id`
+  and
   parents it to the emitting block's span_id. The workflow's
   completion event (`ProjectIterationCompleted`,
   `ProjectMaintenanceCompleted`, etc.) is emitted from a later
@@ -353,12 +369,28 @@ cycle_span                                              [from MaintenanceCycleSt
 
 ### Renames
 
+Two groups of renames. First, splitting the cycle-vs-project events:
+
 | Today                                         | Tomorrow                            | Where it's emitted                              |
 |-----------------------------------------------|-------------------------------------|-------------------------------------------------|
 | `MaintenanceRunStarted` (project = `system`)  | `MaintenanceCycleStarted`            | Scheduler / `foundry run` entry path            |
 | `MaintenanceRunStarted` (per-project)         | `ProjectRunStarted`                  | `FanOutMaintenance`                             |
 | `MaintenanceRunCompleted` (system)            | `MaintenanceCycleCompleted`          | `finalise_system_maintenance` in `service.rs`   |
 | `MaintenanceRunCompleted` (per-project)       | `ProjectRunCompleted`                | Per-project completion in `service.rs`          |
+
+Second, normalizing workflow `*Requested` events to noun form so
+that each opener pairs cleanly with its closer (per AGENTS.md's
+"noun form for compound prefixes" rule):
+
+| Today                  | Tomorrow                       | Pairs cleanly with               |
+|------------------------|--------------------------------|----------------------------------|
+| `IterationRequested`   | `ProjectIterationRequested`    | `ProjectIterationCompleted`      |
+| `MaintenanceRequested` | `ProjectMaintenanceRequested`  | `ProjectMaintenanceCompleted`    |
+| `GreetRequested`       | `GreetingRequested`            | `GreetingDelivered`              |
+
+`ValidationRequested`, `DriftAssessmentRequested`,
+`ReleaseRequested`, and `PipelineCheckRequested` already pair
+cleanly with their closers and are not renamed.
 
 The `MaintenanceRunStartedPayload` and `MaintenanceRunCompletedPayload`
 structs in `payload.rs` are renamed to match
@@ -540,7 +572,7 @@ fresh trace:
 - `parent_span_id` = None
 
 The root event is the workflow's `*Requested` event
-(`IterationRequested` here). Cycle-rooted vs manual is trivially
+(`ProjectIterationRequested` here). Cycle-rooted vs manual is trivially
 distinguishable by the root event type: `MaintenanceCycleStarted`
 for nightly, a workflow `*Requested` for manual.
 
@@ -595,9 +627,9 @@ existing per-event records — no schema change to on-disk traces.
 ├── [span] project_run alpha                span=1b2c…  parent=0b1c…
 │   ├── project_run_started                 (opener event)
 │   ├── [block: RouteProjectWorkflow]       block_span=2b3c…  parent=1b2c…  duration=3ms
-│   │   └── iteration_requested             (opens span 2c3d…, parent=2b3c…)
+│   │   └── project_iteration_requested             (opens span 2c3d…, parent=2b3c…)
 │   ├── [span] iteration                    span=2c3d…  parent=2b3c…
-│   │   ├── iteration_requested             (opener event)
+│   │   ├── project_iteration_requested             (opener event)
 │   │   ├── [block: RunPreflightGates]      block_span=3d4e…  parent=2c3d…  duration=423ms
 │   │   │   └── preflight_completed         (carries span=2c3d…, the iteration span)
 │   │   ├── [block: CreatePlan]             block_span=4e5f…  parent=2c3d…  duration=12.3s
@@ -648,6 +680,78 @@ Hard cutover with self-identifying ID formats:
   metadata version follows.
 - **No `schema_version` field**, **no `cycle_id` interim field**.
 
+### Historical event backfill
+
+A one-shot script rewrites historical event-type names in archived
+data so older traces stay queryable under the new vocabulary.
+Span fields (`span_id`, `parent_span_id`) are **not** backfilled —
+we lack the tree information to reconstruct accurately, and legacy
+events remain identifiable by their `trc_*`-prefixed `trace_id`.
+
+Script: `scripts/migrate-event-names.sh`. Implemented in `jq`
+because the cycle-vs-project split needs to inspect the `project`
+field, which `sed` can't do reliably.
+
+Files in scope:
+
+1. `~/.foundry/events/*.jsonl` — each line is a JSON event.
+2. `~/.foundry/traces/YYYY-MM-DD/*.json` — each file has an
+   `events` array (and a `block_executions` array, but blocks don't
+   carry event_type).
+
+Conditional renames applied to each event:
+
+| Match                                                        | Rewrite to                  |
+|--------------------------------------------------------------|-----------------------------|
+| `event_type == "maintenance_run_started"`, `project == "system"` | `"maintenance_cycle_started"` |
+| `event_type == "maintenance_run_started"`, `project != "system"` | `"project_run_started"`        |
+| `event_type == "maintenance_run_completed"`, `project == "system"` | `"maintenance_cycle_completed"` |
+| `event_type == "maintenance_run_completed"`, `project != "system"` | `"project_run_completed"`       |
+| `event_type == "iteration_requested"`                         | `"project_iteration_requested"` |
+| `event_type == "maintenance_requested"`                       | `"project_maintenance_requested"` |
+| `event_type == "greet_requested"`                             | `"greeting_requested"`         |
+
+Concrete shape (JSONL files; trace files use the same expression
+inside `(.events[] |=)`):
+
+```bash
+for f in ~/.foundry/events/*.jsonl; do
+  jq -c '
+    if .event_type == "maintenance_run_started" then
+      .event_type = (if .project == "system"
+                     then "maintenance_cycle_started"
+                     else "project_run_started" end)
+    elif .event_type == "maintenance_run_completed" then
+      .event_type = (if .project == "system"
+                     then "maintenance_cycle_completed"
+                     else "project_run_completed" end)
+    elif .event_type == "iteration_requested"   then .event_type = "project_iteration_requested"
+    elif .event_type == "maintenance_requested" then .event_type = "project_maintenance_requested"
+    elif .event_type == "greet_requested"       then .event_type = "greeting_requested"
+    else . end
+  ' "$f" > "$f.new" && mv "$f.new" "$f"
+done
+```
+
+**Event id consistency**: `Event::id` is derived from
+(event_type, project, occurred_at, payload). Renaming `event_type`
+breaks the deterministic id relationship for those events. The
+script recomputes `id` for every rewritten event so the new
+event_type and id remain consistent. Any payload references to old
+ids (notably `project_trace_ids` maps inside
+`maintenance_run_completed` payloads) are rewritten in the same
+pass to point at the new ids — done by building an old-id → new-id
+table during the first pass and substituting in the second.
+
+**Safety**: the script writes to `*.new` and atomically renames, so
+a kill mid-run leaves the original intact. A `--dry-run` mode prints
+counts and example rewrites without touching files. The script is
+idempotent — running it twice after success is a no-op (no remaining
+old-name events to match).
+
+After the script lands, it's removed (or moved to `scripts/archive/`)
+in a follow-up release to avoid implying it should be re-run.
+
 ## Implementation phasing
 
 Done in this order, each step a working green-build commit on main:
@@ -684,14 +788,33 @@ Done in this order, each step a working green-build commit on main:
      `MaintenanceCycleCompleted`, `ProjectRunStarted`,
      `ProjectRunCompleted`, `StrategicCycleStarted`,
      `InnerIterationStarted`.
+   - Rename existing variants: `IterationRequested` →
+     `ProjectIterationRequested`, `MaintenanceRequested` →
+     `ProjectMaintenanceRequested`, `GreetRequested` →
+     `GreetingRequested`.
    - Remove old `MaintenanceRunStarted`,
      `MaintenanceRunCompleted` (hard rename, no deprecation alias).
    - Rename payload structs in `payload.rs` and split
-     cycle-vs-project semantics where they differ.
+     cycle-vs-project semantics where they differ. Payload structs
+     for the workflow renames (`IterationRequestedPayload` →
+     `ProjectIterationRequestedPayload`, etc.) follow.
    - Update `FanOutMaintenance`, `finalise_system_maintenance`,
-     `extract_per_project_traces`, `GenerateSummary`, and all
-     associated tests.
+     `extract_per_project_traces`, `GenerateSummary`, all blocks'
+     `sinks_on` lists, the CLI's emit paths, and all associated
+     tests.
    - Update AGENTS.md's event-naming taxonomy examples to match.
+
+4.5. **Historical data backfill**:
+   - Add `scripts/migrate-event-names.sh` per "Historical event
+     backfill" above (jq-based, with `--dry-run` mode and id
+     recomputation).
+   - Document its one-time use in CHANGELOG and the 0.17.0 release
+     notes.
+   - The daemon refuses to start if it detects pre-0.17.0 event
+     names on disk and the backfill hasn't been run — a clear
+     error message points at the script. (Or: refuses to *write*
+     summaries until backfill is complete. Final shape decided in
+     plan.)
 
 5. **Subprocess propagation**:
    - Wire `SPAN_CONTEXT` through the engine before block dispatch.
