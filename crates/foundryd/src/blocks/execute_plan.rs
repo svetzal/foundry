@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::PlanCompletedPayload;
+use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, PlanCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -47,6 +47,48 @@ impl TaskBlock for ExecutePlan {
         let shell = Arc::clone(&self.shell);
 
         let plan_payload = parse_payload!(trigger, PlanCompletedPayload);
+
+        if !plan_payload.correction_needed {
+            let reason = plan_payload.correction_reason.clone();
+            let summary =
+                "no correction needed — codebase satisfies assessed principle".to_string();
+            let context = LoopContext::extract_from(&payload);
+            let workflow = WorkflowType::from_payload(&payload);
+            let exec_payload = ExecutionCompletedPayload {
+                project: project.clone(),
+                workflow: workflow.to_string(),
+                success: true,
+                summary: summary.clone(),
+                execution_output: if reason.is_empty() {
+                    None
+                } else {
+                    Some(reason)
+                },
+                dry_run: None,
+                retry_count: None,
+                changes_detected: Some(false),
+                files_changed: vec![],
+                context,
+            };
+            let event = match trigger.with_payload(EventType::ExecutionCompleted, &exec_payload) {
+                Ok(e) => e,
+                Err(e) => return Box::pin(async move { Err(e) }),
+            };
+            tracing::info!(
+                project = %project,
+                "iterate plan concluded no correction needed; short-circuiting before agent invocation"
+            );
+            return Box::pin(async move {
+                Ok(TaskBlockResult {
+                    events: vec![event],
+                    success: true,
+                    summary: format!("{project}: {summary}"),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                })
+            });
+        }
 
         // Read the workflow from the trigger payload so that non-iterate callers
         // (e.g. the prompt workflow) receive the correct WorkflowType.  This is
@@ -336,11 +378,11 @@ mod tests {
         use crate::gateway::fakes::FakeShellGateway;
 
         let dir = tempfile::tempdir().unwrap();
-        let agent = FakeAgentGateway::success_with("Reviewed; no changes needed.");
+        let agent = FakeAgentGateway::success_with("THIS SHOULD NEVER RUN");
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        let shell = FakeShellGateway::success(); // empty stdout → no changes
-        let block = ExecutePlan::with_gateways(agent, registry, shell);
+        let shell = FakeShellGateway::success();
+        let block = ExecutePlan::with_gateways(agent.clone(), registry, shell);
         let trigger = test_event!(EventType::PlanCompleted, "my-project", {
             "project": "my-project",
             "plan": "No changes needed.",
@@ -362,6 +404,44 @@ mod tests {
             result.summary
         );
         assert_eq!(result.events[0].payload["success"], true);
+        assert!(
+            agent.invocations().is_empty(),
+            "agent must not be invoked when correction_needed=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn iterate_no_correction_needed_emits_reason_in_execution_output() {
+        use crate::gateway::fakes::FakeShellGateway;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("THIS SHOULD NEVER RUN");
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success();
+        let block = ExecutePlan::with_gateways(agent.clone(), registry, shell);
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "No changes needed.",
+            "principle": "DRY",
+            "category": "duplication",
+            "workflow": "iterate",
+            "correction_needed": false,
+            "correction_reason": "Codebase already extracts shared validation into a helper.",
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(agent.invocations().is_empty());
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ExecutionCompleted);
+        assert_eq!(
+            result.events[0].payload["execution_output"],
+            "Codebase already extracts shared validation into a helper."
+        );
+        assert_eq!(result.events[0].payload["changes_detected"], false);
+        assert_eq!(result.events[0].payload["workflow"], "iterate");
     }
 
     #[tokio::test]
