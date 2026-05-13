@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
+use foundry_core::registry::ProjectEntry;
 use foundry_core::task_block::TaskBlockResult;
 use foundry_core::throttle::Throttle;
 use foundry_core::workflow::WorkflowType;
@@ -457,6 +458,58 @@ pub(super) async fn build_execution_outcome(
         files_changed,
         correction_needed,
     )
+}
+
+/// Execute the common agent-driven body shared by `ExecutePlan`, `ExecuteMaintain`,
+/// and `RetryExecution`: resolve the project path and agent file, capture the
+/// pre-execution HEAD SHA, invoke the coding agent, and build the result.
+///
+/// `label` is forwarded to both `invoke_coding_agent` and `build_execution_outcome`
+/// for tracing and summary text (e.g. `"plan execution"`, `"maintenance"`,
+/// `"retry 2"`).  Pass `retry_count: Some(n)` for the retry flow; `None`
+/// otherwise.  `correction_needed` controls whether a clean working tree is
+/// treated as a silent flake (`true`) or a legitimate no-op (`false`).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn execute_agent_block(
+    agent: &dyn AgentGateway,
+    shell: &dyn ShellGateway,
+    entry: &ProjectEntry,
+    project: &str,
+    workflow: WorkflowType,
+    prompt: String,
+    payload: &serde_json::Value,
+    throttle: Throttle,
+    label: &str,
+    retry_count: Option<u64>,
+    correction_needed: bool,
+) -> TaskBlockResult {
+    let project_path = PathBuf::from(&entry.path);
+    let agent_file = execute_maintain::resolve_agent_file(&entry.agent);
+    let pre_sha = capture_pre_execution_sha(shell, &project_path).await;
+    let outcome = invoke_coding_agent(
+        agent,
+        project,
+        project_path.clone(),
+        prompt,
+        agent_file,
+        entry.timeout(),
+        label,
+    )
+    .await;
+    build_execution_outcome(
+        shell,
+        &project_path,
+        project,
+        workflow,
+        outcome,
+        payload,
+        throttle,
+        label,
+        retry_count,
+        pre_sha,
+        correction_needed,
+    )
+    .await
 }
 
 #[cfg(test)]

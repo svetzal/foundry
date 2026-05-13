@@ -192,6 +192,54 @@ macro_rules! assert_block_meta {
     };
 }
 
+/// Generates the struct definition, `pub fn new(agent, registry)` constructor,
+/// and `#[cfg(test)] pub(super) fn with_gateways(agent, registry, shell)` test
+/// constructor for agent-driven execution blocks that hold `registry`, `agent`,
+/// and `shell` gateways.
+///
+/// Requires `Registry`, `AgentGateway`, `ShellGateway`, and `ProcessShellGateway`
+/// to be in scope at the call site.
+///
+/// # Usage
+/// ```ignore
+/// agent_execution_block! {
+///     /// Doc comment
+///     pub struct MyBlock
+/// }
+/// ```
+macro_rules! agent_execution_block {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
+        $(#[$meta])*
+        $vis struct $name {
+            registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+            agent: ::std::sync::Arc<dyn AgentGateway>,
+            shell: ::std::sync::Arc<dyn ShellGateway>,
+        }
+
+        impl $name {
+            pub fn new(
+                agent: ::std::sync::Arc<dyn AgentGateway>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+            ) -> Self {
+                Self {
+                    registry,
+                    agent,
+                    shell: ::std::sync::Arc::new(ProcessShellGateway),
+                }
+            }
+
+            #[cfg(test)]
+            pub(super) fn with_gateways(
+                agent: ::std::sync::Arc<dyn AgentGateway>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+                shell: ::std::sync::Arc<dyn ShellGateway>,
+            ) -> Self {
+                Self { registry, agent, shell }
+            }
+        }
+    };
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

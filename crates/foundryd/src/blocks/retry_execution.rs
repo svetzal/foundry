@@ -1,6 +1,5 @@
-use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::RetryRequestedPayload;
@@ -12,38 +11,13 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::TriggerContext;
 
-/// Retries the execution phase with context about which gates failed.
-///
-/// Mutator — sinks on `RetryRequested`.
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
-pub struct RetryExecution {
-    registry: Arc<RwLock<Registry>>,
-    agent: Arc<dyn AgentGateway>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl RetryExecution {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
-        Self {
-            registry,
-            agent,
-            shell: Arc::new(ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_gateways(
-        agent: Arc<dyn AgentGateway>,
-        registry: Arc<RwLock<Registry>>,
-        shell: Arc<dyn ShellGateway>,
-    ) -> Self {
-        Self {
-            registry,
-            agent,
-            shell,
-        }
-    }
+agent_execution_block! {
+    /// Retries the execution phase with context about which gates failed.
+    ///
+    /// Mutator — sinks on `RetryRequested`.
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
+    pub struct RetryExecution
 }
 
 impl TaskBlock for RetryExecution {
@@ -85,8 +59,6 @@ impl TaskBlock for RetryExecution {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let project_path = PathBuf::from(&entry.path);
-
             let prompt = build_retry_prompt(
                 &project,
                 workflow,
@@ -95,34 +67,17 @@ impl TaskBlock for RetryExecution {
                 &prior_output,
             );
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
-
-            // Capture HEAD before the agent runs so post-execution change
-            // detection can compare against a stable snapshot.
-            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
-
-            let outcome = super::invoke_coding_agent(
+            Ok(super::execute_agent_block(
                 &*agent,
-                &project,
-                project_path.clone(),
-                prompt,
-                agent_file,
-                entry.timeout(),
-                &format!("retry {retry_count}"),
-            )
-            .await;
-
-            Ok(super::build_execution_outcome(
                 &*shell,
-                &project_path,
+                &entry,
                 &project,
                 workflow,
-                outcome,
+                prompt,
                 &payload,
                 throttle,
                 &format!("retry {retry_count}"),
                 Some(retry_count),
-                pre_sha,
                 // Retry only fires when the initial execution was detected as a silent
                 // no-op (or a genuine failure), so correction is always required here.
                 true,
@@ -347,14 +302,12 @@ mod tests {
         ]);
         let block = RetryExecution::with_gateways(agent, registry, shell);
         let trigger = retry_event("my-project", 1, "maintain");
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], true);
-        let files = result.events[0].payload["files_changed"].as_array().unwrap();
-        assert!(files.iter().any(|f| f == "src/main.rs"), "expected src/main.rs in {files:?}");
-        assert!(files.iter().any(|f| f == "fix.patch"), "expected fix.patch in {files:?}");
+        test_helpers::assert_detects_changes_when_dirty(
+            &block,
+            &trigger,
+            &["src/main.rs", "fix.patch"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -368,17 +321,7 @@ mod tests {
         let shell = FakeShellGateway::success(); // empty stdout
         let block = RetryExecution::with_gateways(agent, registry, shell);
         let trigger = retry_event("my-project", 1, "maintain");
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
-        assert!(
-            result.events[0]
-                .payload
-                .get("files_changed")
-                .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
-        );
+        test_helpers::assert_reports_no_changes_when_clean(&block, &trigger, true).await;
     }
 
     #[tokio::test]
@@ -393,11 +336,7 @@ mod tests {
         let block = RetryExecution::with_gateways(agent, registry, shell);
         // Use maintain so the iterate override doesn't fire (we're testing git failure tolerance)
         let trigger = retry_event("my-project", 1, "maintain");
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
+        test_helpers::assert_tolerates_git_failure(&block, &trigger, true).await;
     }
 
     #[tokio::test]
@@ -459,10 +398,6 @@ mod tests {
                 "actions": {"maintain": true},
             }),
         );
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        let actions = result.events[0].payload.get("actions").unwrap();
-        assert_eq!(actions["maintain"], true);
+        test_helpers::assert_forwards_actions(&block, &trigger).await;
     }
 }

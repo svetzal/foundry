@@ -1,6 +1,5 @@
-use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::PlanCompletedPayload;
@@ -12,38 +11,13 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::TriggerContext;
 
-/// Applies the correction plan to the project.
-///
-/// Mutator — sinks on `PlanCompleted`.
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
-pub struct ExecutePlan {
-    registry: Arc<RwLock<Registry>>,
-    agent: Arc<dyn AgentGateway>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl ExecutePlan {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
-        Self {
-            registry,
-            agent,
-            shell: Arc::new(ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_gateways(
-        agent: Arc<dyn AgentGateway>,
-        registry: Arc<RwLock<Registry>>,
-        shell: Arc<dyn ShellGateway>,
-    ) -> Self {
-        Self {
-            registry,
-            agent,
-            shell,
-        }
-    }
+agent_execution_block! {
+    /// Applies the correction plan to the project.
+    ///
+    /// Mutator — sinks on `PlanCompleted`.
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
+    pub struct ExecutePlan
 }
 
 impl TaskBlock for ExecutePlan {
@@ -80,43 +54,22 @@ impl TaskBlock for ExecutePlan {
         let workflow = WorkflowType::from_payload(&payload);
 
         Box::pin(async move {
-            let project_path = PathBuf::from(&entry.path);
-
             let plan = &plan_payload.plan;
             let principle = &plan_payload.principle;
             let gates = plan_payload.chain.gates.as_ref();
-
             let prompt = build_execution_prompt(&project, plan, principle, gates);
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
-
-            // Capture HEAD before the agent runs so post-execution change
-            // detection can compare against a stable snapshot — agents that
-            // commit their work would otherwise leave a clean working tree.
-            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
-
-            let outcome = super::invoke_coding_agent(
+            Ok(super::execute_agent_block(
                 &*agent,
-                &project,
-                project_path.clone(),
-                prompt,
-                agent_file,
-                entry.timeout(),
-                "plan execution",
-            )
-            .await;
-
-            Ok(super::build_execution_outcome(
                 &*shell,
-                &project_path,
+                &entry,
                 &project,
                 workflow,
-                outcome,
+                prompt,
                 &payload,
                 throttle,
                 "plan execution",
                 None,
-                pre_sha,
                 plan_payload.correction_needed,
             )
             .await)
@@ -222,13 +175,7 @@ mod tests {
             "category": "duplication",
             "workflow": "iterate",
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.success);
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ExecutionCompleted);
-        assert_eq!(result.events[0].payload["success"], false);
+        test_helpers::assert_agent_failure_emits_failure(&block, &trigger).await;
     }
 
     #[tokio::test]
@@ -250,11 +197,7 @@ mod tests {
                 "actions": {"maintain": true},
             }),
         );
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        let actions = result.events[0].payload.get("actions").unwrap();
-        assert_eq!(actions["maintain"], true);
+        test_helpers::assert_forwards_actions(&block, &trigger).await;
     }
 
     #[test]
@@ -330,14 +273,12 @@ mod tests {
             "category": "duplication",
             "workflow": "iterate",
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], true);
-        let files = result.events[0].payload["files_changed"].as_array().unwrap();
-        assert!(files.iter().any(|f| f == "src/lib.rs"), "expected src/lib.rs in {files:?}");
-        assert!(files.iter().any(|f| f == "new.txt"), "expected new.txt in {files:?}");
+        test_helpers::assert_detects_changes_when_dirty(
+            &block,
+            &trigger,
+            &["src/lib.rs", "new.txt"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -357,19 +298,8 @@ mod tests {
             "category": "duplication",
             "workflow": "iterate",
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
         // Iterate + clean tree → overridden to failure (silent no-op)
-        assert!(!result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
-        // files_changed is skip_serializing_if Vec::is_empty, so absent when empty
-        assert!(
-            result.events[0]
-                .payload
-                .get("files_changed")
-                .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
-        );
+        test_helpers::assert_reports_no_changes_when_clean(&block, &trigger, false).await;
     }
 
     #[tokio::test]
@@ -492,12 +422,8 @@ mod tests {
             "category": "duplication",
             "workflow": "iterate",
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
         // Git status failure → changes_detected=false → iterate override fires
-        assert!(!result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
+        test_helpers::assert_tolerates_git_failure(&block, &trigger, false).await;
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::GateResolutionCompletedPayload;
@@ -12,39 +12,14 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::TriggerContext;
 
-/// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
-/// and resolves quality gate failures.
-///
-/// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
-/// Uses `AgentGateway` with `Coding` capability and `Full` access.
-/// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
-pub struct ExecuteMaintain {
-    registry: Arc<RwLock<Registry>>,
-    agent: Arc<dyn AgentGateway>,
-    shell: Arc<dyn ShellGateway>,
-}
-
-impl ExecuteMaintain {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
-        Self {
-            registry,
-            agent,
-            shell: Arc::new(ProcessShellGateway),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_gateways(
-        agent: Arc<dyn AgentGateway>,
-        registry: Arc<RwLock<Registry>>,
-        shell: Arc<dyn ShellGateway>,
-    ) -> Self {
-        Self {
-            registry,
-            agent,
-            shell,
-        }
-    }
+agent_execution_block! {
+    /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
+    /// and resolves quality gate failures.
+    ///
+    /// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
+    /// Uses `AgentGateway` with `Coding` capability and `Full` access.
+    /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
+    pub struct ExecuteMaintain
 }
 
 /// Resolve the agent file path from the registry agent name.
@@ -102,38 +77,19 @@ impl TaskBlock for ExecuteMaintain {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let project_path = PathBuf::from(&entry.path);
-
             let prompt = build_maintain_prompt(&project, Some(&gates).filter(|v| !v.is_null()));
 
-            let agent_file = resolve_agent_file(&entry.agent);
-
-            // Capture HEAD before the agent runs so post-execution change
-            // detection can compare against a stable snapshot.
-            let pre_sha = super::capture_pre_execution_sha(&*shell, &project_path).await;
-
-            let outcome = super::invoke_coding_agent(
+            Ok(super::execute_agent_block(
                 &*agent,
-                &project,
-                project_path.clone(),
-                prompt,
-                agent_file,
-                entry.timeout(),
-                "maintain",
-            )
-            .await;
-
-            Ok(super::build_execution_outcome(
                 &*shell,
-                &project_path,
+                &entry,
                 &project,
                 WorkflowType::Maintain,
-                outcome,
+                prompt,
                 &payload,
                 throttle,
                 "maintenance",
                 None,
-                pre_sha,
                 // Maintain is never the iterate workflow, so correction_needed is
                 // irrelevant — the clean-tree override only fires for WorkflowType::Iterate.
                 true,
@@ -328,17 +284,9 @@ mod tests {
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
             "workflow": "maintain",
-            "gates": [
-                {"name": "fmt", "command": "cargo fmt --check", "required": true}
-            ],
+            "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.success);
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ExecutionCompleted);
-        assert_eq!(result.events[0].payload["success"], false);
+        test_helpers::assert_agent_failure_emits_failure(&block, &trigger).await;
     }
 
     #[tokio::test]
@@ -362,11 +310,7 @@ mod tests {
                 "actions": {"maintain": true},
             }),
         );
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        let actions = result.events[0].payload.get("actions").unwrap();
-        assert_eq!(actions["maintain"], true);
+        test_helpers::assert_forwards_actions(&block, &trigger).await;
     }
 
     #[test]
@@ -450,17 +394,12 @@ mod tests {
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], true);
-        let files = result.events[0].payload["files_changed"].as_array().unwrap();
-        assert!(files.iter().any(|f| f == "Cargo.lock"), "expected Cargo.lock in {files:?}");
-        assert!(
-            files.iter().any(|f| f == "new-patch.txt"),
-            "expected new-patch.txt in {files:?}"
-        );
+        test_helpers::assert_detects_changes_when_dirty(
+            &block,
+            &trigger,
+            &["Cargo.lock", "new-patch.txt"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -479,21 +418,9 @@ mod tests {
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
             "workflow": "maintain",
-            "gates": [
-                {"name": "fmt", "command": "cargo fmt --check", "required": true}
-            ],
+            "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
-        assert!(
-            result.events[0]
-                .payload
-                .get("files_changed")
-                .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
-        );
+        test_helpers::assert_reports_no_changes_when_clean(&block, &trigger, true).await;
     }
 
     #[tokio::test]
@@ -513,9 +440,7 @@ mod tests {
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
             "workflow": "maintain",
-            "gates": [
-                {"name": "fmt", "command": "cargo fmt --check", "required": true}
-            ],
+            "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
 
         let result = block.execute(&trigger).await.unwrap();
@@ -540,14 +465,8 @@ mod tests {
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
             "workflow": "maintain",
-            "gates": [
-                {"name": "fmt", "command": "cargo fmt --check", "required": true}
-            ],
+            "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.events[0].payload["changes_detected"], false);
+        test_helpers::assert_tolerates_git_failure(&block, &trigger, true).await;
     }
 }

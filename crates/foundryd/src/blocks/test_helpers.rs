@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+use foundry_core::task_block::TaskBlock;
 use foundry_core::throttle::Throttle;
 
 use crate::engine::Engine;
@@ -166,6 +167,80 @@ pub fn test_project_dir_no_charter() -> tempfile::TempDir {
     )
     .unwrap();
     dir
+}
+
+/// Assert that a block with a failing agent emits `ExecutionCompleted` with `success: false`.
+pub async fn assert_agent_failure_emits_failure(block: &dyn TaskBlock, trigger: &Event) {
+    let result = block.execute(trigger).await.unwrap();
+    assert!(!result.success);
+    assert_eq!(result.events.len(), 1);
+    assert_eq!(result.events[0].event_type, EventType::ExecutionCompleted);
+    assert_eq!(result.events[0].payload["success"], false);
+}
+
+/// Assert that a block forwards `actions` from the trigger payload to `ExecutionCompleted`.
+///
+/// Expects `actions.maintain == true` in the first emitted event.
+pub async fn assert_forwards_actions(block: &dyn TaskBlock, trigger: &Event) {
+    let result = block.execute(trigger).await.unwrap();
+    let actions = result.events[0].payload.get("actions").unwrap();
+    assert_eq!(actions["maintain"], true);
+}
+
+/// Assert change detection when the working tree is dirty.
+///
+/// `expected_files` must all appear in `files_changed` of the first emitted event.
+pub async fn assert_detects_changes_when_dirty(
+    block: &dyn TaskBlock,
+    trigger: &Event,
+    expected_files: &[&str],
+) {
+    let result = block.execute(trigger).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.events[0].payload["changes_detected"], true);
+    let files = result.events[0].payload["files_changed"].as_array().unwrap();
+    for expected in expected_files {
+        assert!(files.iter().any(|f| f == *expected), "expected {expected} in {files:?}");
+    }
+}
+
+/// Assert that a clean working tree is reported correctly.
+///
+/// `expect_success`: `true` for blocks where a clean tree stays success (maintain),
+/// `false` for blocks where the iterate override fires.
+pub async fn assert_reports_no_changes_when_clean(
+    block: &dyn TaskBlock,
+    trigger: &Event,
+    expect_success: bool,
+) {
+    let result = block.execute(trigger).await.unwrap();
+    if expect_success {
+        assert!(result.success, "expected success on clean tree");
+    } else {
+        assert!(!result.success, "expected iterate override to failure on clean tree");
+    }
+    assert_eq!(result.events[0].payload["changes_detected"], false);
+    assert!(
+        result.events[0]
+            .payload
+            .get("files_changed")
+            .is_none_or(|v| v.as_array().is_none_or(std::vec::Vec::is_empty))
+    );
+}
+
+/// Assert that a git status failure is tolerated, reporting `changes_detected: false`.
+pub async fn assert_tolerates_git_failure(
+    block: &dyn TaskBlock,
+    trigger: &Event,
+    expect_success: bool,
+) {
+    let result = block.execute(trigger).await.unwrap();
+    if expect_success {
+        assert!(result.success);
+    } else {
+        assert!(!result.success);
+    }
+    assert_eq!(result.events[0].payload["changes_detected"], false);
 }
 
 /// Assert that a block returns a not-found failure when the trigger project is not in the registry.
