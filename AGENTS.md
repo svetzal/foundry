@@ -102,6 +102,23 @@ Rules:
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
+### Registry commands
+
+Registry **mutations** (`add`, `edit`, `remove`) now go through `foundryd` via gRPC so the daemon's in-memory registry stays consistent with the file on disk.  Pass `--offline` to bypass the daemon and write the file directly (useful when bootstrapping before `foundryd` starts).
+
+| Command | Daemon required? | Notes |
+|---------|-----------------|-------|
+| `foundry registry init` | No | Creates an empty `~/.foundry/registry.json` |
+| `foundry registry list` | No | Reads the file directly |
+| `foundry registry show <name>` | No | Reads the file directly |
+| `foundry registry add …` | Yes (or `--offline`) | Adds via gRPC; falls back with a warning when daemon is unreachable |
+| `foundry registry edit <name> …` | Yes (or `--offline`) | Edits via gRPC; falls back with a warning when daemon is unreachable |
+| `foundry registry remove <name>` | Yes (or `--offline`) | Removes via gRPC; falls back with a warning when daemon is unreachable |
+
+The gRPC RPCs added for registry mutations are `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
+
+> **Note for scripts/automation**: If you run `foundry registry add/edit/remove` without `--offline` and `foundryd` is not listening, the command will warn and fall back to direct file editing.  A running daemon will not see that change until it is restarted.  Start `foundryd` before running mutations, or use `--offline` deliberately and restart the daemon afterward.
+
 ## Payload Conventions
 
 Task blocks in `foundryd` use typed `*Payload` structs from `foundry_core::payload` rather than untyped `serde_json` access.
@@ -196,7 +213,7 @@ The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must al
 
 ## Key Directories
 
-- `~/.foundry/registry.json` — project registry (managed via `foundry registry` commands)
+- `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
 - `~/.foundry/audits/{project}/` — centralized audit logs
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)

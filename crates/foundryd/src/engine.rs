@@ -56,6 +56,12 @@ async fn execute_with_retry(
     last_result.expect("loop always sets last_result")
 }
 
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         Self {
@@ -68,12 +74,14 @@ impl Engine {
     /// Attach an [`EventWriter`] so every event in a processing chain is
     /// persisted to JSONL as it is produced.  Write failures are logged but
     /// never interrupt event processing.
+    #[must_use]
     pub fn with_event_writer(mut self, writer: Arc<EventWriter>) -> Self {
         self.event_writer = Some(writer);
         self
     }
 
     /// Attach a broadcast sender so events are pushed to Watch subscribers in real time.
+    #[must_use]
     pub fn with_event_broadcaster(mut self, tx: broadcast::Sender<Event>) -> Self {
         self.event_tx = Some(tx);
         self

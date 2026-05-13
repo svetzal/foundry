@@ -20,6 +20,12 @@ pub struct WorkflowTracker {
     active: RwLock<HashMap<String, ActiveWorkflow>>,
 }
 
+impl Default for WorkflowTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorkflowTracker {
     pub fn new() -> Self {
         Self {
