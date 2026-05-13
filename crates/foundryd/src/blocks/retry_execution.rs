@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::RetryRequestedPayload;
@@ -18,13 +18,13 @@ use super::TriggerContext;
 /// Uses `AgentGateway` with `Coding` capability and `Full` access.
 /// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
 pub struct RetryExecution {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     agent: Arc<dyn AgentGateway>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl RetryExecution {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
             agent,
@@ -35,7 +35,7 @@ impl RetryExecution {
     #[cfg(test)]
     pub(super) fn with_gateways(
         agent: Arc<dyn AgentGateway>,
-        registry: Arc<Registry>,
+        registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
     ) -> Self {
         Self {
@@ -161,7 +161,7 @@ fn build_retry_prompt(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -186,7 +186,7 @@ mod tests {
     assert_block_meta!(
         RetryExecution::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Mutator,
         sinks_on: [RetryRequested],
@@ -253,10 +253,10 @@ mod tests {
     async fn project_not_in_registry_returns_failure() {
         let block = RetryExecution::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = retry_event("unknown-project", 1, "maintain");
         let result = block.execute(&trigger).await.unwrap();

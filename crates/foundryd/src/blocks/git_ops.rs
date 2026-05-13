@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
@@ -42,7 +42,7 @@ task_block_new! {
 
 impl CommitAndPush {
     async fn commit_and_push(
-        registry: Arc<Registry>,
+        registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
         project: String,
         throttle: foundry_core::throttle::Throttle,
@@ -50,7 +50,14 @@ impl CommitAndPush {
         cve: String,
     ) -> anyhow::Result<TaskBlockResult> {
         // Resolve the project path and push flag from the registry.
-        let Some(entry) = registry.find_project(&project) else {
+        // Extract synchronously before any .await point so the lock is not held across yields.
+        let entry_data = registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .map(|e| (e.path.clone(), e.actions.push));
+
+        let Some((path_str, push_enabled)) = entry_data else {
             // Project not in registry — emit stub events for test compatibility.
             tracing::warn!(
                 project = %project,
@@ -59,8 +66,7 @@ impl CommitAndPush {
             return Ok(stub_result(&project, throttle, &cve));
         };
 
-        let path = std::path::Path::new(&entry.path);
-        let push_enabled = entry.actions.push;
+        let path = std::path::Path::new(&path_str);
 
         tracing::info!(%project, "checking for changes to commit");
 
@@ -188,7 +194,12 @@ impl TaskBlock for CommitAndPush {
         )];
 
         // Simulate push if the project has push enabled, or if unknown (stub path).
-        let push_enabled = self.registry.find_project(&project).is_none_or(|e| e.actions.push);
+        let push_enabled = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .is_none_or(|e| e.actions.push);
 
         if push_enabled {
             events.push(Event::new(
@@ -306,7 +317,7 @@ fn stub_result(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
     use foundry_core::event::{Event, EventType};
@@ -321,11 +332,11 @@ mod tests {
 
     use super::{CommitAndPush, commit_message};
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
     fn make_trigger(project: &str, cve: &str) -> Event {
@@ -350,8 +361,8 @@ mod tests {
         )
     }
 
-    fn registry_for(name: &str, path: &str, push: bool) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn registry_for(name: &str, path: &str, push: bool) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: name.to_string(),
@@ -373,7 +384,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        })
+        }))
     }
 
     /// Fake sequence that simulates: status=dirty, add=ok, commit=ok, push=ok.

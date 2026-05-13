@@ -63,6 +63,97 @@ Optionally filtered by project name.
 | `project` | string | Target project |
 | `payload_json` | string | Event payload as JSON |
 
+### `RegistryAdd(RegistryAddRequest) → RegistryAddResponse`
+
+Add a project to the daemon's in-memory registry and persist the change to
+`registry.json`. The daemon is the single source of truth for registry state.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique project name |
+| `path` | string | Absolute path on the local filesystem |
+| `stack` | string | Technology stack: `rust`, `python`, `typescript`, `elixir` |
+| `agent` | string | AI agent name |
+| `repo` | string | GitHub repo slug (`owner/repo`) |
+| `branch` | string | Default branch (empty → `main`) |
+| `iterate` | bool | Enable iterate action |
+| `maintain` | bool | Enable maintain action |
+| `push` | bool | Enable push action |
+| `audit` | bool | Enable audit action |
+| `release` | bool | Enable release action |
+| `install_command` | string | Shell command for local install (mutually exclusive with `install_brew`) |
+| `install_brew` | string | Homebrew formula for local install (mutually exclusive with `install_command`) |
+| `notes` | string | Human-readable notes (empty → none) |
+| `timeout_secs` | uint64 | Per-project timeout (0 → use default 3600 s) |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | Project | The newly created project entry |
+
+**Errors:** `ALREADY_EXISTS` if the name is already in the registry;
+`INVALID_ARGUMENT` for an unknown stack or conflicting install fields.
+
+### `RegistryRemove(RegistryRemoveRequest) → RegistryRemoveResponse`
+
+Remove a project from the registry by name.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Project name to remove |
+
+**Errors:** `NOT_FOUND` if no project with that name exists.
+
+### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
+
+Apply partial edits to an existing project. Only fields that are non-empty /
+non-zero are applied. Use `clear_*` booleans to explicitly clear optional
+fields (e.g. `clear_skip = true` to un-skip a project).
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Project to edit (required) |
+| `path` | string | New path (empty → no change) |
+| `stack` | string | New stack (empty → no change) |
+| `agent` | string | New agent (empty → no change) |
+| `repo` | string | New repo slug (empty → no change) |
+| `branch` | string | New branch (empty → no change) |
+| `skip` | string | New skip reason; non-empty sets it; empty → no change unless `clear_skip` |
+| `clear_skip` | bool | Remove the skip flag |
+| `iterate` | bool | Set iterate to true (use `clear_iterate` to set false) |
+| `clear_iterate` | bool | Set iterate to false |
+| `maintain` | bool | Set maintain to true |
+| `clear_maintain` | bool | Set maintain to false |
+| `push` | bool | Set push to true |
+| `clear_push` | bool | Set push to false |
+| `audit` | bool | Set audit to true |
+| `clear_audit` | bool | Set audit to false |
+| `release` | bool | Set release to true |
+| `clear_release` | bool | Set release to false |
+| `install_command` | string | Set a shell-command install |
+| `install_brew` | string | Set a Homebrew formula install |
+| `clear_install` | bool | Remove the install config |
+| `notes` | string | Set notes (empty string + `clear_notes = false` → no change) |
+| `clear_notes` | bool | Remove notes |
+| `timeout_secs` | uint64 | Set timeout (0 → no change unless `clear_timeout`) |
+| `clear_timeout` | bool | Revert timeout to the daemon default |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | Project | The updated project entry |
+
+**Errors:** `NOT_FOUND`; `INVALID_ARGUMENT` for conflicting install fields or
+unknown stack.
+
 ### `Trace(TraceRequest) → TraceResponse`
 
 Retrieve the trace of a completed event chain. Returns all events produced

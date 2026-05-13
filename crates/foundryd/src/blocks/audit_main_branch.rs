@@ -47,7 +47,12 @@ impl TaskBlock for AuditMainBranch {
         let dirty_from_payload = p.dirty.unwrap_or(true);
 
         // Look up the project entry in the registry.
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
         let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
@@ -109,7 +114,7 @@ impl TaskBlock for AuditMainBranch {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::EventType;
     use foundry_core::registry::Registry;
@@ -122,19 +127,19 @@ mod tests {
 
     #[test]
     fn main_branch_sinks_on_release_tag_audited() {
-        let block = AuditMainBranch::new(Arc::new(Registry {
+        let block = AuditMainBranch::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        }));
+        })));
         assert_eq!(block.sinks_on(), &[EventType::ReleaseTagAudited]);
     }
 
     #[tokio::test]
     async fn main_branch_skips_when_not_vulnerable() {
-        let block = AuditMainBranch::new(Arc::new(Registry {
+        let block = AuditMainBranch::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        }));
+        })));
         let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
             "test-project",
@@ -147,10 +152,10 @@ mod tests {
 
     #[tokio::test]
     async fn main_branch_falls_back_to_payload_when_project_not_in_registry() {
-        let block = AuditMainBranch::new(Arc::new(Registry {
+        let block = AuditMainBranch::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        }));
+        })));
         let trigger = test_helpers::make_trigger(
             EventType::ReleaseTagAudited,
             "test-project",

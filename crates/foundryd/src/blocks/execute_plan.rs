@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::PlanCompletedPayload;
@@ -18,13 +18,13 @@ use super::TriggerContext;
 /// Uses `AgentGateway` with `Coding` capability and `Full` access.
 /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
 pub struct ExecutePlan {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     agent: Arc<dyn AgentGateway>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl ExecutePlan {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
             agent,
@@ -35,7 +35,7 @@ impl ExecutePlan {
     #[cfg(test)]
     pub(super) fn with_gateways(
         agent: Arc<dyn AgentGateway>,
-        registry: Arc<Registry>,
+        registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
     ) -> Self {
         Self {
@@ -146,7 +146,7 @@ fn build_execution_prompt(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -162,7 +162,7 @@ mod tests {
     assert_block_meta!(
         ExecutePlan::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Mutator,
         sinks_on: [PlanCompleted],
@@ -262,10 +262,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = ExecutePlan::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = test_event!(EventType::PlanCompleted, "my-project", {
             "project": "my-project",
@@ -288,10 +288,10 @@ mod tests {
     async fn project_not_in_registry_returns_failure() {
         let block = ExecutePlan::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         test_helpers::assert_missing_project_fails(&block, EventType::PlanCompleted).await;
     }

@@ -8,7 +8,7 @@
 //! - No install config: chain completes with `LocalInstallCompleted` { status: "skipped" }
 //! - Dry run: synthetic events flow through the full chain
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -25,8 +25,8 @@ fn release_actions() -> ActionFlags {
     }
 }
 
-fn test_registry(project_path: &str) -> Arc<Registry> {
-    Arc::new(Registry {
+fn test_registry(project_path: &str) -> Arc<RwLock<Registry>> {
+    Arc::new(RwLock::new(Registry {
         version: 2,
         projects: vec![ProjectEntry {
             name: "test-project".to_string(),
@@ -42,7 +42,7 @@ fn test_registry(project_path: &str) -> Arc<Registry> {
             installs_skill: None,
             timeout_secs: None,
         }],
-    })
+    }))
 }
 
 fn release_requested_event(bump: Option<&str>) -> Event {
@@ -58,7 +58,7 @@ fn release_requested_event(bump: Option<&str>) -> Event {
 /// Uses `InstallLocally::new()` which creates a production shell gateway, but
 /// since test registries use `install: None`, the block skips gracefully without
 /// spawning any processes.
-fn release_engine(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Engine {
+fn release_engine(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Engine {
     let mut engine = Engine::new();
 
     // ExecuteRelease (composed step, sinks on ReleaseRequested)
@@ -127,7 +127,7 @@ async fn action_flag_guard_stops_chain() {
     std::fs::write(dir.path().join("AGENTS.md"), "# Agent guidance").unwrap();
 
     // Registry with release=false
-    let registry = Arc::new(Registry {
+    let registry = Arc::new(RwLock::new(Registry {
         version: 2,
         projects: vec![ProjectEntry {
             name: "test-project".to_string(),
@@ -143,7 +143,7 @@ async fn action_flag_guard_stops_chain() {
             installs_skill: None,
             timeout_secs: None,
         }],
-    });
+    }));
 
     let agent = FakeAgentGateway::success();
 
@@ -173,7 +173,7 @@ async fn missing_agents_md_fails_gracefully() {
     let dir = tempfile::tempdir().unwrap();
     // No AGENTS.md file created
 
-    let registry = Arc::new(Registry {
+    let registry = Arc::new(RwLock::new(Registry {
         version: 2,
         projects: vec![ProjectEntry {
             name: "test-project".to_string(),
@@ -189,7 +189,7 @@ async fn missing_agents_md_fails_gracefully() {
             installs_skill: None,
             timeout_secs: None,
         }],
-    });
+    }));
 
     let agent = FakeAgentGateway::success();
 

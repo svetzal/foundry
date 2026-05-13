@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -37,14 +37,14 @@ async fn main() -> Result<()> {
     let registry = match foundry_core::registry::Registry::load(&registry_path) {
         Ok(r) => {
             tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
-            Arc::new(r)
+            Arc::new(RwLock::new(r))
         }
         Err(e) => {
             tracing::warn!(path = %registry_path.display(), error = %e, "registry not found, using empty registry");
-            Arc::new(foundry_core::registry::Registry {
+            Arc::new(RwLock::new(foundry_core::registry::Registry {
                 version: 2,
                 projects: vec![],
-            })
+            }))
         }
     };
 
@@ -78,6 +78,7 @@ async fn main() -> Result<()> {
         workflow_tracker,
         trace_writer,
         registry,
+        registry_path,
     );
 
     let addr = "127.0.0.1:50051".parse()?;
@@ -92,7 +93,7 @@ async fn main() -> Result<()> {
 }
 
 fn register_blocks(
-    registry: &Arc<foundry_core::registry::Registry>,
+    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
     event_writer: Arc<event_writer::EventWriter>,
     event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
     trace_writer: Arc<trace_writer::TraceWriter>,

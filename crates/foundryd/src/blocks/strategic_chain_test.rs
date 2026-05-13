@@ -6,7 +6,7 @@
 //! - Max iteration cap stops the loop
 //! - Non-strategic iteration still works (backward compatibility)
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
@@ -23,7 +23,7 @@ use crate::shell::CommandResult;
 fn strategic_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 ) -> Engine {
     let mut engine = Engine::new();
 

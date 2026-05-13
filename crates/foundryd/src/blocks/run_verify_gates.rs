@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::gates::{GateResult, GatesRunResult};
@@ -20,17 +20,17 @@ use super::TriggerContext;
 /// Re-reads `.hone-gates.json` from the project directory (does not rely on
 /// earlier resolution) and runs all gates, emitting `GateVerificationCompleted`.
 pub struct RunVerifyGates {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl RunVerifyGates {
-    pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
+    pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry, shell }
     }
 
     #[cfg(test)]
-    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
+    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry, shell }
     }
 }
@@ -182,7 +182,7 @@ fn build_verification_result(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -227,7 +227,7 @@ mod tests {
     assert_block_meta!(
         RunVerifyGates::new(
             FakeShellGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [ExecutionCompleted],

@@ -7,6 +7,10 @@ use foundry_core::registry::{
     derive_default_skill_install_command,
 };
 
+use crate::proto::{
+    RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_client::FoundryClient,
+};
+
 pub fn init(registry_path: &Path) -> Result<()> {
     if registry_path.exists() {
         println!("Registry already exists at {}", registry_path.display());
@@ -93,7 +97,82 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-pub fn add(
+pub async fn add(
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    path: &str,
+    stack: &str,
+    agent: &str,
+    repo: &str,
+    branch: &str,
+    iterate: bool,
+    maintain: bool,
+    push: bool,
+    audit: bool,
+    release: bool,
+    install_command: Option<&str>,
+    install_brew: Option<&str>,
+    notes: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> Result<()> {
+    if !offline {
+        match FoundryClient::connect(addr.to_string()).await {
+            Ok(mut client) => {
+                let req = RegistryAddRequest {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                    stack: stack.to_string(),
+                    agent: agent.to_string(),
+                    repo: repo.to_string(),
+                    branch: branch.to_string(),
+                    iterate,
+                    maintain,
+                    push,
+                    audit,
+                    release,
+                    install_command: install_command.unwrap_or("").to_string(),
+                    install_brew: install_brew.unwrap_or("").to_string(),
+                    notes: notes.unwrap_or("").to_string(),
+                    timeout_secs: timeout_secs.unwrap_or(0),
+                };
+                client
+                    .registry_add(req)
+                    .await
+                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
+                println!("Added project '{name}' to registry.");
+                return Ok(());
+            }
+            Err(_) => {
+                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
+            }
+        }
+    }
+
+    // Offline path — mutate registry.json directly.
+    add_offline(
+        registry_path,
+        name,
+        path,
+        stack,
+        agent,
+        repo,
+        branch,
+        iterate,
+        maintain,
+        push,
+        audit,
+        release,
+        install_command,
+        install_brew,
+        notes,
+        timeout_secs,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn add_offline(
     registry_path: &Path,
     name: &str,
     path: &str,
@@ -153,7 +232,27 @@ pub fn add(
     Ok(())
 }
 
-pub fn remove(registry_path: &Path, name: &str) -> Result<()> {
+pub async fn remove(registry_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+    if !offline {
+        match FoundryClient::connect(addr.to_string()).await {
+            Ok(mut client) => {
+                let req = RegistryRemoveRequest {
+                    name: name.to_string(),
+                };
+                client
+                    .registry_remove(req)
+                    .await
+                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
+                println!("Removed project '{name}' from registry.");
+                return Ok(());
+            }
+            Err(_) => {
+                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
+            }
+        }
+    }
+
+    // Offline path — mutate registry.json directly.
     let mut registry = Registry::load(registry_path)?;
 
     let before = registry.projects.len();
@@ -169,7 +268,94 @@ pub fn remove(registry_path: &Path, name: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-pub fn edit(
+pub async fn edit(
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    path: Option<&str>,
+    stack: Option<&str>,
+    agent: Option<&str>,
+    repo: Option<&str>,
+    branch: Option<&str>,
+    skip: Option<&str>,
+    iterate: Option<bool>,
+    maintain: Option<bool>,
+    push: Option<bool>,
+    audit_flag: Option<bool>,
+    release: Option<bool>,
+    install_command: Option<&str>,
+    install_brew: Option<&str>,
+    notes: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> Result<()> {
+    if !offline {
+        match FoundryClient::connect(addr.to_string()).await {
+            Ok(mut client) => {
+                let req = RegistryEditRequest {
+                    name: name.to_string(),
+                    path: path.unwrap_or("").to_string(),
+                    stack: stack.unwrap_or("").to_string(),
+                    agent: agent.unwrap_or("").to_string(),
+                    repo: repo.unwrap_or("").to_string(),
+                    branch: branch.unwrap_or("").to_string(),
+                    skip: skip.filter(|s| !s.is_empty()).unwrap_or("").to_string(),
+                    clear_skip: skip.is_some_and(str::is_empty),
+                    iterate: iterate.unwrap_or(false),
+                    clear_iterate: iterate.is_some_and(|v| !v),
+                    maintain: maintain.unwrap_or(false),
+                    clear_maintain: maintain.is_some_and(|v| !v),
+                    push: push.unwrap_or(false),
+                    clear_push: push.is_some_and(|v| !v),
+                    audit: audit_flag.unwrap_or(false),
+                    clear_audit: audit_flag.is_some_and(|v| !v),
+                    release: release.unwrap_or(false),
+                    clear_release: release.is_some_and(|v| !v),
+                    install_command: install_command.unwrap_or("").to_string(),
+                    install_brew: install_brew.unwrap_or("").to_string(),
+                    clear_install: false,
+                    notes: notes.filter(|s| !s.is_empty()).unwrap_or("").to_string(),
+                    clear_notes: notes.is_some_and(str::is_empty),
+                    timeout_secs: timeout_secs.unwrap_or(0),
+                    clear_timeout: false,
+                };
+                client
+                    .registry_edit(req)
+                    .await
+                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
+                println!("Updated project '{name}'.");
+                return Ok(());
+            }
+            Err(_) => {
+                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
+            }
+        }
+    }
+
+    // Offline path — mutate registry.json directly.
+    edit_offline(
+        registry_path,
+        name,
+        path,
+        stack,
+        agent,
+        repo,
+        branch,
+        skip,
+        iterate,
+        maintain,
+        push,
+        audit_flag,
+        release,
+        install_command,
+        install_brew,
+        notes,
+        timeout_secs,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn edit_offline(
     registry_path: &Path,
     name: &str,
     path: Option<&str>,

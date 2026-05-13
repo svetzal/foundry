@@ -19,6 +19,10 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:50051", global = true)]
     addr: String,
 
+    /// Skip gRPC and mutate the registry file directly (useful when daemon is not running)
+    #[arg(long, global = true)]
+    offline: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -313,7 +317,12 @@ enum RegistryCommands {
     },
 }
 
-fn handle_registry_command(sub: RegistryCommands, path: &std::path::Path) -> Result<()> {
+async fn handle_registry_command(
+    sub: RegistryCommands,
+    path: &std::path::Path,
+    addr: &str,
+    offline: bool,
+) -> Result<()> {
     match sub {
         RegistryCommands::Init => registry_commands::init(path),
         RegistryCommands::List => registry_commands::list(path),
@@ -334,25 +343,32 @@ fn handle_registry_command(sub: RegistryCommands, path: &std::path::Path) -> Res
             install_brew,
             notes,
             timeout_secs,
-        } => registry_commands::add(
-            path,
-            &name,
-            &project_path,
-            &stack,
-            &agent,
-            &repo,
-            &branch,
-            iterate,
-            maintain,
-            push,
-            audit,
-            release,
-            install_command.as_deref(),
-            install_brew.as_deref(),
-            notes.as_deref(),
-            timeout_secs,
-        ),
-        RegistryCommands::Remove { name } => registry_commands::remove(path, &name),
+        } => {
+            registry_commands::add(
+                path,
+                addr,
+                offline,
+                &name,
+                &project_path,
+                &stack,
+                &agent,
+                &repo,
+                &branch,
+                iterate,
+                maintain,
+                push,
+                audit,
+                release,
+                install_command.as_deref(),
+                install_brew.as_deref(),
+                notes.as_deref(),
+                timeout_secs,
+            )
+            .await
+        }
+        RegistryCommands::Remove { name } => {
+            registry_commands::remove(path, addr, offline, &name).await
+        }
         RegistryCommands::Edit {
             name,
             path: project_path,
@@ -370,25 +386,30 @@ fn handle_registry_command(sub: RegistryCommands, path: &std::path::Path) -> Res
             install_brew,
             notes,
             timeout_secs,
-        } => registry_commands::edit(
-            path,
-            &name,
-            project_path.as_deref(),
-            stack.as_deref(),
-            agent.as_deref(),
-            repo.as_deref(),
-            branch.as_deref(),
-            skip.as_deref(),
-            iterate,
-            maintain,
-            push,
-            audit,
-            release,
-            install_command.as_deref(),
-            install_brew.as_deref(),
-            notes.as_deref(),
-            timeout_secs,
-        ),
+        } => {
+            registry_commands::edit(
+                path,
+                addr,
+                offline,
+                &name,
+                project_path.as_deref(),
+                stack.as_deref(),
+                agent.as_deref(),
+                repo.as_deref(),
+                branch.as_deref(),
+                skip.as_deref(),
+                iterate,
+                maintain,
+                push,
+                audit,
+                release,
+                install_command.as_deref(),
+                install_brew.as_deref(),
+                notes.as_deref(),
+                timeout_secs,
+            )
+            .await
+        }
     }
 }
 
@@ -439,7 +460,13 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Registry(sub) => {
-            handle_registry_command(sub, &foundry_core::paths::registry_path())
+            handle_registry_command(
+                sub,
+                &foundry_core::paths::registry_path(),
+                &cli.addr,
+                cli.offline,
+            )
+            .await
         }
     }
 }

@@ -236,7 +236,7 @@ pub(super) fn extract_json(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -252,7 +252,7 @@ mod tests {
     assert_block_meta!(
         AssessProject::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [PreflightCompleted],

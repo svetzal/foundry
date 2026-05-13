@@ -53,10 +53,14 @@ macro_rules! parse_payload {
 
 /// Early-return a project registry lookup from `self.registry`.
 ///
+/// Acquires a short-lived read guard, clones the entry, and releases the guard
+/// before the `Box::pin(async move { ... })` boundary so the lock is never held
+/// across an `.await` point.
+///
 /// Expands to a `match` that returns the `ProjectEntry` on success or
 /// returns `Ok(result)` (a not-found failure `TaskBlockResult`) on failure.
-/// Requires `self.registry` and that the calling module has `require_project`
-/// visible as `super::require_project`.
+/// Requires `self.registry: Arc<RwLock<Registry>>` and that the calling module
+/// has `require_project` visible as `super::require_project`.
 ///
 /// # Usage
 ///
@@ -65,7 +69,10 @@ macro_rules! parse_payload {
 /// ```
 macro_rules! require_project {
     ($self:expr, $project:expr) => {
-        match super::require_project(&$self.registry, &$project) {
+        match super::require_project(
+            &$self.registry.read().expect("registry lock poisoned"),
+            &$project,
+        ) {
             Ok(e) => e,
             Err(result) => return Box::pin(async { Ok(result) }),
         }
@@ -99,22 +106,22 @@ macro_rules! skip {
 /// ```
 ///
 /// Expands to:
-/// - `pub struct MyBlock { registry: Arc<Registry>, agent: Arc<dyn AgentGateway> }`
-/// - `impl MyBlock { pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self }`
+/// - `pub struct MyBlock { registry: Arc<RwLock<Registry>>, agent: Arc<dyn AgentGateway> }`
+/// - `impl MyBlock { pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self }`
 ///
 /// Requires `Registry` and `AgentGateway` to be in scope at the call site.
 macro_rules! agent_block_new {
     ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
         $(#[$meta])*
         $vis struct $name {
-            registry: ::std::sync::Arc<Registry>,
+            registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
             agent: ::std::sync::Arc<dyn AgentGateway>,
         }
 
         impl $name {
             pub fn new(
                 agent: ::std::sync::Arc<dyn AgentGateway>,
-                registry: ::std::sync::Arc<Registry>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
             ) -> Self {
                 Self { registry, agent }
             }
@@ -211,7 +218,7 @@ macro_rules! assert_block_meta {
 /// ```
 ///
 /// Both forms expand to:
-/// - `pub struct MyBlock { registry: Arc<Registry>, field: Arc<dyn Trait>, ... }`
+/// - `pub struct MyBlock { registry: Arc<RwLock<Registry>>, field: Arc<dyn Trait>, ... }`
 /// - `impl MyBlock { pub fn new(registry) -> Self { ... } }`
 /// - `#[cfg(test)] fn with_gateways(registry, field, ...) -> Self { ... }`
 ///
@@ -228,12 +235,12 @@ macro_rules! task_block_new {
     ) => {
         $(#[$meta])*
         $vis struct $name {
-            registry: ::std::sync::Arc<Registry>,
+            registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
             $gw_field: ::std::sync::Arc<dyn $gw_trait>,
         }
 
         impl $name {
-            pub fn new(registry: ::std::sync::Arc<Registry>) -> Self {
+            pub fn new(registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>) -> Self {
                 Self {
                     registry,
                     $gw_field: ::std::sync::Arc::new($gw_default),
@@ -242,7 +249,7 @@ macro_rules! task_block_new {
 
             #[cfg(test)]
             fn with_gateways(
-                registry: ::std::sync::Arc<Registry>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
                 $gw_field: ::std::sync::Arc<dyn $gw_trait>,
             ) -> Self {
                 Self { registry, $gw_field }
@@ -259,12 +266,12 @@ macro_rules! task_block_new {
     ) => {
         $(#[$meta])*
         $vis struct $name {
-            registry: ::std::sync::Arc<Registry>,
+            registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
             $($gw_field: ::std::sync::Arc<dyn $gw_trait>),+
         }
 
         impl $name {
-            pub fn new(registry: ::std::sync::Arc<Registry>) -> Self {
+            pub fn new(registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>) -> Self {
                 Self {
                     registry,
                     $($gw_field: ::std::sync::Arc::new($gw_default)),+
@@ -273,7 +280,7 @@ macro_rules! task_block_new {
 
             #[cfg(test)]
             fn with_gateways(
-                registry: ::std::sync::Arc<Registry>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
                 $($gw_field: ::std::sync::Arc<dyn $gw_trait>),+
             ) -> Self {
                 Self { registry, $($gw_field),+ }

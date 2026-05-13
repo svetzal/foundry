@@ -67,7 +67,12 @@ impl TaskBlock for StrategicLoopController {
             None
         };
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {
@@ -320,7 +325,7 @@ async fn assess_continue(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -332,11 +337,11 @@ mod tests {
     use super::super::test_helpers;
     use super::StrategicLoopController;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
     #[test]

@@ -67,7 +67,12 @@ impl TaskBlock for InstallLocally {
         let throttle = trigger.throttle;
 
         // Resolve install config and project path from registry.
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
@@ -289,7 +294,7 @@ fn tail_lines(text: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
     use foundry_core::event::{Event, EventType};
@@ -304,22 +309,22 @@ mod tests {
 
     use super::InstallLocally;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
-    fn registry_with_install(install: Option<InstallConfig>) -> Arc<Registry> {
+    fn registry_with_install(install: Option<InstallConfig>) -> Arc<RwLock<Registry>> {
         registry_with_install_and_skill(install, None)
     }
 
     fn registry_with_install_and_skill(
         install: Option<InstallConfig>,
         installs_skill: Option<InstallsSkill>,
-    ) -> Arc<Registry> {
-        Arc::new(Registry {
+    ) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: "my-project".to_string(),
@@ -335,7 +340,7 @@ mod tests {
                 installs_skill,
                 timeout_secs: None,
             }],
-        })
+        }))
     }
 
     fn make_trigger(project: &str) -> Event {

@@ -165,11 +165,18 @@ impl TaskBlock for CleanupBranches {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
         let project = trigger.project.clone();
-        let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
         let p = parse_payload!(trigger, ProjectValidationCompletedPayload);
         let status_ok = p.status == "ok";
+
+        // Extract registry data before the async boundary — the RwLock guard must not cross .await.
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
 
         Box::pin(async move {
             // Self-filter: only act on successful validations.
@@ -177,7 +184,7 @@ impl TaskBlock for CleanupBranches {
                 return Ok(TaskBlockResult::success("Skipped: validation not ok", vec![]));
             }
 
-            let Some(entry) = registry.find_project(&project) else {
+            let Some(entry) = entry else {
                 return Ok(TaskBlockResult::success(
                     format!("Skipped: {project} not in registry"),
                     vec![],
@@ -205,7 +212,7 @@ impl TaskBlock for CleanupBranches {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -217,8 +224,8 @@ mod tests {
 
     use super::CleanupBranches;
 
-    fn make_registry(name: &str, path: &str) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn make_registry(name: &str, path: &str) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: name.to_string(),
@@ -234,7 +241,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        })
+        }))
     }
 
     fn validation_ok(project: &str) -> Event {
@@ -276,7 +283,7 @@ mod tests {
     // -- Metadata tests --
 
     assert_block_meta!(
-        CleanupBranches::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        CleanupBranches::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [ProjectValidationCompleted],
     );
@@ -312,10 +319,10 @@ mod tests {
 
     #[tokio::test]
     async fn skips_when_project_not_in_registry() {
-        let registry = Arc::new(Registry {
+        let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        });
+        }));
         let shell = FakeShellGateway::success();
         let block = CleanupBranches::with_gateways(registry, shell);
 

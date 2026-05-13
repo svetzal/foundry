@@ -17,6 +17,18 @@ export FOUNDRY_REGISTRY_PATH=/path/to/my-registry.json
 The daemon reads the registry on startup. If the file is missing it logs a
 warning and continues with an empty registry (no projects will be processed).
 
+## Single Source of Truth
+
+The running daemon holds an in-memory copy of the registry in a read-write lock.
+All mutations (`add`, `remove`, `edit`) go through the daemon's gRPC API so the
+in-memory state always matches `registry.json`. The CLI routes mutation commands
+to the daemon when it is reachable and falls back to direct file mutation when the
+daemon is not running (pass `--offline` to force the fallback regardless):
+
+```bash
+foundry registry add --name my-tool … --offline   # write directly to registry.json
+```
+
 ## Registry Format (v2)
 
 ```json

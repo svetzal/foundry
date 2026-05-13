@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::VulnerabilityDetectedPayload;
@@ -17,7 +17,7 @@ use crate::gateway::{ScannerGateway, ShellGateway};
 ///   registry and emits a clean `ReleaseTagAudited` if the project is known;
 ///   emits nothing when the project is not in the registry.
 pub struct AuditReleaseTag {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
     scanner: Arc<dyn ScannerGateway>,
 }
@@ -26,17 +26,17 @@ impl AuditReleaseTag {
     /// Create a new `AuditReleaseTag` block with no registered projects.
     pub fn new() -> Self {
         Self {
-            registry: Arc::new(Registry {
+            registry: Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
             shell: Arc::new(crate::gateway::ProcessShellGateway),
             scanner: Arc::new(crate::gateway::ProcessScannerGateway),
         }
     }
 
     /// Create a new `AuditReleaseTag` block backed by the given registry.
-    pub fn with_registry(registry: Arc<Registry>) -> Self {
+    pub fn with_registry(registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
             shell: Arc::new(crate::gateway::ProcessShellGateway),
@@ -46,7 +46,7 @@ impl AuditReleaseTag {
 
     #[cfg(test)]
     fn with_gateways(
-        registry: Arc<Registry>,
+        registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
         scanner: Arc<dyn ScannerGateway>,
     ) -> Self {
@@ -77,7 +77,12 @@ impl AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
         let scanner = Arc::clone(&self.scanner);
 
         let Some(entry) = entry else {
@@ -134,7 +139,12 @@ impl AuditReleaseTag {
         let payload_dirty = Some(p.dirty);
 
         // Look up the project entry in the registry.
-        let entry = self.registry.find_project(&project).cloned();
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .find_project(&project)
+            .cloned();
         let shell = Arc::clone(&self.shell);
         let scanner = Arc::clone(&self.scanner);
 

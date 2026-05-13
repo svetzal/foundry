@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::GateResolutionCompletedPayload;
@@ -19,13 +19,13 @@ use super::TriggerContext;
 /// Uses `AgentGateway` with `Coding` capability and `Full` access.
 /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
 pub struct ExecuteMaintain {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     agent: Arc<dyn AgentGateway>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl ExecuteMaintain {
-    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<Registry>) -> Self {
+    pub fn new(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
             agent,
@@ -36,7 +36,7 @@ impl ExecuteMaintain {
     #[cfg(test)]
     fn with_gateways(
         agent: Arc<dyn AgentGateway>,
-        registry: Arc<Registry>,
+        registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
     ) -> Self {
         Self {
@@ -156,7 +156,7 @@ fn build_maintain_prompt(project: &str, gates: Option<&serde_json::Value>) -> St
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -172,7 +172,7 @@ mod tests {
     assert_block_meta!(
         ExecuteMaintain::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Mutator,
         sinks_on: [GateResolutionCompleted],
@@ -295,10 +295,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = ExecuteMaintain::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = test_event!(EventType::GateResolutionCompleted, "unknown-project", {
             "project": "unknown-project",
@@ -374,10 +374,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = ExecuteMaintain::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
@@ -399,10 +399,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = ExecuteMaintain::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",

@@ -207,7 +207,7 @@ fn parse_strategic_assessment(output: &str) -> Vec<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -222,7 +222,7 @@ mod tests {
     assert_block_meta!(
         StrategicAssessor::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [IterationRequested],

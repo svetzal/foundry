@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
@@ -21,17 +21,17 @@ use super::TriggerContext;
 /// Only runs gates when `workflow == "iterate"`; maintenance workflows skip
 /// preflight and immediately emit `PreflightCompleted` with `all_passed: true`.
 pub struct RunPreflightGates {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl RunPreflightGates {
-    pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
+    pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry, shell }
     }
 
     #[cfg(test)]
-    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<Registry>) -> Self {
+    fn with_shell(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry, shell }
     }
 }
@@ -108,7 +108,10 @@ impl TaskBlock for RunPreflightGates {
                 );
             }
 
-            let entry = match super::require_project(&registry, &project) {
+            let entry = match super::require_project(
+                &registry.read().expect("registry lock poisoned"),
+                &project,
+            ) {
                 Ok(e) => e,
                 Err(result) => return Ok(result),
             };
@@ -177,7 +180,7 @@ fn parse_gates_from_value(gates_array: Option<&Vec<serde_json::Value>>) -> Vec<G
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -209,7 +212,7 @@ mod tests {
     assert_block_meta!(
         RunPreflightGates::new(
             FakeShellGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [GateResolutionCompleted],
@@ -218,10 +221,10 @@ mod tests {
     #[tokio::test]
     async fn skips_preflight_for_maintain_workflow() {
         let shell = FakeShellGateway::success();
-        let registry = Arc::new(Registry {
+        let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        });
+        }));
         let block = RunPreflightGates::with_shell(shell.clone(), registry);
         let trigger = gate_resolution_completed_event(
             "my-project",
@@ -343,10 +346,10 @@ mod tests {
     #[tokio::test]
     async fn no_gates_emits_success() {
         let shell = FakeShellGateway::success();
-        let registry = Arc::new(Registry {
+        let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        });
+        }));
         let block = RunPreflightGates::with_shell(shell, registry);
         let trigger =
             gate_resolution_completed_event("my-project", "iterate", &serde_json::json!([]));

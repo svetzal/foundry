@@ -222,7 +222,7 @@ async fn fetch_failure_logs(run_id: u64, repo: &str, shell: &dyn ShellGateway) -
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -233,15 +233,15 @@ mod tests {
 
     use super::CheckPipeline;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
-    fn registry_with_repo(name: &str, repo: &str) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn registry_with_repo(name: &str, repo: &str) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: name.to_string(),
@@ -257,7 +257,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        })
+        }))
     }
 
     fn trigger(project: &str) -> Event {
@@ -265,14 +265,14 @@ mod tests {
     }
 
     assert_block_meta!(
-        CheckPipeline::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        CheckPipeline::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [PipelineCheckRequested],
     );
 
     #[tokio::test]
     async fn skips_when_no_repo_configured() {
-        let registry = Arc::new(Registry {
+        let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: "my-project".to_string(),
@@ -288,7 +288,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        });
+        }));
         let shell = FakeShellGateway::success();
         let block = CheckPipeline::with_gateways(registry, shell);
         let t = trigger("my-project");

@@ -213,6 +213,234 @@ impl std::fmt::Display for Stack {
         }
     }
 }
+
+/// Parse a stack name, returning an error on unrecognised values.
+///
+/// # Errors
+///
+/// Returns `RegistryMutationError::InvalidStack` when the input string does not
+/// match any known stack name.
+pub fn parse_stack(s: &str) -> Result<Stack, RegistryMutationError> {
+    serde_json::from_str(&format!("\"{s}\""))
+        .map_err(|_| RegistryMutationError::InvalidStack(s.to_string()))
+}
+
+/// Errors that can occur when mutating the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryMutationError {
+    /// A project with this name already exists.
+    DuplicateName(String),
+    /// No project with this name exists.
+    NotFound(String),
+    /// The given stack name is not recognised.
+    InvalidStack(String),
+    /// Both `install_command` and `install_brew` were provided; only one is allowed.
+    ConflictingInstall,
+}
+
+impl std::fmt::Display for RegistryMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateName(name) => {
+                write!(f, "project '{name}' already exists in registry")
+            }
+            Self::NotFound(name) => write!(f, "project '{name}' not found in registry"),
+            Self::InvalidStack(s) => {
+                write!(f, "invalid stack '{s}'; use: rust, python, typescript, elixir, cpp")
+            }
+            Self::ConflictingInstall => {
+                write!(f, "provide at most one of install_command or install_brew")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegistryMutationError {}
+
+/// All fields required when adding a new project.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone)]
+pub struct ProjectSpec {
+    pub name: String,
+    pub path: String,
+    pub stack: Stack,
+    pub agent: String,
+    pub repo: String,
+    pub branch: String,
+    pub iterate: bool,
+    pub maintain: bool,
+    pub push: bool,
+    pub audit: bool,
+    pub release: bool,
+    pub install_command: Option<String>,
+    pub install_brew: Option<String>,
+    pub notes: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Optional overrides when editing an existing project.
+///
+/// `None` on a field means "leave unchanged".
+#[derive(Debug, Clone, Default)]
+pub struct ProjectEdits {
+    pub path: Option<String>,
+    pub stack: Option<Stack>,
+    pub agent: Option<String>,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    /// `Some(Some(reason))` sets skip; `Some(None)` clears skip; `None` leaves unchanged.
+    pub skip: Option<Option<String>>,
+    pub iterate: Option<bool>,
+    pub maintain: Option<bool>,
+    pub push: Option<bool>,
+    pub audit: Option<bool>,
+    pub release: Option<bool>,
+    /// Set a command-based install. Mutually exclusive with `install_brew`.
+    pub install_command: Option<String>,
+    /// Set a Homebrew formula install. Mutually exclusive with `install_command`.
+    pub install_brew: Option<String>,
+    /// When `true`, clear the install config entirely (set to `None`).
+    /// Takes precedence over `install_command` / `install_brew` when both are absent.
+    pub clear_install: bool,
+    /// `Some(s)` sets notes (empty string clears); `None` leaves unchanged.
+    pub notes: Option<String>,
+    /// `Some(v)` sets timeout; `None` leaves unchanged.
+    pub timeout_secs: Option<u64>,
+    /// When `true`, clear the timeout (revert to daemon default).
+    pub clear_timeout: bool,
+}
+
+impl Registry {
+    /// Add a new project to the registry.
+    ///
+    /// # Errors
+    ///
+    /// - `DuplicateName` if a project with the same name already exists.
+    /// - `ConflictingInstall` if both `install_command` and `install_brew` are set.
+    pub fn add_project(
+        &mut self,
+        spec: ProjectSpec,
+    ) -> Result<&ProjectEntry, RegistryMutationError> {
+        if self.projects.iter().any(|p| p.name == spec.name) {
+            return Err(RegistryMutationError::DuplicateName(spec.name));
+        }
+        if spec.install_command.is_some() && spec.install_brew.is_some() {
+            return Err(RegistryMutationError::ConflictingInstall);
+        }
+        let install = match (spec.install_command, spec.install_brew) {
+            (Some(cmd), _) => Some(InstallConfig::Command(cmd)),
+            (_, Some(formula)) => Some(InstallConfig::Brew(formula)),
+            _ => None,
+        };
+        self.projects.push(ProjectEntry {
+            name: spec.name,
+            path: spec.path,
+            stack: spec.stack,
+            agent: spec.agent,
+            repo: spec.repo,
+            branch: spec.branch,
+            skip: None,
+            notes: spec.notes,
+            actions: ActionFlags {
+                iterate: spec.iterate,
+                maintain: spec.maintain,
+                push: spec.push,
+                audit: spec.audit,
+                release: spec.release,
+            },
+            install,
+            installs_skill: None,
+            timeout_secs: spec.timeout_secs,
+        });
+        Ok(self.projects.last().expect("just pushed"))
+    }
+
+    /// Remove a project from the registry by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if no project with the given name exists.
+    pub fn remove_project(&mut self, name: &str) -> Result<(), RegistryMutationError> {
+        let before = self.projects.len();
+        self.projects.retain(|p| p.name != name);
+        if self.projects.len() == before {
+            return Err(RegistryMutationError::NotFound(name.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Apply partial edits to an existing project.
+    ///
+    /// # Errors
+    ///
+    /// - `NotFound` if no project with the given name exists.
+    /// - `ConflictingInstall` if both `install_command` and `install_brew` are set.
+    pub fn edit_project(
+        &mut self,
+        name: &str,
+        edits: ProjectEdits,
+    ) -> Result<&ProjectEntry, RegistryMutationError> {
+        if edits.install_command.is_some() && edits.install_brew.is_some() {
+            return Err(RegistryMutationError::ConflictingInstall);
+        }
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.name == name)
+            .ok_or_else(|| RegistryMutationError::NotFound(name.to_string()))?;
+
+        if let Some(v) = edits.path {
+            project.path = v;
+        }
+        if let Some(v) = edits.stack {
+            project.stack = v;
+        }
+        if let Some(v) = edits.agent {
+            project.agent = v;
+        }
+        if let Some(v) = edits.repo {
+            project.repo = v;
+        }
+        if let Some(v) = edits.branch {
+            project.branch = v;
+        }
+        if let Some(skip_val) = edits.skip {
+            project.skip = skip_val;
+        }
+        if let Some(v) = edits.iterate {
+            project.actions.iterate = v;
+        }
+        if let Some(v) = edits.maintain {
+            project.actions.maintain = v;
+        }
+        if let Some(v) = edits.push {
+            project.actions.push = v;
+        }
+        if let Some(v) = edits.audit {
+            project.actions.audit = v;
+        }
+        if let Some(v) = edits.release {
+            project.actions.release = v;
+        }
+        if let Some(cmd) = edits.install_command {
+            project.install = Some(InstallConfig::Command(cmd));
+        } else if let Some(formula) = edits.install_brew {
+            project.install = Some(InstallConfig::Brew(formula));
+        } else if edits.clear_install {
+            project.install = None;
+        }
+        if let Some(v) = edits.notes {
+            project.notes = if v.is_empty() { None } else { Some(v) };
+        }
+        if edits.clear_timeout {
+            project.timeout_secs = None;
+        } else if let Some(v) = edits.timeout_secs {
+            project.timeout_secs = Some(v);
+        }
+
+        Ok(project)
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -600,5 +828,288 @@ mod tests {
             let stack: Stack = serde_json::from_str(&format!(r#""{json}""#)).unwrap();
             assert_eq!(stack, expected);
         }
+    }
+
+    // --- parse_stack ---
+
+    #[test]
+    fn parse_stack_valid_values() {
+        assert_eq!(parse_stack("rust").unwrap(), Stack::Rust);
+        assert_eq!(parse_stack("python").unwrap(), Stack::Python);
+        assert_eq!(parse_stack("typescript").unwrap(), Stack::TypeScript);
+        assert_eq!(parse_stack("elixir").unwrap(), Stack::Elixir);
+        assert_eq!(parse_stack("cpp").unwrap(), Stack::Cpp);
+    }
+
+    #[test]
+    fn parse_stack_invalid_value_returns_error() {
+        assert!(matches!(
+            parse_stack("cobol"),
+            Err(RegistryMutationError::InvalidStack(s)) if s == "cobol"
+        ));
+    }
+
+    // --- Registry::add_project ---
+
+    fn empty_registry() -> Registry {
+        Registry {
+            version: 2,
+            projects: vec![],
+        }
+    }
+
+    fn minimal_spec(name: &str) -> ProjectSpec {
+        ProjectSpec {
+            name: name.to_string(),
+            path: format!("/projects/{name}"),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: format!("owner/{name}"),
+            branch: "main".to_string(),
+            iterate: false,
+            maintain: false,
+            push: false,
+            audit: false,
+            release: false,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn add_project_succeeds_on_empty_registry() {
+        let mut registry = empty_registry();
+        let result = registry.add_project(minimal_spec("alpha"));
+        assert!(result.is_ok());
+        assert_eq!(registry.projects.len(), 1);
+        assert_eq!(registry.projects[0].name, "alpha");
+    }
+
+    #[test]
+    fn add_project_returns_reference_to_new_entry() {
+        let mut registry = empty_registry();
+        let entry = registry.add_project(minimal_spec("alpha")).unwrap();
+        assert_eq!(entry.name, "alpha");
+        assert_eq!(entry.stack, Stack::Rust);
+    }
+
+    #[test]
+    fn add_project_duplicate_name_returns_error() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        let err = registry.add_project(minimal_spec("alpha")).unwrap_err();
+        assert!(matches!(err, RegistryMutationError::DuplicateName(n) if n == "alpha"));
+    }
+
+    #[test]
+    fn add_project_conflicting_install_returns_error() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            install_command: Some("cargo install --path .".to_string()),
+            install_brew: Some("my-formula".to_string()),
+            ..minimal_spec("alpha")
+        };
+        let err = registry.add_project(spec).unwrap_err();
+        assert_eq!(err, RegistryMutationError::ConflictingInstall);
+    }
+
+    #[test]
+    fn add_project_install_command_is_wired() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            install_command: Some("cargo install --path .".to_string()),
+            ..minimal_spec("alpha")
+        };
+        registry.add_project(spec).unwrap();
+        assert!(
+            matches!(&registry.projects[0].install, Some(InstallConfig::Command(c)) if c == "cargo install --path .")
+        );
+    }
+
+    #[test]
+    fn add_project_install_brew_is_wired() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            install_brew: Some("my-formula".to_string()),
+            ..minimal_spec("alpha")
+        };
+        registry.add_project(spec).unwrap();
+        assert!(
+            matches!(&registry.projects[0].install, Some(InstallConfig::Brew(f)) if f == "my-formula")
+        );
+    }
+
+    // --- Registry::remove_project ---
+
+    #[test]
+    fn remove_project_removes_existing_entry() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry.remove_project("alpha").unwrap();
+        assert!(registry.projects.is_empty());
+    }
+
+    #[test]
+    fn remove_project_not_found_returns_error() {
+        let mut registry = empty_registry();
+        let err = registry.remove_project("nonexistent").unwrap_err();
+        assert!(matches!(err, RegistryMutationError::NotFound(n) if n == "nonexistent"));
+    }
+
+    // --- Registry::edit_project ---
+
+    #[test]
+    fn edit_project_updates_path() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    path: Some("/new/path".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(registry.projects[0].path, "/new/path");
+    }
+
+    #[test]
+    fn edit_project_updates_stack() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    stack: Some(Stack::Python),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(registry.projects[0].stack, Stack::Python);
+    }
+
+    #[test]
+    fn edit_project_sets_skip_reason() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    skip: Some(Some("CI broken".to_string())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(registry.projects[0].skip.as_deref(), Some("CI broken"));
+    }
+
+    #[test]
+    fn edit_project_clears_skip() {
+        let mut registry = empty_registry();
+        let mut spec = minimal_spec("alpha");
+        spec.notes = None;
+        registry.add_project(spec).unwrap();
+        registry.projects[0].skip = Some("old reason".to_string());
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    skip: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(registry.projects[0].skip.is_none());
+    }
+
+    #[test]
+    fn edit_project_not_found_returns_error() {
+        let mut registry = empty_registry();
+        let err = registry.edit_project("nonexistent", ProjectEdits::default()).unwrap_err();
+        assert!(matches!(err, RegistryMutationError::NotFound(n) if n == "nonexistent"));
+    }
+
+    #[test]
+    fn edit_project_conflicting_install_returns_error() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        let err = registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    install_command: Some("cmd".to_string()),
+                    install_brew: Some("formula".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, RegistryMutationError::ConflictingInstall);
+    }
+
+    #[test]
+    fn edit_project_updates_action_flags() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    iterate: Some(true),
+                    maintain: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(registry.projects[0].actions.iterate);
+        assert!(registry.projects[0].actions.maintain);
+    }
+
+    #[test]
+    fn edit_project_returns_reference_to_updated_entry() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        let entry = registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    agent: Some("gemini".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(entry.agent, "gemini");
+    }
+
+    // --- RegistryMutationError display ---
+
+    #[test]
+    fn mutation_error_display_duplicate_name() {
+        let e = RegistryMutationError::DuplicateName("proj".to_string());
+        assert!(e.to_string().contains("proj"));
+        assert!(e.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn mutation_error_display_not_found() {
+        let e = RegistryMutationError::NotFound("proj".to_string());
+        assert!(e.to_string().contains("proj"));
+        assert!(e.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn mutation_error_display_invalid_stack() {
+        let e = RegistryMutationError::InvalidStack("cobol".to_string());
+        assert!(e.to_string().contains("cobol"));
+    }
+
+    #[test]
+    fn mutation_error_display_conflicting_install() {
+        let e = RegistryMutationError::ConflictingInstall;
+        assert!(!e.to_string().is_empty());
     }
 }

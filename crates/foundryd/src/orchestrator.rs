@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType, mint_trace_id};
 use foundry_core::registry::Registry;
@@ -23,11 +23,11 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// returns immediately with no emitted events — the per-project event is
 /// handled by downstream blocks.
 pub struct FanOutMaintenance {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl FanOutMaintenance {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
 }
@@ -52,7 +52,18 @@ impl TaskBlock for FanOutMaintenance {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let registry = Arc::clone(&self.registry);
+
+        // Extract data before the async boundary — the RwLock guard must not cross .await.
+        let (project_names, active_count, skipped_count) = if project == "system" {
+            let reg = self.registry.read().expect("registry lock poisoned");
+            let active = reg.active_projects();
+            let names: Vec<String> = active.iter().map(|p| p.name.clone()).collect();
+            let active_count = names.len();
+            let skipped_count = reg.projects.len() - active_count;
+            (names, active_count, skipped_count)
+        } else {
+            (vec![], 0, 0)
+        };
 
         Box::pin(async move {
             if project != "system" {
@@ -65,11 +76,6 @@ impl TaskBlock for FanOutMaintenance {
                     audit_artifacts: vec![],
                 });
             }
-
-            let active = registry.active_projects();
-            let project_names: Vec<String> = active.iter().map(|p| p.name.clone()).collect();
-            let active_count = project_names.len();
-            let skipped_count = registry.projects.len() - active_count;
 
             tracing::info!(
                 active = active_count,
@@ -107,7 +113,7 @@ impl TaskBlock for FanOutMaintenance {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -116,11 +122,11 @@ mod tests {
 
     use super::*;
 
-    fn make_registry(entries: Vec<ProjectEntry>) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn make_registry(entries: Vec<ProjectEntry>) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: entries,
-        })
+        }))
     }
 
     fn active_entry(name: &str) -> ProjectEntry {

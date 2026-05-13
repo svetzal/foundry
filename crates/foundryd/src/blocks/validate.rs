@@ -119,13 +119,20 @@ impl TaskBlock for ValidateProject {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let registry = Arc::clone(&self.registry);
+        // Extract the entry before the async boundary — the RwLock guard must not cross await.
+        let entry = self
+            .registry
+            .read()
+            .expect("registry lock poisoned")
+            .active_projects()
+            .into_iter()
+            .find(|p| p.name == project)
+            .cloned();
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             // Self-filter: only act on active (non-skipped) projects.
-            let Some(entry) = registry.active_projects().into_iter().find(|p| p.name == project)
-            else {
+            let Some(entry) = entry else {
                 tracing::info!(%project, "project skipped or not in registry, skipping validation");
                 let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
                     project: project.clone(),
@@ -194,7 +201,7 @@ impl TaskBlock for ValidateProject {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::registry::{ProjectEntry, Registry};
     use foundry_core::throttle::Throttle;
@@ -213,11 +220,11 @@ mod tests {
         )
     }
 
-    fn make_registry(entries: Vec<ProjectEntry>) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn make_registry(entries: Vec<ProjectEntry>) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: entries,
-        })
+        }))
     }
 
     fn active_entry(name: &str, path: &str) -> ProjectEntry {
@@ -290,7 +297,7 @@ mod tests {
     // -- Metadata tests (no filesystem or git) --
 
     assert_block_meta!(
-        ValidateProject::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        ValidateProject::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [MaintenanceRunStarted],
     );

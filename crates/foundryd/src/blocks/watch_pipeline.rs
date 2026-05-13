@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
@@ -18,13 +18,13 @@ use crate::gateway::ShellGateway;
 /// Looks up the GitHub repository slug (`owner/repo`) from the project registry.
 /// Falls back to stub behaviour when the project has no `repo` configured.
 pub struct WatchPipeline {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
 }
 
 impl WatchPipeline {
     /// Create a `WatchPipeline` that resolves the repository from the registry.
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
             shell: Arc::new(crate::gateway::ProcessShellGateway),
@@ -35,17 +35,17 @@ impl WatchPipeline {
     #[cfg(test)]
     pub fn stub() -> Self {
         Self {
-            registry: Arc::new(Registry {
+            registry: Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
             shell: Arc::new(crate::gateway::ProcessShellGateway),
         }
     }
 
     /// Create a `WatchPipeline` with injected registry and shell gateway (for tests).
     #[cfg(test)]
-    fn with_gateways(registry: Arc<Registry>, shell: Arc<dyn ShellGateway>) -> Self {
+    fn with_gateways(registry: Arc<RwLock<Registry>>, shell: Arc<dyn ShellGateway>) -> Self {
         Self { registry, shell }
     }
 }
@@ -76,6 +76,8 @@ impl TaskBlock for WatchPipeline {
 
         let repo = self
             .registry
+            .read()
+            .expect("registry lock poisoned")
             .find_project(&project)
             .map(|p| p.repo.clone())
             .filter(|r| !r.is_empty());
@@ -226,7 +228,7 @@ async fn query_latest_run(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -238,8 +240,8 @@ mod tests {
 
     use super::*;
 
-    fn registry_with_repo(name: &str, repo: &str) -> Arc<Registry> {
-        Arc::new(Registry {
+    fn registry_with_repo(name: &str, repo: &str) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: name.to_string(),
@@ -255,7 +257,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        })
+        }))
     }
 
     fn trigger() -> Event {
@@ -296,7 +298,7 @@ mod tests {
 
     #[tokio::test]
     async fn watch_pipeline_stubs_when_project_has_empty_repo() {
-        let registry = Arc::new(Registry {
+        let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: "my-project".to_string(),
@@ -312,7 +314,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        });
+        }));
         let block = WatchPipeline::new(registry);
         let trigger = Event::new(
             EventType::ReleaseCompleted,

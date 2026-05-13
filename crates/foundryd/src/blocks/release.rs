@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
@@ -151,11 +151,11 @@ impl WorkBlock for AgentRelease {
 ///
 /// Returns `None` when `dirty=true` (self-filter: only acts on clean branches).
 pub struct VulnReleaseAdapter {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl VulnReleaseAdapter {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
 }
@@ -171,7 +171,8 @@ impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
         let project = &trigger.project;
         let cve = p.cve.clone();
 
-        let entry = self.registry.find_project(project)?;
+        let guard = self.registry.read().expect("registry lock poisoned");
+        let entry = guard.find_project(project)?;
         let project_path = PathBuf::from(&entry.path);
 
         let prompt = format!(
@@ -198,11 +199,11 @@ impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
 ///
 /// Returns `None` when `entry.actions.release` is false.
 pub struct ManualReleaseAdapter {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl ManualReleaseAdapter {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
 }
@@ -211,7 +212,8 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
     fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
         let project = &trigger.project;
 
-        let Some(entry) = self.registry.find_project(project) else {
+        let guard = self.registry.read().expect("registry lock poisoned");
+        let Some(entry) = guard.find_project(project) else {
             tracing::warn!(project = %project, "project not found in registry");
             return None;
         };
@@ -407,7 +409,7 @@ pub type ExecuteReleaseStep = ComposedStep<AgentRelease, ManualReleaseAdapter, R
 /// Build the composed "Cut Release" step (vulnerability flow).
 ///
 /// Sinks on `MainBranchAudited`, skips when dirty, invokes agent for patch release.
-pub fn cut_release_step(registry: Arc<Registry>) -> CutReleaseStep {
+pub fn cut_release_step(registry: Arc<RwLock<Registry>>) -> CutReleaseStep {
     let shell: Arc<dyn ShellGateway> = Arc::new(crate::gateway::ProcessShellGateway);
     let agent: Arc<dyn AgentGateway> = Arc::new(ClaudeAgentGateway::new(shell));
 
@@ -426,7 +428,7 @@ pub fn cut_release_step(registry: Arc<Registry>) -> CutReleaseStep {
 /// Sinks on `ReleaseRequested`, checks action flag, invokes agent following AGENTS.md.
 pub fn execute_release_step(
     agent: Arc<dyn AgentGateway>,
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 ) -> ExecuteReleaseStep {
     ComposedStep::new(
         "Execute Release",
@@ -442,7 +444,7 @@ pub fn execute_release_step(
 #[cfg(test)]
 pub fn cut_release_step_with_agent(
     agent: Arc<dyn AgentGateway>,
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 ) -> CutReleaseStep {
     ComposedStep::new(
         "Cut Release",
@@ -476,7 +478,7 @@ fn extract_version_tag(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::{ActionFlags, Registry};
@@ -488,11 +490,11 @@ mod tests {
     use super::super::test_helpers;
     use super::*;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
     // --- CutRelease (composed) tests ---

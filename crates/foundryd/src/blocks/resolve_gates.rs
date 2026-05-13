@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{CharterCheckCompletedPayload, GateResolutionCompletedPayload};
@@ -15,11 +15,11 @@ use super::TriggerContext;
 /// For iterate workflow: triggered by `CharterCheckCompleted` (checks `success=true`).
 /// For maintain/validate workflows: triggered directly by request events.
 pub struct ResolveGates {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl ResolveGates {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
 }
@@ -121,7 +121,7 @@ impl TaskBlock for ResolveGates {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -132,7 +132,7 @@ mod tests {
     use super::ResolveGates;
 
     assert_block_meta!(
-        ResolveGates::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        ResolveGates::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [CharterCheckCompleted, MaintenanceRequested, ValidationRequested],
     );
@@ -217,10 +217,10 @@ mod tests {
 
     #[tokio::test]
     async fn project_not_in_registry_returns_failure() {
-        let block = ResolveGates::new(Arc::new(Registry {
+        let block = ResolveGates::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        }));
+        })));
         test_helpers::assert_missing_project_fails(&block, EventType::CharterCheckCompleted).await;
     }
 

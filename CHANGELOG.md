@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **gRPC registry mutations** (`proto/foundry.proto`, `foundry-core`, `foundryd`,
+  `foundry-cli`): `foundry registry add|remove|edit` now route through the daemon's
+  gRPC API (`RegistryAdd`, `RegistryRemove`, `RegistryEdit` RPCs) when the daemon is
+  reachable, so the in-memory registry stays consistent with `registry.json` across
+  concurrent CLI calls. Pass `--offline` to bypass gRPC and mutate the file directly
+  (useful when the daemon is not running). The daemon holds `Arc<RwLock<Registry>>`
+  and persists changes atomically via `Registry::save` inside the write-lock guard.
+  `foundry-core` gains `ProjectSpec`, `ProjectEdits`, `RegistryMutationError`, and
+  `parse_stack` to support typed add/edit operations.
+
 ### Changed
 
 - **CI maintenance — Node 24 action bumps** (`.github/workflows/`): bumped pinned

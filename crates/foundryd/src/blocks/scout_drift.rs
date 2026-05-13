@@ -302,7 +302,7 @@ fn parse_drift_assessment(output: &str) -> DriftAssessmentResult {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, AgentCapability};
@@ -316,7 +316,7 @@ mod tests {
     assert_block_meta!(
         ScoutDrift::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [DriftAssessmentRequested],
@@ -326,10 +326,10 @@ mod tests {
     async fn project_not_in_registry_returns_failure() {
         let block = ScoutDrift::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         test_helpers::assert_missing_project_fails(&block, EventType::DriftAssessmentRequested)
             .await;

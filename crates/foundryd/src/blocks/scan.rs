@@ -88,7 +88,7 @@ impl TaskBlock for ScanDependencies {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;
@@ -99,15 +99,15 @@ mod tests {
     use super::super::test_helpers;
     use super::ScanDependencies;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
     assert_block_meta!(
-        ScanDependencies::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        ScanDependencies::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [ScanRequested],
     );

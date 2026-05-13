@@ -150,7 +150,7 @@ fn parse_triage(output: &str) -> (bool, String) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use crate::gateway::fakes::FakeAgentGateway;
     use foundry_core::event::EventType;
@@ -163,7 +163,7 @@ mod tests {
     assert_block_meta!(
         TriageAssessment::new(
             FakeAgentGateway::success(),
-            Arc::new(Registry { version: 2, projects: vec![] }),
+            Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
         sinks_on: [AssessmentCompleted],

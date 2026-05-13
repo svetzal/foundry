@@ -477,6 +477,7 @@ mod tests {
 
     fn vuln_engine() -> Engine {
         use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
+        use std::sync::RwLock;
 
         // CutRelease requires AGENTS.md to exist before invoking Claude.
         // Leak the temp dir so it outlives the test.
@@ -525,7 +526,7 @@ mod tests {
         std::mem::forget(dir);
         std::mem::forget(remote_dir);
 
-        let registry = Arc::new(foundry_core::registry::Registry {
+        let registry = Arc::new(RwLock::new(foundry_core::registry::Registry {
             version: 2,
             projects: vec![ProjectEntry {
                 name: "test-project".to_string(),
@@ -547,7 +548,7 @@ mod tests {
                 installs_skill: None,
                 timeout_secs: None,
             }],
-        });
+        }));
         let mut engine = Engine::new();
         engine.register(Box::new(crate::blocks::ScanDependencies::new(Arc::clone(&registry))));
         engine.register(Box::new(crate::blocks::AuditReleaseTag::with_registry(Arc::clone(

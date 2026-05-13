@@ -104,7 +104,7 @@ impl TaskBlock for RemediateVulnerability {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -129,10 +129,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = RemediateVulnerability::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = clean_trigger("any-project");
 
@@ -147,10 +147,10 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = RemediateVulnerability::new(
             agent,
-            Arc::new(Registry {
+            Arc::new(RwLock::new(Registry {
                 version: 2,
                 projects: vec![],
-            }),
+            })),
         );
         let trigger = dirty_trigger("unknown-project", "CVE-2026-1234");
 

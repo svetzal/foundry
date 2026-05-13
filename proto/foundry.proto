@@ -115,6 +115,94 @@ message WatchResponse {
     string trace_id = 5;     // Workflow instance this event belongs to
 }
 
+// A project entry in the registry.
+message Project {
+    string name = 1;
+    string path = 2;
+    string stack = 3;
+    string agent = 4;
+    string repo = 5;
+    string branch = 6;
+    string skip = 7;         // Empty string means not skipped.
+    bool iterate = 8;
+    bool maintain = 9;
+    bool push = 10;
+    bool audit = 11;
+    bool release = 12;
+    string install_command = 13;  // Empty means not set.
+    string install_brew = 14;     // Empty means not set.
+    string notes = 15;            // Empty means not set.
+    uint64 timeout_secs = 16;     // 0 means use default (3600).
+}
+
+// Add a project to the registry.
+message RegistryAddRequest {
+    string name = 1;
+    string path = 2;
+    string stack = 3;
+    string agent = 4;
+    string repo = 5;
+    string branch = 6;
+    bool iterate = 7;
+    bool maintain = 8;
+    bool push = 9;
+    bool audit = 10;
+    bool release = 11;
+    string install_command = 12;
+    string install_brew = 13;
+    string notes = 14;
+    uint64 timeout_secs = 15;
+}
+
+message RegistryAddResponse {
+    Project project = 1;
+}
+
+// Remove a project from the registry.
+message RegistryRemoveRequest {
+    string name = 1;
+}
+
+message RegistryRemoveResponse {}
+
+// Edit a project in the registry.
+// Only non-empty / non-zero fields are applied as updates.
+// Use clear_skip = true to explicitly clear the skip field.
+// Use clear_notes = true to explicitly clear the notes field.
+// Use clear_install = true to explicitly clear the install config.
+// Use clear_timeout = true to explicitly clear the timeout (revert to default).
+message RegistryEditRequest {
+    string name = 1;
+    string path = 2;
+    string stack = 3;
+    string agent = 4;
+    string repo = 5;
+    string branch = 6;
+    string skip = 7;
+    bool clear_skip = 8;
+    bool iterate = 9;
+    bool clear_iterate = 10;
+    bool maintain = 11;
+    bool clear_maintain = 12;
+    bool push = 13;
+    bool clear_push = 14;
+    bool audit = 15;
+    bool clear_audit = 16;
+    bool release = 17;
+    bool clear_release = 18;
+    string install_command = 19;
+    string install_brew = 20;
+    bool clear_install = 21;
+    string notes = 22;
+    bool clear_notes = 23;
+    uint64 timeout_secs = 24;
+    bool clear_timeout = 25;
+}
+
+message RegistryEditResponse {
+    Project project = 1;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -128,4 +216,13 @@ service Foundry {
 
     // Retrieve the trace of a completed event chain.
     rpc Trace(TraceRequest) returns (TraceResponse);
+
+    // Add a project to the registry.
+    rpc RegistryAdd(RegistryAddRequest) returns (RegistryAddResponse);
+
+    // Remove a project from the registry.
+    rpc RegistryRemove(RegistryRemoveRequest) returns (RegistryRemoveResponse);
+
+    // Edit a project in the registry.
+    rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
 }

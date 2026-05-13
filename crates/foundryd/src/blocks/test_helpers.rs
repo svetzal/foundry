@@ -3,7 +3,7 @@
 //! Gated with `#[cfg(test)]` — this module is only compiled during testing.
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
@@ -17,8 +17,8 @@ use crate::shell::CommandResult;
 /// Build a registry containing a single standard test project entry.
 ///
 /// Uses `Stack::Rust`, agent `"claude"`, and `ActionFlags::default()`.
-pub fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
-    Arc::new(Registry {
+pub fn registry_with_project(name: &str, path: &str) -> Arc<RwLock<Registry>> {
+    Arc::new(RwLock::new(Registry {
         version: 2,
         projects: vec![ProjectEntry {
             name: name.to_string(),
@@ -34,15 +34,15 @@ pub fn registry_with_project(name: &str, path: &str) -> Arc<Registry> {
             installs_skill: None,
             timeout_secs: None,
         }],
-    })
+    }))
 }
 
 /// Build a registry containing a single project entry with custom fields via a pre-built entry.
-pub fn registry_with_entry(entry: ProjectEntry) -> Arc<Registry> {
-    Arc::new(Registry {
+pub fn registry_with_entry(entry: ProjectEntry) -> Arc<RwLock<Registry>> {
+    Arc::new(RwLock::new(Registry {
         version: 2,
         projects: vec![entry],
-    })
+    }))
 }
 
 /// Build a standard test project entry with default fields.
@@ -199,7 +199,7 @@ pub fn register_iterate_chain(
     engine: &mut Engine,
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 ) {
     engine.register(Box::new(super::CheckCharter::new(registry.clone())));
     engine.register(Box::new(super::ResolveGates::new(registry.clone())));

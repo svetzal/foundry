@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
@@ -16,11 +16,11 @@ use super::TriggerContext;
 /// Emits `CharterCheckCompleted` with `success: true/false`.
 /// If the charter check fails, the chain stops (`ResolveGates` checks for `success=true`).
 pub struct CheckCharter {
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl CheckCharter {
-    pub fn new(registry: Arc<Registry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
 }
@@ -110,7 +110,7 @@ impl TaskBlock for CheckCharter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::{Event, EventType};
     use foundry_core::registry::Registry;
@@ -121,7 +121,7 @@ mod tests {
     use super::CheckCharter;
 
     assert_block_meta!(
-        CheckCharter::new(Arc::new(Registry { version: 2, projects: vec![] })),
+        CheckCharter::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
         sinks_on: [IterationRequested, PromptExecutionRequested],
     );
@@ -194,10 +194,10 @@ mod tests {
 
     #[tokio::test]
     async fn project_not_in_registry_returns_failure() {
-        let block = CheckCharter::new(Arc::new(Registry {
+        let block = CheckCharter::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        }));
+        })));
         test_helpers::assert_missing_project_fails(&block, EventType::IterationRequested).await;
     }
 }

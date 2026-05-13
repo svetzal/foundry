@@ -6,7 +6,7 @@
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
@@ -21,7 +21,7 @@ use crate::gateway::{AgentGateway, ShellGateway};
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
-    registry: Arc<Registry>,
+    registry: Arc<RwLock<Registry>>,
 ) -> Engine {
     let mut engine = Engine::new();
 

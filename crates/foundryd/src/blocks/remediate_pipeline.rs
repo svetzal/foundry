@@ -126,7 +126,7 @@ async fn run_remediation(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use foundry_core::event::EventType;
     use foundry_core::registry::Registry;
@@ -137,15 +137,15 @@ mod tests {
     use super::super::test_helpers;
     use super::RemediatePipeline;
 
-    fn empty_registry() -> Arc<Registry> {
-        Arc::new(Registry {
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
-        })
+        }))
     }
 
     assert_block_meta!(
-        RemediatePipeline::new(FakeAgentGateway::success(), Arc::new(Registry { version: 2, projects: vec![] })),
+        RemediatePipeline::new(FakeAgentGateway::success(), Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Mutator,
         sinks_on: [PipelineChecked],
     );
