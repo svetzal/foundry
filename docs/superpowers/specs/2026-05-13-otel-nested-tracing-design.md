@@ -1,8 +1,26 @@
 # OpenTelemetry-shaped nested tracing for Foundry
 
-Status: Draft — design approved, awaiting plan
-Date: 2026-05-13
+Status: **Design approved, ready for implementation plan**
+Date: 2026-05-13 (spec written), 2026-05-14 (last update)
 Author: Stacey Vetzal (with Claude as collaborator)
+
+## Resume / next step
+
+Brainstorming is complete. All eight decisions in "Decisions locked"
+have been confirmed by Stacey. The next step is to invoke the
+`superpowers:writing-plans` skill to produce a step-by-step
+implementation plan in `docs/superpowers/plans/`, then execute
+phase-by-phase per the "Implementation phasing" section below.
+
+When resuming:
+
+1. Re-read this spec start-to-finish (≈30 min) — it's the source of
+   truth.
+2. Invoke `superpowers:writing-plans` with this spec as input.
+3. The plan should preserve the 8-phase ordering: foundation in
+   foundry-core → proto + service → engine span stamping → event
+   taxonomy rename → historical backfill → subprocess propagation →
+   `Span` RPC → CLI display → docs.
 
 ## Why
 
