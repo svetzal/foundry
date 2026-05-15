@@ -261,8 +261,8 @@ fn collect_tree(dir: &Path, depth: usize, max_depth: usize, lines: &mut Vec<Stri
 fn invoke_claude(project_dir: &Path, context: &str) -> Result<String> {
     let prompt = build_prompt(context);
 
-    let output = Command::new("claude")
-        .arg("--print")
+    let mut cmd = Command::new("claude");
+    cmd.arg("--print")
         .arg("--model")
         .arg("claude-sonnet-4-6")
         .arg("--dangerously-skip-permissions")
@@ -271,7 +271,14 @@ fn invoke_claude(project_dir: &Path, context: &str) -> Result<String> {
         .arg("-p")
         .arg(&prompt)
         .current_dir(project_dir)
-        .env("CLAUDE_CODE", "")
+        .env("CLAUDE_CODE", "");
+    // Forward TRACEPARENT from the CLI's environment to the spawned child so
+    // distributed tracing context propagates when this CLI is invoked by a
+    // foundryd block (which sets TRACEPARENT). No-op when invoked manually.
+    if let Ok(tp) = std::env::var("TRACEPARENT") {
+        cmd.env("TRACEPARENT", tp);
+    }
+    let output = cmd
         .output()
         .context("failed to run `claude` CLI — is it installed and on PATH?")?;
 

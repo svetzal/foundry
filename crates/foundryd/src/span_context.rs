@@ -5,10 +5,11 @@
 //! `shell.rs` and `agent_stream.rs` to inject `TRACEPARENT` into
 //! spawned commands.
 //!
-//! Items here are wired up incrementally over Phase 5; the
-//! `dead_code` allowance covers helpers staged ahead of their
-//! call-site migration (Tasks 5.2–5.5).
-#![allow(dead_code)]
+//! Items here are wired up incrementally over Phase 5. After Task 5.5
+//! the tokio-flavored `inject_traceparent` and `SpanContext`/`SPAN_CONTEXT`
+//! have production consumers; `inject_traceparent_std` and `from_event`
+//! remain staged for future migrations (release/install chains and event
+//! replay) and carry targeted `allow(dead_code)` attributes.
 
 use foundry_core::event::Event;
 
@@ -45,6 +46,7 @@ pub fn inject_traceparent(cmd: &mut tokio::process::Command) {
 
 /// Variant for `std::process::Command` (legacy callsites in subprocess
 /// migration). Prefer migrating to `tokio::process::Command`.
+#[allow(dead_code)]
 pub fn inject_traceparent_std(cmd: &mut std::process::Command) {
     let _ = SPAN_CONTEXT.try_with(|ctx| {
         cmd.env("TRACEPARENT", ctx.traceparent());
@@ -53,6 +55,7 @@ pub fn inject_traceparent_std(cmd: &mut std::process::Command) {
 
 /// Extract a `SpanContext` from an Event's span fields. Returns `None` if any
 /// required field is missing.
+#[allow(dead_code)]
 #[must_use]
 pub fn from_event(event: &Event) -> Option<SpanContext> {
     let trace_id = event.trace_id.clone()?;
