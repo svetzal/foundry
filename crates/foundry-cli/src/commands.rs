@@ -72,6 +72,8 @@ impl WorkflowRunner {
                 throttle: 0, // Full
                 payload_json,
                 trace_id: String::new(),
+                span_id: String::new(),
+                parent_span_id: String::new(),
             })
             .await?
             .into_inner();
@@ -130,6 +132,8 @@ pub async fn emit(
         throttle: parse_throttle(throttle),
         payload_json: payload.unwrap_or_default(),
         trace_id: String::new(),
+        span_id: String::new(),
+        parent_span_id: String::new(),
     };
 
     let response = client.emit(request).await?.into_inner();
@@ -358,6 +362,8 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         throttle: parse_throttle(throttle),
         payload_json: String::new(),
         trace_id: String::new(),
+        span_id: String::new(),
+        parent_span_id: String::new(),
     };
 
     let response = emit_client.emit(request).await?.into_inner();

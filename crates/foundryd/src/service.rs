@@ -19,8 +19,9 @@ use crate::engine::Engine;
 use crate::proto::{
     EmitRequest, EmitResponse, Project, RegistryAddRequest, RegistryAddResponse,
     RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse,
-    StatusRequest, StatusResponse, TraceBlockExecution, TraceEvent, TraceRequest, TraceResponse,
-    WatchRequest, WatchResponse, WorkflowStatus, foundry_server::Foundry,
+    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceBlockExecution, TraceEvent,
+    TraceRequest, TraceResponse, WatchRequest, WatchResponse, WorkflowStatus,
+    foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::trace_writer::TraceWriter;
@@ -256,8 +257,19 @@ impl Foundry for FoundryService {
         } else {
             req.trace_id
         };
+        let request_span_id = if req.span_id.is_empty() {
+            None
+        } else {
+            Some(req.span_id)
+        };
+        let request_parent_span_id = if req.parent_span_id.is_empty() {
+            None
+        } else {
+            Some(req.parent_span_id)
+        };
         let event = Event::new(event_type, req.project, throttle, payload)
-            .with_trace_id(Some(trace_id.clone()));
+            .with_trace_id(Some(trace_id.clone()))
+            .with_span_ids(request_span_id, request_parent_span_id);
         let event_id = event.id.clone();
 
         tracing::info!(
@@ -408,6 +420,8 @@ impl Foundry for FoundryService {
                                 project: event.project.clone(),
                                 payload_json: event.payload.to_string(),
                                 trace_id: event.trace_id.clone().unwrap_or_default(),
+                                span_id: event.span_id.clone().unwrap_or_default(),
+                                parent_span_id: event.parent_span_id.clone().unwrap_or_default(),
                             });
                         }
                     }
@@ -666,6 +680,8 @@ impl Foundry for FoundryService {
                         Throttle::DryRun => 2,
                     },
                     trace_id: e.trace_id.clone().unwrap_or_default(),
+                    span_id: e.span_id.clone().unwrap_or_default(),
+                    parent_span_id: e.parent_span_id.clone().unwrap_or_default(),
                 })
                 .collect();
 
@@ -688,6 +704,8 @@ impl Foundry for FoundryService {
                         .map(ToString::to_string)
                         .collect(),
                     audit_artifacts: b.audit_artifacts.clone(),
+                    span_id: b.span_id.clone().unwrap_or_default(),
+                    parent_span_id: b.parent_span_id.clone().unwrap_or_default(),
                 })
                 .collect();
 
@@ -709,6 +727,10 @@ impl Foundry for FoundryService {
                 total_duration_ms: 0,
             }))
         }
+    }
+
+    async fn span(&self, _request: Request<SpanRequest>) -> Result<Response<SpanResponse>, Status> {
+        Err(Status::unimplemented("Span RPC not implemented yet"))
     }
 }
 
@@ -754,6 +776,8 @@ mod tests {
             throttle: 2, // dry_run
             payload_json: String::new(),
             trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -799,6 +823,8 @@ mod tests {
             throttle: 2, // dry_run
             payload_json: String::new(),
             trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -841,6 +867,8 @@ mod tests {
             throttle: 0,
             payload_json: String::new(),
             trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
         });
 
         service.emit(request).await.expect("emit should succeed");
