@@ -147,6 +147,8 @@ mod tests {
                 trigger_payload: serde_json::json!({"key": "value"}),
                 emitted_payloads: vec![serde_json::json!({"result": true})],
                 audit_artifacts: vec![],
+                span_id: None,
+                parent_span_id: None,
             }],
             total_duration_ms: 100,
         }

@@ -41,6 +41,19 @@ pub struct BlockExecution {
     /// Paths to audit artifacts produced by this block.
     #[serde(default)]
     pub audit_artifacts: Vec<String>,
+
+    /// This block's own `span_id`. The block's span is a child of the
+    /// workflow span this block runs inside. Events emitted by the
+    /// block do **not** carry this `span_id` — they carry the workflow's
+    /// `span_id` under the default propagation rule. Use
+    /// `emitted_event_ids` to find what this block produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+
+    /// The workflow span this block executes inside (= the trigger event's
+    /// `span_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_span_id: Option<String>,
 }
 
 impl BlockExecution {
@@ -62,6 +75,8 @@ impl BlockExecution {
             trigger_payload,
             emitted_payloads: vec![],
             audit_artifacts: vec![],
+            span_id: None,
+            parent_span_id: None,
         }
     }
 }
@@ -126,6 +141,8 @@ mod tests {
             trigger_payload: serde_json::json!({}),
             emitted_payloads: vec![],
             audit_artifacts: vec![],
+            span_id: None,
+            parent_span_id: None,
         }
     }
 
@@ -218,5 +235,40 @@ mod tests {
             total_duration_ms: 0,
         };
         assert!(result.is_success());
+    }
+
+    #[test]
+    fn block_execution_span_fields_round_trip() {
+        let mut b = BlockExecution::new("X", "evt_abc", 10, serde_json::json!({}));
+        b.span_id = Some("0123456789abcdef".to_string());
+        b.parent_span_id = Some("fedcba9876543210".to_string());
+
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["span_id"], "0123456789abcdef");
+        assert_eq!(json["parent_span_id"], "fedcba9876543210");
+
+        let restored: BlockExecution = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.span_id.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(restored.parent_span_id.as_deref(), Some("fedcba9876543210"));
+    }
+
+    #[test]
+    fn block_execution_span_fields_deserialize_default_none() {
+        let json = serde_json::json!({
+            "block_name": "X",
+            "trigger_event_id": "evt_abc",
+            "success": true,
+            "summary": "",
+            "emitted_event_ids": [],
+            "duration_ms": 0,
+            "trigger_payload": {},
+            "emitted_payloads": []
+        });
+        let b: BlockExecution = serde_json::from_value(json).unwrap();
+        assert!(
+            b.span_id.is_none(),
+            "span_id missing from on-disk record must deserialize as None"
+        );
+        assert!(b.parent_span_id.is_none());
     }
 }

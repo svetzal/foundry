@@ -105,6 +105,8 @@ mod tests {
                 trigger_payload: serde_json::json!({}),
                 emitted_payloads: vec![],
                 audit_artifacts: vec![],
+                span_id: None,
+                parent_span_id: None,
             }],
             total_duration_ms: 0,
         }
