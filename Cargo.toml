@@ -60,6 +60,7 @@ hex = "0.4"
 
 # Unique identifiers
 uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
 
 # Async stream utilities
 async-stream = "0.3"

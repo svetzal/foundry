@@ -151,9 +151,33 @@ impl Event {
     }
 }
 
-/// Generate a fresh trace ID for a new workflow instance.
+/// Generate a fresh 128-bit trace ID as 32 lowercase hex characters.
+///
+/// The format is OpenTelemetry-compatible: no prefix, lowercase hex,
+/// fixed length. Used as a workflow / cycle root identifier.
 pub fn mint_trace_id() -> String {
-    format!("trc_{}", uuid::Uuid::new_v4().simple())
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Generate a fresh 64-bit span ID as 16 lowercase hex characters.
+///
+/// The format is OpenTelemetry-compatible.
+pub fn mint_span_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// True if `id` is a pre-OTel-tracing trace ID (legacy `trc_<uuid>` format).
+///
+/// Used by analysis and migration code to distinguish events written before
+/// the OTel-shaped tracing cutover from new-format ones.
+pub fn is_legacy_trace_id(id: &str) -> bool {
+    id.starts_with("trc_")
 }
 
 /// Extension methods for extracting typed values from a `serde_json::Value` payload object.
@@ -460,15 +484,16 @@ mod tests {
 
     #[test]
     fn trace_id_present_in_json_when_set() {
+        let trace_id = super::mint_trace_id();
         let event = Event::new(
             EventType::GreetRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some("trc_abc123".to_string()));
+        .with_trace_id(Some(trace_id.clone()));
         let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["trace_id"], "trc_abc123");
+        assert_eq!(json["trace_id"], trace_id);
     }
 
     #[test]
@@ -488,23 +513,28 @@ mod tests {
 
     #[test]
     fn trace_id_round_trip() {
+        let trace_id = super::mint_trace_id();
         let event = Event::new(
             EventType::GreetRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some("trc_deadbeef".to_string()));
+        .with_trace_id(Some(trace_id.clone()));
         let json = serde_json::to_string(&event).unwrap();
         let restored: Event = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.trace_id, Some("trc_deadbeef".to_string()));
+        assert_eq!(restored.trace_id, Some(trace_id));
     }
 
     #[test]
-    fn mint_trace_id_produces_trc_prefix() {
+    fn mint_trace_id_produces_32_hex_chars() {
         let id = super::mint_trace_id();
-        assert!(id.starts_with("trc_"), "trace ID must start with trc_");
-        assert!(id.len() > 10, "trace ID must have sufficient entropy");
+        assert_eq!(id.len(), 32, "trace_id must be exactly 32 hex chars");
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && (c.is_ascii_digit() || c.is_ascii_lowercase())),
+            "trace_id must be lowercase hex only: {id}"
+        );
     }
 
     #[test]
@@ -512,6 +542,25 @@ mod tests {
         let id1 = super::mint_trace_id();
         let id2 = super::mint_trace_id();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn is_legacy_trace_id_recognizes_old_format() {
+        assert!(super::is_legacy_trace_id("trc_abc123"));
+        assert!(!super::is_legacy_trace_id(&super::mint_trace_id()));
+        assert!(!super::is_legacy_trace_id(""));
+    }
+
+    #[test]
+    fn mint_span_id_produces_16_hex_chars() {
+        let id = super::mint_span_id();
+        assert_eq!(id.len(), 16, "span_id must be exactly 16 hex chars");
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && (c.is_ascii_digit() || c.is_ascii_lowercase())),
+            "span_id must be lowercase hex only: {id}"
+        );
+        assert_ne!(id, super::mint_span_id(), "two mints must differ");
     }
 
     #[test]

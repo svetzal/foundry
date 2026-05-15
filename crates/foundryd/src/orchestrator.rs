@@ -265,12 +265,17 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert_eq!(result.events.len(), 2);
 
-        // Each per-project event should have a trace_id.
+        // Each per-project event should have a trace_id in OTel-compatible
+        // 32-char lowercase hex format.
         for event in &result.events {
             assert!(event.trace_id.is_some(), "per-project event should have a trace_id");
+            let trace_id = event.trace_id.as_ref().unwrap();
+            assert_eq!(trace_id.len(), 32, "trace_id must be 32 hex chars");
             assert!(
-                event.trace_id.as_ref().unwrap().starts_with("trc_"),
-                "trace_id should start with trc_",
+                trace_id.chars().all(
+                    |c| c.is_ascii_hexdigit() && (c.is_ascii_digit() || c.is_ascii_lowercase())
+                ),
+                "trace_id must be lowercase hex only: {trace_id}",
             );
         }
 
