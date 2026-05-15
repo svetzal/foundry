@@ -7,7 +7,7 @@ Every event in Foundry has this shape:
 ```json
 {
   "id": "evt_a1b2c3d4e5f6",
-  "event_type": "iteration_requested",
+  "event_type": "project_iteration_requested",
   "project": "my-project",
   "occurred_at": "2026-03-29T12:34:56.789Z",
   "recorded_at": "2026-03-29T12:34:56.789Z",
@@ -19,6 +19,8 @@ Every event in Foundry has this shape:
 - **id** — Deterministic SHA256 hash of (event_type, project, occurred_at, payload), prefixed `evt_`. Same inputs always produce the same ID.
 - **throttle** — 0 = Full, 1 = AuditOnly, 2 = DryRun. Propagated through the entire chain.
 - **payload** — Event-specific JSON. Completion events use `"success": true/false`.
+
+> **Tracing:** Every event also carries `span_id` and `parent_span_id` fields used for OTel-shaped nested tracing. These let trace renderers reconstruct the hierarchical span tree across chained events. See `book/src/architecture/tracing.md` for details.
 
 ## Naming Conventions
 
@@ -68,8 +70,8 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 ### Workflow Triggers
 | Event | Category |
 |-------|----------|
-| `IterationRequested` | Command |
-| `MaintenanceRequested` | Command |
+| `ProjectIterationRequested` | Command |
+| `ProjectMaintenanceRequested` | Command |
 | `ValidationRequested` | Command |
 | `DriftAssessmentRequested` | Command |
 | `PipelineCheckRequested` | Command |
@@ -77,8 +79,10 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 ### Run Lifecycle
 | Event | Category |
 |-------|----------|
-| `MaintenanceRunStarted` | Lifecycle start |
-| `MaintenanceRunCompleted` | Lifecycle end |
+| `MaintenanceCycleStarted` | Lifecycle start (system-level fan-out) |
+| `MaintenanceCycleCompleted` | Lifecycle end (system-level fan-out) |
+| `ProjectRunStarted` | Lifecycle start (per-project) |
+| `ProjectRunCompleted` | Lifecycle end (per-project) |
 
 ### Gate Orchestration
 | Event | Category |
@@ -123,7 +127,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `DriftAssessmentCompleted` | `candidate_count`, `high_value_count`, `candidates[]` |
 | `ProjectIterationCompleted` | `success`, `project` |
 | `ProjectMaintenanceCompleted` | `success`, `project` |
-| `MaintenanceRunCompleted` | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level only) |
+| `MaintenanceCycleCompleted` | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level fan-out only) |
 | `PipelineChecked` | `passing`, `logs` |
 | `ReleaseCompleted` | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only) |
 | `ReleasePipelineCompleted` | `success`, `new_tag` |

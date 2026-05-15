@@ -5,7 +5,7 @@
 Triggered by `foundry iterate <project>` or routed from a maintenance run when `actions.iterate=true`.
 
 ```
-IterationRequested
+ProjectIterationRequested
   └─ CheckCharter (Observer)
        └─ CharterCheckCompleted {success: true}
             └─ ResolveGates (Observer)
@@ -36,14 +36,14 @@ IterationRequested
 - Triage rejects (`accepted: false`) — CreatePlan self-filters, chain stops
 - Retries exhausted (3 failures) — emits ProjectIterationCompleted with `success: false`
 
-**Maintain chaining:** If the trigger payload has `actions.maintain=true` and iterate succeeds, RouteGateResult also emits `MaintenanceRequested` to chain into the maintain workflow.
+**Maintain chaining:** If the trigger payload has `actions.maintain=true` and iterate succeeds, RouteGateResult also emits `ProjectMaintenanceRequested` to chain into the maintain workflow.
 
 ## Maintain Workflow
 
-Triggered by `foundry emit maintenance_requested` or chained from iterate.
+Triggered by `foundry emit project_maintenance_requested` or chained from iterate.
 
 ```
-MaintenanceRequested
+ProjectMaintenanceRequested
   └─ ResolveGates (Observer)
        └─ GateResolutionCompleted {workflow: "maintain", gates: [...]}
             ├─ RunPreflightGates (Observer) — skips for maintain, emits PreflightCompleted {skipped: true}
@@ -87,16 +87,16 @@ DriftAssessmentRequested
 Triggered by `foundry run`. Fan-out across all active projects.
 
 ```
-MaintenanceRunStarted {project: "system"}
+MaintenanceCycleStarted {project: "system"}
   └─ FanOutMaintenance (Observer)
-       ├─ MaintenanceRunStarted {project: "alpha"}
+       ├─ ProjectRunStarted {project: "alpha"}
        │    └─ ValidateProject → ProjectValidationCompleted
        │         └─ RouteProjectWorkflow
-       │              └─ IterationRequested or MaintenanceRequested (per project flags)
+       │              └─ ProjectIterationRequested or ProjectMaintenanceRequested (per project flags)
        │                   └─ ... (iterate or maintain chain)
-       ├─ MaintenanceRunStarted {project: "beta"}
+       ├─ ProjectRunStarted {project: "beta"}
        │    └─ ... (same pattern)
-       └─ MaintenanceRunCompleted {project_count, skipped_count}
+       └─ MaintenanceCycleCompleted {project_count, skipped_count}
             └─ GenerateSummary → writes audit report
 ```
 
