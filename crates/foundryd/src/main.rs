@@ -13,6 +13,7 @@ mod event_writer;
 mod gate_file;
 mod gate_runner;
 mod gateway;
+mod legacy_event_check;
 mod orchestrator;
 mod scanner;
 mod service;
@@ -33,6 +34,15 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
+    let events_dir = foundry_core::paths::events_dir();
+    if let Some(legacy) = legacy_event_check::detect_legacy_event_names(&events_dir) {
+        eprintln!(
+            "ERROR: foundryd 0.17.0 detected legacy event-type name '{legacy}' on disk.\n\
+             Run scripts/migrate-event-names.sh once to backfill, then restart foundryd."
+        );
+        std::process::exit(2);
+    }
+
     let registry_path = foundry_core::paths::registry_path();
     let registry = match foundry_core::registry::Registry::load(&registry_path) {
         Ok(r) => {
@@ -48,7 +58,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let event_writer = Arc::new(event_writer::EventWriter::new(foundry_core::paths::events_dir()));
+    let event_writer = Arc::new(event_writer::EventWriter::new(events_dir));
 
     let traces_dir = foundry_core::paths::traces_dir();
     let trace_writer = Arc::new(trace_writer::TraceWriter::new(
