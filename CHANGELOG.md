@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Event taxonomy renames** (no aliases — hard cutover):
+  - `MaintenanceRunStarted` split into `MaintenanceCycleStarted` (cycle root)
+    and `ProjectRunStarted` (per-project).
+  - `MaintenanceRunCompleted` split similarly into `MaintenanceCycleCompleted`
+    and `ProjectRunCompleted`.
+  - `IterationRequested` → `ProjectIterationRequested`.
+  - `MaintenanceRequested` → `ProjectMaintenanceRequested`.
+  - `GreetRequested` → `GreetingRequested`.
+  - Snake_case wire strings change accordingly (e.g. `iteration_requested`
+    → `project_iteration_requested`).
+- **`trc_*` trace IDs replaced** with OpenTelemetry-compatible 32-char
+  lowercase hex. Legacy `trc_*` IDs remain readable (a helper
+  `is_legacy_trace_id` discriminates), but newly-emitted events use the
+  new format.
+- **`FanOutMaintenance` no longer mints a fresh `trace_id` per project**.
+  Per-project events inherit the cycle root's `trace_id` via the engine's
+  span-stamping pass, so every event in a nightly batch shares one
+  `trace_id`.
+
+### Migration
+
+Run once after upgrading and **before** restarting `foundryd`:
+
+```bash
+scripts/migrate-event-names.sh --dry-run   # review counts
+scripts/migrate-event-names.sh             # apply
+```
+
+The script rewrites archived event names in `~/.foundry/events/*.jsonl`
+and `~/.foundry/traces/**/*.json`, recomputes `Event::id` for renamed
+events, and fixes up payload references (`project_trace_ids`,
+`root_event_id`). `foundryd` refuses to start (exit code 2) if it
+detects legacy event names on disk and prints the remediation command.
+
+### Added
+
+- **OpenTelemetry-shaped nested tracing**: every `Event` now carries
+  `span_id` (16-char hex) and `parent_span_id` (16-char hex) alongside
+  `trace_id` (32-char hex). The engine stamps these per two rules:
+  emitted events default to the trigger's span; events registered as
+  *span openers* (`*Requested` workflow events, `*Started` lifecycle
+  events, `RemediationStarted`) get a fresh `span_id` parented to the
+  emitting block's span. Block-level spans are recorded on
+  `BlockExecution` (not on emitted events), so the call tree can be
+  reconstructed without changing event volume on the wire.
+- **New `Span` RPC** (`proto/foundry.proto`): retrieve every event and
+  block execution within a single span. Phase 2 stub returns
+  `found = false`; Phase 6 wires it to a real `span_id → trace_id`
+  index in the trace store.
+- **`mint_span_id` / `mint_trace_id`** in `foundry_core::event`: both
+  hex-encoded random output (16-char and 32-char respectively).
+- **`EventType::is_span_opener`**: predicate over the span-opener
+  registry. Used by the engine's stamping pass to decide between the
+  default rule and the span-opener rule.
+
+### Changed
+
+- **`EventType::IterationRequested` → `ProjectIterationRequested`** and
+  the parallel renames listed above. Payload structs renamed in
+  lockstep (`IterationRequestedPayload` → `ProjectIterationRequestedPayload`,
+  etc.).
+- **`MaintenanceRunStartedPayload`/`MaintenanceRunCompletedPayload`**
+  removed and replaced by four new payload structs:
+  `MaintenanceCycleStartedPayload`, `ProjectRunStartedPayload`,
+  `MaintenanceCycleCompletedPayload`, `ProjectRunCompletedPayload`.
+  The cycle-level completion still carries `project_trace_ids` /
+  `skipped_projects` / `total_duration_ms` for `GenerateSummary`
+  compatibility; the per-project completion is a leaner shape
+  (`success` + optional `root_event_id`).
+- **`AGENTS.md` event taxonomy examples** updated to new names.
+
 ## [0.16.1] - 2026-05-13
 
 ### Fixed
