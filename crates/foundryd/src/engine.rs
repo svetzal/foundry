@@ -93,13 +93,15 @@ impl Engine {
         self.blocks.push(block);
     }
 
-    /// Propagate trace IDs, persist to JSONL, broadcast to Watch subscribers,
-    /// and optionally deliver to the processing queue.
-    /// Returns collected event IDs and payloads for the [`BlockExecution`] record.
+    /// Propagate trace IDs, stamp `OTel`-shaped span context, persist to JSONL,
+    /// broadcast to Watch subscribers, and optionally deliver to the processing
+    /// queue. Returns collected event IDs and payloads for the
+    /// [`BlockExecution`] record.
     fn persist_and_broadcast_events(
         &self,
         events: Vec<Event>,
         trigger: &Event,
+        block_span_id: &str,
         all_events: &mut Vec<Event>,
         queue: &mut Vec<Event>,
         deliver: bool,
@@ -107,9 +109,7 @@ impl Engine {
         let mut emitted_ids = Vec::new();
         let mut emitted_payloads = Vec::new();
         for mut emitted in events {
-            if emitted.trace_id.is_none() {
-                emitted.trace_id.clone_from(&trigger.trace_id);
-            }
+            Self::stamp_span_context(&mut emitted, trigger, block_span_id);
             if let Some(writer) = &self.event_writer {
                 if let Err(e) = writer.write(&emitted) {
                     tracing::warn!(error = %e, event_id = %emitted.id, "failed to write event to JSONL");
@@ -128,6 +128,46 @@ impl Engine {
             }
         }
         (emitted_ids, emitted_payloads)
+    }
+
+    /// Apply `OTel`-shaped span stamping to an emitted event.
+    ///
+    /// All stamping is "set if unset", so a block may emit an event with
+    /// explicit span context and that context is preserved.
+    ///
+    /// # Rules
+    ///
+    /// - **Default** (non-opener events): the emitted event is a peer of the
+    ///   trigger — it inherits the trigger's `trace_id`, `span_id` (the active
+    ///   workflow span), and `parent_span_id`.
+    /// - **Span opener** (e.g. `IterationRequested`): the emitted event opens a
+    ///   new workflow span — it inherits the trigger's `trace_id`, receives a
+    ///   freshly minted `span_id`, and is parented to the emitting block's
+    ///   `block_span_id`.
+    fn stamp_span_context(emitted: &mut Event, trigger: &Event, block_span_id: &str) {
+        use foundry_core::event::mint_span_id;
+
+        if emitted.trace_id.is_none() {
+            emitted.trace_id.clone_from(&trigger.trace_id);
+        }
+
+        if emitted.event_type.is_span_opener() {
+            // New workflow span: child of the emitting block's span.
+            if emitted.span_id.is_none() {
+                emitted.span_id = Some(mint_span_id());
+            }
+            if emitted.parent_span_id.is_none() {
+                emitted.parent_span_id = Some(block_span_id.to_string());
+            }
+        } else {
+            // Default: peer of trigger, attached to the same workflow span.
+            if emitted.span_id.is_none() {
+                emitted.span_id.clone_from(&trigger.span_id);
+            }
+            if emitted.parent_span_id.is_none() {
+                emitted.parent_span_id.clone_from(&trigger.parent_span_id);
+            }
+        }
     }
 
     /// Execute one block against a triggering event, persist any emitted events,
@@ -159,6 +199,7 @@ impl Engine {
             let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
                 simulated_events,
                 current,
+                &block_span_id,
                 all_events,
                 queue,
                 true,
@@ -211,6 +252,7 @@ impl Engine {
                 let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
                     result.events,
                     current,
+                    &block_span_id,
                     all_events,
                     queue,
                     deliver,
@@ -1107,17 +1149,19 @@ mod tests {
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
 
+        let workflow_span = foundry_core::event::mint_span_id();
         let trigger = Event::new(
             EventType::GreetRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some("trc_test123".to_string()));
+        .with_trace_id(Some("trc_test123".to_string()))
+        .with_span_ids(Some(workflow_span.clone()), None);
 
         let result = engine.process(trigger).await;
 
-        // All events in the chain should share the same trace_id.
+        // All events in the chain should share the same trace_id and carry a span_id.
         for event in &result.events {
             assert_eq!(
                 event.trace_id.as_deref(),
@@ -1125,7 +1169,26 @@ mod tests {
                 "event {} should have propagated trace_id",
                 event.event_type,
             );
+            assert!(
+                event.span_id.is_some(),
+                "event {} should have a span_id after stamping",
+                event.event_type,
+            );
         }
+
+        // GreetRequested is a span opener — the trigger itself keeps its span,
+        // and the emitted GreetingComposed (non-opener) inherits that span as
+        // a peer.
+        let composed = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::GreetingComposed)
+            .unwrap();
+        assert_eq!(
+            composed.span_id.as_ref(),
+            Some(&workflow_span),
+            "non-opener child should share the trigger's workflow span",
+        );
     }
 
     #[tokio::test]
@@ -1215,28 +1278,313 @@ mod tests {
         );
     }
 
+    /// Test helper: a block that sinks on a configured event type and emits
+    /// a fixed list of event types with empty payloads. Used by span-stamping
+    /// tests where we want to assert how the engine attaches span fields to
+    /// arbitrary emitted events.
+    struct EmittingBlock {
+        name: &'static str,
+        sinks: Vec<EventType>,
+        emits: Vec<EventType>,
+    }
+
+    impl TaskBlock for EmittingBlock {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &self.sinks
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            let emits = self.emits.clone();
+            Box::pin(async move {
+                let events = emits
+                    .into_iter()
+                    .map(|t| Event::new(t, project.clone(), throttle, serde_json::json!({})))
+                    .collect();
+                Ok(TaskBlockResult {
+                    events,
+                    success: true,
+                    summary: "emitted".to_string(),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                })
+            })
+        }
+    }
+
+    fn emitting_block(
+        name: &'static str,
+        sinks_on: EventType,
+        emits: Vec<EventType>,
+    ) -> EmittingBlock {
+        EmittingBlock {
+            name,
+            sinks: vec![sinks_on],
+            emits,
+        }
+    }
+
+    #[tokio::test]
+    async fn default_rule_emitted_event_inherits_trigger_span() {
+        let workflow_span = foundry_core::event::mint_span_id();
+        let trace = foundry_core::event::mint_trace_id();
+        let trigger = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(trace.clone()))
+        .with_span_ids(Some(workflow_span.clone()), Some("0000000000000001".to_string()));
+
+        // A block that emits a non-opener event (ProjectChangesPushed).
+        let block = emitting_block(
+            "B",
+            EventType::VulnerabilityDetected,
+            vec![EventType::ProjectChangesPushed],
+        );
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let emitted: Vec<&Event> = result
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::ProjectChangesPushed)
+            .collect();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].trace_id.as_deref(), Some(trace.as_str()));
+        assert_eq!(emitted[0].span_id, Some(workflow_span));
+        assert_eq!(emitted[0].parent_span_id.as_deref(), Some("0000000000000001"));
+    }
+
+    #[tokio::test]
+    async fn span_opener_rule_mints_fresh_span_parented_to_block() {
+        let workflow_span = foundry_core::event::mint_span_id();
+        let trace = foundry_core::event::mint_trace_id();
+        let trigger = Event::new(
+            EventType::PipelineChecked,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(trace.clone()))
+        .with_span_ids(Some(workflow_span), None);
+
+        // A block that emits a workflow opener (IterationRequested).
+        let block =
+            emitting_block("B", EventType::PipelineChecked, vec![EventType::IterationRequested]);
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let opener = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::IterationRequested)
+            .expect("opener must be emitted");
+        let block_exec = result.block_executions.iter().find(|b| b.block_name == "B").unwrap();
+
+        assert_eq!(
+            opener.trace_id.as_deref(),
+            Some(trace.as_str()),
+            "trace_id propagates through opener"
+        );
+        assert_ne!(
+            opener.span_id, block_exec.parent_span_id,
+            "opener gets a FRESH span_id, not the workflow span"
+        );
+        assert_eq!(
+            opener.parent_span_id, block_exec.span_id,
+            "opener's parent is the block's own span"
+        );
+        assert_eq!(
+            opener.span_id.as_ref().map(String::len),
+            Some(16),
+            "minted span_id is 16 hex chars"
+        );
+    }
+
+    /// Test helper: a block that emits a single event with explicit
+    /// `trace_id`, `span_id`, and `parent_span_id` pre-populated. Used to
+    /// pin the "set if unset" contract: when a block emits an event that
+    /// already carries span context, the engine must preserve it.
+    struct ExplicitlyStampedBlock {
+        name: &'static str,
+        sinks: Vec<EventType>,
+        emit_type: EventType,
+        trace_id: String,
+        span_id: String,
+        parent_span_id: String,
+    }
+
+    impl ExplicitlyStampedBlock {
+        fn new(
+            name: &'static str,
+            sinks_on: EventType,
+            emit_type: EventType,
+            trace_id: String,
+            span_id: String,
+            parent_span_id: String,
+        ) -> Self {
+            Self {
+                name,
+                sinks: vec![sinks_on],
+                emit_type,
+                trace_id,
+                span_id,
+                parent_span_id,
+            }
+        }
+    }
+
+    impl TaskBlock for ExplicitlyStampedBlock {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &self.sinks
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            let emit_type = self.emit_type.clone();
+            let trace_id = self.trace_id.clone();
+            let span_id = self.span_id.clone();
+            let parent_span_id = self.parent_span_id.clone();
+            Box::pin(async move {
+                let emitted = Event::new(emit_type, project, throttle, serde_json::json!({}))
+                    .with_trace_id(Some(trace_id))
+                    .with_span_ids(Some(span_id), Some(parent_span_id));
+                Ok(TaskBlockResult {
+                    events: vec![emitted],
+                    success: true,
+                    summary: "emitted".to_string(),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn stamp_span_context_preserves_block_provided_span_fields() {
+        // Contract: stamping is "set if unset". If a block emits an event with
+        // explicit span context (trace_id / span_id / parent_span_id all
+        // populated), the engine must NOT overwrite those values, even though
+        // the trigger context is different.
+
+        let trigger_trace = foundry_core::event::mint_trace_id();
+        let trigger_span = foundry_core::event::mint_span_id();
+        let trigger = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(trigger_trace.clone()))
+        .with_span_ids(Some(trigger_span.clone()), None);
+
+        // Block emits a non-opener event with explicit span context.
+        // Use a distinct trace_id / span_id from the trigger so any
+        // accidental overwrite is observable.
+        let explicit_trace = foundry_core::event::mint_trace_id();
+        let explicit_span = foundry_core::event::mint_span_id();
+        let explicit_parent = foundry_core::event::mint_span_id();
+        assert_ne!(explicit_trace, trigger_trace, "test setup: must differ");
+        assert_ne!(explicit_span, trigger_span, "test setup: must differ");
+
+        let block = ExplicitlyStampedBlock::new(
+            "B",
+            EventType::VulnerabilityDetected,
+            EventType::ProjectChangesPushed,
+            explicit_trace.clone(),
+            explicit_span.clone(),
+            explicit_parent.clone(),
+        );
+
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let emitted = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ProjectChangesPushed)
+            .expect("explicit-stamped event must be emitted");
+
+        // All three fields preserved — none overwritten.
+        assert_eq!(
+            emitted.trace_id.as_deref(),
+            Some(explicit_trace.as_str()),
+            "block-provided trace_id must NOT be overwritten"
+        );
+        assert_eq!(
+            emitted.span_id.as_deref(),
+            Some(explicit_span.as_str()),
+            "block-provided span_id must NOT be overwritten"
+        );
+        assert_eq!(
+            emitted.parent_span_id.as_deref(),
+            Some(explicit_parent.as_str()),
+            "block-provided parent_span_id must NOT be overwritten"
+        );
+    }
+
     #[tokio::test]
     async fn trace_id_propagates_in_dry_run() {
         let mut engine = Engine::new();
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
 
+        let workflow_span = foundry_core::event::mint_span_id();
         let trigger = Event::new(
             EventType::GreetRequested,
             "test-project".to_string(),
             Throttle::DryRun,
             serde_json::json!({}),
         )
-        .with_trace_id(Some("trc_dryrun".to_string()));
+        .with_trace_id(Some("trc_dryrun".to_string()))
+        .with_span_ids(Some(workflow_span), None);
 
         let result = engine.process(trigger).await;
 
-        // Even dry-run simulated events should carry the trace_id.
+        // Even dry-run simulated events should carry the trace_id and a span_id.
         for event in &result.events {
             assert_eq!(
                 event.trace_id.as_deref(),
                 Some("trc_dryrun"),
                 "dry-run event {} should have propagated trace_id",
+                event.event_type,
+            );
+            assert!(
+                event.span_id.is_some(),
+                "dry-run event {} should have a stamped span_id",
                 event.event_type,
             );
         }
