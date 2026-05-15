@@ -240,7 +240,22 @@ impl Engine {
             };
         }
 
-        match execute_with_retry(block, current, block.retry_policy()).await {
+        // Scope SPAN_CONTEXT for the duration of block execution so that
+        // any subprocess spawn site inside the block (shell.rs,
+        // agent_stream.rs, etc.) can inject `TRACEPARENT` derived from the
+        // active workflow trace and this block's own freshly minted span.
+        let exec_future = execute_with_retry(block, current, block.retry_policy());
+        let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
+            let span_ctx = crate::span_context::SpanContext {
+                trace_id,
+                span_id: block_span_id.clone(),
+            };
+            crate::span_context::SPAN_CONTEXT.scope(span_ctx, exec_future).await
+        } else {
+            exec_future.await
+        };
+
+        match result_or_err {
             Ok(result) => {
                 tracing::info!(
                     success = result.success,
@@ -1598,6 +1613,95 @@ mod tests {
             emitted.parent_span_id.as_deref(),
             Some(explicit_parent.as_str()),
             "block-provided parent_span_id must NOT be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn block_inside_engine_sees_span_context_via_task_local() {
+        // Task 5.2: the engine wraps `block.execute` in
+        // `SPAN_CONTEXT::scope` so subprocess spawners inside the block
+        // can read (trace_id, block_span_id) without explicit plumbing.
+        use crate::span_context::SPAN_CONTEXT;
+        use std::sync::Mutex;
+
+        struct ContextProbingBlock {
+            seen_trace: Arc<Mutex<Option<String>>>,
+            seen_span: Arc<Mutex<Option<String>>>,
+        }
+
+        impl TaskBlock for ContextProbingBlock {
+            fn name(&self) -> &'static str {
+                "Probe"
+            }
+
+            fn kind(&self) -> BlockKind {
+                BlockKind::Observer
+            }
+
+            fn sinks_on(&self) -> &[EventType] {
+                &[EventType::VulnerabilityDetected]
+            }
+
+            fn execute(
+                &self,
+                _trigger: &Event,
+            ) -> Pin<
+                Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>,
+            > {
+                let seen_trace = Arc::clone(&self.seen_trace);
+                let seen_span = Arc::clone(&self.seen_span);
+                Box::pin(async move {
+                    let _ = SPAN_CONTEXT.try_with(|ctx| {
+                        *seen_trace.lock().unwrap() = Some(ctx.trace_id.clone());
+                        *seen_span.lock().unwrap() = Some(ctx.span_id.clone());
+                    });
+                    Ok(TaskBlockResult {
+                        events: vec![],
+                        success: true,
+                        summary: "probed".to_string(),
+                        raw_output: None,
+                        exit_code: None,
+                        audit_artifacts: vec![],
+                    })
+                })
+            }
+        }
+
+        let seen_trace: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen_span: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let block = Box::new(ContextProbingBlock {
+            seen_trace: Arc::clone(&seen_trace),
+            seen_span: Arc::clone(&seen_span),
+        });
+
+        let mut engine = Engine::new();
+        engine.register(block);
+
+        let trigger = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_core::event::mint_span_id()), None);
+
+        let trigger_trace = trigger.trace_id.clone();
+        let result = engine.process(trigger).await;
+
+        let block_exec = &result.block_executions[0];
+        let block_span = block_exec.span_id.clone();
+
+        assert_eq!(
+            *seen_trace.lock().unwrap(),
+            trigger_trace,
+            "block must see trigger's trace_id via SPAN_CONTEXT"
+        );
+        assert_eq!(
+            *seen_span.lock().unwrap(),
+            block_span,
+            "block must see its OWN span_id via SPAN_CONTEXT (NOT trigger's span_id)"
         );
     }
 
