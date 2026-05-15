@@ -329,6 +329,26 @@ impl EventType {
     pub fn as_str(&self) -> &'static str {
         self.into()
     }
+
+    /// True if this event type is a registered **span opener** — meaning the
+    /// engine's stamping pass should mint a fresh `span_id` for this event
+    /// and parent it to the emitting block's `span_id`.
+    ///
+    /// See the `OTel` nested tracing design spec; this list is expected to
+    /// grow as additional openers are registered.
+    pub fn is_span_opener(&self) -> bool {
+        matches!(
+            self,
+            EventType::IterationRequested
+                | EventType::MaintenanceRequested
+                | EventType::ValidationRequested
+                | EventType::DriftAssessmentRequested
+                | EventType::ReleaseRequested
+                | EventType::PipelineCheckRequested
+                | EventType::GreetRequested
+                | EventType::RemediationStarted
+        )
+    }
 }
 
 #[cfg(test)]
@@ -662,6 +682,23 @@ mod tests {
             .with_trace_id(Some(super::mint_trace_id()))
             .with_span_ids(Some(super::mint_span_id()), Some(super::mint_span_id()));
         assert_eq!(base.id, with_spans.id, "span metadata must not change Event::id");
+    }
+
+    #[test]
+    fn is_span_opener_identifies_workflow_requests() {
+        assert!(EventType::IterationRequested.is_span_opener());
+        assert!(EventType::MaintenanceRequested.is_span_opener());
+        assert!(EventType::ValidationRequested.is_span_opener());
+        assert!(EventType::DriftAssessmentRequested.is_span_opener());
+        assert!(EventType::ReleaseRequested.is_span_opener());
+        assert!(EventType::PipelineCheckRequested.is_span_opener());
+        assert!(EventType::GreetRequested.is_span_opener());
+        assert!(EventType::RemediationStarted.is_span_opener());
+
+        // Negative cases — completion events are NOT openers.
+        assert!(!EventType::ProjectIterationCompleted.is_span_opener());
+        assert!(!EventType::VulnerabilityDetected.is_span_opener());
+        assert!(!EventType::GreetingDelivered.is_span_opener());
     }
 
     #[test]
