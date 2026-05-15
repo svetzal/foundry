@@ -133,6 +133,7 @@ impl Engine {
     /// Execute one block against a triggering event, persist any emitted events,
     /// and return the [`BlockExecution`] record.  Mutates `all_events` and
     /// `queue` in place so downstream events continue to be processed.
+    #[allow(clippy::too_many_lines)]
     async fn run_block(
         &self,
         block: &dyn TaskBlock,
@@ -140,6 +141,11 @@ impl Engine {
         all_events: &mut Vec<Event>,
         queue: &mut Vec<Event>,
     ) -> BlockExecution {
+        // Mint a fresh span for this dispatch. The block's span is a CHILD of
+        // the workflow span carried on the triggering event.
+        let block_span_id = foundry_core::event::mint_span_id();
+        let workflow_span_id = current.span_id.clone();
+
         let block_start = std::time::Instant::now();
 
         // DRY-RUN PRETEND-SUCCESS: Mutator blocks under DryRun are not executed.
@@ -163,6 +169,8 @@ impl Engine {
                 summary: "dry-run (simulated)".to_string(),
                 emitted_event_ids: emitted_ids,
                 emitted_payloads,
+                span_id: Some(block_span_id),
+                parent_span_id: workflow_span_id,
                 ..BlockExecution::new(
                     block.name(),
                     &current.id,
@@ -180,6 +188,8 @@ impl Engine {
             return BlockExecution {
                 success: true,
                 summary: "skipped (throttle)".to_string(),
+                span_id: Some(block_span_id),
+                parent_span_id: workflow_span_id,
                 ..BlockExecution::new(
                     block.name(),
                     &current.id,
@@ -215,6 +225,8 @@ impl Engine {
                     exit_code: result.exit_code,
                     emitted_payloads,
                     audit_artifacts: result.audit_artifacts,
+                    span_id: Some(block_span_id),
+                    parent_span_id: workflow_span_id,
                     ..BlockExecution::new(
                         block.name(),
                         &current.id,
@@ -229,6 +241,8 @@ impl Engine {
                     u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 BlockExecution {
                     summary: format!("error: {err}"),
+                    span_id: Some(block_span_id),
+                    parent_span_id: workflow_span_id,
                     ..BlockExecution::new(
                         block.name(),
                         &current.id,
@@ -1137,6 +1151,68 @@ mod tests {
                 event.event_type,
             );
         }
+    }
+
+    /// Minimal observer block that sinks on `VulnerabilityDetected` and emits
+    /// no events. Used for span-id propagation tests where we only care about
+    /// the `BlockExecution` record, not downstream chaining.
+    struct SilentObserver;
+
+    impl TaskBlock for SilentObserver {
+        fn name(&self) -> &'static str {
+            "B"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::VulnerabilityDetected]
+        }
+
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            Box::pin(async {
+                Ok(TaskBlockResult {
+                    events: vec![],
+                    success: true,
+                    summary: "ok".to_string(),
+                    raw_output: None,
+                    exit_code: None,
+                    audit_artifacts: vec![],
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn block_execution_records_block_span_id() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(SilentObserver));
+
+        let trigger = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_core::event::mint_span_id()), None);
+
+        let workflow_span = trigger.span_id.clone();
+        let result = engine.process(trigger).await;
+
+        let block_exec = &result.block_executions[0];
+        let block_span = block_exec.span_id.as_ref().expect("block must have span_id");
+        assert_eq!(block_span.len(), 16, "block span_id must be 16 hex chars");
+        assert_eq!(
+            block_exec.parent_span_id, workflow_span,
+            "block parent_span_id must equal the triggering event's span_id"
+        );
     }
 
     #[tokio::test]
