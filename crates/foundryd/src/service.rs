@@ -729,8 +729,14 @@ impl Foundry for FoundryService {
         }
     }
 
-    async fn span(&self, _request: Request<SpanRequest>) -> Result<Response<SpanResponse>, Status> {
-        Err(Status::unimplemented("Span RPC not implemented yet"))
+    async fn span(&self, request: Request<SpanRequest>) -> Result<Response<SpanResponse>, Status> {
+        let _ = request; // populated in Phase 6
+        Ok(Response::new(SpanResponse {
+            found: false,
+            events: vec![],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        }))
     }
 }
 
