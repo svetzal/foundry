@@ -76,9 +76,9 @@ All event types follow a disciplined taxonomy with four suffix categories:
 
 | Category | Suffix | Meaning | Examples |
 |----------|--------|---------|----------|
-| Command | `*Requested` | Intent — someone or something wants action taken | `IterationRequested`, `MaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested` |
-| Lifecycle start | `*Started` | A multi-step operation began | `RemediationStarted`, `MaintenanceRunStarted` |
-| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `PreflightCompleted`, `GateResolutionCompleted`, `ProjectIterationCompleted` |
+| Command | `*Requested` | Intent — someone or something wants action taken | `ProjectIterationRequested`, `ProjectMaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested` |
+| Lifecycle start | `*Started` | A multi-step operation began | `MaintenanceCycleStarted`, `ProjectRunStarted`, `StrategicCycleStarted`, `InnerIterationStarted`, `RemediationStarted` |
+| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `MaintenanceCycleCompleted`, `ProjectRunCompleted`, `ProjectIterationCompleted`, `PreflightCompleted`, `GateResolutionCompleted` |
 | Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked` |
 
 Rules:
@@ -133,7 +133,7 @@ let all_passed = p.all_passed;
 Use `.ok()` when parsing is best-effort (e.g., a block that sinks on multiple event types):
 
 ```rust
-let strategic = trigger.parse_payload::<IterationRequestedPayload>().ok().and_then(|p| p.strategic).unwrap_or(false);
+let strategic = trigger.parse_payload::<ProjectIterationRequestedPayload>().ok().and_then(|p| p.strategic).unwrap_or(false);
 ```
 
 **Writing an output payload:**

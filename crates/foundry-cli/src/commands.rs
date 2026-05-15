@@ -355,9 +355,17 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     let mut stream = watch_client.watch(watch_request).await?.into_inner();
 
     // Now emit the maintenance run event using a separate connection.
+    //
+    // System-wide runs open a `MaintenanceCycle` (the daemon fans out to each
+    // registered project). Single-project runs open a `ProjectRun` directly.
     let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let opener_event_type = if is_system_run {
+        "maintenance_cycle_started"
+    } else {
+        "project_run_started"
+    };
     let request = EmitRequest {
-        event_type: "maintenance_run_started".to_string(),
+        event_type: opener_event_type.to_string(),
         project: project_name.clone(),
         throttle: parse_throttle(throttle),
         payload_json: String::new(),
@@ -386,15 +394,20 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
 
 /// Determine whether a watch stream event signals that the run is complete.
 ///
-/// For single-project runs, any `maintenance_run_completed` event is terminal.
+/// For single-project runs, any `project_run_completed` event is terminal.
 ///
 /// For system-level runs, the fan-out orchestrator emits an early
-/// `maintenance_run_completed` (with `project_count` in payload) before
+/// `maintenance_cycle_completed` (with `project_count` in payload) before
 /// per-project chains execute. The true terminal signal is the service-level
 /// broadcast (with `root_event_id` in payload) emitted after all processing
 /// finishes.
 fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) -> bool {
-    if event_type != "maintenance_run_completed" {
+    let expected = if is_system_run {
+        "maintenance_cycle_completed"
+    } else {
+        "project_run_completed"
+    };
+    if event_type != expected {
         return false;
     }
     if !is_system_run {
@@ -784,40 +797,51 @@ mod tests {
     fn non_completion_event_is_not_terminal() {
         assert!(!is_run_complete("project_validation_completed", "{}", false));
         assert!(!is_run_complete("project_validation_completed", "{}", true));
-        assert!(!is_run_complete("maintenance_run_started", "{}", false));
-        assert!(!is_run_complete("maintenance_run_started", "{}", true));
+        assert!(!is_run_complete("project_run_started", "{}", false));
+        assert!(!is_run_complete("maintenance_cycle_started", "{}", true));
     }
 
     #[test]
-    fn single_project_run_exits_on_any_completion() {
-        // Service-level completion (has root_event_id)
+    fn single_project_run_does_not_exit_on_cycle_completion() {
+        // A system-level `maintenance_cycle_completed` must not terminate a
+        // single-project run — single-project runs key off `project_run_completed`.
         let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
-        assert!(is_run_complete("maintenance_run_completed", service_payload, false));
+        assert!(!is_run_complete("maintenance_cycle_completed", service_payload, false));
+    }
 
-        // Fan-out completion (has project_count) — still terminal for single-project
-        let fanout_payload = r#"{"project_count":3,"skipped_count":0,"projects":["a","b","c"]}"#;
-        assert!(is_run_complete("maintenance_run_completed", fanout_payload, false));
+    #[test]
+    fn single_project_run_exits_on_project_run_completion() {
+        let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
+        assert!(is_run_complete("project_run_completed", service_payload, false));
 
         // Empty payload — still terminal for single-project
-        assert!(is_run_complete("maintenance_run_completed", "{}", false));
+        assert!(is_run_complete("project_run_completed", "{}", false));
     }
 
     #[test]
     fn system_run_ignores_fanout_completion() {
         let fanout_payload = r#"{"project_count":3,"skipped_count":0,"projects":["a","b","c"]}"#;
-        assert!(!is_run_complete("maintenance_run_completed", fanout_payload, true));
+        assert!(!is_run_complete("maintenance_cycle_completed", fanout_payload, true));
+    }
+
+    #[test]
+    fn system_run_ignores_project_run_completion() {
+        // Per-project `project_run_completed` events fly during a system run,
+        // but they must not terminate the cycle.
+        let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
+        assert!(!is_run_complete("project_run_completed", service_payload, true));
     }
 
     #[test]
     fn system_run_exits_on_service_completion() {
         let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
-        assert!(is_run_complete("maintenance_run_completed", service_payload, true));
+        assert!(is_run_complete("maintenance_cycle_completed", service_payload, true));
     }
 
     #[test]
     fn system_run_does_not_exit_on_empty_payload() {
-        assert!(!is_run_complete("maintenance_run_completed", "{}", true));
-        assert!(!is_run_complete("maintenance_run_completed", "", true));
+        assert!(!is_run_complete("maintenance_cycle_completed", "{}", true));
+        assert!(!is_run_complete("maintenance_cycle_completed", "", true));
     }
 
     // -- extract_status tests --
