@@ -5,6 +5,7 @@ mod commands;
 mod gates_commands;
 mod init_commands;
 mod registry_commands;
+mod trace_tree;
 
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
@@ -72,6 +73,13 @@ enum Commands {
         /// Show raw output and payloads for each block
         #[arg(long)]
         verbose: bool,
+
+        /// Print events in chronological order (legacy 0.16 format).
+        ///
+        /// By default `trace` renders the OTel-shaped span tree. Use `--flat`
+        /// to fall back to the pre-0.17 event-tree view.
+        #[arg(long, default_value_t = false)]
+        flat: bool,
     },
 
     /// Trigger a maintenance run for all or specific projects
@@ -427,9 +435,11 @@ async fn main() -> Result<()> {
         } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
         Commands::Watch { project } => commands::watch(&cli.addr, project).await,
-        Commands::Trace { event_id, verbose } => {
-            commands::trace(&cli.addr, &event_id, verbose).await
-        }
+        Commands::Trace {
+            event_id,
+            verbose,
+            flat,
+        } => commands::trace(&cli.addr, &event_id, verbose, flat).await,
         Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
         Commands::Validate { projects, all } => {
             commands::validate(&cli.addr, projects, all, &foundry_core::paths::registry_path())

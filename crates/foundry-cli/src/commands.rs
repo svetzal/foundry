@@ -238,7 +238,7 @@ pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn trace(addr: &str, event_id: &str, verbose: bool) -> Result<()> {
+pub async fn trace(addr: &str, event_id: &str, verbose: bool, flat: bool) -> Result<()> {
     let mut client = FoundryClient::connect(addr.to_string()).await?;
 
     let request = TraceRequest {
@@ -252,12 +252,41 @@ pub async fn trace(addr: &str, event_id: &str, verbose: bool) -> Result<()> {
         return Ok(());
     }
 
-    render_trace(&response, verbose);
+    // Legacy fallback: pre-OTel traces have no span_id on any event. Render
+    // those flat with a one-line note even when `--flat` is not set, since
+    // the tree builder would produce a degenerate (single empty-string-rooted)
+    // forest otherwise.
+    let legacy = is_legacy_trace_response(&response);
+
+    if flat || legacy {
+        if legacy && !flat {
+            eprintln!("(legacy trace: rendering flat)");
+        }
+        render_trace(&response, verbose);
+    } else {
+        let forest = crate::trace_tree::build_forest(
+            response.events.clone(),
+            response.block_executions.clone(),
+        );
+        let mut out = String::new();
+        crate::trace_tree::render(&forest, &mut out);
+        print!("{out}");
+    }
+
     let block_sum: u64 = response.block_executions.iter().map(|b| b.duration_ms).sum();
     println!("---");
     println!("Total: {}ms (blocks: {}ms)", response.total_duration_ms, block_sum);
 
     Ok(())
+}
+
+/// Returns `true` when no event in the response carries a `span_id`.
+///
+/// Pre-0.17 daemons did not stamp `span_id` on events, so the tree builder
+/// has nothing to root the forest on. Detecting this lets us fall back to
+/// the legacy flat renderer gracefully.
+fn is_legacy_trace_response(response: &TraceResponse) -> bool {
+    !response.events.is_empty() && response.events.iter().all(|e| e.span_id.is_empty())
 }
 
 fn render_trace(response: &TraceResponse, verbose: bool) {
@@ -815,6 +844,71 @@ fn extract_status(payload_json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::TraceEvent;
+
+    // -- is_legacy_trace_response tests --
+
+    fn test_event_with_span_id(span_id: &str) -> TraceEvent {
+        TraceEvent {
+            event_id: "evt_1".to_string(),
+            event_type: "x".to_string(),
+            project: "p".to_string(),
+            occurred_at: String::new(),
+            throttle: 0,
+            trace_id: String::new(),
+            span_id: span_id.to_string(),
+            parent_span_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn detects_legacy_trace_when_all_events_lack_span_id() {
+        let response = TraceResponse {
+            found: true,
+            events: vec![test_event_with_span_id(""), test_event_with_span_id("")],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(is_legacy_trace_response(&response));
+    }
+
+    #[test]
+    fn detects_modern_trace_when_some_events_have_span_id() {
+        let response = TraceResponse {
+            found: true,
+            events: vec![test_event_with_span_id("abc"), test_event_with_span_id("")],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(!is_legacy_trace_response(&response));
+    }
+
+    #[test]
+    fn detects_modern_trace_when_all_events_have_span_id() {
+        let response = TraceResponse {
+            found: true,
+            events: vec![
+                test_event_with_span_id("abc"),
+                test_event_with_span_id("def"),
+            ],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(!is_legacy_trace_response(&response));
+    }
+
+    #[test]
+    fn empty_response_is_not_legacy() {
+        // An empty response shouldn't be treated as legacy — there's nothing to render
+        // flat, and `all_legacy` keys off "we have events but none have span_id".
+        let response = TraceResponse {
+            found: true,
+            events: vec![],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(!is_legacy_trace_response(&response));
+    }
 
     // -- is_run_complete tests --
 
