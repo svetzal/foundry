@@ -20,10 +20,23 @@ pub struct Event {
     pub recorded_at: DateTime<Utc>,
     /// The throttle level propagated through this event chain.
     pub throttle: Throttle,
-    /// Groups related events into a single workflow instance.
-    /// Propagated automatically by the engine from trigger to emitted events.
+    /// 32-char lowercase hex. Identifies the whole tree (cycle root through
+    /// leaf blocks). Inherited from parent span; minted only at root spans.
+    /// Legacy events use a `trc_*` UUID format — distinguishable via
+    /// [`is_legacy_trace_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+
+    /// 16-char lowercase hex. Identifies the span this event belongs to.
+    /// Every event participating in a span shares the same `span_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+
+    /// 16-char lowercase hex. The span that caused this one to open.
+    /// `None` for root spans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_span_id: Option<String>,
+
     /// Event-type-specific payload.
     pub payload: serde_json::Value,
 }
@@ -48,6 +61,8 @@ impl Event {
             recorded_at,
             throttle,
             trace_id: None,
+            span_id: None,
+            parent_span_id: None,
             payload,
         }
     }
@@ -56,6 +71,19 @@ impl Event {
     #[must_use]
     pub fn with_trace_id(mut self, trace_id: Option<String>) -> Self {
         self.trace_id = trace_id;
+        self
+    }
+
+    /// Attach span IDs to this event (builder pattern). `parent_span_id = None`
+    /// indicates a root span.
+    #[must_use]
+    pub fn with_span_ids(
+        mut self,
+        span_id: Option<String>,
+        parent_span_id: Option<String>,
+    ) -> Self {
+        self.span_id = span_id;
+        self.parent_span_id = parent_span_id;
         self
     }
 
@@ -586,6 +614,54 @@ mod tests {
             EventType::from_str("agent_session_ended").unwrap(),
             EventType::AgentSessionEnded
         );
+    }
+
+    #[test]
+    fn span_fields_round_trip_when_present() {
+        let event = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("0123456789abcdef0123456789abcdef".to_string()))
+        .with_span_ids(Some("0123456789abcdef".to_string()), Some("fedcba9876543210".to_string()));
+
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["span_id"], "0123456789abcdef");
+        assert_eq!(json["parent_span_id"], "fedcba9876543210");
+
+        let restored: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.span_id.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(restored.parent_span_id.as_deref(), Some("fedcba9876543210"));
+    }
+
+    #[test]
+    fn span_fields_omitted_from_json_when_none() {
+        let event = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("span_id").is_none(), "span_id must be absent when None");
+        assert!(json.get("parent_span_id").is_none(), "parent_span_id must be absent when None");
+    }
+
+    #[test]
+    fn event_id_does_not_depend_on_span_fields() {
+        let base = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({"x": 1}),
+        );
+        let with_spans = base
+            .clone()
+            .with_trace_id(Some(super::mint_trace_id()))
+            .with_span_ids(Some(super::mint_span_id()), Some(super::mint_span_id()));
+        assert_eq!(base.id, with_spans.id, "span metadata must not change Event::id");
     }
 
     #[test]
