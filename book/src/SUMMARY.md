@@ -7,6 +7,7 @@
 
 - [Concepts](architecture/concepts.md)
 - [Event Model](architecture/event-model.md)
+- [Tracing](architecture/tracing.md)
 - [Task Block Library](architecture/task-blocks.md)
 - [Crate Structure](architecture/crates.md)
 
