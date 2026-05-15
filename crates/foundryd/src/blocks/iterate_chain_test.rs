@@ -1,7 +1,7 @@
 //! Integration tests for the full native iterate workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: `IterationRequested` -> `CharterCheckCompleted` -> `GateResolutionCompleted`
+//! - Happy path: `ProjectIterationRequested` -> `CharterCheckCompleted` -> `GateResolutionCompleted`
 //!   -> `PreflightCompleted` -> `AssessmentCompleted` -> `TriageCompleted` -> `PlanCompleted`
 //!   -> `ExecutionCompleted` -> `GateVerificationCompleted` -> `ProjectIterationCompleted`
 //!   -> `SummarizeCompleted`
@@ -25,7 +25,7 @@ use crate::shell::CommandResult;
 
 fn iteration_requested_event(maintain: bool) -> Event {
     Event::new(
-        EventType::IterationRequested,
+        EventType::ProjectIterationRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({
@@ -140,7 +140,7 @@ async fn happy_path_iterate_chain() {
 
     // Verify the full chain
     assert!(
-        event_types.contains(&"iteration_requested"),
+        event_types.contains(&"project_iteration_requested"),
         "chain should start with iteration_requested"
     );
     assert!(event_types.contains(&"charter_check_completed"), "should check charter");
@@ -548,7 +548,7 @@ async fn iterate_with_maintain_chaining() {
         },
     ]);
     // Agent: assess, name, triage, plan, execute, summarize (iterate), then maintain chain agents...
-    // We only verify MaintenanceRequested is emitted; the maintain chain needs its own engine blocks.
+    // We only verify ProjectMaintenanceRequested is emitted; the maintain chain needs its own engine blocks.
     let agent = FakeAgentGateway::sequence(vec![
         // AssessProject — assessment
         AgentResponse {
@@ -592,7 +592,7 @@ async fn iterate_with_maintain_chaining() {
             exit_code: 0,
             success: true,
         },
-        // ExecuteMaintain (from chained MaintenanceRequested -> GateResolutionCompleted -> ExecuteMaintain)
+        // ExecuteMaintain (from chained ProjectMaintenanceRequested -> GateResolutionCompleted -> ExecuteMaintain)
         AgentResponse {
             stdout: "Dependencies updated".to_string(),
             stderr: String::new(),
@@ -611,7 +611,7 @@ async fn iterate_with_maintain_chaining() {
     // Build engine with BOTH iterate and maintain chain blocks
     let mut engine = Engine::new();
     test_helpers::register_iterate_chain(&mut engine, shell, agent.clone(), registry.clone());
-    // Also register maintain blocks so the chained MaintenanceRequested is handled
+    // Also register maintain blocks so the chained ProjectMaintenanceRequested is handled
     engine.register(Box::new(super::ExecuteMaintain::new(agent.clone(), registry.clone())));
 
     let result = engine.process(iteration_requested_event(true)).await;
@@ -627,9 +627,9 @@ async fn iterate_with_maintain_chaining() {
         .unwrap();
     assert_eq!(completion.payload["success"], true);
 
-    // Verify MaintenanceRequested was emitted
+    // Verify ProjectMaintenanceRequested was emitted
     assert!(
-        event_types.contains(&"maintenance_requested"),
+        event_types.contains(&"project_maintenance_requested"),
         "should emit maintenance_requested when actions.maintain=true"
     );
 

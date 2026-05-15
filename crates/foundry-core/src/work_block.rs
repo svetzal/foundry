@@ -178,7 +178,7 @@ mod tests {
 
     fn make_trigger() -> Event {
         Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -255,7 +255,7 @@ mod tests {
         let step = ComposedStep::new(
             "TestStep",
             BlockKind::Observer,
-            vec![EventType::GreetRequested],
+            vec![EventType::GreetingRequested],
             EchoBlock,
             FilterAdapter,
             EchoMapper,
@@ -271,7 +271,7 @@ mod tests {
         let step = ComposedStep::new(
             "TestStep",
             BlockKind::Observer,
-            vec![EventType::GreetRequested],
+            vec![EventType::GreetingRequested],
             EchoBlock,
             FixedAdapter("hello".to_string()),
             EchoMapper,
@@ -286,7 +286,7 @@ mod tests {
         let step = ComposedStep::new(
             "FailStep",
             BlockKind::Observer,
-            vec![EventType::GreetRequested],
+            vec![EventType::GreetingRequested],
             FailBlock,
             UnitAdapter,
             UnitMapper,

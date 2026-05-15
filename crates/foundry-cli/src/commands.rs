@@ -412,7 +412,7 @@ pub async fn iterate(addr: &str, project: &str) -> Result<()> {
     let runner = WorkflowRunner::new(addr, project);
     let (event_id, events) = runner
         .run_workflow(
-            "iteration_requested",
+            "project_iteration_requested",
             serde_json::json!({
                 "project": project,
                 "actions": { "maintain": false },

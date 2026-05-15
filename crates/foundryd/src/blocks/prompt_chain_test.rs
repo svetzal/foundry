@@ -25,7 +25,7 @@ fn prompt_engine(
 ) -> Engine {
     let mut engine = Engine::new();
 
-    // Charter check (sinks on IterationRequested + PromptExecutionRequested)
+    // Charter check (sinks on ProjectIterationRequested + PromptExecutionRequested)
     engine.register(Box::new(super::CheckCharter::new(registry.clone())));
     // Gate resolution (sinks on CharterCheckCompleted)
     engine.register(Box::new(super::ResolveGates::new(registry.clone())));

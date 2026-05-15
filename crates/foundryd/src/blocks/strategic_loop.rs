@@ -19,12 +19,12 @@ agent_block_new!(
     /// Observer — sinks on `StrategicAssessmentCompleted` and `InnerIterationCompleted`.
     ///
     /// On `StrategicAssessmentCompleted`: picks the first area from the ranked
-    /// list and emits `IterationRequested` with `loop_context` (entering the
+    /// list and emits `ProjectIterationRequested` with `loop_context` (entering the
     /// inner iterate formation).
     ///
     /// On `InnerIterationCompleted`: uses an AI agent to re-assess whether
     /// further improvement is warranted. If yes and iterations remain, picks
-    /// the next area and emits another `IterationRequested`. If no (or max
+    /// the next area and emits another `ProjectIterationRequested`. If no (or max
     /// iterations reached), emits `ProjectIterationCompleted` **without**
     /// `loop_context`, which triggers `SummarizeResult` and `CommitAndPush`.
     pub struct StrategicLoopController
@@ -132,7 +132,7 @@ fn handle_assessment_completed(
     TaskBlockResult::success(
         format!("{project}: strategic loop iteration 1 — {area_name}"),
         vec![Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             project.to_string(),
             throttle,
             event_payload,
@@ -212,7 +212,7 @@ async fn handle_inner_completed(
     Ok(TaskBlockResult::success(
         format!("{project}: strategic loop continuing — iteration {next_iteration}"),
         vec![Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             project.to_string(),
             throttle,
             event_payload,
@@ -384,7 +384,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::IterationRequested);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationRequested);
 
         let payload = &result.events[0].payload;
         // loop_context should be updated to iteration 1
@@ -499,7 +499,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::IterationRequested);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationRequested);
         assert_eq!(result.events[0].payload["loop_context"]["strategic"]["iteration"], 2);
     }
 

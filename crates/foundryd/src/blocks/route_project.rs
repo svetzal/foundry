@@ -10,7 +10,7 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// Routes a validated project to the correct maintenance sub-workflow.
 ///
 /// Observer — sinks on `ProjectValidationCompleted` and emits either
-/// `IterationRequested` or `MaintenanceRequested` based on the action flags
+/// `ProjectIterationRequested` or `ProjectMaintenanceRequested` based on the action flags
 /// forwarded in the validation payload.
 ///
 /// When validation did not succeed (`status != "ok"`) the block emits nothing,
@@ -62,7 +62,7 @@ impl TaskBlock for RouteProjectWorkflow {
                 tracing::info!(%project, "routing to iteration workflow");
                 super::emit_result(
                     format!("{project}: routing to iteration workflow"),
-                    EventType::IterationRequested,
+                    EventType::ProjectIterationRequested,
                     &project,
                     throttle,
                     &IterationRequestedPayload {
@@ -79,7 +79,7 @@ impl TaskBlock for RouteProjectWorkflow {
                 tracing::info!(%project, "routing to maintenance workflow");
                 super::emit_result(
                     format!("{project}: routing to maintenance workflow"),
-                    EventType::MaintenanceRequested,
+                    EventType::ProjectMaintenanceRequested,
                     &project,
                     throttle,
                     &MaintenanceRequestedPayload {
@@ -130,7 +130,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::IterationRequested);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationRequested);
         assert_eq!(result.events[0].project, "my-project");
         // maintain=false forwarded in payload
         let maintain = result.events[0]
@@ -148,7 +148,7 @@ mod tests {
         let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
 
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::IterationRequested);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationRequested);
         // maintain=true forwarded so iterate chain can route to maintain
         let maintain = result.events[0]
             .payload
@@ -166,7 +166,7 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::MaintenanceRequested);
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceRequested);
         assert_eq!(result.events[0].project, "my-project");
     }
 

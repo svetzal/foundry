@@ -142,7 +142,7 @@ fn handle_gates_passed(
             })
             .expect("MaintenanceRequestedPayload is infallibly serializable");
             events.push(Event::new(
-                EventType::MaintenanceRequested,
+                EventType::ProjectMaintenanceRequested,
                 project.to_string(),
                 throttle,
                 maintenance_payload,
@@ -392,7 +392,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events.len(), 2);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
-        assert_eq!(result.events[1].event_type, EventType::MaintenanceRequested);
+        assert_eq!(result.events[1].event_type, EventType::ProjectMaintenanceRequested);
     }
 
     #[tokio::test]
@@ -474,7 +474,7 @@ mod tests {
         let result = RouteGateResult.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        // Only one event — no MaintenanceRequested chaining inside a loop
+        // Only one event — no ProjectMaintenanceRequested chaining inside a loop
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::InnerIterationCompleted);
     }

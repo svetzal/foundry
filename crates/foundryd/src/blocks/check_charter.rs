@@ -12,7 +12,7 @@ use super::TriggerContext;
 
 /// Validates that a project has intent documentation before the iterate workflow proceeds.
 ///
-/// Observer — sinks on `IterationRequested`.
+/// Observer — sinks on `ProjectIterationRequested`.
 /// Emits `CharterCheckCompleted` with `success: true/false`.
 /// If the charter check fails, the chain stops (`ResolveGates` checks for `success=true`).
 pub struct CheckCharter {
@@ -29,7 +29,7 @@ impl TaskBlock for CheckCharter {
     task_block_meta! {
         name: "Check Charter",
         kind: Observer,
-        sinks_on: [IterationRequested, PromptExecutionRequested],
+        sinks_on: [ProjectIterationRequested, PromptExecutionRequested],
     }
 
     fn execute(
@@ -46,7 +46,7 @@ impl TaskBlock for CheckCharter {
 
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
         // Use .ok() — this block sinks on multiple event types with different payload
-        // shapes (IterationRequested and PromptExecutionRequested).
+        // shapes (ProjectIterationRequested and PromptExecutionRequested).
         let iter_payload = trigger.parse_payload::<IterationRequestedPayload>().ok();
         let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
         if strategic {
@@ -123,7 +123,7 @@ mod tests {
     assert_block_meta!(
         CheckCharter::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
-        sinks_on: [IterationRequested, PromptExecutionRequested],
+        sinks_on: [ProjectIterationRequested, PromptExecutionRequested],
     );
 
     #[tokio::test]
@@ -135,7 +135,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CheckCharter::new(registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project"}),
@@ -157,7 +157,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CheckCharter::new(registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project"}),
@@ -180,7 +180,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = CheckCharter::new(registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project", "actions": {"maintain": true}}),
@@ -198,6 +198,7 @@ mod tests {
             version: 2,
             projects: vec![],
         })));
-        test_helpers::assert_missing_project_fails(&block, EventType::IterationRequested).await;
+        test_helpers::assert_missing_project_fails(&block, EventType::ProjectIterationRequested)
+            .await;
     }
 }

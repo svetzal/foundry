@@ -273,8 +273,8 @@ pub enum EventType {
     ProjectChangesPushed,
 
     // Maintenance sub-workflow triggers
-    IterationRequested,
-    MaintenanceRequested,
+    ProjectIterationRequested,
+    ProjectMaintenanceRequested,
     PromptExecutionRequested,
 
     // Validation workflow
@@ -322,7 +322,7 @@ pub enum EventType {
     PipelineChecked,
 
     // Hello-world workflow (validates engine mechanics)
-    GreetRequested,
+    GreetingRequested,
     GreetingComposed,
     GreetingDelivered,
 
@@ -345,14 +345,18 @@ impl EventType {
     pub fn is_span_opener(&self) -> bool {
         matches!(
             self,
-            EventType::IterationRequested
-                | EventType::MaintenanceRequested
+            EventType::MaintenanceCycleStarted
+                | EventType::ProjectRunStarted
+                | EventType::ProjectIterationRequested
+                | EventType::ProjectMaintenanceRequested
                 | EventType::ValidationRequested
                 | EventType::DriftAssessmentRequested
                 | EventType::ReleaseRequested
                 | EventType::PipelineCheckRequested
-                | EventType::GreetRequested
+                | EventType::GreetingRequested
                 | EventType::RemediationStarted
+                | EventType::StrategicCycleStarted
+                | EventType::InnerIterationStarted
         )
     }
 }
@@ -413,8 +417,8 @@ mod tests {
             (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),
             (EventType::ProjectChangesCommitted, "project_changes_committed"),
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
-            (EventType::IterationRequested, "iteration_requested"),
-            (EventType::MaintenanceRequested, "maintenance_requested"),
+            (EventType::ProjectIterationRequested, "project_iteration_requested"),
+            (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
             (EventType::PromptExecutionRequested, "prompt_execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
@@ -444,7 +448,7 @@ mod tests {
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::PipelineCheckRequested, "pipeline_check_requested"),
             (EventType::PipelineChecked, "pipeline_checked"),
-            (EventType::GreetRequested, "greet_requested"),
+            (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
         ];
@@ -477,8 +481,8 @@ mod tests {
             (EventType::ProjectMaintenanceCompleted, "project_maintenance_completed"),
             (EventType::ProjectChangesCommitted, "project_changes_committed"),
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
-            (EventType::IterationRequested, "iteration_requested"),
-            (EventType::MaintenanceRequested, "maintenance_requested"),
+            (EventType::ProjectIterationRequested, "project_iteration_requested"),
+            (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
             (EventType::PromptExecutionRequested, "prompt_execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
@@ -508,7 +512,7 @@ mod tests {
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::PipelineCheckRequested, "pipeline_check_requested"),
             (EventType::PipelineChecked, "pipeline_checked"),
-            (EventType::GreetRequested, "greet_requested"),
+            (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
         ];
@@ -539,7 +543,7 @@ mod tests {
     #[test]
     fn trace_id_omitted_from_json_when_none() {
         let event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -552,7 +556,7 @@ mod tests {
     fn trace_id_present_in_json_when_set() {
         let trace_id = super::mint_trace_id();
         let event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -566,7 +570,7 @@ mod tests {
     fn trace_id_deserialized_as_none_when_absent() {
         let json = r#"{
             "id": "evt_test",
-            "event_type": "greet_requested",
+            "event_type": "greeting_requested",
             "project": "test",
             "occurred_at": "2026-01-01T00:00:00Z",
             "recorded_at": "2026-01-01T00:00:00Z",
@@ -581,7 +585,7 @@ mod tests {
     fn trace_id_round_trip() {
         let trace_id = super::mint_trace_id();
         let event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -704,14 +708,18 @@ mod tests {
 
     #[test]
     fn is_span_opener_identifies_workflow_requests() {
-        assert!(EventType::IterationRequested.is_span_opener());
-        assert!(EventType::MaintenanceRequested.is_span_opener());
+        assert!(EventType::MaintenanceCycleStarted.is_span_opener());
+        assert!(EventType::ProjectRunStarted.is_span_opener());
+        assert!(EventType::ProjectIterationRequested.is_span_opener());
+        assert!(EventType::ProjectMaintenanceRequested.is_span_opener());
         assert!(EventType::ValidationRequested.is_span_opener());
         assert!(EventType::DriftAssessmentRequested.is_span_opener());
         assert!(EventType::ReleaseRequested.is_span_opener());
         assert!(EventType::PipelineCheckRequested.is_span_opener());
-        assert!(EventType::GreetRequested.is_span_opener());
+        assert!(EventType::GreetingRequested.is_span_opener());
         assert!(EventType::RemediationStarted.is_span_opener());
+        assert!(EventType::StrategicCycleStarted.is_span_opener());
+        assert!(EventType::InnerIterationStarted.is_span_opener());
 
         // Negative cases — completion events are NOT openers.
         assert!(!EventType::ProjectIterationCompleted.is_span_opener());

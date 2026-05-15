@@ -86,7 +86,7 @@ mod tests {
 
     fn sample_result() -> ProcessResult {
         let event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test".to_string(),
             Throttle::Full,
             serde_json::json!({}),

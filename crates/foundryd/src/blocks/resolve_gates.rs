@@ -11,7 +11,7 @@ use super::TriggerContext;
 /// Reads `.hone-gates.json` from the project directory and emits `GateResolutionCompleted`
 /// with the gate definitions and workflow type.
 ///
-/// Observer — sinks on `CharterCheckCompleted`, `MaintenanceRequested`, and `ValidationRequested`.
+/// Observer — sinks on `CharterCheckCompleted`, `ProjectMaintenanceRequested`, and `ValidationRequested`.
 /// For iterate workflow: triggered by `CharterCheckCompleted` (checks `success=true`).
 /// For maintain/validate workflows: triggered directly by request events.
 pub struct ResolveGates {
@@ -28,7 +28,7 @@ impl TaskBlock for ResolveGates {
     task_block_meta! {
         name: "Resolve Gates",
         kind: Observer,
-        sinks_on: [CharterCheckCompleted, MaintenanceRequested, ValidationRequested],
+        sinks_on: [CharterCheckCompleted, ProjectMaintenanceRequested, ValidationRequested],
     }
 
     fn execute(
@@ -71,7 +71,7 @@ impl TaskBlock for ResolveGates {
                 charter_payload.map_or_else(|| "iterate".to_string(), |p| p.workflow)
             } else {
                 match event_type {
-                    EventType::MaintenanceRequested => "maintain".to_string(),
+                    EventType::ProjectMaintenanceRequested => "maintain".to_string(),
                     EventType::ValidationRequested => "validate".to_string(),
                     _ => "unknown".to_string(),
                 }
@@ -134,7 +134,7 @@ mod tests {
     assert_block_meta!(
         ResolveGates::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
-        sinks_on: [CharterCheckCompleted, MaintenanceRequested, ValidationRequested],
+        sinks_on: [CharterCheckCompleted, ProjectMaintenanceRequested, ValidationRequested],
     );
 
     #[tokio::test]
@@ -199,7 +199,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = ResolveGates::new(registry);
         let trigger = Event::new(
-            EventType::MaintenanceRequested,
+            EventType::ProjectMaintenanceRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project"}),

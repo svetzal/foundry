@@ -80,7 +80,7 @@ mod tests {
         let occurred_at =
             Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).single().expect("invalid date");
         let mut event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({"msg": "hello"}),
@@ -184,7 +184,7 @@ mod tests {
         let v: Value = serde_json::from_str(line).unwrap();
 
         assert_eq!(v["id"], event_id);
-        assert_eq!(v["event_type"], "greet_requested");
+        assert_eq!(v["event_type"], "greeting_requested");
         assert_eq!(v["project"], "test-project");
         assert!(v["occurred_at"].is_string(), "occurred_at should be a string");
         assert!(v["recorded_at"].is_string(), "recorded_at should be a string");
@@ -198,7 +198,7 @@ mod tests {
         let writer = EventWriter::new(tmp.path());
 
         let mut event = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({"message": "hello \"world\" \n tab:\there"}),

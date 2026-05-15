@@ -15,7 +15,7 @@ agent_block_new!(
     /// Performs a strategic assessment of the project to identify multiple areas
     /// for improvement, then emits a plan for the strategic loop controller.
     ///
-    /// Observer — sinks on `IterationRequested`.
+    /// Observer — sinks on `ProjectIterationRequested`.
     /// Self-filters: only runs when the payload contains `strategic: true`.
     /// Without that flag, the existing `CheckCharter` block handles the event
     /// instead (standalone iterate).
@@ -29,7 +29,7 @@ impl TaskBlock for StrategicAssessor {
     task_block_meta! {
         name: "Strategic Assessor",
         kind: Observer,
-        sinks_on: [IterationRequested],
+        sinks_on: [ProjectIterationRequested],
     }
 
     fn execute(
@@ -225,7 +225,7 @@ mod tests {
             Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Observer,
-        sinks_on: [IterationRequested],
+        sinks_on: [ProjectIterationRequested],
     );
 
     #[tokio::test]
@@ -234,7 +234,7 @@ mod tests {
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = StrategicAssessor::new(agent.clone(), registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project", "workflow": "iterate"}),
@@ -257,7 +257,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent.clone(), registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true}),
@@ -288,7 +288,7 @@ mod tests {
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent, registry);
         let trigger = Event::new(
-            EventType::IterationRequested,
+            EventType::ProjectIterationRequested,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true, "actions": {"maintain": true}}),

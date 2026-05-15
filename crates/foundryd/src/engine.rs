@@ -140,7 +140,7 @@ impl Engine {
     /// - **Default** (non-opener events): the emitted event is a peer of the
     ///   trigger — it inherits the trigger's `trace_id`, `span_id` (the active
     ///   workflow span), and `parent_span_id`.
-    /// - **Span opener** (e.g. `IterationRequested`): the emitted event opens a
+    /// - **Span opener** (e.g. `ProjectIterationRequested`): the emitted event opens a
     ///   new workflow span — it inherits the trigger's `trace_id`, receives a
     ///   freshly minted `span_id`, and is parented to the emitting block's
     ///   `block_span_id`.
@@ -383,7 +383,7 @@ mod tests {
         }
 
         fn sinks_on(&self) -> &[EventType] {
-            &[EventType::GreetRequested]
+            &[EventType::GreetingRequested]
         }
 
         fn execute(
@@ -467,7 +467,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({"name": "world"}),
@@ -476,7 +476,14 @@ mod tests {
         let result = engine.process(trigger).await;
 
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
         assert_eq!(result.block_executions.len(), 2);
         assert!(result.block_executions.iter().all(|b| b.success));
     }
@@ -488,7 +495,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::AuditOnly,
             serde_json::json!({"name": "world"}),
@@ -499,7 +506,14 @@ mod tests {
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         // Mutator executes and its event is logged (in all_events), but not delivered
         // to downstream blocks. The chain stops at the mutation boundary.
-        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
         // The mutator's execution is recorded as successful (it ran for real).
         assert_eq!(result.block_executions.len(), 2);
         assert!(result.block_executions.iter().all(|b| b.success));
@@ -512,7 +526,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::DryRun,
             serde_json::json!({"name": "world"}),
@@ -522,7 +536,14 @@ mod tests {
 
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         // Full chain completes: Observer emits, Mutator simulates success via dry_run_events.
-        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
         // Mutator's execution is recorded as simulated.
         let mutator_exec =
             result.block_executions.iter().find(|b| b.block_name == "Test Mutator").unwrap();
@@ -838,7 +859,7 @@ mod tests {
         }
 
         fn sinks_on(&self) -> &[EventType] {
-            &[EventType::GreetRequested]
+            &[EventType::GreetingRequested]
         }
 
         fn retry_policy(&self) -> RetryPolicy {
@@ -901,7 +922,7 @@ mod tests {
         }
 
         fn sinks_on(&self) -> &[EventType] {
-            &[EventType::GreetRequested]
+            &[EventType::GreetingRequested]
         }
 
         fn retry_policy(&self) -> RetryPolicy {
@@ -940,7 +961,7 @@ mod tests {
         )));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -963,7 +984,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({"name": "world"}),
@@ -973,7 +994,14 @@ mod tests {
 
         // Verify all three events were returned in process result.
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
 
         // Verify JSONL file was created and contains one line per event.
         let entries: Vec<_> =
@@ -992,7 +1020,14 @@ mod tests {
                 e.event_type.as_str().to_string()
             })
             .collect();
-        assert_eq!(written_types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            written_types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1004,7 +1039,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({"name": "world"}),
@@ -1013,7 +1048,14 @@ mod tests {
         let result = engine.process(trigger).await;
 
         let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        assert_eq!(types, ["greet_requested", "greeting_composed", "greeting_delivered"]);
+        assert_eq!(
+            types,
+            [
+                "greeting_requested",
+                "greeting_composed",
+                "greeting_delivered"
+            ]
+        );
         assert_eq!(result.block_executions.len(), 2);
         assert!(result.block_executions.iter().all(|b| b.success));
     }
@@ -1027,7 +1069,7 @@ mod tests {
         let engine = Engine::new().with_event_writer(Arc::clone(&writer));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1056,7 +1098,7 @@ mod tests {
         )));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1082,7 +1124,7 @@ mod tests {
         )));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1101,7 +1143,7 @@ mod tests {
         engine.register(Box::new(FailFirstN::new(1, RetryPolicy::default())));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1127,7 +1169,7 @@ mod tests {
         engine.register(Box::new(block));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1151,7 +1193,7 @@ mod tests {
 
         let workflow_span = foundry_core::event::mint_span_id();
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1176,7 +1218,7 @@ mod tests {
             );
         }
 
-        // GreetRequested is a span opener — the trigger itself keeps its span,
+        // GreetingRequested is a span opener — the trigger itself keeps its span,
         // and the emitted GreetingComposed (non-opener) inherits that span as
         // a peer.
         let composed = result
@@ -1198,7 +1240,7 @@ mod tests {
         engine.register(Box::new(TestMutator));
 
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -1385,9 +1427,12 @@ mod tests {
         .with_trace_id(Some(trace.clone()))
         .with_span_ids(Some(workflow_span), None);
 
-        // A block that emits a workflow opener (IterationRequested).
-        let block =
-            emitting_block("B", EventType::PipelineChecked, vec![EventType::IterationRequested]);
+        // A block that emits a workflow opener (ProjectIterationRequested).
+        let block = emitting_block(
+            "B",
+            EventType::PipelineChecked,
+            vec![EventType::ProjectIterationRequested],
+        );
         let mut engine = Engine::new();
         engine.register(Box::new(block));
         let result = engine.process(trigger).await;
@@ -1395,7 +1440,7 @@ mod tests {
         let opener = result
             .events
             .iter()
-            .find(|e| e.event_type == EventType::IterationRequested)
+            .find(|e| e.event_type == EventType::ProjectIterationRequested)
             .expect("opener must be emitted");
         let block_exec = result.block_executions.iter().find(|b| b.block_name == "B").unwrap();
 
@@ -1564,7 +1609,7 @@ mod tests {
 
         let workflow_span = foundry_core::event::mint_span_id();
         let trigger = Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::DryRun,
             serde_json::json!({}),

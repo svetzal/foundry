@@ -1,7 +1,7 @@
 //! Integration tests for the full native maintain workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: `MaintenanceRequested` -> `GateResolutionCompleted` -> `ExecutionCompleted`
+//! - Happy path: `ProjectMaintenanceRequested` -> `GateResolutionCompleted` -> `ExecutionCompleted`
 //!   -> `GateVerificationCompleted` -> `ProjectMaintenanceCompleted` -> `SummarizeCompleted`
 //! - Retry path: gate failure triggers `RetryRequested` -> `RetryExecution` -> loop
 
@@ -19,7 +19,7 @@ use crate::shell::CommandResult;
 
 fn maintenance_requested_event() -> Event {
     Event::new(
-        EventType::MaintenanceRequested,
+        EventType::ProjectMaintenanceRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({ "project": "test-project" }),
@@ -66,11 +66,11 @@ async fn happy_path_maintain_chain() {
     let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Expected chain:
-    // MaintenanceRequested -> GateResolutionCompleted -> PreflightCompleted (skipped for maintain)
+    // ProjectMaintenanceRequested -> GateResolutionCompleted -> PreflightCompleted (skipped for maintain)
     //   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectMaintenanceCompleted
     //   -> SummarizeCompleted
     assert!(
-        event_types.contains(&"maintenance_requested"),
+        event_types.contains(&"project_maintenance_requested"),
         "chain should start with maintenance_requested"
     );
     assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");

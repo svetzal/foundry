@@ -125,7 +125,7 @@ fn register_blocks(
     engine.register(Box::new(blocks::WatchPipeline::new(registry.clone())));
     engine.register(Box::new(blocks::InstallLocally::new(registry.clone())));
     // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
-    // correct sub-workflow via IterationRequested or MaintenanceRequested.
+    // correct sub-workflow via ProjectIterationRequested or ProjectMaintenanceRequested.
     engine.register(Box::new(blocks::CleanupBranches::new(registry.clone())));
     engine.register(Box::new(blocks::RouteProjectWorkflow));
     // Native gate orchestration blocks

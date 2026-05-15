@@ -14,7 +14,7 @@ impl TaskBlock for ComposeGreeting {
     task_block_meta! {
         name: "Compose Greeting",
         kind: Observer,
-        sinks_on: [GreetRequested],
+        sinks_on: [GreetingRequested],
     }
 
     fn execute(
@@ -117,7 +117,12 @@ mod tests {
             name: name.map(str::to_string),
         })
         .unwrap();
-        Event::new(EventType::GreetRequested, "test-project".to_string(), Throttle::Full, payload)
+        Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            payload,
+        )
     }
 
     fn greeting_composed(greeting: &str) -> Event {
@@ -157,7 +162,7 @@ mod tests {
     fn compose_greeting_metadata() {
         let block = ComposeGreeting;
         assert_eq!(block.kind(), BlockKind::Observer);
-        assert_eq!(block.sinks_on(), &[EventType::GreetRequested]);
+        assert_eq!(block.sinks_on(), &[EventType::GreetingRequested]);
     }
 
     #[tokio::test]

@@ -158,7 +158,7 @@ mod tests {
     fn write_and_read_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = TraceWriter::new(dir.path().to_str().unwrap());
-        let result = sample_result(EventType::GreetRequested, "test-project");
+        let result = sample_result(EventType::GreetingRequested, "test-project");
 
         writer.write("evt_abc123", &result).expect("write");
         let loaded = writer.read("evt_abc123").expect("read should find the file");
@@ -180,7 +180,7 @@ mod tests {
     fn list_date_returns_index_for_written_traces() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = TraceWriter::new(dir.path().to_str().unwrap());
-        let result = sample_result(EventType::GreetRequested, "proj-a");
+        let result = sample_result(EventType::GreetingRequested, "proj-a");
 
         writer.write("evt_111", &result).expect("write");
 
@@ -206,7 +206,7 @@ mod tests {
     fn list_recent_returns_days_with_traces() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = TraceWriter::new(dir.path().to_str().unwrap());
-        let result = sample_result(EventType::GreetRequested, "proj-b");
+        let result = sample_result(EventType::GreetingRequested, "proj-b");
 
         writer.write("evt_222", &result).expect("write");
 

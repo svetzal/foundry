@@ -210,7 +210,7 @@ mod tests {
 
     fn make_event() -> Event {
         Event::new(
-            EventType::GreetRequested,
+            EventType::GreetingRequested,
             "test-project".to_string(),
             Throttle::Full,
             serde_json::json!({}),

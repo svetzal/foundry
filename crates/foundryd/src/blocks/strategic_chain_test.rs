@@ -59,7 +59,7 @@ fn strategic_engine(
 
 fn strategic_iteration_requested() -> Event {
     Event::new(
-        EventType::IterationRequested,
+        EventType::ProjectIterationRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({
@@ -109,7 +109,7 @@ fn single_iterate_shell() -> Arc<dyn ShellGateway> {
 
 fn non_strategic_iteration_requested() -> Event {
     Event::new(
-        EventType::IterationRequested,
+        EventType::ProjectIterationRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({
@@ -214,7 +214,7 @@ async fn strategic_loop_stops_at_max_iterations() {
     // With max_iterations=1, should run one inner loop then complete regardless
     // of continue check.
     let trigger = Event::new(
-        EventType::IterationRequested,
+        EventType::ProjectIterationRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({
@@ -254,7 +254,7 @@ async fn strategic_loop_stops_at_max_iterations() {
     let iteration_requests: Vec<_> = result
         .events
         .iter()
-        .filter(|e| e.event_type == EventType::IterationRequested)
+        .filter(|e| e.event_type == EventType::ProjectIterationRequested)
         .collect();
     // First is the root event, second is from StrategicLoopController
     assert_eq!(

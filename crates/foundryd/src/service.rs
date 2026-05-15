@@ -868,7 +868,7 @@ mod tests {
         let (service, mut rx) = test_service();
 
         let request = Request::new(EmitRequest {
-            event_type: "greet_requested".to_string(),
+            event_type: "greeting_requested".to_string(),
             project: "test-project".to_string(),
             throttle: 0,
             payload_json: String::new(),
