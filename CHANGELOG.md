@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-15
+
 ### Breaking changes
 
 - **Event taxonomy renames** (no aliases — hard cutover):
