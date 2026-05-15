@@ -5,6 +5,7 @@
 //! should not depend on this crate as a library in production.
 
 pub mod registry_commands;
+pub mod trace_tree;
 
 /// Generated gRPC bindings (tonic / prost).
 pub mod proto {
