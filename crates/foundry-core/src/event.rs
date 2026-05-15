@@ -284,6 +284,10 @@ pub enum EventType {
     // Run lifecycle
     MaintenanceRunStarted,
     MaintenanceRunCompleted,
+    MaintenanceCycleStarted,
+    MaintenanceCycleCompleted,
+    ProjectRunStarted,
+    ProjectRunCompleted,
 
     // Release audit
     ReleaseTagAudited,
@@ -304,7 +308,9 @@ pub enum EventType {
 
     // Strategic loop workflow (nested iteration)
     StrategicAssessmentCompleted,
+    StrategicCycleStarted,
     StrategicCycleCompleted,
+    InnerIterationStarted,
     InnerIterationCompleted,
 
     // Drift scout workflow
@@ -414,6 +420,10 @@ mod tests {
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceRunStarted, "maintenance_run_started"),
             (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
+            (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
+            (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
+            (EventType::ProjectRunStarted, "project_run_started"),
+            (EventType::ProjectRunCompleted, "project_run_completed"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
             (EventType::GateResolutionCompleted, "gate_resolution_completed"),
             (EventType::PreflightCompleted, "preflight_completed"),
@@ -426,7 +436,9 @@ mod tests {
             (EventType::TriageCompleted, "triage_completed"),
             (EventType::PlanCompleted, "plan_completed"),
             (EventType::StrategicAssessmentCompleted, "strategic_assessment_completed"),
+            (EventType::StrategicCycleStarted, "strategic_cycle_started"),
             (EventType::StrategicCycleCompleted, "strategic_cycle_completed"),
+            (EventType::InnerIterationStarted, "inner_iteration_started"),
             (EventType::InnerIterationCompleted, "inner_iteration_completed"),
             (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
@@ -472,6 +484,10 @@ mod tests {
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceRunStarted, "maintenance_run_started"),
             (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
+            (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
+            (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
+            (EventType::ProjectRunStarted, "project_run_started"),
+            (EventType::ProjectRunCompleted, "project_run_completed"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
             (EventType::GateResolutionCompleted, "gate_resolution_completed"),
             (EventType::PreflightCompleted, "preflight_completed"),
@@ -484,7 +500,9 @@ mod tests {
             (EventType::TriageCompleted, "triage_completed"),
             (EventType::PlanCompleted, "plan_completed"),
             (EventType::StrategicAssessmentCompleted, "strategic_assessment_completed"),
+            (EventType::StrategicCycleStarted, "strategic_cycle_started"),
             (EventType::StrategicCycleCompleted, "strategic_cycle_completed"),
+            (EventType::InnerIterationStarted, "inner_iteration_started"),
             (EventType::InnerIterationCompleted, "inner_iteration_completed"),
             (EventType::DriftAssessmentRequested, "drift_assessment_requested"),
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
