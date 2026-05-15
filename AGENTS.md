@@ -156,6 +156,12 @@ trigger.with_payload(EventType::SomethingCompleted, &MyPayload { ... })?
 - Wire format must remain byte-for-byte identical — typed structs serialize to the same JSON shape as the untyped `json!({})` they replace.
 - `dry_run_events` serialization failures must use `.expect("... is infallibly serializable")`, not `.unwrap_or_else(|_| json!({}))`.
 
+## Tracing
+
+Foundry uses OpenTelemetry-shaped nested spans. Every event carries `trace_id` (32-char hex), `span_id` (16-char hex), and `parent_span_id` (16-char hex). The engine stamps these automatically per two rules (default + span-opener registry). Subprocesses inherit `TRACEPARENT`.
+
+See `book/src/architecture/tracing.md` for the full model. When adding a new workflow `*Requested` event, register it as a span opener in `foundry_core::event::EventType::is_span_opener`.
+
 ## Key Conventions
 
 - Edition 2024, Rust 1.85+, `unsafe_code` is denied
