@@ -8,8 +8,8 @@ use foundry_core::event::PayloadExt;
 use foundry_core::trace::{ProcessResult, TraceIndex};
 
 use crate::proto::{
-    EmitRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
-    foundry_client::FoundryClient,
+    EmitRequest, SpanRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest,
+    WatchResponse, WorkflowStatus, foundry_client::FoundryClient,
 };
 
 fn parse_throttle(s: &str) -> i32 {
@@ -187,8 +187,27 @@ pub async fn emit(
     Ok(())
 }
 
-pub async fn status(addr: &str, workflow_id: Option<String>) -> Result<()> {
+pub async fn status(addr: &str, workflow_id: Option<String>, span: Option<String>) -> Result<()> {
     let mut client = FoundryClient::connect(addr.to_string()).await?;
+
+    // If `--span` is set, resolve it to a trace_id first so we can filter the
+    // Status response. A span_id is unique within a trace; any event in the
+    // span carries the trace_id we want to filter on.
+    let target_trace_id: Option<String> = if let Some(span_id) = span.as_ref() {
+        let span_response = client
+            .span(SpanRequest {
+                span_id: span_id.clone(),
+            })
+            .await?
+            .into_inner();
+        if !span_response.found {
+            println!("No span found with id: {span_id}");
+            return Ok(());
+        }
+        span_response.events.first().map(|e| e.trace_id.clone())
+    } else {
+        None
+    };
 
     let request = StatusRequest {
         workflow_id: workflow_id.unwrap_or_default(),
@@ -196,10 +215,17 @@ pub async fn status(addr: &str, workflow_id: Option<String>) -> Result<()> {
 
     let response = client.status(request).await?.into_inner();
 
-    if response.workflows.is_empty() {
-        println!("No active workflows.");
+    let workflows: Vec<WorkflowStatus> =
+        filter_workflows_by_trace(response.workflows, target_trace_id.as_deref());
+
+    if workflows.is_empty() {
+        if target_trace_id.is_some() {
+            println!("No active workflows in span's trace.");
+        } else {
+            println!("No active workflows.");
+        }
     } else {
-        for wf in &response.workflows {
+        for wf in &workflows {
             println!("{} [{}] {} — {}", wf.workflow_id, wf.workflow_type, wf.project, wf.state);
             for tb in &wf.task_blocks {
                 let throttled = if tb.throttled { " (throttled)" } else { "" };
@@ -209,6 +235,20 @@ pub async fn status(addr: &str, workflow_id: Option<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Filter workflows by `trace_id`, returning all when `target` is `None`.
+///
+/// Extracted so the (very small) filter logic is independently testable
+/// without a live gRPC client.
+fn filter_workflows_by_trace(
+    workflows: Vec<WorkflowStatus>,
+    target: Option<&str>,
+) -> Vec<WorkflowStatus> {
+    match target {
+        Some(trace_id) => workflows.into_iter().filter(|w| w.trace_id == trace_id).collect(),
+        None => workflows,
+    }
 }
 
 pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
@@ -908,6 +948,47 @@ mod tests {
             total_duration_ms: 0,
         };
         assert!(!is_legacy_trace_response(&response));
+    }
+
+    // -- filter_workflows_by_trace tests --
+
+    fn test_workflow(workflow_id: &str, trace_id: &str) -> WorkflowStatus {
+        WorkflowStatus {
+            workflow_id: workflow_id.to_string(),
+            workflow_type: "x".to_string(),
+            project: "p".to_string(),
+            state: "running".to_string(),
+            started_at: String::new(),
+            completed_at: String::new(),
+            task_blocks: vec![],
+            trace_id: trace_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn filter_workflows_by_trace_returns_all_when_target_is_none() {
+        let wfs = vec![test_workflow("a", "t1"), test_workflow("b", "t2")];
+        let out = filter_workflows_by_trace(wfs, None);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn filter_workflows_by_trace_keeps_only_matching_trace() {
+        let wfs = vec![
+            test_workflow("a", "t1"),
+            test_workflow("b", "t2"),
+            test_workflow("c", "t1"),
+        ];
+        let out = filter_workflows_by_trace(wfs, Some("t1"));
+        let ids: Vec<_> = out.iter().map(|w| w.workflow_id.clone()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn filter_workflows_by_trace_returns_empty_when_no_match() {
+        let wfs = vec![test_workflow("a", "t1")];
+        let out = filter_workflows_by_trace(wfs, Some("nope"));
+        assert!(out.is_empty());
     }
 
     // -- is_run_complete tests --

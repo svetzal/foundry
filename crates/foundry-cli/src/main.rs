@@ -56,6 +56,10 @@ enum Commands {
     Status {
         /// Specific workflow ID (omit for all active)
         workflow_id: Option<String>,
+
+        /// Filter to workflows whose trace contains the given span id.
+        #[arg(long)]
+        span: Option<String>,
     },
 
     /// Stream live events in real-time
@@ -433,7 +437,9 @@ async fn main() -> Result<()> {
             payload,
             wait,
         } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
-        Commands::Status { workflow_id } => commands::status(&cli.addr, workflow_id).await,
+        Commands::Status { workflow_id, span } => {
+            commands::status(&cli.addr, workflow_id, span).await
+        }
         Commands::Watch { project } => commands::watch(&cli.addr, project).await,
         Commands::Trace {
             event_id,
