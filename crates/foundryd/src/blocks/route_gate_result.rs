@@ -3,8 +3,8 @@ use std::pin::Pin;
 use foundry_core::event::{Event, EventType};
 use foundry_core::loop_context::has_loop_context;
 use foundry_core::payload::{
-    ChainContext, GateVerificationCompletedPayload, LoopContext, MaintenanceRequestedPayload,
-    ProjectCompletedPayload, RetryRequestedPayload,
+    ChainContext, GateVerificationCompletedPayload, LoopContext, ProjectCompletedPayload,
+    ProjectMaintenanceRequestedPayload, RetryRequestedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -135,12 +135,13 @@ fn handle_gates_passed(
             .unwrap_or(false);
         if maintain {
             tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
-            let maintenance_payload = Event::serialize_payload(&MaintenanceRequestedPayload {
-                project: project.to_string(),
-                workflow: WorkflowType::Maintain.to_string(),
-                chain: ChainContext::default(),
-            })
-            .expect("MaintenanceRequestedPayload is infallibly serializable");
+            let maintenance_payload =
+                Event::serialize_payload(&ProjectMaintenanceRequestedPayload {
+                    project: project.to_string(),
+                    workflow: WorkflowType::Maintain.to_string(),
+                    chain: ChainContext::default(),
+                })
+                .expect("ProjectMaintenanceRequestedPayload is infallibly serializable");
             events.push(Event::new(
                 EventType::ProjectMaintenanceRequested,
                 project.to_string(),

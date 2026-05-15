@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    GreetRequestedPayload, GreetingComposedPayload, GreetingDeliveredPayload,
+    GreetingComposedPayload, GreetingDeliveredPayload, GreetingRequestedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -24,7 +24,8 @@ impl TaskBlock for ComposeGreeting {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let name_owned = trigger.parse_payload::<GreetRequestedPayload>().ok().and_then(|p| p.name);
+        let name_owned =
+            trigger.parse_payload::<GreetingRequestedPayload>().ok().and_then(|p| p.name);
         let name = name_owned.as_deref().unwrap_or("world");
         let greeting = format!("Hello, {name}!");
 
@@ -106,14 +107,14 @@ impl TaskBlock for DeliverGreeting {
 #[cfg(test)]
 mod tests {
     use foundry_core::event::{Event, EventType};
-    use foundry_core::payload::{GreetRequestedPayload, GreetingComposedPayload};
+    use foundry_core::payload::{GreetingComposedPayload, GreetingRequestedPayload};
     use foundry_core::task_block::{BlockKind, TaskBlock};
     use foundry_core::throttle::Throttle;
 
     use super::{ComposeGreeting, DeliverGreeting};
 
     fn greet_requested(name: Option<&str>) -> Event {
-        let payload = Event::serialize_payload(&GreetRequestedPayload {
+        let payload = Event::serialize_payload(&GreetingRequestedPayload {
             name: name.map(str::to_string),
         })
         .unwrap();

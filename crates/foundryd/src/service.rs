@@ -115,7 +115,7 @@ fn project_to_proto(entry: &foundry_core::registry::ProjectEntry) -> Project {
 /// Extract per-project sub-traces from a system-level maintenance `ProcessResult`.
 ///
 /// Groups events and block executions by project name, returning a map of
-/// project name → `ProcessResult` for each per-project `MaintenanceRunStarted`
+/// project name → `ProcessResult` for each per-project `ProjectRunStarted`
 /// event found in the result.
 fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, ProcessResult> {
     let event_map: HashMap<&str, &Event> =
@@ -125,7 +125,7 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
     let project_roots: Vec<&Event> = result
         .events
         .iter()
-        .filter(|e| e.event_type == EventType::MaintenanceRunStarted && e.project != "system")
+        .filter(|e| e.event_type == EventType::ProjectRunStarted && e.project != "system")
         .collect();
 
     let mut traces = HashMap::new();
@@ -162,8 +162,8 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
     traces
 }
 
-/// After a system-level maintenance run completes, write per-project sub-traces
-/// to disk, then synthesise and process `MaintenanceRunCompleted` so that
+/// After a system-level maintenance cycle completes, write per-project sub-traces
+/// to disk, then synthesise and process `MaintenanceCycleCompleted` so that
 /// `GenerateSummary` can read the traces.
 async fn finalise_system_maintenance(
     result: &ProcessResult,
@@ -188,10 +188,8 @@ async fn finalise_system_maintenance(
     let mut project_trace_ids: HashMap<String, String> = HashMap::new();
 
     for (project_name, sub_result) in &per_project {
-        if let Some(root_evt) = sub_result
-            .events
-            .iter()
-            .find(|e| e.event_type == EventType::MaintenanceRunStarted)
+        if let Some(root_evt) =
+            sub_result.events.iter().find(|e| e.event_type == EventType::ProjectRunStarted)
         {
             let sub_id = root_evt.id.clone();
             if let Err(e) = trace_writer.write(&sub_id, sub_result) {
@@ -206,7 +204,7 @@ async fn finalise_system_maintenance(
     }
 
     let completed_event = Event::new(
-        EventType::MaintenanceRunCompleted,
+        EventType::MaintenanceCycleCompleted,
         "system".to_string(),
         throttle,
         serde_json::json!({
@@ -325,7 +323,7 @@ impl Foundry for FoundryService {
                     tracing::warn!(error = %e, event_id = %bg_event_id, "failed to write trace to disk");
                 }
 
-                if root_event_type == EventType::MaintenanceRunStarted
+                if root_event_type == EventType::MaintenanceCycleStarted
                     && root_project == "system"
                 {
                     finalise_system_maintenance(
@@ -338,12 +336,12 @@ impl Foundry for FoundryService {
                         &bg_event_id,
                     )
                     .await;
-                } else if root_event_type == EventType::MaintenanceRunStarted {
+                } else if root_event_type == EventType::ProjectRunStarted {
                     // Per-project maintenance run (not system-level): broadcast
                     // completion so Watch clients see it.
                     let success = result.is_success();
                     let completed = Event::new(
-                        EventType::MaintenanceRunCompleted,
+                        EventType::ProjectRunCompleted,
                         root_project,
                         root_throttle,
                         serde_json::json!({
@@ -773,11 +771,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintenance_run_broadcasts_completion_event() {
+    async fn project_run_broadcasts_completion_event() {
         let (service, mut rx) = test_service();
 
         let request = Request::new(EmitRequest {
-            event_type: "maintenance_run_started".to_string(),
+            event_type: "project_run_started".to_string(),
             project: "test-project".to_string(),
             throttle: 2, // dry_run
             payload_json: String::new(),
@@ -803,7 +801,7 @@ mod tests {
                     if event.id == root_event_id {
                         saw_root = true;
                     }
-                    if event.event_type == EventType::MaintenanceRunCompleted {
+                    if event.event_type == EventType::ProjectRunCompleted {
                         saw_completed = true;
                         completed_payload = event.payload.clone();
                         break;
@@ -814,17 +812,17 @@ mod tests {
         }
 
         assert!(saw_root, "root event should be broadcast");
-        assert!(saw_completed, "MaintenanceRunCompleted should be broadcast");
+        assert!(saw_completed, "ProjectRunCompleted should be broadcast");
         assert_eq!(completed_payload["root_event_id"], root_event_id);
         assert_eq!(completed_payload["success"], true);
     }
 
     #[tokio::test]
-    async fn system_maintenance_run_broadcasts_completion_with_root_event_id() {
+    async fn system_maintenance_cycle_broadcasts_completion_with_root_event_id() {
         let (service, mut rx) = test_service();
 
         let request = Request::new(EmitRequest {
-            event_type: "maintenance_run_started".to_string(),
+            event_type: "maintenance_cycle_started".to_string(),
             project: "system".to_string(),
             throttle: 2, // dry_run
             payload_json: String::new(),
@@ -844,7 +842,7 @@ mod tests {
             let result = tokio::time::timeout_at(deadline, rx.recv()).await;
             match result {
                 Ok(Ok(event)) => {
-                    if event.event_type == EventType::MaintenanceRunCompleted
+                    if event.event_type == EventType::MaintenanceCycleCompleted
                         && event.project == "system"
                     {
                         saw_completed = true;
@@ -856,7 +854,7 @@ mod tests {
             }
         }
 
-        assert!(saw_completed, "system-level MaintenanceRunCompleted should be broadcast");
+        assert!(saw_completed, "system-level MaintenanceCycleCompleted should be broadcast");
         assert_eq!(
             completed_payload["root_event_id"], root_event_id,
             "system completion must include root_event_id so CLI can detect run end"
@@ -882,10 +880,12 @@ mod tests {
         // Give the background task time to complete.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Drain all events — none should be MaintenanceRunCompleted.
+        // Drain all events — none should be MaintenanceCycleCompleted or ProjectRunCompleted.
         let mut saw_completed = false;
         while let Ok(event) = rx.try_recv() {
-            if event.event_type == EventType::MaintenanceRunCompleted {
+            if event.event_type == EventType::MaintenanceCycleCompleted
+                || event.event_type == EventType::ProjectRunCompleted
+            {
                 saw_completed = true;
             }
         }

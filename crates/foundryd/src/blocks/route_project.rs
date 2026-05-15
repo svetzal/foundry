@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    ChainContext, IterationRequestedPayload, MaintenanceRequestedPayload,
+    ChainContext, ProjectIterationRequestedPayload, ProjectMaintenanceRequestedPayload,
     ProjectValidationCompletedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -65,7 +65,7 @@ impl TaskBlock for RouteProjectWorkflow {
                     EventType::ProjectIterationRequested,
                     &project,
                     throttle,
-                    &IterationRequestedPayload {
+                    &ProjectIterationRequestedPayload {
                         project: project.clone(),
                         workflow: "iterate".to_string(),
                         chain: ChainContext {
@@ -82,7 +82,7 @@ impl TaskBlock for RouteProjectWorkflow {
                     EventType::ProjectMaintenanceRequested,
                     &project,
                     throttle,
-                    &MaintenanceRequestedPayload {
+                    &ProjectMaintenanceRequestedPayload {
                         project: project.clone(),
                         workflow: "maintain".to_string(),
                         chain: ChainContext::default(),

@@ -1,21 +1,26 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType, mint_trace_id};
+use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-/// Fans out a system-level maintenance run to individual per-project runs.
+/// Fans out a system-level maintenance cycle to individual per-project runs.
 ///
 /// Observer — always runs regardless of throttle.
 ///
-/// Sinks on `MaintenanceRunStarted`. When the triggering event's project is
+/// Sinks on `MaintenanceCycleStarted`. When the triggering event's project is
 /// `"system"` (emitted by `foundry run` without `--project`), the block reads
 /// the registry, collects all active (non-skipped) projects, and emits a
-/// `MaintenanceRunStarted` event for each one. These per-project events then
+/// `ProjectRunStarted` event for each one. These per-project events then
 /// trigger the existing chain (`ValidateProject` → `RouteProjectWorkflow` → …).
 ///
-/// `MaintenanceRunCompleted` is NOT emitted here — it is synthesised by the
+/// Per-project events do not mint a fresh `trace_id`; the engine propagates
+/// the cycle root's `trace_id` to emitted events, keeping the entire cycle
+/// (cycle root + every per-project sub-trace) on a single OTel-compatible
+/// trace.
+///
+/// `MaintenanceCycleCompleted` is NOT emitted here — it is synthesised by the
 /// service layer after `engine.process()` returns, so that per-project traces
 /// are available on disk when `GenerateSummary` runs.
 ///
@@ -42,7 +47,7 @@ impl TaskBlock for FanOutMaintenance {
     }
 
     fn sinks_on(&self) -> &[EventType] {
-        &[EventType::MaintenanceRunStarted]
+        &[EventType::MaintenanceCycleStarted]
     }
 
     fn execute(
@@ -86,15 +91,15 @@ impl TaskBlock for FanOutMaintenance {
             let mut events = Vec::with_capacity(active_count);
 
             for name in &project_names {
-                events.push(
-                    Event::new(
-                        EventType::MaintenanceRunStarted,
-                        name.clone(),
-                        throttle,
-                        serde_json::json!({}),
-                    )
-                    .with_trace_id(Some(mint_trace_id())),
-                );
+                // Per-project events inherit the cycle root's trace_id via the
+                // engine's propagation pass (`persist_and_broadcast_events`),
+                // so the entire cycle stays on a single trace.
+                events.push(Event::new(
+                    EventType::ProjectRunStarted,
+                    name.clone(),
+                    throttle,
+                    serde_json::json!({}),
+                ));
             }
 
             Ok(TaskBlockResult {
@@ -165,16 +170,17 @@ mod tests {
 
     fn system_trigger(throttle: Throttle) -> Event {
         Event::new(
-            EventType::MaintenanceRunStarted,
+            EventType::MaintenanceCycleStarted,
             "system".to_string(),
             throttle,
             serde_json::json!({}),
         )
+        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
     }
 
     fn project_trigger(project: &str) -> Event {
         Event::new(
-            EventType::MaintenanceRunStarted,
+            EventType::MaintenanceCycleStarted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -184,9 +190,9 @@ mod tests {
     // -- Metadata tests --
 
     #[test]
-    fn sinks_on_maintenance_run_started() {
+    fn sinks_on_maintenance_cycle_started() {
         let block = FanOutMaintenance::new(make_registry(vec![]));
-        assert_eq!(block.sinks_on(), &[EventType::MaintenanceRunStarted]);
+        assert_eq!(block.sinks_on(), &[EventType::MaintenanceCycleStarted]);
     }
 
     #[test]
@@ -222,11 +228,11 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
 
-        // 3 per-project MaintenanceRunStarted (no MaintenanceRunCompleted —
+        // 3 per-project ProjectRunStarted (no MaintenanceCycleCompleted —
         // that is synthesised by the service layer after process() returns).
         assert_eq!(result.events.len(), 3);
 
-        assert!(result.events.iter().all(|e| e.event_type == EventType::MaintenanceRunStarted));
+        assert!(result.events.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
 
         let mut project_names: Vec<&str> =
             result.events.iter().map(|e| e.project.as_str()).collect();
@@ -257,33 +263,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn per_project_events_have_distinct_trace_ids() {
+    async fn per_project_events_have_no_trace_id_set_at_block_emission() {
+        // The block no longer mints a fresh trace_id per project; the engine
+        // propagates the cycle root's trace_id to each emitted event during
+        // its persist-and-broadcast pass. At the block level, emitted events
+        // carry no trace_id — the engine fills it in from the trigger.
         let registry = make_registry(vec![active_entry("alpha"), active_entry("beta")]);
         let block = FanOutMaintenance::new(registry);
         let trigger = system_trigger(Throttle::Full);
+        assert!(trigger.trace_id.is_some(), "test setup: trigger must have a trace_id");
 
         let result = block.execute(&trigger).await.expect("should succeed");
         assert_eq!(result.events.len(), 2);
 
-        // Each per-project event should have a trace_id in OTel-compatible
-        // 32-char lowercase hex format.
         for event in &result.events {
-            assert!(event.trace_id.is_some(), "per-project event should have a trace_id");
-            let trace_id = event.trace_id.as_ref().unwrap();
-            assert_eq!(trace_id.len(), 32, "trace_id must be 32 hex chars");
             assert!(
-                trace_id.chars().all(
-                    |c| c.is_ascii_hexdigit() && (c.is_ascii_digit() || c.is_ascii_lowercase())
-                ),
-                "trace_id must be lowercase hex only: {trace_id}",
+                event.trace_id.is_none(),
+                "per-project event should leave trace_id unset; engine inherits it from the cycle root",
             );
         }
-
-        // And they should be distinct.
-        assert_ne!(
-            result.events[0].trace_id, result.events[1].trace_id,
-            "each project should get its own trace_id",
-        );
     }
 
     #[tokio::test]
@@ -320,8 +318,8 @@ mod tests {
 
         let result = block.execute(&trigger).await.expect("should succeed");
 
-        // Only per-project events, no MaintenanceRunCompleted.
-        assert!(result.events.iter().all(|e| e.event_type == EventType::MaintenanceRunStarted));
+        // Only per-project events, no MaintenanceCycleCompleted.
+        assert!(result.events.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@
 //!
 //! Reading a typed payload from an incoming trigger:
 //! ```rust,ignore
-//! let p: GreetRequestedPayload = trigger.parse_payload()?;
+//! let p: GreetingRequestedPayload = trigger.parse_payload()?;
 //! let name = p.name.as_deref().unwrap_or("world");
 //! ```
 
@@ -109,9 +109,9 @@ impl LoopContext {
 // Greet workflow
 // ---------------------------------------------------------------------------
 
-/// Payload for `GreetRequested`.
+/// Payload for `GreetingRequested`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GreetRequestedPayload {
+pub struct GreetingRequestedPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -426,9 +426,9 @@ pub struct ProjectValidationCompletedPayload {
 // Iterate workflow — charter check, assess, triage, plan
 // ---------------------------------------------------------------------------
 
-/// Payload for `IterationRequested`.
+/// Payload for `ProjectIterationRequested`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IterationRequestedPayload {
+pub struct ProjectIterationRequestedPayload {
     pub project: String,
     pub workflow: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -441,9 +441,9 @@ pub struct IterationRequestedPayload {
     pub chain: ChainContext,
 }
 
-/// Payload for `MaintenanceRequested`.
+/// Payload for `ProjectMaintenanceRequested`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MaintenanceRequestedPayload {
+pub struct ProjectMaintenanceRequestedPayload {
     pub project: String,
     pub workflow: String,
     #[serde(flatten)]
@@ -534,24 +534,41 @@ pub struct PlanCompletedPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance run lifecycle
+// Maintenance run lifecycle — cycle (system-level) and per-project pair
 // ---------------------------------------------------------------------------
 
-/// Payload for `MaintenanceRunStarted`.
+/// Payload for `MaintenanceCycleStarted` (cycle-root, emitted by the scheduler / `foundry run`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MaintenanceRunStartedPayload {
+pub struct MaintenanceCycleStartedPayload {
     pub project_count: u64,
 }
 
-/// Payload for `MaintenanceRunCompleted` (system-level, synthesised by the service layer).
+/// Payload for `ProjectRunStarted` (per-project, emitted by `FanOutMaintenance`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MaintenanceRunCompletedPayload {
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct ProjectRunStartedPayload {
+    // currently empty — the project name lives on the Event itself.
+}
+
+/// Payload for `MaintenanceCycleCompleted` (cycle-level, synthesised by `finalise_system_maintenance`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaintenanceCycleCompletedPayload {
+    /// Kept during the transition for `GenerateSummary`. Will be removed
+    /// once that block queries `Span` instead.
     #[serde(default)]
     pub project_trace_ids: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub skipped_projects: Vec<String>,
     #[serde(default)]
     pub total_duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
+}
+
+/// Payload for `ProjectRunCompleted` (per-project, emitted by `service.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectRunCompletedPayload {
+    pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
 }
@@ -916,16 +933,16 @@ mod tests {
     }
 
     #[test]
-    fn greet_requested_payload_optional_name_round_trips() {
-        let with_name = GreetRequestedPayload {
+    fn greeting_requested_payload_optional_name_round_trips() {
+        let with_name = GreetingRequestedPayload {
             name: Some("Alice".to_string()),
         };
         let json = serde_json::to_value(&with_name).unwrap();
         assert_eq!(json["name"], "Alice");
-        let restored: GreetRequestedPayload = serde_json::from_value(json).unwrap();
+        let restored: GreetingRequestedPayload = serde_json::from_value(json).unwrap();
         assert_eq!(restored.name.as_deref(), Some("Alice"));
 
-        let without_name = GreetRequestedPayload { name: None };
+        let without_name = GreetingRequestedPayload { name: None };
         let json = serde_json::to_value(&without_name).unwrap();
         assert!(json.get("name").is_none(), "name must be absent when None");
     }
@@ -969,12 +986,12 @@ mod tests {
     }
 
     #[test]
-    fn iteration_requested_payload_flattens_chain() {
+    fn project_iteration_requested_payload_flattens_chain() {
         let chain = ChainContext {
             actions: Some(serde_json::json!({"maintain": true})),
             ..ChainContext::default()
         };
-        let p = IterationRequestedPayload {
+        let p = ProjectIterationRequestedPayload {
             project: "my-project".to_string(),
             workflow: "iterate".to_string(),
             strategic: Some(true),
@@ -991,7 +1008,7 @@ mod tests {
         // Chain flattened: actions at top level
         assert_eq!(json["actions"]["maintain"], true);
         assert!(json.get("chain").is_none(), "chain must not appear as a key");
-        let p2: IterationRequestedPayload = serde_json::from_value(json).unwrap();
+        let p2: ProjectIterationRequestedPayload = serde_json::from_value(json).unwrap();
         assert_eq!(p2.project, "my-project");
         assert_eq!(p2.strategic, Some(true));
         assert_eq!(p2.chain.actions.unwrap()["maintain"], true);

@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    ChainContext, CharterCheckCompletedPayload, IterationRequestedPayload,
+    ChainContext, CharterCheckCompletedPayload, ProjectIterationRequestedPayload,
 };
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -47,7 +47,7 @@ impl TaskBlock for CheckCharter {
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
         // Use .ok() — this block sinks on multiple event types with different payload
         // shapes (ProjectIterationRequested and PromptExecutionRequested).
-        let iter_payload = trigger.parse_payload::<IterationRequestedPayload>().ok();
+        let iter_payload = trigger.parse_payload::<ProjectIterationRequestedPayload>().ok();
         let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
         if strategic {
             return skip!("Skipped: strategic iteration handled by StrategicAssessor");

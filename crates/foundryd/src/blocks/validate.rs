@@ -109,7 +109,7 @@ impl TaskBlock for ValidateProject {
     task_block_meta! {
         name: "Validate Project",
         kind: Observer,
-        sinks_on: [MaintenanceRunStarted],
+        sinks_on: [ProjectRunStarted],
     }
 
     fn execute(
@@ -213,7 +213,7 @@ mod tests {
 
     fn make_trigger(project: &str) -> Event {
         Event::new(
-            EventType::MaintenanceRunStarted,
+            EventType::ProjectRunStarted,
             project.to_string(),
             Throttle::Full,
             serde_json::json!({}),
@@ -299,7 +299,7 @@ mod tests {
     assert_block_meta!(
         ValidateProject::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
-        sinks_on: [MaintenanceRunStarted],
+        sinks_on: [ProjectRunStarted],
     );
 
     // -- Self-filter tests --

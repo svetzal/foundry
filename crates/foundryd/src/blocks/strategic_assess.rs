@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::IterationRequestedPayload;
+use foundry_core::payload::ProjectIterationRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -43,7 +43,7 @@ impl TaskBlock for StrategicAssessor {
 
         // Self-filter: only run when strategic mode is requested.
         // When strategic=false or absent, the existing CheckCharter path handles it.
-        let p = parse_payload!(trigger, IterationRequestedPayload);
+        let p = parse_payload!(trigger, ProjectIterationRequestedPayload);
         let strategic = p.strategic.unwrap_or(false);
 
         if !strategic {

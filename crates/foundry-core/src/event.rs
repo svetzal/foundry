@@ -281,9 +281,7 @@ pub enum EventType {
     ValidationRequested,
     ValidationCompleted,
 
-    // Run lifecycle
-    MaintenanceRunStarted,
-    MaintenanceRunCompleted,
+    // Run lifecycle — cycle (system-level) and project (per-project) pair
     MaintenanceCycleStarted,
     MaintenanceCycleCompleted,
     ProjectRunStarted,
@@ -422,8 +420,6 @@ mod tests {
             (EventType::PromptExecutionRequested, "prompt_execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
-            (EventType::MaintenanceRunStarted, "maintenance_run_started"),
-            (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
             (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
             (EventType::ProjectRunStarted, "project_run_started"),
@@ -486,8 +482,6 @@ mod tests {
             (EventType::PromptExecutionRequested, "prompt_execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
-            (EventType::MaintenanceRunStarted, "maintenance_run_started"),
-            (EventType::MaintenanceRunCompleted, "maintenance_run_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
             (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
             (EventType::ProjectRunStarted, "project_run_started"),
