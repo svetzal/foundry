@@ -199,7 +199,20 @@ async fn charter_failure_stops_chain() {
         .unwrap();
     assert_eq!(charter_event.payload["success"], false);
 
-    // Chain should stop — no downstream events
+    // ResolveGates emits the terminal failure event so is_success() is accurate.
+    assert!(
+        event_types.contains(&"project_iteration_completed"),
+        "should emit terminal failure when charter check fails"
+    );
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(completion.payload["success"], false, "terminal event must be success=false");
+    assert!(!result.is_success(), "overall chain must be failure when charter fails");
+
+    // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
         !event_types.contains(&"gate_resolution_completed"),
         "should NOT resolve gates after charter failure"
@@ -207,10 +220,6 @@ async fn charter_failure_stops_chain() {
     assert!(
         !event_types.contains(&"assessment_completed"),
         "should NOT assess after charter failure"
-    );
-    assert!(
-        !event_types.contains(&"project_iteration_completed"),
-        "should NOT complete iterate"
     );
 }
 
@@ -240,14 +249,23 @@ async fn preflight_failure_stops_chain() {
         .unwrap();
     assert_eq!(preflight.payload["all_passed"], false);
 
-    // Chain should stop — AssessProject self-filters on failed preflight
+    // RunPreflightGates emits a terminal failure event so is_success() is accurate.
+    assert!(
+        event_types.contains(&"project_iteration_completed"),
+        "should emit terminal failure when preflight fails"
+    );
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(completion.payload["success"], false, "terminal event must be success=false");
+    assert!(!result.is_success(), "overall chain must be failure when preflight fails");
+
+    // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
         !event_types.contains(&"assessment_completed"),
         "should NOT assess after preflight failure"
-    );
-    assert!(
-        !event_types.contains(&"project_iteration_completed"),
-        "should NOT complete iterate"
     );
 }
 
@@ -295,7 +313,20 @@ async fn triage_rejection_stops_chain() {
         .unwrap();
     assert_eq!(triage.payload["accepted"], false);
 
-    // Chain should stop — CreatePlan self-filters on rejected triage
+    // CreatePlan emits a terminal failure event so is_success() is accurate.
+    assert!(
+        event_types.contains(&"project_iteration_completed"),
+        "should emit terminal failure when triage is rejected"
+    );
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(completion.payload["success"], false, "terminal event must be success=false");
+    assert!(!result.is_success(), "overall chain must be failure when triage is rejected");
+
+    // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
         !event_types.contains(&"plan_completed"),
         "should NOT create plan after triage rejection"
@@ -303,10 +334,6 @@ async fn triage_rejection_stops_chain() {
     assert!(
         !event_types.contains(&"execution_completed"),
         "should NOT execute after triage rejection"
-    );
-    assert!(
-        !event_types.contains(&"project_iteration_completed"),
-        "should NOT complete iterate"
     );
 }
 
@@ -902,5 +929,73 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
     assert!(
         event_types.contains(&"summarize_completed"),
         "should emit summarize_completed for legitimate no-op success"
+    );
+}
+
+/// Count terminal `ProjectIterationCompleted` events in a result.
+///
+/// Used by regression tests to assert the invariant: every trace must end with
+/// exactly one terminal event whose `success` field accurately reflects the run.
+fn count_terminal_events(result: &foundry_core::trace::ProcessResult) -> usize {
+    result
+        .events
+        .iter()
+        .filter(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .count()
+}
+
+/// Regression test for the gilt-cli bug.
+///
+/// gilt-cli traces ended at `preflight_completed` with no terminal event.
+/// The registry consumer showed "running" forever because `is_success()` fell
+/// back to block-level aggregation, and `ProjectRunCompleted.success` was wrong.
+///
+/// After the fix, `RunPreflightGates` emits `ProjectIterationCompleted { success: false }`
+/// when preflight fails, giving the trace exactly one accurate terminal event.
+#[tokio::test]
+async fn gilt_cli_preflight_failure_regression() {
+    let dir = test_helpers::test_project_dir();
+    let registry = test_helpers::registry_with_project("gilt-cli", dir.path().to_str().unwrap());
+
+    // Preflight gate fails (simulates gilt-cli's cargo fmt --check returning non-zero)
+    let shell = FakeShellGateway::failure("formatting error: src/lib.rs");
+    let agent = FakeAgentGateway::success();
+
+    let engine = iterate_engine(shell, agent, registry);
+    let result = engine
+        .process(Event::new(
+            EventType::ProjectIterationRequested,
+            "gilt-cli".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "gilt-cli",
+                "workflow": "iterate",
+                "actions": { "iterate": true, "maintain": false },
+            }),
+        ))
+        .await;
+
+    // Invariant: exactly one terminal event
+    let terminal_count = count_terminal_events(&result);
+    assert_eq!(
+        terminal_count, 1,
+        "every trace must end with exactly one terminal ProjectIterationCompleted event"
+    );
+
+    // That terminal event must accurately report failure
+    let terminal = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(
+        terminal.payload["success"], false,
+        "terminal event must be success=false when preflight fails"
+    );
+
+    // is_success() must use the terminal event, not block aggregation
+    assert!(
+        !result.is_success(),
+        "result.is_success() must return false when terminal event has success=false"
     );
 }

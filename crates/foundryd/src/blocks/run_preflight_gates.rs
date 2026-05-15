@@ -6,6 +6,7 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::gates::GateDefinition;
 use foundry_core::payload::{
     ChainContext, GateResolutionCompletedPayload, PreflightCompletedPayload,
+    ProjectCompletedPayload,
 };
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -134,7 +135,7 @@ fn build_preflight_result(
 ) -> TaskBlockResult {
     let results = run_result.results.clone();
     let success = run_result.required_passed;
-    super::build_gate_result_from_payload(
+    let mut block_result = super::build_gate_result_from_payload(
         project,
         EventType::PreflightCompleted,
         success,
@@ -149,7 +150,35 @@ fn build_preflight_result(
             results,
             chain,
         },
-    )
+    );
+
+    // When preflight fails for the iterate workflow, append a terminal
+    // ProjectIterationCompleted { success: false } so the trace has an
+    // accurate terminal event.  Without it, is_success() falls back to
+    // block-level aggregation and the watch client shows "running" forever.
+    if !success && workflow == WorkflowType::Iterate {
+        tracing::info!(
+            project = %project,
+            "preflight gates failed — emitting terminal failure for iterate workflow"
+        );
+        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            summary: "preflight gates failed".to_string(),
+            workflow: workflow.to_string(),
+            loop_context: None,
+            changes: None,
+        })
+        .expect("ProjectCompletedPayload is infallibly serializable");
+        block_result.events.push(Event::new(
+            EventType::ProjectIterationCompleted,
+            project.to_string(),
+            throttle,
+            terminal_payload,
+        ));
+    }
+
+    block_result
 }
 
 /// Parse gate definitions from a gates array value.
@@ -304,6 +333,10 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.events[0].payload["all_passed"], false);
+        // Iterate preflight failure must emit a terminal ProjectIterationCompleted { success: false }
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[1].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[1].payload["success"], false);
     }
 
     #[tokio::test]

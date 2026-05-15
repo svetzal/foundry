@@ -2,7 +2,9 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{CharterCheckCompletedPayload, GateResolutionCompletedPayload};
+use foundry_core::payload::{
+    CharterCheckCompletedPayload, GateResolutionCompletedPayload, ProjectCompletedPayload,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -22,6 +24,47 @@ impl ResolveGates {
     pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
         Self { registry }
     }
+}
+
+/// Build the result for a failed charter check.
+///
+/// For the `iterate` workflow, emits `ProjectIterationCompleted { success: false }` so
+/// the trace has a truthful terminal event.  Other workflows (prompt, validate) have no
+/// matching terminal event type, so the chain stops silently for those.
+fn charter_failure_result(
+    project: &str,
+    workflow: &str,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    tracing::info!(%project, %workflow, "charter check failed, skipping gate resolution");
+    if workflow == "iterate" {
+        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            summary: "charter check failed".to_string(),
+            workflow: workflow.to_string(),
+            loop_context: None,
+            changes: None,
+        })
+        .expect("ProjectCompletedPayload is infallibly serializable");
+        return TaskBlockResult {
+            events: vec![Event::new(
+                EventType::ProjectIterationCompleted,
+                project.to_string(),
+                throttle,
+                terminal_payload,
+            )],
+            success: false,
+            summary: format!("{project}: charter check failed, no gates to resolve"),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        };
+    }
+    TaskBlockResult::success(
+        format!("{project}: charter check failed, no gates to resolve"),
+        vec![],
+    )
 }
 
 impl TaskBlock for ResolveGates {
@@ -53,15 +96,14 @@ impl TaskBlock for ResolveGates {
         let entry = require_project!(self, project);
 
         Box::pin(async move {
-            // CharterCheckCompleted: only proceed if charter passed
+            // CharterCheckCompleted: only proceed if charter passed.
             if event_type == EventType::CharterCheckCompleted {
                 let charter_success = charter_payload.as_ref().is_some_and(|p| p.success);
                 if !charter_success {
-                    tracing::info!(project = %project, "charter check failed, skipping gate resolution");
-                    return Ok(TaskBlockResult::success(
-                        format!("{project}: charter check failed, no gates to resolve"),
-                        vec![],
-                    ));
+                    let workflow = charter_payload
+                        .as_ref()
+                        .map_or_else(|| "iterate".to_string(), |p| p.workflow.clone());
+                    return Ok(charter_failure_result(&project, &workflow, throttle));
                 }
             }
 
@@ -168,7 +210,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn charter_check_failed_returns_empty_events() {
+    async fn charter_check_failed_emits_terminal_failure() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".hone-gates.json"),
@@ -188,8 +230,10 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(!result.success, "charter failure should produce a failing result");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
     }
 
     #[tokio::test]

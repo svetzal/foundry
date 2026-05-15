@@ -3,7 +3,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ChainContext, PlanCompletedPayload, TriageCompletedPayload};
+use foundry_core::payload::{
+    ChainContext, PlanCompletedPayload, ProjectCompletedPayload, TriageCompletedPayload,
+};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
@@ -20,6 +22,39 @@ agent_block_new!(
     /// Emits `PlanCompleted` with the plan text.
     pub struct CreatePlan
 );
+
+/// Build the terminal failure result emitted when triage is rejected.
+///
+/// Emitting `ProjectIterationCompleted { success: false }` here ensures the trace
+/// has an accurate terminal event, so `is_success()` and the watch client both see
+/// the correct outcome rather than falling back to block-level aggregation.
+fn triage_rejection_result(
+    project: &str,
+    throttle: foundry_core::throttle::Throttle,
+) -> TaskBlockResult {
+    let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
+        project: project.to_string(),
+        success: false,
+        summary: "triage rejected — no correction warranted".to_string(),
+        workflow: WorkflowType::Iterate.to_string(),
+        loop_context: None,
+        changes: None,
+    })
+    .expect("ProjectCompletedPayload is infallibly serializable");
+    TaskBlockResult {
+        events: vec![Event::new(
+            EventType::ProjectIterationCompleted,
+            project.to_string(),
+            throttle,
+            terminal_payload,
+        )],
+        success: false,
+        summary: format!("{project}: triage rejected, no correction warranted"),
+        raw_output: None,
+        exit_code: None,
+        audit_artifacts: vec![],
+    }
+}
 
 impl TaskBlock for CreatePlan {
     task_block_meta! {
@@ -39,11 +74,15 @@ impl TaskBlock for CreatePlan {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: only create plan for accepted triages
+        // Self-filter: only create plan for accepted triages.
+        // When triage is rejected, emit ProjectIterationCompleted { success: false }
+        // so the trace has a truthful terminal event.  Without it, is_success() falls
+        // back to block-level aggregation and the watch client shows "running" forever.
         let p = parse_payload!(trigger, TriageCompletedPayload);
 
         if !p.accepted {
-            return skip!("Skipped: triage was rejected");
+            let result = triage_rejection_result(&project, throttle);
+            return Box::pin(async move { Ok(result) });
         }
 
         let entry = require_project!(self, project);
@@ -228,7 +267,7 @@ mod tests {
     );
 
     #[tokio::test]
-    async fn skips_rejected_triage() {
+    async fn rejected_triage_emits_terminal_failure() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
@@ -245,8 +284,11 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(!result.success, "rejected triage should produce a failing result");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        // No plan agent invoked
         assert!(agent.invocations().is_empty());
     }
 

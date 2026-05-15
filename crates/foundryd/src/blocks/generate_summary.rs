@@ -6,8 +6,8 @@ use chrono::Utc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    LocalInstallCompletedPayload, MaintenanceCycleCompletedPayload, ReleaseCompletedPayload,
-    ReleaseTagAuditedPayload,
+    LocalInstallCompletedPayload, MaintenanceCycleCompletedPayload, ProjectCompletedPayload,
+    ReleaseCompletedPayload, ReleaseTagAuditedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::trace::ProcessResult;
@@ -48,14 +48,49 @@ impl GenerateSummary {
     }
 }
 
-/// Extract per-project status from a trace's `ProcessResult`.
-fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
-    let failed_block = result.block_executions.iter().find(|b| !b.success);
+/// Terminal event types whose `success` payload field determines overall outcome.
+///
+/// Must stay in sync with `foundry_core::trace::TERMINAL_EVENT_TYPES`.
+const TERMINAL_EVENT_TYPES: &[EventType] = &[
+    EventType::ProjectIterationCompleted,
+    EventType::ProjectMaintenanceCompleted,
+    EventType::InnerIterationCompleted,
+];
 
-    let status = if let Some(block) = failed_block {
-        ProjectStatus::Failed(block.summary.clone())
+/// Extract per-project status from a trace's `ProcessResult`.
+///
+/// Prefers the `success` field of a terminal completion event when one is
+/// present — this aligns with `ProcessResult::is_success()` and avoids
+/// reporting success when the terminal event says otherwise (e.g. mojentic-ex
+/// where gates failed but earlier blocks succeeded).
+///
+/// Falls back to inspecting block executions when no terminal event exists
+/// (legacy traces, or very early chain aborts before any block runs).
+fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResult {
+    let terminal = result.events.iter().find(|e| TERMINAL_EVENT_TYPES.contains(&e.event_type));
+
+    let status = if let Some(event) = terminal {
+        let terminal_success =
+            event.parse_payload::<ProjectCompletedPayload>().ok().is_some_and(|p| p.success);
+        if terminal_success {
+            ProjectStatus::Success
+        } else {
+            let summary = event
+                .parse_payload::<ProjectCompletedPayload>()
+                .ok()
+                .map(|p| p.summary)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "terminal event reported failure".to_string());
+            ProjectStatus::Failed(summary)
+        }
     } else {
-        ProjectStatus::Success
+        // Fallback: no terminal event — use block executions.
+        let failed_block = result.block_executions.iter().find(|b| !b.success);
+        if let Some(block) = failed_block {
+            ProjectStatus::Failed(block.summary.clone())
+        } else {
+            ProjectStatus::Success
+        }
     };
 
     ProjectResult {
@@ -557,6 +592,69 @@ mod tests {
         if let ProjectStatus::Failed(reason) = &result.status {
             assert!(reason.contains("cargo clippy failed"));
         }
+    }
+
+    #[test]
+    fn extract_project_result_uses_terminal_event_over_block_executions() {
+        // When a terminal event with success=false is present, it should win
+        // even if all block executions were marked success.  This covers the
+        // mojentic-ex scenario where the summary.md incorrectly showed "success"
+        // because extract_project_result was reading block-level results.
+        let mut trace = successful_trace("mojentic-ex");
+        // Inject a failed terminal event (gates failed after a maintain run)
+        let terminal = Event::new(
+            EventType::ProjectMaintenanceCompleted,
+            "mojentic-ex".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "mojentic-ex",
+                "success": false,
+                "summary": "gates failed after 3 retries",
+                "workflow": "maintain",
+            }),
+        );
+        trace.events.push(terminal);
+
+        let result = extract_project_result("mojentic-ex", &trace);
+        assert_eq!(result.name, "mojentic-ex");
+        assert!(
+            matches!(result.status, ProjectStatus::Failed(_)),
+            "terminal event success=false must override block-level success"
+        );
+        if let ProjectStatus::Failed(reason) = &result.status {
+            assert!(
+                reason.contains("gates failed"),
+                "failure reason should come from terminal event summary, got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_project_result_terminal_success_overrides_block_failures() {
+        // When a terminal event with success=true is present, the trace
+        // succeeded even if some intermediate blocks failed (e.g. after a
+        // successful retry that followed an initial gate failure).
+        let mut trace = failed_trace("retry-project");
+        // Inject a success terminal event (retry recovered)
+        let terminal = Event::new(
+            EventType::ProjectMaintenanceCompleted,
+            "retry-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "retry-project",
+                "success": true,
+                "summary": "all required gates passed",
+                "workflow": "maintain",
+            }),
+        );
+        trace.events.push(terminal);
+
+        let result = extract_project_result("retry-project", &trace);
+        assert_eq!(
+            result.status,
+            ProjectStatus::Success,
+            "terminal success must win over intermediate block failures"
+        );
     }
 
     #[test]
