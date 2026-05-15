@@ -66,6 +66,10 @@ pub async fn run(
         // on timeout).
         .kill_on_drop(true);
 
+    // Propagate the active block's span context to the child process as a W3C
+    // `TRACEPARENT` env var. No-op when no span context is in scope.
+    crate::span_context::inject_traceparent(&mut cmd);
+
     if let Some(pairs) = env {
         for (key, value) in pairs {
             cmd.env(key, value);
@@ -198,5 +202,47 @@ mod tests {
         assert!(result.success);
         assert!(result.stdout.is_empty());
         assert!(result.stderr.is_empty());
+    }
+
+    // --- TRACEPARENT propagation tests --------------------------------------
+
+    #[tokio::test]
+    async fn run_injects_traceparent_when_span_context_set() {
+        use crate::span_context::{SPAN_CONTEXT, SpanContext};
+
+        let ctx = SpanContext {
+            trace_id: "0123456789abcdef0123456789abcdef".to_string(),
+            span_id: "fedcba9876543210".to_string(),
+        };
+        let expected = ctx.traceparent();
+
+        let result = SPAN_CONTEXT
+            .scope(ctx, async {
+                run(&tmp(), "sh", &["-c", "printenv TRACEPARENT"], None, None).await
+            })
+            .await
+            .expect("run must succeed");
+
+        assert!(result.success, "printenv should find TRACEPARENT; result: {result:?}");
+        assert!(
+            result.stdout.contains(&expected),
+            "stdout should contain {expected}, got: {}",
+            result.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn run_does_not_set_traceparent_when_context_absent() {
+        // `printenv` with a missing var exits non-zero; `|| true` keeps the
+        // pipeline successful so we can assert against stdout cleanly.
+        let result = run(&tmp(), "sh", &["-c", "printenv TRACEPARENT || true"], None, None)
+            .await
+            .expect("run must succeed");
+
+        assert!(
+            !result.stdout.contains("00-"),
+            "no TRACEPARENT should leak when context is unset; got: {}",
+            result.stdout
+        );
     }
 }
