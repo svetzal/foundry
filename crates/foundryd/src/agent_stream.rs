@@ -78,6 +78,11 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
 
+            // Propagate the active block's span context to the child process as
+            // a W3C `TRACEPARENT` env var. No-op when no span context is in
+            // scope. Caller-provided env (below) wins if it sets TRACEPARENT.
+            crate::span_context::inject_traceparent(&mut cmd);
+
             if let Some(pairs) = env {
                 for (k, v) in pairs {
                     cmd.env(k, v);
@@ -171,6 +176,72 @@ mod tests {
 
         let written = tokio::fs::read_to_string(&log).await.unwrap();
         assert_eq!(written, "line one\nline two\nline three\n");
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    // --- TRACEPARENT propagation tests --------------------------------------
+
+    #[tokio::test]
+    async fn run_injects_traceparent_when_span_context_set() {
+        use crate::span_context::{SPAN_CONTEXT, SpanContext};
+
+        let ctx = SpanContext {
+            trace_id: "0123456789abcdef0123456789abcdef".to_string(),
+            span_id: "fedcba9876543210".to_string(),
+        };
+        let expected = ctx.traceparent();
+
+        let log = tmp_log();
+        let runner = ProcessAgentStreamRunner;
+        let outcome = SPAN_CONTEXT
+            .scope(ctx, async {
+                runner
+                    .run(
+                        std::env::temp_dir().as_path(),
+                        "sh",
+                        &["-c", "printenv TRACEPARENT"],
+                        None,
+                        None,
+                        log.as_path(),
+                    )
+                    .await
+            })
+            .await
+            .expect("run should succeed");
+
+        assert!(outcome.success, "printenv should find TRACEPARENT; outcome: {outcome:?}");
+        assert_eq!(outcome.lines.len(), 1);
+        assert_eq!(outcome.lines[0].raw, expected);
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    #[tokio::test]
+    async fn run_does_not_set_traceparent_when_context_absent() {
+        let log = tmp_log();
+        let runner = ProcessAgentStreamRunner;
+        let outcome = runner
+            .run(
+                std::env::temp_dir().as_path(),
+                "sh",
+                &["-c", "printenv TRACEPARENT || true"],
+                None,
+                None,
+                log.as_path(),
+            )
+            .await
+            .expect("run should succeed");
+
+        // When no span context is active, no TRACEPARENT should be set.
+        // `printenv` produces no output for an unset var; `|| true` keeps
+        // success. The line reader skips empty trailing lines, so we just
+        // assert nothing resembling a W3C traceparent shows up.
+        assert!(
+            outcome.lines.iter().all(|l| !l.raw.starts_with("00-")),
+            "no TRACEPARENT should leak when context is unset; got: {:?}",
+            outcome.lines
+        );
 
         let _ = tokio::fs::remove_file(&log).await;
     }
