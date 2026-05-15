@@ -18,6 +18,8 @@ message Event {
     string payload_json = 5; // Event-type-specific payload as JSON
     Throttle throttle = 6;
     string trace_id = 7;     // Groups events into a workflow instance
+    string span_id = 8;         // Identifies the span this event belongs to.
+    string parent_span_id = 9;  // Empty for root spans.
 }
 
 // Status of a running or completed workflow.
@@ -47,6 +49,8 @@ message EmitRequest {
     Throttle throttle = 3;
     string payload_json = 4;  // Optional additional payload
     string trace_id = 5;      // Optional; auto-minted if empty
+    string span_id = 6;         // Optional. Auto-minted if empty.
+    string parent_span_id = 7;  // Optional. Empty ⇒ root span.
 }
 
 message EmitResponse {
@@ -76,6 +80,8 @@ message TraceBlockExecution {
     string trigger_payload_json = 10;
     repeated string emitted_payload_jsons = 11;
     repeated string audit_artifacts = 12;
+    string span_id = 13;
+    string parent_span_id = 14;
 }
 
 // A single event in a trace chain.
@@ -86,6 +92,8 @@ message TraceEvent {
     string occurred_at = 4;
     Throttle throttle = 5;
     string trace_id = 6;     // Workflow instance this event belongs to
+    string span_id = 7;
+    string parent_span_id = 8;
 }
 
 // Request to retrieve a completed event trace.
@@ -101,6 +109,19 @@ message TraceResponse {
     uint64 total_duration_ms = 5;
 }
 
+// Request: retrieve a single span's events and block executions.
+message SpanRequest {
+    string span_id = 1;
+}
+
+// Response containing the events and blocks for one span.
+message SpanResponse {
+    bool found = 1;
+    repeated TraceEvent events = 2;
+    repeated TraceBlockExecution block_executions = 3;
+    uint64 total_duration_ms = 4;
+}
+
 // Request to subscribe to the live event stream.
 message WatchRequest {
     string project = 1;  // Filter by project, or empty string for all projects
@@ -113,6 +134,8 @@ message WatchResponse {
     string project = 3;
     string payload_json = 4;
     string trace_id = 5;     // Workflow instance this event belongs to
+    string span_id = 6;
+    string parent_span_id = 7;
 }
 
 // A project entry in the registry.
@@ -225,4 +248,7 @@ service Foundry {
 
     // Edit a project in the registry.
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
+
+    // Retrieve every event and block execution within a single span.
+    rpc Span(SpanRequest) returns (SpanResponse);
 }
