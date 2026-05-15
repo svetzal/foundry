@@ -16,6 +16,7 @@
 
 pub mod engine;
 pub mod service;
+pub mod span_context;
 pub mod trace_store;
 pub mod trace_writer;
 pub mod workflow_tracker;
