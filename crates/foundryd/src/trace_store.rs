@@ -33,10 +33,6 @@ struct State {
 }
 
 /// Result of looking up a single span in the trace store.
-//
-// `dead_code` is silenced until Task 6.2 wires `find_span` into the Span
-// RPC handler. Once that lands, this allow should be removed.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpanResult {
     /// All events whose `span_id` matches the requested span.
@@ -141,10 +137,6 @@ impl TraceStore {
     /// Returns `None` when the span is unknown (either never seen or evicted).
     /// Only consults in-memory state — disk-backed traces are not searched
     /// because the on-disk format is keyed by root `event_id`, not span.
-    //
-    // `dead_code` is silenced until Task 6.2 wires this into the Span RPC
-    // handler. Once that lands, this allow should be removed.
-    #[allow(dead_code)]
     pub fn find_span(&self, span_id: &str) -> Option<SpanResult> {
         let state = self.state.read().expect("trace store lock poisoned");
         let trace_id = state.span_to_trace.get(span_id)?;

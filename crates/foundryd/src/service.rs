@@ -13,7 +13,7 @@ use foundry_core::registry::{
     parse_stack,
 };
 use foundry_core::throttle::Throttle;
-use foundry_core::trace::ProcessResult;
+use foundry_core::trace::{BlockExecution, ProcessResult};
 
 use crate::engine::Engine;
 use crate::proto::{
@@ -232,6 +232,43 @@ fn parse_throttle(proto_value: i32) -> Throttle {
     }
 }
 
+/// Convert a domain `Event` to the proto `TraceEvent` message.
+fn trace_event_from(e: &Event) -> TraceEvent {
+    TraceEvent {
+        event_id: e.id.clone(),
+        event_type: e.event_type.as_str().to_string(),
+        project: e.project.clone(),
+        occurred_at: e.occurred_at.to_rfc3339(),
+        throttle: match e.throttle {
+            Throttle::Full => 0,
+            Throttle::AuditOnly => 1,
+            Throttle::DryRun => 2,
+        },
+        trace_id: e.trace_id.clone().unwrap_or_default(),
+        span_id: e.span_id.clone().unwrap_or_default(),
+        parent_span_id: e.parent_span_id.clone().unwrap_or_default(),
+    }
+}
+
+/// Convert a domain `BlockExecution` to the proto `TraceBlockExecution` message.
+fn trace_block_from(b: &BlockExecution) -> TraceBlockExecution {
+    TraceBlockExecution {
+        block_name: b.block_name.clone(),
+        trigger_event_id: b.trigger_event_id.clone(),
+        success: b.success,
+        summary: b.summary.clone(),
+        emitted_event_ids: b.emitted_event_ids.clone(),
+        duration_ms: b.duration_ms,
+        raw_output: b.raw_output.clone().unwrap_or_default(),
+        exit_code: b.exit_code.unwrap_or(0),
+        trigger_payload_json: b.trigger_payload.to_string(),
+        emitted_payload_jsons: b.emitted_payloads.iter().map(ToString::to_string).collect(),
+        audit_artifacts: b.audit_artifacts.clone(),
+        span_id: b.span_id.clone().unwrap_or_default(),
+        parent_span_id: b.parent_span_id.clone().unwrap_or_default(),
+    }
+}
+
 #[tonic::async_trait]
 #[allow(clippy::too_many_lines)]
 impl Foundry for FoundryService {
@@ -256,7 +293,7 @@ impl Foundry for FoundryService {
             req.trace_id
         };
         let request_span_id = if req.span_id.is_empty() {
-            None
+            Some(foundry_core::event::mint_span_id())
         } else {
             Some(req.span_id)
         };
@@ -664,49 +701,8 @@ impl Foundry for FoundryService {
         let _guard = span.enter();
 
         if let Some(result) = self.trace_store.get(&req.event_id) {
-            let events = result
-                .events
-                .iter()
-                .map(|e| TraceEvent {
-                    event_id: e.id.clone(),
-                    event_type: e.event_type.as_str().to_string(),
-                    project: e.project.clone(),
-                    occurred_at: e.occurred_at.to_rfc3339(),
-                    throttle: match e.throttle {
-                        Throttle::Full => 0,
-                        Throttle::AuditOnly => 1,
-                        Throttle::DryRun => 2,
-                    },
-                    trace_id: e.trace_id.clone().unwrap_or_default(),
-                    span_id: e.span_id.clone().unwrap_or_default(),
-                    parent_span_id: e.parent_span_id.clone().unwrap_or_default(),
-                })
-                .collect();
-
-            let block_executions = result
-                .block_executions
-                .iter()
-                .map(|b| TraceBlockExecution {
-                    block_name: b.block_name.clone(),
-                    trigger_event_id: b.trigger_event_id.clone(),
-                    success: b.success,
-                    summary: b.summary.clone(),
-                    emitted_event_ids: b.emitted_event_ids.clone(),
-                    duration_ms: b.duration_ms,
-                    raw_output: b.raw_output.clone().unwrap_or_default(),
-                    exit_code: b.exit_code.unwrap_or(0),
-                    trigger_payload_json: b.trigger_payload.to_string(),
-                    emitted_payload_jsons: b
-                        .emitted_payloads
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                    audit_artifacts: b.audit_artifacts.clone(),
-                    span_id: b.span_id.clone().unwrap_or_default(),
-                    parent_span_id: b.parent_span_id.clone().unwrap_or_default(),
-                })
-                .collect();
-
+            let events = result.events.iter().map(trace_event_from).collect();
+            let block_executions = result.block_executions.iter().map(trace_block_from).collect();
             let total_duration_ms = result.total_duration_ms;
 
             tracing::info!("trace found");
@@ -728,13 +724,30 @@ impl Foundry for FoundryService {
     }
 
     async fn span(&self, request: Request<SpanRequest>) -> Result<Response<SpanResponse>, Status> {
-        let _ = request; // populated in Phase 6
-        Ok(Response::new(SpanResponse {
-            found: false,
-            events: vec![],
-            block_executions: vec![],
-            total_duration_ms: 0,
-        }))
+        let req = request.into_inner();
+
+        let span = tracing::info_span!("span", span_id = %req.span_id);
+        let _guard = span.enter();
+
+        let response = if let Some(r) = self.trace_store.find_span(&req.span_id) {
+            tracing::info!(events = r.events.len(), blocks = r.blocks.len(), "span found");
+            SpanResponse {
+                found: true,
+                events: r.events.iter().map(trace_event_from).collect(),
+                block_executions: r.blocks.iter().map(trace_block_from).collect(),
+                total_duration_ms: r.total_duration_ms,
+            }
+        } else {
+            tracing::info!("span not found");
+            SpanResponse {
+                found: false,
+                events: vec![],
+                block_executions: vec![],
+                total_duration_ms: 0,
+            }
+        };
+
+        Ok(Response::new(response))
     }
 }
 
@@ -859,6 +872,144 @@ mod tests {
             completed_payload["root_event_id"], root_event_id,
             "system completion must include root_event_id so CLI can detect run end"
         );
+    }
+
+    #[tokio::test]
+    async fn emit_mints_span_id_when_request_omits_it() {
+        let (service, mut rx) = test_service();
+
+        let request = Request::new(EmitRequest {
+            event_type: "project_run_started".to_string(),
+            project: "span-mint-project".to_string(),
+            throttle: 2, // dry_run
+            payload_json: String::new(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+        });
+
+        let response = service.emit(request).await.expect("emit should succeed");
+        let root_event_id = response.into_inner().event_id;
+
+        // Read the broadcast stream until we see the root event itself, which
+        // carries the minted span_id.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut root_span_id: Option<String> = None;
+        loop {
+            let result = tokio::time::timeout_at(deadline, rx.recv()).await;
+            match result {
+                Ok(Ok(event)) => {
+                    if event.id == root_event_id {
+                        root_span_id = event.span_id.clone();
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        let span_id = root_span_id.expect("root event must carry a span_id");
+        assert!(
+            !span_id.is_empty(),
+            "Emit must mint a non-empty span_id when the request omits one"
+        );
+        // span_ids are 16 hex chars (see mint_span_id contract).
+        assert_eq!(span_id.len(), 16, "minted span_id must be 16 hex chars");
+        assert!(span_id.chars().all(|c| c.is_ascii_hexdigit()), "minted span_id must be hex");
+    }
+
+    #[tokio::test]
+    async fn span_rpc_returns_events_sharing_requested_span_id() {
+        let (service, mut rx) = test_service();
+
+        // 1. Emit a workflow root event with no trace/span set — Emit will mint both.
+        let request = Request::new(EmitRequest {
+            event_type: "project_run_started".to_string(),
+            project: "span-rpc-project".to_string(),
+            throttle: 2, // dry_run
+            payload_json: String::new(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+        });
+
+        let response = service.emit(request).await.expect("emit should succeed");
+        let root_event_id = response.into_inner().event_id;
+
+        // Wait for ProjectRunCompleted to confirm the background task has
+        // finished inserting the trace into the store.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_completed = false;
+        loop {
+            let result = tokio::time::timeout_at(deadline, rx.recv()).await;
+            match result {
+                Ok(Ok(event)) => {
+                    if event.event_type == EventType::ProjectRunCompleted {
+                        saw_completed = true;
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        assert!(saw_completed, "background processing must complete before Trace lookup");
+
+        // 2. Call Trace and confirm span fields are populated end-to-end.
+        let trace_resp = service
+            .trace(Request::new(TraceRequest {
+                event_id: root_event_id.clone(),
+            }))
+            .await
+            .expect("trace should succeed")
+            .into_inner();
+
+        assert!(trace_resp.found, "trace must be found for the root event");
+        let root_trace_event = trace_resp
+            .events
+            .iter()
+            .find(|e| e.event_id == root_event_id)
+            .expect("root event must appear in trace");
+        assert!(!root_trace_event.span_id.is_empty(), "root event's span_id must be populated");
+        assert!(!root_trace_event.trace_id.is_empty(), "root event's trace_id must be populated");
+
+        // 3. Pick the workflow span_id from the response.
+        let workflow_span_id = root_trace_event.span_id.clone();
+
+        // 4. Call Span and confirm found=true plus every returned event shares that span_id.
+        let span_resp = service
+            .span(Request::new(SpanRequest {
+                span_id: workflow_span_id.clone(),
+            }))
+            .await
+            .expect("span should succeed")
+            .into_inner();
+
+        assert!(span_resp.found, "span must be found");
+        assert!(!span_resp.events.is_empty(), "span lookup must surface at least the root event");
+        for e in &span_resp.events {
+            assert_eq!(
+                e.span_id, workflow_span_id,
+                "every event returned by Span must share the requested span_id"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn span_rpc_returns_not_found_for_unknown_span() {
+        let (service, _rx) = test_service();
+
+        let resp = service
+            .span(Request::new(SpanRequest {
+                span_id: "deadbeefdeadbeef".to_string(),
+            }))
+            .await
+            .expect("span should succeed")
+            .into_inner();
+
+        assert!(!resp.found);
+        assert!(resp.events.is_empty());
+        assert!(resp.block_executions.is_empty());
+        assert_eq!(resp.total_duration_ms, 0);
     }
 
     #[tokio::test]
