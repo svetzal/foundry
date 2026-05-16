@@ -37,20 +37,35 @@ tokio::task_local! {
 }
 
 /// Inject `TRACEPARENT` into a `Command` if a span context is active in the
-/// current tokio task. No-op outside a tokio task or when context is unset.
+/// current tokio task. When no context is active, explicitly removes any
+/// inherited `TRACEPARENT` from the parent process environment so the child
+/// starts clean.
 pub fn inject_traceparent(cmd: &mut tokio::process::Command) {
-    let _ = SPAN_CONTEXT.try_with(|ctx| {
-        cmd.env("TRACEPARENT", ctx.traceparent());
-    });
+    if SPAN_CONTEXT
+        .try_with(|ctx| {
+            cmd.env("TRACEPARENT", ctx.traceparent());
+        })
+        .is_err()
+    {
+        cmd.env_remove("TRACEPARENT");
+    }
 }
 
 /// Variant for `std::process::Command` (legacy callsites in subprocess
 /// migration). Prefer migrating to `tokio::process::Command`.
+///
+/// Like `inject_traceparent`, explicitly removes any inherited `TRACEPARENT`
+/// from the parent process environment when no context is active.
 #[allow(dead_code)]
 pub fn inject_traceparent_std(cmd: &mut std::process::Command) {
-    let _ = SPAN_CONTEXT.try_with(|ctx| {
-        cmd.env("TRACEPARENT", ctx.traceparent());
-    });
+    if SPAN_CONTEXT
+        .try_with(|ctx| {
+            cmd.env("TRACEPARENT", ctx.traceparent());
+        })
+        .is_err()
+    {
+        cmd.env_remove("TRACEPARENT");
+    }
 }
 
 /// Extract a `SpanContext` from an Event's span fields. Returns `None` if any
@@ -99,10 +114,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inject_traceparent_outside_scope_is_noop() {
-        // No SPAN_CONTEXT::scope around this — try_with should silently fail.
+    async fn inject_traceparent_outside_scope_strips_inherited() {
+        // No SPAN_CONTEXT::scope around this — inject_traceparent should
+        // issue an env_remove so the child does not inherit any TRACEPARENT
+        // that happens to live in the parent process environment.
+        // `get_envs()` represents a removal directive as `(key, None)`, which
+        // is what we want to see — no non-None value for TRACEPARENT.
         let mut cmd = tokio::process::Command::new("true");
         inject_traceparent(&mut cmd);
-        assert!(cmd.as_std().get_envs().all(|(k, _)| k.to_str() != Some("TRACEPARENT")));
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .all(|(k, v)| { k.to_str() != Some("TRACEPARENT") || v.is_none() })
+        );
     }
 }
