@@ -12,6 +12,7 @@ use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
+use super::triage_assessment::TRIAGE_SEVERITY_THRESHOLD;
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 agent_block_new!(
@@ -23,36 +24,79 @@ agent_block_new!(
     pub struct CreatePlan
 );
 
-/// Build the terminal failure result emitted when triage is rejected.
+/// Build the terminal result emitted when triage is rejected.
 ///
-/// Emitting `ProjectIterationCompleted { success: false }` here ensures the trace
-/// has an accurate terminal event, so `is_success()` and the watch client both see
-/// the correct outcome rather than falling back to block-level aggregation.
+/// Two branches depending on the rejection cause:
+///
+/// - **Below-threshold** (`payload.severity < TRIAGE_SEVERITY_THRESHOLD`): triage correctly
+///   filtered a low-severity item. This is a *successful* no-op outcome — the chain worked
+///   as intended. Emits `ProjectIterationCompleted { success: true }`.
+///
+/// - **Other rejection** (severity at-or-above threshold but rejected for busy-work): the
+///   triage agent declined a substantive-severity item as not worth correcting. This is
+///   treated as `success: false` to preserve existing log-scraper behaviour.
+///
+/// Either way, emitting `ProjectIterationCompleted` here gives the trace an accurate
+/// terminal event so `is_success()` and the watch client see the correct outcome
+/// rather than falling back to block-level aggregation.
 fn triage_rejection_result(
-    project: &str,
+    payload: &TriageCompletedPayload,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
-        project: project.to_string(),
-        success: false,
-        summary: "triage rejected — no correction warranted".to_string(),
-        workflow: WorkflowType::Iterate.to_string(),
-        loop_context: None,
-        changes: None,
-    })
-    .expect("ProjectCompletedPayload is infallibly serializable");
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ProjectIterationCompleted,
-            project.to_string(),
-            throttle,
-            terminal_payload,
-        )],
-        success: false,
-        summary: format!("{project}: triage rejected, no correction warranted"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
+    let project = payload.project.as_str();
+
+    if payload.severity < TRIAGE_SEVERITY_THRESHOLD {
+        // Below-threshold: triage did its job correctly — this is a successful no-op.
+        let summary = format!(
+            "no correction warranted (severity {}/10 below threshold {})",
+            payload.severity, TRIAGE_SEVERITY_THRESHOLD
+        );
+        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
+            project: project.to_string(),
+            success: true,
+            summary: summary.clone(),
+            workflow: WorkflowType::Iterate.to_string(),
+            loop_context: None,
+            changes: None,
+        })
+        .expect("ProjectCompletedPayload is infallibly serializable");
+        TaskBlockResult {
+            events: vec![Event::new(
+                EventType::ProjectIterationCompleted,
+                project.to_string(),
+                throttle,
+                terminal_payload,
+            )],
+            success: true,
+            summary: format!("{project}: {summary}"),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        }
+    } else {
+        // At-or-above threshold but rejected (busy-work): treat as failure.
+        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            summary: "triage rejected — no correction warranted".to_string(),
+            workflow: WorkflowType::Iterate.to_string(),
+            loop_context: None,
+            changes: None,
+        })
+        .expect("ProjectCompletedPayload is infallibly serializable");
+        TaskBlockResult {
+            events: vec![Event::new(
+                EventType::ProjectIterationCompleted,
+                project.to_string(),
+                throttle,
+                terminal_payload,
+            )],
+            success: false,
+            summary: format!("{project}: triage rejected, no correction warranted"),
+            raw_output: None,
+            exit_code: None,
+            audit_artifacts: vec![],
+        }
     }
 }
 
@@ -81,7 +125,7 @@ impl TaskBlock for CreatePlan {
         let p = parse_payload!(trigger, TriageCompletedPayload);
 
         if !p.accepted {
-            let result = triage_rejection_result(&project, throttle);
+            let result = triage_rejection_result(&p, throttle);
             return Box::pin(async move { Ok(result) });
         }
 
@@ -267,15 +311,15 @@ mod tests {
     );
 
     #[tokio::test]
-    async fn rejected_triage_emits_terminal_failure() {
+    async fn rejected_high_severity_triage_emits_terminal_failure() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
         let trigger = test_event!(EventType::TriageCompleted, "my-project", {
             "project": "my-project",
             "accepted": false,
-            "reason": "too trivial",
-            "severity": 2,
+            "reason": "busy-work cosmetic tweak",
+            "severity": 5,
             "principle": "unknown",
             "category": "conventions",
             "assessment": "",
@@ -284,9 +328,66 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(!result.success, "rejected triage should produce a failing result");
+        assert!(!result.success, "rejected high-severity triage should produce a failing result");
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        // No plan agent invoked
+        assert!(agent.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn below_threshold_triage_emits_terminal_success() {
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
+        let block = CreatePlan::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::TriageCompleted, "my-project", {
+            "project": "my-project",
+            "accepted": false,
+            "reason": "Severity is 3/10, below the 4+ threshold for acceptance",
+            "severity": 3,
+            "principle": "unknown",
+            "category": "conventions",
+            "assessment": "",
+            "workflow": "iterate",
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "below-threshold rejection should be a successful no-op");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], true);
+        let summary = result.events[0].payload["summary"].as_str().unwrap();
+        assert!(
+            summary.contains("no correction warranted"),
+            "summary should mention no correction warranted"
+        );
+        assert!(summary.contains("severity 3/10"), "summary should mention severity");
+        // No plan agent invoked
+        assert!(agent.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_severity_at_threshold_with_rejection_is_failure() {
+        // severity == TRIAGE_SEVERITY_THRESHOLD (4) with accepted=false → failure (< not <=)
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
+        let block = CreatePlan::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::TriageCompleted, "my-project", {
+            "project": "my-project",
+            "accepted": false,
+            "reason": "busy-work at boundary severity",
+            "severity": 4,
+            "principle": "unknown",
+            "category": "conventions",
+            "assessment": "",
+            "workflow": "iterate",
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "severity at threshold (4) rejected should still be failure");
         assert_eq!(result.events[0].payload["success"], false);
         // No plan agent invoked
         assert!(agent.invocations().is_empty());

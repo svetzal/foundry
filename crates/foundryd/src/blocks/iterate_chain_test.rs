@@ -270,16 +270,17 @@ async fn preflight_failure_stops_chain() {
 }
 
 #[tokio::test]
-async fn triage_rejection_stops_chain() {
+async fn triage_busywork_rejection_stops_chain_as_failure() {
+    // Severity above threshold but rejected as busy-work → chain stops, success=false.
     let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
     let shell = FakeShellGateway::success();
-    // Agent responses: assess, name, triage (rejected)
+    // Agent responses: assess, name, triage (rejected — high severity, busy-work)
     let agent = FakeAgentGateway::sequence(vec![
         // AssessProject — assessment
         AgentResponse {
-            stdout: r#"{"severity": 2, "principle": "formatting", "category": "conventions", "assessment": "Minor formatting issues."}"#.to_string(),
+            stdout: r#"{"severity": 6, "principle": "formatting", "category": "conventions", "assessment": "Cosmetic whitespace issues."}"#.to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -291,9 +292,9 @@ async fn triage_rejection_stops_chain() {
             exit_code: 0,
             success: true,
         },
-        // TriageAssessment — rejected
+        // TriageAssessment — rejected as busy-work despite severity 6
         AgentResponse {
-            stdout: r#"{"accepted": false, "reason": "too trivial, severity only 2"}"#.to_string(),
+            stdout: r#"{"accepted": false, "reason": "purely cosmetic whitespace, busy-work"}"#.to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
@@ -316,7 +317,7 @@ async fn triage_rejection_stops_chain() {
     // CreatePlan emits a terminal failure event so is_success() is accurate.
     assert!(
         event_types.contains(&"project_iteration_completed"),
-        "should emit terminal failure when triage is rejected"
+        "should emit terminal failure when high-severity triage is rejected as busy-work"
     );
     let completion = result
         .events
@@ -324,7 +325,10 @@ async fn triage_rejection_stops_chain() {
         .find(|e| e.event_type == EventType::ProjectIterationCompleted)
         .unwrap();
     assert_eq!(completion.payload["success"], false, "terminal event must be success=false");
-    assert!(!result.is_success(), "overall chain must be failure when triage is rejected");
+    assert!(
+        !result.is_success(),
+        "overall chain must be failure when busy-work triage is rejected"
+    );
 
     // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
@@ -334,6 +338,81 @@ async fn triage_rejection_stops_chain() {
     assert!(
         !event_types.contains(&"execution_completed"),
         "should NOT execute after triage rejection"
+    );
+}
+
+#[tokio::test]
+async fn triage_below_threshold_rejection_stops_chain_as_success() {
+    // Severity below threshold → triage correctly filters; chain stops, success=true (successful no-op).
+    let dir = test_helpers::test_project_dir();
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+    let shell = FakeShellGateway::success();
+    // Agent responses: assess (severity 2), name, triage (rejected — below threshold)
+    let agent = FakeAgentGateway::sequence(vec![
+        // AssessProject — assessment
+        AgentResponse {
+            stdout: r#"{"severity": 2, "principle": "formatting", "category": "conventions", "assessment": "Minor formatting issues."}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // AssessProject — name
+        AgentResponse {
+            stdout: "fix-formatting".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        // TriageAssessment — rejected because severity 2 < threshold
+        AgentResponse {
+            stdout: r#"{"accepted": false, "reason": "too trivial, severity only 2"}"#.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
+
+    let engine = iterate_engine(shell, agent, registry);
+    let result = engine.process(iteration_requested_event(false)).await;
+
+    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+    assert!(event_types.contains(&"triage_completed"), "should complete triage");
+    let triage = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::TriageCompleted)
+        .unwrap();
+    assert_eq!(triage.payload["accepted"], false);
+
+    // CreatePlan emits a terminal success event — below-threshold is a successful no-op.
+    assert!(
+        event_types.contains(&"project_iteration_completed"),
+        "should emit terminal event when below-threshold triage is rejected"
+    );
+    let completion = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(
+        completion.payload["success"], true,
+        "terminal event must be success=true for below-threshold rejection"
+    );
+    assert!(
+        result.is_success(),
+        "overall chain must succeed when below-threshold triage filters correctly"
+    );
+
+    // Chain still stops — no plan or execution
+    assert!(
+        !event_types.contains(&"plan_completed"),
+        "should NOT create plan after below-threshold triage rejection"
+    );
+    assert!(
+        !event_types.contains(&"execution_completed"),
+        "should NOT execute after below-threshold triage rejection"
     );
 }
 

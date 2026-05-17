@@ -12,6 +12,11 @@ use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
+/// Severity threshold below which triage rejects assessments as not worth correcting.
+/// Below-threshold rejections are a *successful* no-op outcome of triage filtering,
+/// not a failure.
+pub(crate) const TRIAGE_SEVERITY_THRESHOLD: u64 = 4;
+
 agent_block_new!(
     /// Filters assessments: rejects low-severity issues and busy-work.
     ///
@@ -52,6 +57,7 @@ impl TaskBlock for TriageAssessment {
             let category = assessment_payload.category.clone();
             let assessment = assessment_payload.assessment.clone();
 
+            let threshold = TRIAGE_SEVERITY_THRESHOLD;
             let prompt = format!(
                 "You are triaging an assessment for project '{project}'.\n\n\
                  Assessment:\n\
@@ -60,9 +66,9 @@ impl TaskBlock for TriageAssessment {
                  - Category: {category}\n\
                  - Details: {assessment}\n\n\
                  Decide whether this assessment should be accepted for correction.\n\
-                 Accept if: severity >= 4 AND the work is substantive (not busy-work like \
+                 Accept if: severity >= {threshold} AND the work is substantive (not busy-work like \
                  trivial comment changes, whitespace formatting, or purely cosmetic tweaks).\n\
-                 Reject if: severity < 4 OR the work is busy-work.\n\n\
+                 Reject if: severity < {threshold} OR the work is busy-work.\n\n\
                  Output ONLY valid JSON in this exact format, nothing else:\n\
                  {{\"accepted\": true/false, \"reason\": \"<brief explanation>\"}}"
             );
