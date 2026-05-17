@@ -28,9 +28,9 @@ impl TaskBlock for RetryExecution {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let p = trigger
-            .parse_payload::<RetryRequestedPayload>()
-            .expect("dry_run_events called with invalid RetryRequested payload");
+        let Some(p) = trigger.parse_payload::<RetryRequestedPayload>().ok() else {
+            return vec![];
+        };
         let workflow = WorkflowType::from_payload(&trigger.payload);
         super::dry_run_execution_event(trigger, workflow, Some(p.retry_count))
     }
