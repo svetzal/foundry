@@ -99,42 +99,39 @@ impl CommitAndPush {
 
         tracing::info!(%project, "committed changes");
 
-        let mut events = vec![Event::new(
-            EventType::ProjectChangesCommitted,
-            project.clone(),
+        // Push if permitted, collecting the push payload for event construction.
+        let push_payload = if push_enabled {
+            tracing::info!(%project, "pushing changes");
+            let push = shell.run(path, "git", &["push"], None, None).await?;
+            if push.success {
+                Some(ProjectChangesPushedPayload {
+                    project: project.clone(),
+                    cve: cve.clone(),
+                    message: None,
+                    dry_run: None,
+                    stub: None,
+                })
+            } else {
+                tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
+                None
+            }
+        } else {
+            tracing::info!(%project, "push disabled in registry, skipping");
+            None
+        };
+
+        let events = build_commit_push_events(
+            &project,
             throttle,
-            Event::serialize_payload(&ProjectChangesCommittedPayload {
+            &ProjectChangesCommittedPayload {
                 project: project.clone(),
                 cve: cve.clone(),
                 message: commit_msg.clone(),
                 dry_run: None,
                 stub: None,
-            })?,
-        )];
-
-        // Push if permitted.
-        if push_enabled {
-            tracing::info!(%project, "pushing changes");
-            let push = shell.run(path, "git", &["push"], None, None).await?;
-            if push.success {
-                events.push(Event::new(
-                    EventType::ProjectChangesPushed,
-                    project.clone(),
-                    throttle,
-                    Event::serialize_payload(&ProjectChangesPushedPayload {
-                        project: project.clone(),
-                        cve: cve.clone(),
-                        message: None,
-                        dry_run: None,
-                        stub: None,
-                    })?,
-                ));
-            } else {
-                tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
-            }
-        } else {
-            tracing::info!(%project, "push disabled in registry, skipping");
-        }
+            },
+            push_payload.as_ref(),
+        )?;
 
         Ok(TaskBlockResult::success("Committed and pushed changes", events))
     }
@@ -179,20 +176,6 @@ impl TaskBlock for CommitAndPush {
             .and_then(|p| p.cve)
             .unwrap_or_else(|| "unknown".to_string());
 
-        let mut events = vec![Event::new(
-            EventType::ProjectChangesCommitted,
-            project.clone(),
-            throttle,
-            Event::serialize_payload(&ProjectChangesCommittedPayload {
-                project: project.clone(),
-                cve: cve.clone(),
-                message: commit_message(&trigger.event_type, &project),
-                dry_run: Some(true),
-                stub: None,
-            })
-            .expect("ProjectChangesCommittedPayload is infallibly serializable"),
-        )];
-
         // Simulate push if the project has push enabled, or if unknown (stub path).
         let push_enabled = self
             .registry
@@ -201,23 +184,27 @@ impl TaskBlock for CommitAndPush {
             .find_project(&project)
             .is_none_or(|e| e.actions.push);
 
-        if push_enabled {
-            events.push(Event::new(
-                EventType::ProjectChangesPushed,
-                project.clone(),
-                throttle,
-                Event::serialize_payload(&ProjectChangesPushedPayload {
-                    project: project.clone(),
-                    cve: cve.clone(),
-                    message: None,
-                    dry_run: Some(true),
-                    stub: None,
-                })
-                .expect("ProjectChangesPushedPayload is infallibly serializable"),
-            ));
-        }
+        let push_payload = push_enabled.then(|| ProjectChangesPushedPayload {
+            project: project.clone(),
+            cve: cve.clone(),
+            message: None,
+            dry_run: Some(true),
+            stub: None,
+        });
 
-        events
+        build_commit_push_events(
+            &project,
+            throttle,
+            &ProjectChangesCommittedPayload {
+                project: project.clone(),
+                cve: cve.clone(),
+                message: commit_message(&trigger.event_type, &project),
+                dry_run: Some(true),
+                stub: None,
+            },
+            push_payload.as_ref(),
+        )
+        .expect("commit and push event payloads are infallibly serializable")
     }
 
     fn execute(
@@ -264,6 +251,33 @@ impl TaskBlock for CommitAndPush {
     }
 }
 
+/// Build a `Vec<Event>` for a commit (and optional push) from typed payloads.
+///
+/// Eliminates the repeated serialize-and-construct pattern in the real execution
+/// path, `dry_run_events`, and the stub fallback.
+fn build_commit_push_events(
+    project: &str,
+    throttle: foundry_core::throttle::Throttle,
+    commit_payload: &ProjectChangesCommittedPayload,
+    push_payload: Option<&ProjectChangesPushedPayload>,
+) -> anyhow::Result<Vec<Event>> {
+    let mut events = vec![Event::new(
+        EventType::ProjectChangesCommitted,
+        project.to_string(),
+        throttle,
+        Event::serialize_payload(commit_payload)?,
+    )];
+    if let Some(push) = push_payload {
+        events.push(Event::new(
+            EventType::ProjectChangesPushed,
+            project.to_string(),
+            throttle,
+            Event::serialize_payload(push)?,
+        ));
+    }
+    Ok(events)
+}
+
 /// Map a trigger event type to the appropriate `chore(project): ...` commit message.
 fn commit_message(event_type: &EventType, project: &str) -> String {
     match event_type {
@@ -282,37 +296,26 @@ fn stub_result(
     throttle: foundry_core::throttle::Throttle,
     cve: &str,
 ) -> TaskBlockResult {
-    TaskBlockResult::success(
-        format!("Committed and pushed fix for {cve} (stub)"),
-        vec![
-            Event::new(
-                EventType::ProjectChangesCommitted,
-                project.to_string(),
-                throttle,
-                Event::serialize_payload(&ProjectChangesCommittedPayload {
-                    project: project.to_string(),
-                    cve: cve.to_string(),
-                    message: format!("chore({project}): automated remediation"),
-                    dry_run: None,
-                    stub: Some(true),
-                })
-                .expect("ProjectChangesCommittedPayload is infallibly serializable"),
-            ),
-            Event::new(
-                EventType::ProjectChangesPushed,
-                project.to_string(),
-                throttle,
-                Event::serialize_payload(&ProjectChangesPushedPayload {
-                    project: project.to_string(),
-                    cve: cve.to_string(),
-                    message: None,
-                    dry_run: None,
-                    stub: Some(true),
-                })
-                .expect("ProjectChangesPushedPayload is infallibly serializable"),
-            ),
-        ],
+    let events = build_commit_push_events(
+        project,
+        throttle,
+        &ProjectChangesCommittedPayload {
+            project: project.to_string(),
+            cve: cve.to_string(),
+            message: format!("chore({project}): automated remediation"),
+            dry_run: None,
+            stub: Some(true),
+        },
+        Some(&ProjectChangesPushedPayload {
+            project: project.to_string(),
+            cve: cve.to_string(),
+            message: None,
+            dry_run: None,
+            stub: Some(true),
+        }),
     )
+    .expect("commit and push event payloads are infallibly serializable");
+    TaskBlockResult::success(format!("Committed and pushed fix for {cve} (stub)"), events)
 }
 
 #[cfg(test)]

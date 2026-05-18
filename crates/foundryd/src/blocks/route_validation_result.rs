@@ -45,33 +45,24 @@ impl TaskBlock for RouteValidationResult {
                 ));
             }
 
-            let event_payload = Event::serialize_payload(&ValidationCompletedPayload {
-                project: project.clone(),
-                success: required_passed,
-                workflow: WorkflowType::Validate.to_string(),
-                results: Some(results),
-                ..Default::default()
-            })?;
-
-            let summary = if required_passed {
-                format!("{project}: validation passed")
-            } else {
-                format!("{project}: validation failed")
-            };
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ValidationCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success: required_passed,
-                summary,
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+            super::emit_event_result(
+                if required_passed {
+                    format!("{project}: validation passed")
+                } else {
+                    format!("{project}: validation failed")
+                },
+                required_passed,
+                EventType::ValidationCompleted,
+                &project,
+                throttle,
+                &ValidationCompletedPayload {
+                    project: project.clone(),
+                    success: required_passed,
+                    workflow: WorkflowType::Validate.to_string(),
+                    results: Some(results),
+                    ..Default::default()
+                },
+            )
         })
     }
 }

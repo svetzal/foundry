@@ -110,19 +110,17 @@ impl TaskBlock for SummarizeResult {
                 "summary generated"
             );
 
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("{project}: {headline}"),
-                vec![Event::new(
-                    EventType::SummarizeCompleted,
-                    project.clone(),
-                    throttle,
-                    Event::serialize_payload(&SummarizeCompletedPayload {
-                        project: project.clone(),
-                        headline,
-                        summary,
-                    })?,
-                )],
-            ))
+                EventType::SummarizeCompleted,
+                &project,
+                throttle,
+                &SummarizeCompletedPayload {
+                    project: project.clone(),
+                    headline,
+                    summary,
+                },
+            )
         })
     }
 }

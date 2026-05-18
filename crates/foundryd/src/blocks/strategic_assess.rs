@@ -175,25 +175,9 @@ fn build_strategic_result(
 
 /// Parse the agent output as a JSON object with an `areas` array.
 fn parse_strategic_assessment(output: &str) -> Vec<serde_json::Value> {
-    // Try to extract JSON from the output (agent may include extra text)
-    let trimmed = output.trim();
-
-    // Try direct parse first
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    if let Some(parsed) = super::parse_agent_json(output) {
         if let Some(areas) = parsed.get("areas").and_then(serde_json::Value::as_array) {
             return areas.clone();
-        }
-    }
-
-    // Try to find JSON block in the output
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            let json_str = &trimmed[start..=end];
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let Some(areas) = parsed.get("areas").and_then(serde_json::Value::as_array) {
-                    return areas.clone();
-                }
-            }
         }
     }
 

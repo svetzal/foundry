@@ -271,8 +271,7 @@ struct DriftAssessmentResult {
 }
 
 fn parse_drift_assessment(output: &str) -> DriftAssessmentResult {
-    let json_str = super::assess_project::extract_json(output);
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+    if let Some(json) = super::parse_agent_json(output) {
         let candidates = json
             .get("candidates")
             .and_then(serde_json::Value::as_array)

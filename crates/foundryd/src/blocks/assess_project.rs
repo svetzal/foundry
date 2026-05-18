@@ -197,9 +197,7 @@ async fn run_naming_agent(
 
 /// Parse the JSON assessment output from the agent.
 fn parse_assessment(output: &str) -> (i64, String, String, String) {
-    // Try to find JSON in the output (agent may include extra text)
-    let json_str = extract_json(output);
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+    if let Some(json) = super::parse_agent_json(output) {
         let severity = json.get("severity").and_then(serde_json::Value::as_i64).unwrap_or(5);
         let principle = json
             .get("principle")
@@ -222,16 +220,6 @@ fn parse_assessment(output: &str) -> (i64, String, String, String) {
         let first_line = output.lines().next().unwrap_or("assessment failed");
         (5, "unknown".to_string(), "conventions".to_string(), first_line.to_string())
     }
-}
-
-/// Extract the first JSON object from a string (handles surrounding text).
-pub(super) fn extract_json(s: &str) -> String {
-    if let Some(start) = s.find('{') {
-        if let Some(end) = s.rfind('}') {
-            return s[start..=end].to_string();
-        }
-    }
-    s.to_string()
 }
 
 #[cfg(test)]

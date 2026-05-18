@@ -42,7 +42,7 @@ agent_block_new!(
 fn triage_rejection_result(
     payload: &TriageCompletedPayload,
     throttle: foundry_core::throttle::Throttle,
-) -> TaskBlockResult {
+) -> anyhow::Result<TaskBlockResult> {
     let project = payload.project.as_str();
 
     if payload.severity < TRIAGE_SEVERITY_THRESHOLD {
@@ -51,52 +51,38 @@ fn triage_rejection_result(
             "no correction warranted (severity {}/10 below threshold {})",
             payload.severity, TRIAGE_SEVERITY_THRESHOLD
         );
-        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
-            project: project.to_string(),
-            success: true,
-            summary: summary.clone(),
-            workflow: WorkflowType::Iterate.to_string(),
-            loop_context: None,
-            changes: None,
-        })
-        .expect("ProjectCompletedPayload is infallibly serializable");
-        TaskBlockResult {
-            events: vec![Event::new(
-                EventType::ProjectIterationCompleted,
-                project.to_string(),
-                throttle,
-                terminal_payload,
-            )],
-            success: true,
-            summary: format!("{project}: {summary}"),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
-        }
+        super::emit_event_result(
+            format!("{project}: {summary}"),
+            true,
+            EventType::ProjectIterationCompleted,
+            project,
+            throttle,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: true,
+                summary: summary.clone(),
+                workflow: WorkflowType::Iterate.to_string(),
+                loop_context: None,
+                changes: None,
+            },
+        )
     } else {
         // At-or-above threshold but rejected (busy-work): treat as failure.
-        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
-            project: project.to_string(),
-            success: false,
-            summary: "triage rejected — no correction warranted".to_string(),
-            workflow: WorkflowType::Iterate.to_string(),
-            loop_context: None,
-            changes: None,
-        })
-        .expect("ProjectCompletedPayload is infallibly serializable");
-        TaskBlockResult {
-            events: vec![Event::new(
-                EventType::ProjectIterationCompleted,
-                project.to_string(),
-                throttle,
-                terminal_payload,
-            )],
-            success: false,
-            summary: format!("{project}: triage rejected, no correction warranted"),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
-        }
+        super::emit_event_result(
+            format!("{project}: triage rejected, no correction warranted"),
+            false,
+            EventType::ProjectIterationCompleted,
+            project,
+            throttle,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: false,
+                summary: "triage rejected — no correction warranted".to_string(),
+                workflow: WorkflowType::Iterate.to_string(),
+                loop_context: None,
+                changes: None,
+            },
+        )
     }
 }
 
@@ -126,7 +112,7 @@ impl TaskBlock for CreatePlan {
 
         if !p.accepted {
             let result = triage_rejection_result(&p, throttle);
-            return Box::pin(async move { Ok(result) });
+            return Box::pin(async move { result });
         }
 
         let entry = require_project!(self, project);
@@ -198,31 +184,24 @@ impl TaskBlock for CreatePlan {
             );
 
             let chain = ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&PlanCompletedPayload {
-                project: project.clone(),
-                plan: plan.clone(),
-                principle: principle.to_string(),
-                category: category.to_string(),
-                assessment: assessment.to_string(),
-                workflow: WorkflowType::Iterate.to_string(),
-                correction_needed,
-                correction_reason,
-                chain,
-            })?;
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::PlanCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
+            super::emit_event_result(
+                format!("{project}: plan created for {principle} violation"),
                 success,
-                summary: format!("{project}: plan created for {principle} violation"),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+                EventType::PlanCompleted,
+                &project,
+                throttle,
+                &PlanCompletedPayload {
+                    project: project.clone(),
+                    plan: plan.clone(),
+                    principle: principle.to_string(),
+                    category: category.to_string(),
+                    assessment: assessment.to_string(),
+                    workflow: WorkflowType::Iterate.to_string(),
+                    correction_needed,
+                    correction_reason,
+                    chain,
+                },
+            )
         })
     }
 }

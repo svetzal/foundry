@@ -121,6 +121,34 @@ fn require_project(
     })
 }
 
+/// Emit a single-event result with a serialized payload, controlling the success flag.
+///
+/// Core helper for blocks whose result emits exactly one event with no `raw_output`
+/// or `exit_code`. Use [`emit_result`] for the always-success variant.
+pub(super) fn emit_event_result(
+    summary: String,
+    success: bool,
+    event_type: EventType,
+    project: &str,
+    throttle: Throttle,
+    payload: &impl serde::Serialize,
+) -> anyhow::Result<TaskBlockResult> {
+    let event_payload = Event::serialize_payload(payload)?;
+    Ok(TaskBlockResult {
+        events: vec![Event::new(
+            event_type,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+        success,
+        summary,
+        raw_output: None,
+        exit_code: None,
+        audit_artifacts: vec![],
+    })
+}
+
 /// Emit a single-event success result with a serialized payload.
 ///
 /// Eliminates the three-line boilerplate of `serialize_payload` → `Event::new` →
@@ -133,16 +161,24 @@ pub(super) fn emit_result(
     throttle: Throttle,
     payload: &impl serde::Serialize,
 ) -> anyhow::Result<TaskBlockResult> {
-    let event_payload = Event::serialize_payload(payload)?;
-    Ok(TaskBlockResult::success(
-        summary,
-        vec![Event::new(
-            event_type,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
-    ))
+    emit_event_result(summary, true, event_type, project, throttle, payload)
+}
+
+/// Extract and parse the first JSON object from agent output.
+///
+/// Returns `None` if no valid JSON object is found. Handles agent responses
+/// that include surrounding prose by locating the first `{` and last `}`.
+pub(super) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(&extract_json(output)).ok()
+}
+
+fn extract_json(s: &str) -> String {
+    if let Some(start) = s.find('{') {
+        if let Some(end) = s.rfind('}') {
+            return s[start..=end].to_string();
+        }
+    }
+    s.to_string()
 }
 
 /// Build a `TaskBlockResult` for an agent-driven remediation, handling the

@@ -78,32 +78,25 @@ impl TaskBlock for CheckCharter {
             let sources_json: Vec<serde_json::Value> =
                 result.sources.iter().map(|s| serde_json::json!(s)).collect();
             let chain = ChainContext::extract_from(&payload);
-            let event_payload = Event::serialize_payload(&CharterCheckCompletedPayload {
-                project: project.clone(),
-                success: result.passed,
-                sources: sources_json,
-                guidance: result.guidance.clone(),
-                workflow,
-                chain,
-            })?;
-
-            Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::CharterCheckCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-                success: result.passed,
-                summary: if result.passed {
+            super::emit_event_result(
+                if result.passed {
                     format!("{project}: charter validated from {}", result.sources.join(", "))
                 } else {
                     format!("{project}: charter check failed — {}", result.guidance)
                 },
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
-            })
+                result.passed,
+                EventType::CharterCheckCompleted,
+                &project,
+                throttle,
+                &CharterCheckCompletedPayload {
+                    project: project.clone(),
+                    success: result.passed,
+                    sources: sources_json,
+                    guidance: result.guidance.clone(),
+                    workflow,
+                    chain,
+                },
+            )
         })
     }
 }
