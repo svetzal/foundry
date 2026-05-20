@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-05-20
+
+### Fixed
+
+- Below-threshold triage rejections are now classified as successful no-ops
+  rather than failures. A project that has stabilized — where the iterate
+  triage finds no correction warranted — no longer shows as `failed` in
+  maintenance run summaries.
+- Terminal events now emit with accurate success status on all trace paths.
+- `span_context` no longer carries an inherited `TRACEPARENT` when the
+  context is absent.
+- `retry_execution` replaces an `expect` with a graceful fallback in
+  `dry_run_events`.
+
+### Changed
+
+- Internal refactors: event serialization and agent JSON parsing consolidated
+  in `blocks`; loose parameters encapsulated into `ProjectSpec`,
+  `ProjectEdits`, and `ExecutionContext`.
+- Upgraded `rand` 0.8 → 0.10.
+
 ## [0.17.0] - 2026-05-15
 
 ### Breaking changes
