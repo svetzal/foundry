@@ -184,9 +184,9 @@ impl Event {
 /// The format is OpenTelemetry-compatible: no prefix, lowercase hex,
 /// fixed length. Used as a workflow / cycle root identifier.
 pub fn mint_trace_id() -> String {
-    use rand::RngCore;
+    use rand::Rng as _;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -194,9 +194,9 @@ pub fn mint_trace_id() -> String {
 ///
 /// The format is OpenTelemetry-compatible.
 pub fn mint_span_id() -> String {
-    use rand::RngCore;
+    use rand::Rng as _;
     let mut bytes = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
