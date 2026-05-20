@@ -9,7 +9,7 @@ use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::TriggerContext;
+use super::{ExecutionContext, TriggerContext};
 
 agent_execution_block! {
     /// Applies the correction plan to the project.
@@ -100,21 +100,17 @@ impl TaskBlock for ExecutePlan {
             let principle = &plan_payload.principle;
             let gates = plan_payload.chain.gates.as_ref();
             let prompt = build_execution_prompt(&project, plan, principle, gates);
-
-            Ok(super::execute_agent_block(
-                &*agent,
-                &*shell,
-                &entry,
-                &project,
+            let ctx = ExecutionContext {
+                project: &project,
                 workflow,
-                prompt,
-                &payload,
+                payload: &payload,
                 throttle,
-                "plan execution",
-                None,
-                plan_payload.correction_needed,
-            )
-            .await)
+                label: "plan execution",
+                retry_count: None,
+                correction_needed: plan_payload.correction_needed,
+            };
+
+            Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
         })
     }
 }

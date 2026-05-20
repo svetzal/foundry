@@ -10,7 +10,7 @@
 //! the CLI crate.
 
 use foundry_cli::registry_commands;
-use foundry_core::registry::Registry;
+use foundry_core::registry::{ProjectEdits, ProjectSpec, Registry, Stack};
 use tempfile::NamedTempFile;
 
 /// Write an empty but valid registry JSON file and return the temp file handle.
@@ -28,6 +28,26 @@ fn init_registry() -> NamedTempFile {
     tmp
 }
 
+fn simple_spec(name: &str, path: &str, stack: Stack) -> ProjectSpec {
+    ProjectSpec {
+        name: name.to_string(),
+        path: path.to_string(),
+        stack,
+        agent: "claude".to_string(),
+        repo: format!("o/{name}"),
+        branch: "main".to_string(),
+        iterate: false,
+        maintain: false,
+        push: false,
+        audit: false,
+        release: false,
+        install_command: None,
+        install_brew: None,
+        notes: None,
+        timeout_secs: None,
+    }
+}
+
 // The addr string is passed to `FoundryClient::connect` only when `offline`
 // is false.  With `offline = true` the value is never used; we still pass
 // something realistic to keep the tests self-documenting.
@@ -41,28 +61,27 @@ const DUMMY_ADDR: &str = "http://127.0.0.1:9";
 async fn add_offline_writes_project_to_file() {
     let tmp = init_registry();
 
-    registry_commands::add(
-        tmp.path(),
-        DUMMY_ADDR,
-        true, // offline
-        "test-proj",
-        "/tmp/test-proj",
-        "rust",
-        "claude",
-        "owner/test-proj",
-        "main",
-        true,  // iterate
-        false, // maintain
-        false, // push
-        false, // audit
-        false, // release
-        None,  // install_command
-        None,  // install_brew
-        None,  // notes
-        None,  // timeout_secs
-    )
-    .await
-    .expect("add offline should succeed");
+    let spec = ProjectSpec {
+        name: "test-proj".to_string(),
+        path: "/tmp/test-proj".to_string(),
+        stack: Stack::Rust,
+        agent: "claude".to_string(),
+        repo: "owner/test-proj".to_string(),
+        branch: "main".to_string(),
+        iterate: true,
+        maintain: false,
+        push: false,
+        audit: false,
+        release: false,
+        install_command: None,
+        install_brew: None,
+        notes: None,
+        timeout_secs: None,
+    };
+
+    registry_commands::add(tmp.path(), DUMMY_ADDR, true, spec)
+        .await
+        .expect("add offline should succeed");
 
     let registry = Registry::load(tmp.path()).expect("registry must be readable");
     assert_eq!(registry.projects.len(), 1);
@@ -86,21 +105,7 @@ async fn add_offline_duplicate_returns_error() {
             tmp.path(),
             DUMMY_ADDR,
             true,
-            "alpha",
-            "/tmp/alpha",
-            "python",
-            "claude",
-            "o/alpha",
-            "main",
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
+            simple_spec("alpha", "/tmp/alpha", Stack::Python),
         )
     };
 
@@ -125,21 +130,7 @@ async fn remove_offline_deletes_project_from_file() {
         tmp.path(),
         DUMMY_ADDR,
         true,
-        "to-remove",
-        "/tmp/to-remove",
-        "python",
-        "claude",
-        "o/to-remove",
-        "main",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
+        simple_spec("to-remove", "/tmp/to-remove", Stack::Python),
     )
     .await
     .expect("add should succeed");
@@ -176,48 +167,18 @@ async fn edit_offline_updates_branch() {
         tmp.path(),
         DUMMY_ADDR,
         true,
-        "editable",
-        "/tmp/editable",
-        "typescript",
-        "claude",
-        "o/editable",
-        "main",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
+        simple_spec("editable", "/tmp/editable", Stack::TypeScript),
     )
     .await
     .expect("add should succeed");
 
-    registry_commands::edit(
-        tmp.path(),
-        DUMMY_ADDR,
-        true,            // offline
-        "editable",      // name
-        None,            // path
-        None,            // stack
-        None,            // agent
-        None,            // repo
-        Some("develop"), // branch ← the change
-        None,            // skip
-        None,            // iterate
-        None,            // maintain
-        None,            // push
-        None,            // audit
-        None,            // release
-        None,            // install_command
-        None,            // install_brew
-        None,            // notes
-        None,            // timeout_secs
-    )
-    .await
-    .expect("edit offline should succeed");
+    let edits = ProjectEdits {
+        branch: Some("develop".to_string()),
+        ..Default::default()
+    };
+    registry_commands::edit(tmp.path(), DUMMY_ADDR, true, "editable", edits)
+        .await
+        .expect("edit offline should succeed");
 
     let registry = Registry::load(tmp.path()).expect("registry must be readable");
     assert_eq!(registry.projects[0].branch, "develop", "branch should be updated");
@@ -228,28 +189,11 @@ async fn edit_offline_updates_branch() {
 async fn edit_offline_nonexistent_returns_error() {
     let tmp = init_registry();
 
-    let result = registry_commands::edit(
-        tmp.path(),
-        DUMMY_ADDR,
-        true,
-        "ghost",
-        None,
-        None,
-        None,
-        None,
-        Some("develop"),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
+    let edits = ProjectEdits {
+        branch: Some("develop".to_string()),
+        ..Default::default()
+    };
+    let result = registry_commands::edit(tmp.path(), DUMMY_ADDR, true, "ghost", edits).await;
 
     assert!(result.is_err(), "editing nonexistent project should fail");
     assert!(

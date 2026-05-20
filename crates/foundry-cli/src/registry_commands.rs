@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use comfy_table::{ContentArrangement, Table};
 use foundry_core::registry::{
-    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, Registry, Stack,
+    ActionFlags, InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry,
     derive_default_skill_install_command,
 };
 
@@ -96,46 +96,27 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-pub async fn add(
-    registry_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    path: &str,
-    stack: &str,
-    agent: &str,
-    repo: &str,
-    branch: &str,
-    iterate: bool,
-    maintain: bool,
-    push: bool,
-    audit: bool,
-    release: bool,
-    install_command: Option<&str>,
-    install_brew: Option<&str>,
-    notes: Option<&str>,
-    timeout_secs: Option<u64>,
-) -> Result<()> {
+pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectSpec) -> Result<()> {
+    let name = spec.name.clone();
     if !offline {
         match FoundryClient::connect(addr.to_string()).await {
             Ok(mut client) => {
                 let req = RegistryAddRequest {
-                    name: name.to_string(),
-                    path: path.to_string(),
-                    stack: stack.to_string(),
-                    agent: agent.to_string(),
-                    repo: repo.to_string(),
-                    branch: branch.to_string(),
-                    iterate,
-                    maintain,
-                    push,
-                    audit,
-                    release,
-                    install_command: install_command.unwrap_or("").to_string(),
-                    install_brew: install_brew.unwrap_or("").to_string(),
-                    notes: notes.unwrap_or("").to_string(),
-                    timeout_secs: timeout_secs.unwrap_or(0),
+                    name: spec.name,
+                    path: spec.path,
+                    stack: spec.stack.to_string(),
+                    agent: spec.agent,
+                    repo: spec.repo,
+                    branch: spec.branch,
+                    iterate: spec.iterate,
+                    maintain: spec.maintain,
+                    push: spec.push,
+                    audit: spec.audit,
+                    release: spec.release,
+                    install_command: spec.install_command.unwrap_or_default(),
+                    install_brew: spec.install_brew.unwrap_or_default(),
+                    notes: spec.notes.unwrap_or_default(),
+                    timeout_secs: spec.timeout_secs.unwrap_or(0),
                 };
                 client
                     .registry_add(req)
@@ -151,82 +132,13 @@ pub async fn add(
     }
 
     // Offline path — mutate registry.json directly.
-    add_offline(
-        registry_path,
-        name,
-        path,
-        stack,
-        agent,
-        repo,
-        branch,
-        iterate,
-        maintain,
-        push,
-        audit,
-        release,
-        install_command,
-        install_brew,
-        notes,
-        timeout_secs,
-    )
+    add_offline(registry_path, spec)
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn add_offline(
-    registry_path: &Path,
-    name: &str,
-    path: &str,
-    stack: &str,
-    agent: &str,
-    repo: &str,
-    branch: &str,
-    iterate: bool,
-    maintain: bool,
-    push: bool,
-    audit: bool,
-    release: bool,
-    install_command: Option<&str>,
-    install_brew: Option<&str>,
-    notes: Option<&str>,
-    timeout_secs: Option<u64>,
-) -> Result<()> {
+fn add_offline(registry_path: &Path, spec: ProjectSpec) -> Result<()> {
+    let name = spec.name.clone();
     let mut registry = load_or_init(registry_path)?;
-
-    if registry.projects.iter().any(|p| p.name == name) {
-        bail!("Project '{name}' already exists in registry");
-    }
-
-    let stack: Stack = serde_json::from_str(&format!("\"{stack}\"")).map_err(|_| {
-        anyhow::anyhow!("Invalid stack: {stack}. Use: rust, python, typescript, elixir")
-    })?;
-
-    let install = match (install_command, install_brew) {
-        (Some(cmd), _) => Some(InstallConfig::Command(cmd.to_string())),
-        (_, Some(formula)) => Some(InstallConfig::Brew(formula.to_string())),
-        _ => None,
-    };
-
-    registry.projects.push(ProjectEntry {
-        name: name.to_string(),
-        path: path.to_string(),
-        stack,
-        agent: agent.to_string(),
-        repo: repo.to_string(),
-        branch: branch.to_string(),
-        skip: None,
-        notes: notes.map(str::to_string),
-        actions: ActionFlags {
-            iterate,
-            maintain,
-            push,
-            audit,
-            release,
-        },
-        install,
-        installs_skill: None,
-        timeout_secs,
-    });
-
+    registry.add_project(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
     registry.save(registry_path)?;
     println!("Added project '{name}' to registry.");
     Ok(())
@@ -267,57 +179,49 @@ pub async fn remove(registry_path: &Path, addr: &str, offline: bool, name: &str)
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub async fn edit(
     registry_path: &Path,
     addr: &str,
     offline: bool,
     name: &str,
-    path: Option<&str>,
-    stack: Option<&str>,
-    agent: Option<&str>,
-    repo: Option<&str>,
-    branch: Option<&str>,
-    skip: Option<&str>,
-    iterate: Option<bool>,
-    maintain: Option<bool>,
-    push: Option<bool>,
-    audit_flag: Option<bool>,
-    release: Option<bool>,
-    install_command: Option<&str>,
-    install_brew: Option<&str>,
-    notes: Option<&str>,
-    timeout_secs: Option<u64>,
+    edits: ProjectEdits,
 ) -> Result<()> {
     if !offline {
         match FoundryClient::connect(addr.to_string()).await {
             Ok(mut client) => {
+                let (skip_str, clear_skip) = match &edits.skip {
+                    None => (String::new(), false),
+                    Some(None) => (String::new(), true),
+                    Some(Some(reason)) => (reason.clone(), false),
+                };
+                let notes_str = edits.notes.as_deref().unwrap_or("").to_string();
+                let clear_notes = edits.notes.as_deref().is_some_and(str::is_empty);
                 let req = RegistryEditRequest {
                     name: name.to_string(),
-                    path: path.unwrap_or("").to_string(),
-                    stack: stack.unwrap_or("").to_string(),
-                    agent: agent.unwrap_or("").to_string(),
-                    repo: repo.unwrap_or("").to_string(),
-                    branch: branch.unwrap_or("").to_string(),
-                    skip: skip.filter(|s| !s.is_empty()).unwrap_or("").to_string(),
-                    clear_skip: skip.is_some_and(str::is_empty),
-                    iterate: iterate.unwrap_or(false),
-                    clear_iterate: iterate.is_some_and(|v| !v),
-                    maintain: maintain.unwrap_or(false),
-                    clear_maintain: maintain.is_some_and(|v| !v),
-                    push: push.unwrap_or(false),
-                    clear_push: push.is_some_and(|v| !v),
-                    audit: audit_flag.unwrap_or(false),
-                    clear_audit: audit_flag.is_some_and(|v| !v),
-                    release: release.unwrap_or(false),
-                    clear_release: release.is_some_and(|v| !v),
-                    install_command: install_command.unwrap_or("").to_string(),
-                    install_brew: install_brew.unwrap_or("").to_string(),
-                    clear_install: false,
-                    notes: notes.filter(|s| !s.is_empty()).unwrap_or("").to_string(),
-                    clear_notes: notes.is_some_and(str::is_empty),
-                    timeout_secs: timeout_secs.unwrap_or(0),
-                    clear_timeout: false,
+                    path: edits.path.unwrap_or_default(),
+                    stack: edits.stack.map(|s| s.to_string()).unwrap_or_default(),
+                    agent: edits.agent.unwrap_or_default(),
+                    repo: edits.repo.unwrap_or_default(),
+                    branch: edits.branch.unwrap_or_default(),
+                    skip: skip_str,
+                    clear_skip,
+                    iterate: edits.iterate.unwrap_or(false),
+                    clear_iterate: edits.iterate.is_some_and(|v| !v),
+                    maintain: edits.maintain.unwrap_or(false),
+                    clear_maintain: edits.maintain.is_some_and(|v| !v),
+                    push: edits.push.unwrap_or(false),
+                    clear_push: edits.push.is_some_and(|v| !v),
+                    audit: edits.audit.unwrap_or(false),
+                    clear_audit: edits.audit.is_some_and(|v| !v),
+                    release: edits.release.unwrap_or(false),
+                    clear_release: edits.release.is_some_and(|v| !v),
+                    install_command: edits.install_command.unwrap_or_default(),
+                    install_brew: edits.install_brew.unwrap_or_default(),
+                    clear_install: edits.clear_install,
+                    notes: notes_str,
+                    clear_notes,
+                    timeout_secs: edits.timeout_secs.unwrap_or(0),
+                    clear_timeout: edits.clear_timeout,
                 };
                 client
                     .registry_edit(req)
@@ -333,109 +237,12 @@ pub async fn edit(
     }
 
     // Offline path — mutate registry.json directly.
-    edit_offline(
-        registry_path,
-        name,
-        path,
-        stack,
-        agent,
-        repo,
-        branch,
-        skip,
-        iterate,
-        maintain,
-        push,
-        audit_flag,
-        release,
-        install_command,
-        install_brew,
-        notes,
-        timeout_secs,
-    )
+    edit_offline(registry_path, name, edits)
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn edit_offline(
-    registry_path: &Path,
-    name: &str,
-    path: Option<&str>,
-    stack: Option<&str>,
-    agent: Option<&str>,
-    repo: Option<&str>,
-    branch: Option<&str>,
-    skip: Option<&str>,
-    iterate: Option<bool>,
-    maintain: Option<bool>,
-    push: Option<bool>,
-    audit_flag: Option<bool>,
-    release: Option<bool>,
-    install_command: Option<&str>,
-    install_brew: Option<&str>,
-    notes: Option<&str>,
-    timeout_secs: Option<u64>,
-) -> Result<()> {
+fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result<()> {
     let mut registry = Registry::load(registry_path)?;
-
-    let Some(project) = registry.projects.iter_mut().find(|p| p.name == name) else {
-        bail!("Project '{name}' not found in registry");
-    };
-
-    if let Some(v) = path {
-        project.path = v.to_string();
-    }
-    if let Some(v) = stack {
-        project.stack = serde_json::from_str(&format!("\"{v}\"")).map_err(|_| {
-            anyhow::anyhow!("Invalid stack: {v}. Use: rust, python, typescript, elixir")
-        })?;
-    }
-    if let Some(v) = agent {
-        project.agent = v.to_string();
-    }
-    if let Some(v) = repo {
-        project.repo = v.to_string();
-    }
-    if let Some(v) = branch {
-        project.branch = v.to_string();
-    }
-    if let Some(v) = skip {
-        if v.is_empty() {
-            project.skip = None;
-        } else {
-            project.skip = Some(v.to_string());
-        }
-    }
-    if let Some(v) = iterate {
-        project.actions.iterate = v;
-    }
-    if let Some(v) = maintain {
-        project.actions.maintain = v;
-    }
-    if let Some(v) = push {
-        project.actions.push = v;
-    }
-    if let Some(v) = audit_flag {
-        project.actions.audit = v;
-    }
-    if let Some(v) = release {
-        project.actions.release = v;
-    }
-    if let Some(cmd) = install_command {
-        project.install = Some(InstallConfig::Command(cmd.to_string()));
-    }
-    if let Some(formula) = install_brew {
-        project.install = Some(InstallConfig::Brew(formula.to_string()));
-    }
-    if let Some(v) = notes {
-        if v.is_empty() {
-            project.notes = None;
-        } else {
-            project.notes = Some(v.to_string());
-        }
-    }
-    if let Some(v) = timeout_secs {
-        project.timeout_secs = Some(v);
-    }
-
+    registry.edit_project(name, edits).map_err(|e| anyhow::anyhow!("{e}"))?;
     registry.save(registry_path)?;
     println!("Updated project '{name}'.");
     Ok(())

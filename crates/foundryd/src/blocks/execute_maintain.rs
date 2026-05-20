@@ -10,7 +10,7 @@ use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::TriggerContext;
+use super::{ExecutionContext, TriggerContext};
 
 agent_execution_block! {
     /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
@@ -78,23 +78,19 @@ impl TaskBlock for ExecuteMaintain {
 
         Box::pin(async move {
             let prompt = build_maintain_prompt(&project, Some(&gates).filter(|v| !v.is_null()));
-
-            Ok(super::execute_agent_block(
-                &*agent,
-                &*shell,
-                &entry,
-                &project,
-                WorkflowType::Maintain,
-                prompt,
-                &payload,
+            let ctx = ExecutionContext {
+                project: &project,
+                workflow: WorkflowType::Maintain,
+                payload: &payload,
                 throttle,
-                "maintenance",
-                None,
+                label: "maintenance",
+                retry_count: None,
                 // Maintain is never the iterate workflow, so correction_needed is
                 // irrelevant — the clean-tree override only fires for WorkflowType::Iterate.
-                true,
-            )
-            .await)
+                correction_needed: true,
+            };
+
+            Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
         })
     }
 }

@@ -346,32 +346,45 @@ fn only_auxiliary_changes(files: &[String]) -> bool {
     files.is_empty() || files.iter().all(|f| is_auxiliary_path(f))
 }
 
+/// Bundles the execution-context parameters shared across
+/// [`build_agent_execution_result`], [`build_execution_outcome`], and
+/// [`execute_agent_block`].
+pub(super) struct ExecutionContext<'a> {
+    pub project: &'a str,
+    pub workflow: WorkflowType,
+    pub payload: &'a serde_json::Value,
+    pub throttle: Throttle,
+    pub label: &'a str,
+    pub retry_count: Option<u64>,
+    pub correction_needed: bool,
+}
+
 /// Build a `TaskBlockResult` for an agent-driven execution step, handling the
 /// response match, output trimming to 200 lines, tracing, `LoopContext` extraction,
 /// `ExecutionCompletedPayload` serialization, and `TaskBlockResult` construction.
 ///
-/// `success_label` is the base text for the summary, e.g. "plan execution",
-/// "maintenance", or "retry 2".  `retry_count` is forwarded into the payload
+/// `ctx.label` is the base text for the summary, e.g. "plan execution",
+/// "maintenance", or "retry 2".  `ctx.retry_count` is forwarded into the payload
 /// when present (retry flow only).
 ///
 /// For the `Iterate` workflow only: if the agent exits 0 but produces no
 /// meaningful working-tree changes, the result is overridden to `success: false`
-/// with a "silent no-op" summary — unless `correction_needed` is `false`, in
+/// with a "silent no-op" summary — unless `ctx.correction_needed` is `false`, in
 /// which case a clean tree is a legitimate no-op (plan agent said no work needed)
 /// and the result remains `success: true`.  The `Maintain` workflow is unaffected.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_agent_execution_result(
-    project: &str,
-    workflow: WorkflowType,
+    ctx: &ExecutionContext<'_>,
     outcome: AgentOutcome,
-    trigger_payload: &serde_json::Value,
-    throttle: Throttle,
-    success_label: &str,
-    retry_count: Option<u64>,
     changes_detected: bool,
     files_changed: Vec<String>,
-    correction_needed: bool,
 ) -> TaskBlockResult {
+    let project = ctx.project;
+    let workflow = ctx.workflow;
+    let trigger_payload = ctx.payload;
+    let throttle = ctx.throttle;
+    let success_label = ctx.label;
+    let retry_count = ctx.retry_count;
+    let correction_needed = ctx.correction_needed;
     let (raw_output, mut success, mut summary, execution_output) = match outcome {
         AgentOutcome::Success { stdout } => {
             let out = stdout.trim().to_string();
@@ -459,93 +472,43 @@ pub(super) fn build_agent_execution_result(
 ///
 /// `pre_execution_sha` is the HEAD SHA captured immediately before agent
 /// invocation (via [`capture_pre_execution_sha`]); pass `None` only when no
-/// snapshot was taken. Pass `retry_count: Some(n)` for the retry flow; `None`
-/// for the initial execution.
-///
-/// `correction_needed` is forwarded from `PlanCompletedPayload` and controls
-/// whether a clean working tree is treated as a flake (`true`) or a legitimate
-/// no-op (`false`). Pass `true` for callers where the plan always implies work
-/// is required (retry, maintain).
-#[allow(clippy::too_many_arguments)]
+/// snapshot was taken.
 pub(super) async fn build_execution_outcome(
     shell: &dyn ShellGateway,
     project_path: &std::path::Path,
-    project: &str,
-    workflow: foundry_core::workflow::WorkflowType,
+    ctx: &ExecutionContext<'_>,
     outcome: AgentOutcome,
-    payload: &serde_json::Value,
-    throttle: foundry_core::throttle::Throttle,
-    label: &str,
-    retry_count: Option<u64>,
     pre_execution_sha: Option<String>,
-    correction_needed: bool,
 ) -> foundry_core::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
         detect_post_execution_changes(shell, project_path, pre_execution_sha.as_deref()).await;
-    build_agent_execution_result(
-        project,
-        workflow,
-        outcome,
-        payload,
-        throttle,
-        label,
-        retry_count,
-        changes_detected,
-        files_changed,
-        correction_needed,
-    )
+    build_agent_execution_result(ctx, outcome, changes_detected, files_changed)
 }
 
 /// Execute the common agent-driven body shared by `ExecutePlan`, `ExecuteMaintain`,
 /// and `RetryExecution`: resolve the project path and agent file, capture the
 /// pre-execution HEAD SHA, invoke the coding agent, and build the result.
-///
-/// `label` is forwarded to both `invoke_coding_agent` and `build_execution_outcome`
-/// for tracing and summary text (e.g. `"plan execution"`, `"maintenance"`,
-/// `"retry 2"`).  Pass `retry_count: Some(n)` for the retry flow; `None`
-/// otherwise.  `correction_needed` controls whether a clean working tree is
-/// treated as a silent flake (`true`) or a legitimate no-op (`false`).
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_agent_block(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
     entry: &ProjectEntry,
-    project: &str,
-    workflow: WorkflowType,
+    ctx: &ExecutionContext<'_>,
     prompt: String,
-    payload: &serde_json::Value,
-    throttle: Throttle,
-    label: &str,
-    retry_count: Option<u64>,
-    correction_needed: bool,
 ) -> TaskBlockResult {
     let project_path = PathBuf::from(&entry.path);
     let agent_file = execute_maintain::resolve_agent_file(&entry.agent);
     let pre_sha = capture_pre_execution_sha(shell, &project_path).await;
     let outcome = invoke_coding_agent(
         agent,
-        project,
+        ctx.project,
         project_path.clone(),
         prompt,
         agent_file,
         entry.timeout(),
-        label,
+        ctx.label,
     )
     .await;
-    build_execution_outcome(
-        shell,
-        &project_path,
-        project,
-        workflow,
-        outcome,
-        payload,
-        throttle,
-        label,
-        retry_count,
-        pre_sha,
-        correction_needed,
-    )
-    .await
+    build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await
 }
 
 #[cfg(test)]
@@ -560,8 +523,8 @@ mod mod_tests {
     use crate::shell::CommandResult;
 
     use super::{
-        build_agent_execution_result, build_execution_outcome, capture_pre_execution_sha,
-        detect_post_execution_changes, is_auxiliary_path,
+        ExecutionContext, build_agent_execution_result, build_execution_outcome,
+        capture_pre_execution_sha, detect_post_execution_changes, is_auxiliary_path,
     };
 
     fn trigger_payload() -> serde_json::Value {
@@ -587,19 +550,23 @@ mod mod_tests {
 
     #[test]
     fn iterate_clean_tree_overrides_to_failure() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
         let result = build_agent_execution_result(
-            "proj",
-            WorkflowType::Iterate,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
-            &trigger_payload(),
-            Throttle::Full,
-            "plan execution",
-            None,
             false, // changes_detected = false
             vec![],
-            true, // correction_needed = true → treat clean tree as flake
         );
 
         assert!(!result.success, "expected failure but got success");
@@ -622,19 +589,23 @@ mod mod_tests {
 
     #[test]
     fn iterate_clean_tree_no_correction_needed_remains_success() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: false,
+        };
         let result = build_agent_execution_result(
-            "proj",
-            WorkflowType::Iterate,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "Reviewed; no changes needed.".to_string(),
             },
-            &trigger_payload(),
-            Throttle::Full,
-            "plan execution",
-            None,
             false, // changes_detected = false
             vec![],
-            false, // correction_needed = false → legitimate no-op
         );
 
         assert!(result.success, "expected success for legitimate no-op");
@@ -650,19 +621,23 @@ mod mod_tests {
 
     #[test]
     fn iterate_dirty_tree_remains_success() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
         let result = build_agent_execution_result(
-            "proj",
-            WorkflowType::Iterate,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
-            &trigger_payload(),
-            Throttle::Full,
-            "plan execution",
-            None,
             true,
             vec!["src/lib.rs".to_string()],
-            true,
         );
 
         assert!(result.success, "expected success but got failure");
@@ -674,19 +649,22 @@ mod mod_tests {
     #[test]
     fn maintain_clean_tree_remains_success() {
         let payload = serde_json::json!({ "project": "p", "workflow": "maintain" });
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Maintain,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "maintenance",
+            retry_count: None,
+            correction_needed: true,
+        };
         let result = build_agent_execution_result(
-            "proj",
-            WorkflowType::Maintain,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
-            &payload,
-            Throttle::Full,
-            "maintenance",
-            None,
             false, // clean tree
             vec![],
-            true, // correction_needed irrelevant for maintain
         );
 
         assert!(result.success, "maintain workflow must NOT override to failure on clean tree");
@@ -697,19 +675,23 @@ mod mod_tests {
 
     #[test]
     fn iterate_aux_only_changes_treated_as_clean() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
         let result = build_agent_execution_result(
-            "proj",
-            WorkflowType::Iterate,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
-            &trigger_payload(),
-            Throttle::Full,
-            "plan execution",
-            None,
             true, // changes_detected=true but only aux files
             vec![".claude/worktrees/abc/foo".to_string()],
-            true, // correction_needed = true → aux-only still overrides to failure
         );
 
         assert!(!result.success, "all-auxiliary file list must trigger failure override");
@@ -849,20 +831,24 @@ mod mod_tests {
             exit_code: 0,
             success: true,
         });
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
         let result = build_execution_outcome(
             &*shell,
             Path::new("/tmp"),
-            "proj",
-            WorkflowType::Iterate,
+            &ctx,
             AgentOutcome::Success {
                 stdout: "done; commit pushed to origin/main".to_string(),
             },
-            &trigger_payload(),
-            Throttle::Full,
-            "plan execution",
-            None,
             Some("abc123".to_string()),
-            true, // correction_needed = true
         )
         .await;
 

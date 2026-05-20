@@ -9,7 +9,7 @@ use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::TriggerContext;
+use super::{ExecutionContext, TriggerContext};
 
 agent_execution_block! {
     /// Retries the execution phase with context about which gates failed.
@@ -66,23 +66,20 @@ impl TaskBlock for RetryExecution {
                 &failure_context,
                 &prior_output,
             );
-
-            Ok(super::execute_agent_block(
-                &*agent,
-                &*shell,
-                &entry,
-                &project,
+            let label = format!("retry {retry_count}");
+            let ctx = ExecutionContext {
+                project: &project,
                 workflow,
-                prompt,
-                &payload,
+                payload: &payload,
                 throttle,
-                &format!("retry {retry_count}"),
-                Some(retry_count),
+                label: &label,
+                retry_count: Some(retry_count),
                 // Retry only fires when the initial execution was detected as a silent
                 // no-op (or a genuine failure), so correction is always required here.
-                true,
-            )
-            .await)
+                correction_needed: true,
+            };
+
+            Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
         })
     }
 }

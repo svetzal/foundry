@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use foundry_core::registry::{ProjectEdits, ProjectSpec, parse_stack};
 
 mod commands;
 mod gates_commands;
@@ -356,27 +357,25 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            registry_commands::add(
-                path,
-                addr,
-                offline,
-                &name,
-                &project_path,
-                &stack,
-                &agent,
-                &repo,
-                &branch,
+            let stack = parse_stack(&stack).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let spec = ProjectSpec {
+                name,
+                path: project_path,
+                stack,
+                agent,
+                repo,
+                branch,
                 iterate,
                 maintain,
                 push,
                 audit,
                 release,
-                install_command.as_deref(),
-                install_brew.as_deref(),
-                notes.as_deref(),
+                install_command,
+                install_brew,
+                notes,
                 timeout_secs,
-            )
-            .await
+            };
+            registry_commands::add(path, addr, offline, spec).await
         }
         RegistryCommands::Remove { name } => {
             registry_commands::remove(path, addr, offline, &name).await
@@ -399,28 +398,31 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            registry_commands::edit(
-                path,
-                addr,
-                offline,
-                &name,
-                project_path.as_deref(),
-                stack.as_deref(),
-                agent.as_deref(),
-                repo.as_deref(),
-                branch.as_deref(),
-                skip.as_deref(),
+            let stack = stack
+                .as_deref()
+                .map(parse_stack)
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let skip = skip.map(|s| if s.is_empty() { None } else { Some(s) });
+            let edits = ProjectEdits {
+                path: project_path,
+                stack,
+                agent,
+                repo,
+                branch,
+                skip,
                 iterate,
                 maintain,
                 push,
                 audit,
                 release,
-                install_command.as_deref(),
-                install_brew.as_deref(),
-                notes.as_deref(),
+                install_command,
+                install_brew,
+                notes,
                 timeout_secs,
-            )
-            .await
+                ..Default::default()
+            };
+            registry_commands::edit(path, addr, offline, &name, edits).await
         }
     }
 }
