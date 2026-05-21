@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Events now carry an optional `causation_id` — the `id` of the event that
+  triggered the block which emitted it. This records the domain causality
+  edge directly in the event envelope, independent of the observability
+  span structure (`trace_id`/`span_id`/`parent_span_id`). The engine stamps
+  it unconditionally on every emitted event ("set if unset"); root events
+  carry no `causation_id`. Legacy events without the field continue to
+  parse. Groundwork for native fan-out/fan-in coordination.
+
 ## [0.17.1] - 2026-05-20
 
 ### Fixed

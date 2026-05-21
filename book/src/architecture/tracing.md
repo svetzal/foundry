@@ -61,7 +61,7 @@ spans beneath it — no cycle or project run wraps it.
 
 ## Identifiers
 
-Every event carries three optional identifiers that locate it in the
+Every event carries four optional identifiers that locate it in the
 trace tree:
 
 - **`trace_id`** — 32-character lowercase hex string (OTel format).
@@ -73,6 +73,9 @@ trace tree:
 - **`parent_span_id`** — 16-character lowercase hex string, or `None`
   for the root span of a trace. Points at the span that contains this
   one.
+- **`causation_id`** — the `id` of the event that triggered the block
+  which emitted this one, or `None` for a root event. Points at the
+  direct causal parent in the event graph.
 
 A canonical event therefore carries something like:
 
@@ -80,7 +83,19 @@ A canonical event therefore carries something like:
 trace_id        4bf92f3577b34da6a3ce929d0e0e4736
 span_id         00f067aa0ba902b7
 parent_span_id  b9c7c989f97918e1
+causation_id    evt_a1b2c3d4e5f6
 ```
+
+### Spans Versus Causation
+
+`trace_id`, `span_id`, and `parent_span_id` describe **observability**
+structure — how work nests for the purpose of rendering trace trees.
+`causation_id` describes **domain causality** — precisely which event
+caused which. The two often parallel each other, but they are distinct:
+a span groups many peer events under one workflow, whereas
+`causation_id` records the single edge from a trigger to each event a
+block emits in response. Coordination logic (fan-out/fan-in) relies on
+causation, not spans.
 
 ### Legacy Trace IDs
 
@@ -135,6 +150,17 @@ flowchart LR
 This is the only place fresh span IDs appear during execution. Trace
 IDs are minted only at the very top — when a brand new top-level event
 enters the system.
+
+### Causation stamping
+
+Alongside the two span rules, the engine stamps `causation_id` on every
+emitted event, setting it to the `id` of the triggering event. This is
+unconditional — it does not depend on whether the emitted event is a
+span opener — because causation tracks the domain edge from trigger to
+emitted event regardless of how spans nest. Like the span fields,
+stamping is "set if unset": a block that emits an event with an explicit
+`causation_id` keeps it. Root events entering the engine directly carry
+no `causation_id`.
 
 ## Span-Opener Registry
 

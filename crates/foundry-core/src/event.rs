@@ -37,6 +37,16 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
 
+    /// The `id` of the event that triggered the block which emitted this
+    /// event — the direct causal parent in the event graph.
+    ///
+    /// This is distinct from the tracing fields: `trace_id`/`span_id`
+    /// describe *observability* structure, while `causation_id` records the
+    /// *domain* causality edge (which event caused which). `None` for root
+    /// events — those emitted directly into the engine rather than by a block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+
     /// Event-type-specific payload.
     pub payload: serde_json::Value,
 }
@@ -63,6 +73,7 @@ impl Event {
             trace_id: None,
             span_id: None,
             parent_span_id: None,
+            causation_id: None,
             payload,
         }
     }
@@ -84,6 +95,15 @@ impl Event {
     ) -> Self {
         self.span_id = span_id;
         self.parent_span_id = parent_span_id;
+        self
+    }
+
+    /// Attach the causal parent event ID to this event (builder pattern).
+    ///
+    /// `causation_id = None` indicates a root event with no causal parent.
+    #[must_use]
+    pub fn with_causation_id(mut self, causation_id: Option<String>) -> Self {
+        self.causation_id = causation_id;
         self
     }
 
@@ -698,6 +718,74 @@ mod tests {
             .with_trace_id(Some(super::mint_trace_id()))
             .with_span_ids(Some(super::mint_span_id()), Some(super::mint_span_id()));
         assert_eq!(base.id, with_spans.id, "span metadata must not change Event::id");
+    }
+
+    #[test]
+    fn causation_id_defaults_to_none() {
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(event.causation_id.is_none(), "new events have no causal parent");
+    }
+
+    #[test]
+    fn causation_id_omitted_from_json_when_none() {
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(
+            json.get("causation_id").is_none(),
+            "causation_id must be absent from JSON when None"
+        );
+    }
+
+    #[test]
+    fn causation_id_round_trips_when_present() {
+        let event = Event::new(
+            EventType::GreetingComposed,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_causation_id(Some("evt_abc123".to_string()));
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.causation_id.as_deref(), Some("evt_abc123"));
+    }
+
+    #[test]
+    fn causation_id_deserialized_as_none_when_absent() {
+        // Legacy events written before causation tracking must still parse.
+        let json = r#"{
+            "id": "evt_test",
+            "event_type": "greeting_requested",
+            "project": "test",
+            "occurred_at": "2026-01-01T00:00:00Z",
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "throttle": "full",
+            "payload": {}
+        }"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert!(event.causation_id.is_none());
+    }
+
+    #[test]
+    fn event_id_does_not_depend_on_causation_id() {
+        let base = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({"x": 1}),
+        );
+        let with_causation = base.clone().with_causation_id(Some("evt_parent".to_string()));
+        assert_eq!(base.id, with_causation.id, "causation_id must not change Event::id");
     }
 
     #[test]

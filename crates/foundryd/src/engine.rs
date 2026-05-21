@@ -109,7 +109,7 @@ impl Engine {
         let mut emitted_ids = Vec::new();
         let mut emitted_payloads = Vec::new();
         for mut emitted in events {
-            Self::stamp_span_context(&mut emitted, trigger, block_span_id);
+            Self::stamp_context(&mut emitted, trigger, block_span_id);
             if let Some(writer) = &self.event_writer {
                 if let Err(e) = writer.write(&emitted) {
                     tracing::warn!(error = %e, event_id = %emitted.id, "failed to write event to JSONL");
@@ -130,12 +130,18 @@ impl Engine {
         (emitted_ids, emitted_payloads)
     }
 
-    /// Apply `OTel`-shaped span stamping to an emitted event.
+    /// Apply causal and `OTel`-shaped tracing context to an emitted event.
     ///
     /// All stamping is "set if unset", so a block may emit an event with
-    /// explicit span context and that context is preserved.
+    /// explicit context and that context is preserved.
     ///
-    /// # Rules
+    /// # Causation
+    ///
+    /// The emitted event's `causation_id` is set to the triggering event's
+    /// `id` — recording the direct causal edge in the event graph,
+    /// independent of the observability span structure below.
+    ///
+    /// # Span rules
     ///
     /// - **Default** (non-opener events): the emitted event is a peer of the
     ///   trigger — it inherits the trigger's `trace_id`, `span_id` (the active
@@ -144,8 +150,12 @@ impl Engine {
     ///   new workflow span — it inherits the trigger's `trace_id`, receives a
     ///   freshly minted `span_id`, and is parented to the emitting block's
     ///   `block_span_id`.
-    fn stamp_span_context(emitted: &mut Event, trigger: &Event, block_span_id: &str) {
+    fn stamp_context(emitted: &mut Event, trigger: &Event, block_span_id: &str) {
         use foundry_core::event::mint_span_id;
+
+        if emitted.causation_id.is_none() {
+            emitted.causation_id = Some(trigger.id.clone());
+        }
 
         if emitted.trace_id.is_none() {
             emitted.trace_id.clone_from(&trigger.trace_id);
@@ -1273,6 +1283,79 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn causation_id_stamps_direct_causal_parent_through_chain() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        let find = |t: EventType| result.events.iter().find(|e| e.event_type == t).unwrap();
+        let requested = find(EventType::GreetingRequested);
+        let composed = find(EventType::GreetingComposed);
+        let delivered = find(EventType::GreetingDelivered);
+
+        // The root event has no causal parent.
+        assert!(requested.causation_id.is_none(), "root event has no causation_id");
+        // Each emitted event points at the event that triggered its emitting block.
+        assert_eq!(
+            composed.causation_id.as_ref(),
+            Some(&requested.id),
+            "composed was caused by the requested event",
+        );
+        assert_eq!(
+            delivered.causation_id.as_ref(),
+            Some(&composed.id),
+            "delivered was caused by the composed event",
+        );
+    }
+
+    #[tokio::test]
+    async fn causation_id_preserves_block_provided_value() {
+        // Contract: stamping is "set if unset". A block that emits an event
+        // with an explicit causation_id keeps it.
+        let explicit = "evt_explicit_parent".to_string();
+        let block = ExplicitlyStampedBlock {
+            name: "B",
+            sinks: vec![EventType::VulnerabilityDetected],
+            emit_type: EventType::ProjectChangesPushed,
+            trace_id: foundry_core::event::mint_trace_id(),
+            span_id: foundry_core::event::mint_span_id(),
+            parent_span_id: foundry_core::event::mint_span_id(),
+            causation_id: Some(explicit.clone()),
+        };
+
+        let trigger = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let emitted = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ProjectChangesPushed)
+            .unwrap();
+        assert_eq!(
+            emitted.causation_id.as_deref(),
+            Some(explicit.as_str()),
+            "block-provided causation_id must NOT be overwritten",
+        );
+    }
+
     /// Minimal observer block that sinks on `VulnerabilityDetected` and emits
     /// no events. Used for span-id propagation tests where we only care about
     /// the `BlockExecution` record, not downstream chaining.
@@ -1490,6 +1573,7 @@ mod tests {
         trace_id: String,
         span_id: String,
         parent_span_id: String,
+        causation_id: Option<String>,
     }
 
     impl ExplicitlyStampedBlock {
@@ -1508,6 +1592,7 @@ mod tests {
                 trace_id,
                 span_id,
                 parent_span_id,
+                causation_id: None,
             }
         }
     }
@@ -1536,10 +1621,12 @@ mod tests {
             let trace_id = self.trace_id.clone();
             let span_id = self.span_id.clone();
             let parent_span_id = self.parent_span_id.clone();
+            let causation_id = self.causation_id.clone();
             Box::pin(async move {
                 let emitted = Event::new(emit_type, project, throttle, serde_json::json!({}))
                     .with_trace_id(Some(trace_id))
-                    .with_span_ids(Some(span_id), Some(parent_span_id));
+                    .with_span_ids(Some(span_id), Some(parent_span_id))
+                    .with_causation_id(causation_id);
                 Ok(TaskBlockResult {
                     events: vec![emitted],
                     success: true,
