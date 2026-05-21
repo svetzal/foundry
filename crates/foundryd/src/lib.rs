@@ -37,6 +37,7 @@ mod event_writer;
 mod gate_file;
 mod gate_runner;
 mod gateway;
+mod gather_store;
 mod orchestrator;
 mod scanner;
 mod shell;

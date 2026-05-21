@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
-use foundry_core::event::{Event, EventType};
+use foundry_core::event::{Event, EventType, mint_gather_id};
+use foundry_core::scatter::Scatter;
 use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 pub use foundry_core::trace::{BlockExecution, ProcessResult};
 
 use crate::event_writer::EventWriter;
+use crate::gather_store::{GatherGroup, GatherStore};
 
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
@@ -15,6 +17,22 @@ pub struct Engine {
     event_writer: Option<Arc<EventWriter>>,
     /// Optional broadcast channel for real-time event streaming to Watch clients.
     event_tx: Option<broadcast::Sender<Event>>,
+}
+
+/// Mutable state threaded through a single [`Engine::process`] traversal.
+///
+/// Bundling these together keeps the per-traversal signatures small and
+/// names what they are: the running record of every event seen, the queue of
+/// events still to dispatch, and the open gather groups for in-flight
+/// scatters.
+struct ProcessState {
+    /// Every event seen this traversal, in production order — the basis of
+    /// the returned [`ProcessResult`].
+    all_events: Vec<Event>,
+    /// Events awaiting dispatch.
+    queue: Vec<Event>,
+    /// Open scatter/gather groups for the duration of this traversal.
+    gather_store: GatherStore,
 }
 
 /// Execute a block with retry logic, sleeping `policy.backoff` between attempts.
@@ -93,41 +111,110 @@ impl Engine {
         self.blocks.push(block);
     }
 
+    /// Persist an event to JSONL and broadcast it to Watch subscribers.
+    ///
+    /// Both are best-effort: write failures are logged, and a broadcast with
+    /// no receivers is normal. Neither ever interrupts event processing.
+    fn persist_one(&self, event: &Event) {
+        if let Some(writer) = &self.event_writer {
+            if let Err(e) = writer.write(event) {
+                tracing::warn!(error = %e, event_id = %event.id, "failed to write event to JSONL");
+            }
+        }
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event.clone());
+        }
+    }
+
+    /// Offer a delivered event to the gather store. If it satisfies a gather
+    /// group, persist, broadcast, and enqueue the synthesized reduce event —
+    /// then recurse, since a reduce event may itself satisfy an outer
+    /// (nested) group.
+    fn deliver_reduce_if_satisfied(&self, event: &Event, state: &mut ProcessState) {
+        let Some(reduce) = state.gather_store.record(event) else {
+            return;
+        };
+        tracing::info!(
+            gather_id = reduce.gather_id.as_deref().unwrap_or("-"),
+            reduce_event = %reduce.event_type,
+            "gather satisfied — synthesizing reduce event"
+        );
+        self.persist_one(&reduce);
+        state.all_events.push(reduce.clone());
+        state.queue.push(reduce.clone());
+        self.deliver_reduce_if_satisfied(&reduce, state);
+    }
+
     /// Propagate trace IDs, stamp `OTel`-shaped span context, persist to JSONL,
     /// broadcast to Watch subscribers, and optionally deliver to the processing
-    /// queue. Returns collected event IDs and payloads for the
-    /// [`BlockExecution`] record.
+    /// queue. Delivered events are offered to the gather store, which may
+    /// synthesize reduce events. Returns collected event IDs and payloads for
+    /// the [`BlockExecution`] record.
     fn persist_and_broadcast_events(
         &self,
         events: Vec<Event>,
         trigger: &Event,
         block_span_id: &str,
-        all_events: &mut Vec<Event>,
-        queue: &mut Vec<Event>,
+        state: &mut ProcessState,
         deliver: bool,
     ) -> (Vec<String>, Vec<serde_json::Value>) {
         let mut emitted_ids = Vec::new();
         let mut emitted_payloads = Vec::new();
         for mut emitted in events {
             Self::stamp_context(&mut emitted, trigger, block_span_id);
-            if let Some(writer) = &self.event_writer {
-                if let Err(e) = writer.write(&emitted) {
-                    tracing::warn!(error = %e, event_id = %emitted.id, "failed to write event to JSONL");
-                }
-            }
-            if let Some(tx) = &self.event_tx {
-                let _ = tx.send(emitted.clone());
-            }
+            self.persist_one(&emitted);
             emitted_ids.push(emitted.id.clone());
             emitted_payloads.push(emitted.payload.clone());
-            all_events.push(emitted.clone());
+            state.all_events.push(emitted.clone());
             if deliver {
-                queue.push(emitted);
+                state.queue.push(emitted.clone());
+                self.deliver_reduce_if_satisfied(&emitted, state);
             } else {
                 tracing::info!(event_type = %emitted.event_type, "event logged but delivery throttled");
             }
         }
         (emitted_ids, emitted_payloads)
+    }
+
+    /// Open a gather group from a block's [`Scatter`] declaration: mint a
+    /// fresh `gather_id`, stamp every child with it, register the group, and
+    /// dispatch the children. Returns the child event IDs for the
+    /// [`BlockExecution`] record. An empty scatter satisfies its gather at
+    /// once and its reduce event is delivered immediately.
+    fn dispatch_scatter(
+        &self,
+        scatter: Scatter,
+        trigger: &Event,
+        block_span_id: &str,
+        state: &mut ProcessState,
+        deliver: bool,
+    ) -> Vec<String> {
+        let Scatter {
+            mut children,
+            gather,
+        } = scatter;
+        let gather_id = mint_gather_id();
+        // A scatter opens a NEW group: override any inherited gather_id so the
+        // children belong to this group rather than an enclosing one.
+        for child in &mut children {
+            child.gather_id = Some(gather_id.clone());
+        }
+        let group = GatherGroup::new(gather_id.clone(), children.len(), gather, trigger);
+        let immediate = state.gather_store.open(group);
+        let child_count = children.len();
+        let (child_ids, _payloads) =
+            self.persist_and_broadcast_events(children, trigger, block_span_id, state, deliver);
+        tracing::info!(gather_id = %gather_id, children = child_count, "scatter dispatched");
+        // An empty scatter is satisfied on registration — deliver its reduce.
+        if let Some(reduce) = immediate {
+            if deliver {
+                self.persist_one(&reduce);
+                state.all_events.push(reduce.clone());
+                state.queue.push(reduce.clone());
+                self.deliver_reduce_if_satisfied(&reduce, state);
+            }
+        }
+        child_ids
     }
 
     /// Apply causal and `OTel`-shaped tracing context to an emitted event.
@@ -192,15 +279,14 @@ impl Engine {
     }
 
     /// Execute one block against a triggering event, persist any emitted events,
-    /// and return the [`BlockExecution`] record.  Mutates `all_events` and
-    /// `queue` in place so downstream events continue to be processed.
+    /// and return the [`BlockExecution`] record.  Mutates `state` in place so
+    /// downstream events continue to be processed.
     #[allow(clippy::too_many_lines)]
     async fn run_block(
         &self,
         block: &dyn TaskBlock,
         current: &Event,
-        all_events: &mut Vec<Event>,
-        queue: &mut Vec<Event>,
+        state: &mut ProcessState,
     ) -> BlockExecution {
         // Mint a fresh span for this dispatch. The block's span is a CHILD of
         // the workflow span carried on the triggering event.
@@ -221,8 +307,7 @@ impl Engine {
                 simulated_events,
                 current,
                 &block_span_id,
-                all_events,
-                queue,
+                state,
                 true,
             );
             let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -285,14 +370,18 @@ impl Engine {
                     "completed"
                 );
                 let deliver = block.should_emit(current.throttle);
-                let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                let (mut emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
                     result.events,
                     current,
                     &block_span_id,
-                    all_events,
-                    queue,
+                    state,
                     deliver,
                 );
+                if let Some(scatter) = result.scatter {
+                    let child_ids =
+                        self.dispatch_scatter(*scatter, current, &block_span_id, state, deliver);
+                    emitted_ids.extend(child_ids);
+                }
                 let duration_ms =
                     u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 BlockExecution {
@@ -357,11 +446,14 @@ impl Engine {
             let _ = tx.send(event.clone()); // No receivers is normal — not an error.
         }
 
-        let mut all_events = vec![event.clone()];
         let mut block_executions = Vec::new();
-        let mut queue = vec![event];
+        let mut state = ProcessState {
+            all_events: vec![event.clone()],
+            queue: vec![event],
+            gather_store: GatherStore::new(),
+        };
 
-        while let Some(current) = queue.pop() {
+        while let Some(current) = state.queue.pop() {
             let matching: Vec<&dyn TaskBlock> = self
                 .blocks
                 .iter()
@@ -380,13 +472,13 @@ impl Engine {
                 let _block_guard = block_span.enter();
                 tracing::info!("executing");
 
-                let execution = self.run_block(block, &current, &mut all_events, &mut queue).await;
+                let execution = self.run_block(block, &current, &mut state).await;
                 block_executions.push(execution);
             }
         }
 
         ProcessResult {
-            events: all_events,
+            events: state.all_events,
             block_executions,
             total_duration_ms: u64::try_from(process_start.elapsed().as_millis())
                 .unwrap_or(u64::MAX),
@@ -1444,6 +1536,349 @@ mod tests {
                 event.event_type,
             );
         }
+    }
+
+    // -- Scatter/gather integration tests --
+
+    /// Test block: scatters `child_count` children of a fixed type, gathering
+    /// their completions (`on`) into a synthesized reduce event.
+    struct ScatterBlock {
+        name: &'static str,
+        sinks: Vec<EventType>,
+        child_type: EventType,
+        child_count: usize,
+        on: Vec<EventType>,
+        reduce_event_type: EventType,
+        reduce_project: &'static str,
+    }
+
+    impl TaskBlock for ScatterBlock {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &self.sinks
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let throttle = trigger.throttle;
+            let child_type = self.child_type.clone();
+            let count = self.child_count;
+            let on = self.on.clone();
+            let reduce_event_type = self.reduce_event_type.clone();
+            let reduce_project = self.reduce_project.to_string();
+            Box::pin(async move {
+                let children: Vec<Event> = (0..count)
+                    .map(|i| {
+                        Event::new(
+                            child_type.clone(),
+                            format!("child-{i}"),
+                            throttle,
+                            serde_json::json!({}),
+                        )
+                    })
+                    .collect();
+                let scatter = Scatter::all(children, on, reduce_event_type, reduce_project);
+                Ok(TaskBlockResult::scattering("scattered", scatter))
+            })
+        }
+    }
+
+    /// Test block: turns each `ProjectRunStarted` child into a successful
+    /// `ProjectRunCompleted` completion in the same project.
+    struct ChildWorker;
+
+    impl TaskBlock for ChildWorker {
+        fn name(&self) -> &'static str {
+            "ChildWorker"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::ProjectRunStarted]
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            Box::pin(async move {
+                Ok(TaskBlockResult::success(
+                    "child completed",
+                    vec![Event::new(
+                        EventType::ProjectRunCompleted,
+                        project,
+                        throttle,
+                        serde_json::json!({ "success": true }),
+                    )],
+                ))
+            })
+        }
+    }
+
+    /// Test block: records every reduce event it sinks on, for assertions.
+    struct ReduceObserver {
+        sinks: Vec<EventType>,
+        seen: Arc<std::sync::Mutex<Vec<Event>>>,
+    }
+
+    impl TaskBlock for ReduceObserver {
+        fn name(&self) -> &'static str {
+            "ReduceObserver"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &self.sinks
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let seen = Arc::clone(&self.seen);
+            let event = trigger.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push(event);
+                Ok(TaskBlockResult::success("observed reduce", vec![]))
+            })
+        }
+    }
+
+    fn type_count(result: &ProcessResult, ty: &EventType) -> usize {
+        result.events.iter().filter(|e| &e.event_type == ty).count()
+    }
+
+    #[tokio::test]
+    async fn scatter_gathers_children_into_a_reduce_event() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = Engine::new();
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 3,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(ChildWorker));
+        engine.register(Box::new(ReduceObserver {
+            sinks: vec![EventType::MaintenanceCycleCompleted],
+            seen: Arc::clone(&seen),
+        }));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(type_count(&result, &EventType::ProjectRunStarted), 3);
+        assert_eq!(type_count(&result, &EventType::ProjectRunCompleted), 3);
+        assert_eq!(
+            type_count(&result, &EventType::MaintenanceCycleCompleted),
+            1,
+            "the gather synthesizes exactly one reduce event",
+        );
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the reduce block ran once");
+        let payload: foundry_core::payload::GatherCompletedPayload =
+            seen[0].parse_payload().unwrap();
+        assert_eq!(payload.expected, 3);
+        assert_eq!(payload.arrived, 3);
+        assert_eq!(payload.children.len(), 3);
+        assert!(
+            payload.children.iter().all(|c| c.success == Some(true)),
+            "every child reported success",
+        );
+        assert_eq!(seen[0].project, "system", "reduce event carries the GatherSpec's project",);
+    }
+
+    #[tokio::test]
+    async fn scatter_children_and_completions_share_one_gather_id() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 2,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(ChildWorker));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        let started: Vec<&Event> = result
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::ProjectRunStarted)
+            .collect();
+        let gid = started[0].gather_id.clone();
+        assert!(gid.is_some(), "scatter children carry a gather_id");
+        assert!(
+            started.iter().all(|e| e.gather_id == gid),
+            "all children share the one minted gather_id",
+        );
+
+        // The gather_id propagates verbatim into each child's completion.
+        let completed: Vec<&Event> = result
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::ProjectRunCompleted)
+            .collect();
+        assert!(
+            completed.iter().all(|e| e.gather_id == gid),
+            "completions inherit the group's gather_id",
+        );
+
+        // The reduce event has no enclosing group, so its gather_id is None.
+        let reduce = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::MaintenanceCycleCompleted)
+            .unwrap();
+        assert!(reduce.gather_id.is_none(), "top-level reduce has no parent gather");
+    }
+
+    #[tokio::test]
+    async fn empty_scatter_reduces_immediately() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = Engine::new();
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 0,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(ReduceObserver {
+            sinks: vec![EventType::MaintenanceCycleCompleted],
+            seen: Arc::clone(&seen),
+        }));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(type_count(&result, &EventType::ProjectRunStarted), 0);
+        assert_eq!(
+            type_count(&result, &EventType::MaintenanceCycleCompleted),
+            1,
+            "an empty scatter still produces its reduce event",
+        );
+        let seen = seen.lock().unwrap();
+        let payload: foundry_core::payload::GatherCompletedPayload =
+            seen[0].parse_payload().unwrap();
+        assert_eq!(payload.expected, 0);
+        assert_eq!(payload.arrived, 0);
+        assert!(payload.children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nested_scatters_reduce_inner_then_outer() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = Engine::new();
+        // Outer: 2 children, each a PipelineCheckRequested; gathers the inner
+        // reduce events (MaintenanceCycleCompleted) into StrategicCycleCompleted.
+        engine.register(Box::new(ScatterBlock {
+            name: "OuterScatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::PipelineCheckRequested,
+            child_count: 2,
+            on: vec![EventType::MaintenanceCycleCompleted],
+            reduce_event_type: EventType::StrategicCycleCompleted,
+            reduce_project: "outer",
+        }));
+        // Inner: each PipelineCheckRequested scatters 1 ProjectRunStarted,
+        // gathering ProjectRunCompleted into MaintenanceCycleCompleted.
+        engine.register(Box::new(ScatterBlock {
+            name: "InnerScatterer",
+            sinks: vec![EventType::PipelineCheckRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 1,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "inner",
+        }));
+        engine.register(Box::new(ChildWorker));
+        engine.register(Box::new(ReduceObserver {
+            sinks: vec![EventType::StrategicCycleCompleted],
+            seen: Arc::clone(&seen),
+        }));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(type_count(&result, &EventType::PipelineCheckRequested), 2);
+        assert_eq!(type_count(&result, &EventType::ProjectRunCompleted), 2);
+        assert_eq!(
+            type_count(&result, &EventType::MaintenanceCycleCompleted),
+            2,
+            "each inner gather synthesizes one reduce event",
+        );
+        assert_eq!(
+            type_count(&result, &EventType::StrategicCycleCompleted),
+            1,
+            "the inner reduce events satisfy the outer gather",
+        );
+
+        // Each inner reduce rejoins the outer group.
+        let inner_reduces: Vec<&Event> = result
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::MaintenanceCycleCompleted)
+            .collect();
+        assert!(
+            inner_reduces.iter().all(|e| e.gather_id.is_some()),
+            "inner reduce events carry the outer gather_id",
+        );
+
+        let seen = seen.lock().unwrap();
+        let payload: foundry_core::payload::GatherCompletedPayload =
+            seen[0].parse_payload().unwrap();
+        assert_eq!(payload.arrived, 2, "outer gather collected both inner reduces");
     }
 
     /// Minimal observer block that sinks on `VulnerabilityDetected` and emits

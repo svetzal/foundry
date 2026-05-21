@@ -13,6 +13,7 @@ mod event_writer;
 mod gate_file;
 mod gate_runner;
 mod gateway;
+mod gather_store;
 mod legacy_event_check;
 mod orchestrator;
 mod scanner;

@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal `*Completed` event still identifies its group across span-opener
   boundaries. `None` outside any fan-out; legacy events continue to parse.
   Groundwork for the gather/reduce engine primitive.
+- Native scatter/gather (map/reduce) coordination. A task block can return a
+  `Scatter` in its `TaskBlockResult` (`TaskBlockResult::scattering`) declaring
+  a set of child events and a `GatherSpec`. The engine mints a `gather_id`,
+  stamps and dispatches the children, counts their completions, and
+  synthesizes a reduce event (`GatherCompletedPayload`) once the
+  `GatherPolicy` (`All` or `Count(n)`) is satisfied. Gathers nest — a reduce
+  event rejoins its enclosing group — and an empty scatter reduces
+  immediately. For now a gather completes within a single `process()`
+  traversal; durable, cross-call gathers are a later step behind the same
+  interface.
 
 ## [0.17.1] - 2026-05-20
 

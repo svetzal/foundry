@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::event::{Event, EventType};
+use crate::scatter::Scatter;
 use crate::throttle::Throttle;
 
 /// Retry policy for a task block.
@@ -46,6 +47,14 @@ pub struct TaskBlockResult {
     pub exit_code: Option<i32>,
     /// Paths to audit artifacts produced by this block (e.g., audit logs).
     pub audit_artifacts: Vec<String>,
+    /// An optional fan-out (map/reduce) declaration. When `Some`, the engine
+    /// mints a `gather_id`, dispatches the children, and synthesizes a reduce
+    /// event once the gather group is satisfied. See [`Scatter`].
+    ///
+    /// Boxed so a `TaskBlockResult` stays small for the common (non-scatter)
+    /// case — it is occasionally carried in the `Err` position of internal
+    /// helper `Result`s.
+    pub scatter: Option<Box<Scatter>>,
 }
 
 impl TaskBlockResult {
@@ -62,6 +71,18 @@ impl TaskBlockResult {
         Self {
             success: false,
             summary: summary.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A successful result that declares a fan-out. The engine dispatches the
+    /// scatter's children and synthesizes a reduce event when the gather
+    /// group completes.
+    pub fn scattering(summary: impl Into<String>, scatter: Scatter) -> Self {
+        Self {
+            success: true,
+            summary: summary.into(),
+            scatter: Some(Box::new(scatter)),
             ..Self::default()
         }
     }
@@ -306,6 +327,24 @@ mod tests {
         assert!(result.raw_output.is_none());
         assert!(result.exit_code.is_none());
         assert!(result.audit_artifacts.is_empty());
+        assert!(result.scatter.is_none());
+    }
+
+    #[test]
+    fn task_block_result_scattering_declares_a_fan_out() {
+        use crate::scatter::{GatherPolicy, Scatter};
+
+        let scatter = Scatter::all(
+            vec![],
+            vec![EventType::ProjectRunCompleted],
+            EventType::MaintenanceCycleCompleted,
+            "system",
+        );
+        let result = TaskBlockResult::scattering("fanned out", scatter);
+        assert!(result.success);
+        assert_eq!(result.summary, "fanned out");
+        let scatter = result.scatter.expect("scattering result carries a scatter");
+        assert_eq!(scatter.gather.policy, GatherPolicy::All);
     }
 
     #[test]

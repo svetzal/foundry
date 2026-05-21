@@ -757,6 +757,47 @@ pub struct AgentSessionEndedPayload {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Scatter/gather coordination payloads
+// ---------------------------------------------------------------------------
+
+/// One completed child of a gather group, as recorded for the reduce step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatheredChild {
+    /// The `id` of the child's completion event.
+    pub event_id: String,
+    /// The completion event's type.
+    pub event_type: crate::event::EventType,
+    /// The completion event's project.
+    pub project: String,
+    /// The `success` flag read from the completion payload, if it carried
+    /// one. Foundry payloads report boolean results under the `success` key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    /// The completion event's full payload.
+    pub payload: serde_json::Value,
+}
+
+/// Payload for the reduce event the engine synthesizes when a gather group
+/// is satisfied.
+///
+/// A reduce block sinks on the gather's `reduce_event_type` and parses this
+/// payload to decide what the mix of child outcomes means. The engine never
+/// interprets child success/failure itself — it only counts arrivals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatherCompletedPayload {
+    /// The fan-out group this reduce belongs to.
+    pub gather_id: String,
+    /// How many children were scattered.
+    pub expected: usize,
+    /// How many completions had arrived when the policy was satisfied.
+    pub arrived: usize,
+    /// Verbatim context supplied by the scattering block via `GatherSpec`.
+    pub context: serde_json::Value,
+    /// The completed children, in arrival order.
+    pub children: Vec<GatheredChild>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

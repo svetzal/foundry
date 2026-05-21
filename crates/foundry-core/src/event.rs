@@ -243,6 +243,18 @@ pub fn mint_span_id() -> String {
     hex::encode(bytes)
 }
 
+/// Generate a fresh fan-out group ID as `gth_` followed by 32 lowercase
+/// hex characters.
+///
+/// The `gth_` prefix makes the ID self-describing and visually distinct
+/// from `evt_` event IDs and the bare-hex trace/span IDs.
+pub fn mint_gather_id() -> String {
+    use rand::Rng as _;
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    format!("gth_{}", hex::encode(bytes))
+}
+
 /// True if `id` is a pre-OTel-tracing trace ID (legacy `trc_<uuid>` format).
 ///
 /// Used by analysis and migration code to distinguish events written before
@@ -862,6 +874,18 @@ mod tests {
         }"#;
         let event: Event = serde_json::from_str(json).unwrap();
         assert!(event.gather_id.is_none());
+    }
+
+    #[test]
+    fn mint_gather_id_is_prefixed_lowercase_hex() {
+        let id = super::mint_gather_id();
+        let hex = id.strip_prefix("gth_").expect("gather_id must carry the gth_ prefix");
+        assert_eq!(hex.len(), 32, "gather_id body must be 32 hex chars");
+        assert!(
+            hex.chars().all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()),
+            "gather_id body must be lowercase hex: {id}",
+        );
+        assert_ne!(id, super::mint_gather_id(), "two mints must differ");
     }
 
     #[test]
