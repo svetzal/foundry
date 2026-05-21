@@ -3,7 +3,7 @@ use std::pin::Pin;
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
     ChainContext, ProjectIterationRequestedPayload, ProjectMaintenanceRequestedPayload,
-    ProjectValidationCompletedPayload,
+    ProjectRunCompletedPayload, ProjectValidationCompletedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -13,10 +13,13 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 /// `ProjectIterationRequested` or `ProjectMaintenanceRequested` based on the action flags
 /// forwarded in the validation payload.
 ///
-/// When validation did not succeed (`status != "ok"`) the block emits nothing,
-/// stopping the chain.  When both `actions.iterate` and `actions.maintain` are
-/// false the block also emits nothing (no automation is enabled for the
-/// project).
+/// When validation did not succeed (`status != "ok"`), or when neither
+/// `actions.iterate` nor `actions.maintain` is enabled, the per-project chain
+/// reaches no work. In that case, if the run is part of a scattered
+/// maintenance cycle (the trigger carries a `gather_id`), the block emits a
+/// `ProjectRunCompleted` so the cycle's gather still counts this project.
+/// Outside a cycle these no-work paths emit nothing, stopping the chain as
+/// before.
 pub struct RouteProjectWorkflow;
 
 impl TaskBlock for RouteProjectWorkflow {
@@ -33,6 +36,7 @@ impl TaskBlock for RouteProjectWorkflow {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+        let in_cycle = trigger.gather_id.is_some();
 
         let p = parse_payload!(trigger, ProjectValidationCompletedPayload);
         let status = p.status.clone();
@@ -52,6 +56,18 @@ impl TaskBlock for RouteProjectWorkflow {
         Box::pin(async move {
             if status != "ok" {
                 tracing::info!(%project, %status, "skipping routing: validation did not succeed");
+                if in_cycle {
+                    return super::emit_result(
+                        format!("{project}: validation status={status} — project run failed"),
+                        EventType::ProjectRunCompleted,
+                        &project,
+                        throttle,
+                        &ProjectRunCompletedPayload {
+                            success: false,
+                            root_event_id: None,
+                        },
+                    );
+                }
                 return Ok(TaskBlockResult::success(
                     format!("{project}: skipped — validation status={status}"),
                     vec![],
@@ -86,6 +102,18 @@ impl TaskBlock for RouteProjectWorkflow {
                         project: project.clone(),
                         workflow: "maintain".to_string(),
                         chain: ChainContext::default(),
+                    },
+                )
+            } else if in_cycle {
+                tracing::info!(%project, "no automation actions enabled — completing project run");
+                super::emit_result(
+                    format!("{project}: no automation actions enabled — project run completed"),
+                    EventType::ProjectRunCompleted,
+                    &project,
+                    throttle,
+                    &ProjectRunCompletedPayload {
+                        success: true,
+                        root_event_id: None,
                     },
                 )
             } else {
@@ -212,6 +240,47 @@ mod tests {
         // Status defaults to "" which is not "ok"
         assert!(result.success);
         assert!(result.events.is_empty());
+    }
+
+    fn validation_event_in_cycle(status: &str, iterate: bool, maintain: bool) -> Event {
+        validation_event(status, iterate, maintain).with_gather_id(Some("gth_cycle".to_string()))
+    }
+
+    #[tokio::test]
+    async fn in_cycle_status_error_emits_project_run_completed_failure() {
+        let trigger = validation_event_in_cycle("error", true, true);
+        let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectRunCompleted);
+        let payload: foundry_core::payload::ProjectRunCompletedPayload =
+            result.events[0].parse_payload().unwrap();
+        assert!(!payload.success, "a failed validation completes the run unsuccessfully");
+    }
+
+    #[tokio::test]
+    async fn in_cycle_no_actions_emits_project_run_completed_success() {
+        let trigger = validation_event_in_cycle("ok", false, false);
+        let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectRunCompleted);
+        let payload: foundry_core::payload::ProjectRunCompletedPayload =
+            result.events[0].parse_payload().unwrap();
+        assert!(payload.success, "validated-but-no-work still completes the run");
+    }
+
+    #[tokio::test]
+    async fn in_cycle_status_ok_with_actions_still_routes_normally() {
+        // A gather_id present must not short-circuit a project that has work:
+        // routing to the iterate/maintain sub-workflow still happens.
+        let trigger = validation_event_in_cycle("ok", true, false);
+        let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationRequested);
     }
 
     #[tokio::test]

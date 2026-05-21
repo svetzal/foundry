@@ -140,6 +140,7 @@ fn register_blocks(
     // correct sub-workflow via ProjectIterationRequested or ProjectMaintenanceRequested.
     engine.register(Box::new(blocks::CleanupBranches::new(registry.clone())));
     engine.register(Box::new(blocks::RouteProjectWorkflow));
+    engine.register(Box::new(blocks::CompleteProjectRun));
     // Native gate orchestration blocks
     let shell: Arc<dyn gateway::ShellGateway> = Arc::new(gateway::ProcessShellGateway);
     engine.register(Box::new(blocks::ResolveGates::new(registry.clone())));

@@ -565,7 +565,12 @@ pub struct MaintenanceCycleCompletedPayload {
     pub root_event_id: Option<String>,
 }
 
-/// Payload for `ProjectRunCompleted` (per-project, emitted by `service.rs`).
+/// Payload for `ProjectRunCompleted`.
+///
+/// Within a scattered maintenance cycle this is emitted by task blocks
+/// (`CompleteProjectRun` for runs that did work, `RouteProjectWorkflow` for
+/// runs that reached no work) as the uniform per-project terminal. For a
+/// standalone single-project run it is synthesized by the service layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectRunCompletedPayload {
     pub success: bool,
