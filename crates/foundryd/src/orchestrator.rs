@@ -73,12 +73,9 @@ impl TaskBlock for FanOutMaintenance {
         Box::pin(async move {
             if project != "system" {
                 return Ok(TaskBlockResult {
-                    events: vec![],
                     success: true,
                     summary: format!("per-project run (project={project}), fan-out not applicable"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 });
             }
 
@@ -108,9 +105,7 @@ impl TaskBlock for FanOutMaintenance {
                 summary: format!(
                     "fanned out to {active_count} active projects ({skipped_count} skipped)"
                 ),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
+                ..Default::default()
             })
         })
     }

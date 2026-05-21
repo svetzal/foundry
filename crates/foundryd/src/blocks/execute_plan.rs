@@ -83,9 +83,7 @@ impl TaskBlock for ExecutePlan {
                     events: vec![event],
                     success: true,
                     summary: format!("{project}: {summary}"),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             });
         }

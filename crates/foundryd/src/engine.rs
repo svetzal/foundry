@@ -428,9 +428,7 @@ mod tests {
                     )],
                     success: true,
                     summary: "composed greeting".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             })
         }
@@ -468,9 +466,7 @@ mod tests {
                     )],
                     success: true,
                     summary: "delivered greeting".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             })
         }
@@ -905,12 +901,8 @@ mod tests {
                 });
                 if prev.is_ok() {
                     Ok(TaskBlockResult {
-                        events: vec![],
-                        success: false,
                         summary: "transient failure".to_string(),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
+                        ..Default::default()
                     })
                 } else {
                     Ok(TaskBlockResult {
@@ -922,9 +914,7 @@ mod tests {
                         )],
                         success: true,
                         summary: "succeeded".to_string(),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
+                        ..Default::default()
                     })
                 }
             })
@@ -1381,12 +1371,9 @@ mod tests {
         {
             Box::pin(async {
                 Ok(TaskBlockResult {
-                    events: vec![],
                     success: true,
                     summary: "ok".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             })
         }
@@ -1458,9 +1445,7 @@ mod tests {
                     events,
                     success: true,
                     summary: "emitted".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             })
         }
@@ -1631,9 +1616,7 @@ mod tests {
                     events: vec![emitted],
                     success: true,
                     summary: "emitted".to_string(),
-                    raw_output: None,
-                    exit_code: None,
-                    audit_artifacts: vec![],
+                    ..Default::default()
                 })
             })
         }
@@ -1743,12 +1726,9 @@ mod tests {
                         *seen_span.lock().unwrap() = Some(ctx.span_id.clone());
                     });
                     Ok(TaskBlockResult {
-                        events: vec![],
                         success: true,
                         summary: "probed".to_string(),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
+                        ..Default::default()
                     })
                 })
             }

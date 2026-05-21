@@ -325,7 +325,7 @@ impl OutputMapper<ReleaseOutput> for ReleaseOutputMapper {
             summary: output.summary,
             raw_output: output.raw_output,
             exit_code: output.exit_code,
-            audit_artifacts: vec![],
+            ..Default::default()
         }
     }
 

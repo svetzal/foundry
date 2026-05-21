@@ -191,14 +191,11 @@ fn handle_retry_or_exhaustion(
                 throttle,
                 event_payload,
             )],
-            success: false,
             summary: format!(
                 "{project}: gates failed, retry {}/{max_retries} requested",
                 retry_count + 1
             ),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
+            ..Default::default()
         };
     }
 
@@ -227,11 +224,8 @@ fn handle_retry_or_exhaustion(
             throttle,
             event_payload,
         )],
-        success: false,
         summary: format!("{project}: gates failed after {retry_count} retries"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     }
 }
 

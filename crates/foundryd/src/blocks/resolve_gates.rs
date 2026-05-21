@@ -54,11 +54,8 @@ fn charter_failure_result(
                 throttle,
                 terminal_payload,
             )],
-            success: false,
             summary: format!("{project}: charter check failed, no gates to resolve"),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
+            ..Default::default()
         };
     }
     TaskBlockResult::success(

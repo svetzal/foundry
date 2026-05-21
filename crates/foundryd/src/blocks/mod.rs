@@ -143,9 +143,7 @@ pub(super) fn emit_event_result(
         )],
         success,
         summary,
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     })
 }
 
@@ -238,8 +236,7 @@ pub(super) fn build_agent_remediation_result(
             format!("{failure_label}: {summary}")
         },
         raw_output,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     }
 }
 
@@ -459,8 +456,7 @@ pub(super) fn build_agent_execution_result(
         success,
         summary: format!("{project}: {summary}"),
         raw_output,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     }
 }
 
@@ -1010,9 +1006,7 @@ fn build_gate_block_result(
         } else {
             format!("{project}: {label} failed")
         },
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     }
 }
 

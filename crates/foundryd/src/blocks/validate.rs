@@ -97,11 +97,8 @@ fn error_result(
             throttle,
             payload,
         )],
-        success: false,
         summary: format!("Validation failed for {project}: {reason}"),
-        raw_output: None,
-        exit_code: None,
-        audit_artifacts: vec![],
+        ..Default::default()
     }
 }
 

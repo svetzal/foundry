@@ -132,11 +132,8 @@ async fn poll_pipeline(
                     throttle,
                     serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
                 )],
-                success: false,
                 summary: "Pipeline watch timed out after 30 minutes".to_string(),
-                raw_output: None,
-                exit_code: None,
-                audit_artifacts: vec![],
+                ..Default::default()
             });
         }
 
@@ -157,9 +154,7 @@ async fn poll_pipeline(
                         )],
                         success,
                         summary: format!("Release pipeline completed: {conclusion}"),
-                        raw_output: None,
-                        exit_code: None,
-                        audit_artifacts: vec![],
+                        ..Default::default()
                     });
                 }
                 s @ ("in_progress" | "queued" | "waiting") => {

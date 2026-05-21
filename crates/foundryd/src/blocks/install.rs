@@ -147,7 +147,7 @@ impl TaskBlock for InstallLocally {
                 },
                 raw_output,
                 exit_code,
-                audit_artifacts: vec![],
+                ..Default::default()
             })
         })
     }

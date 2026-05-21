@@ -27,7 +27,12 @@ impl Default for RetryPolicy {
 }
 
 /// The result of executing a task block.
-#[derive(Debug)]
+///
+/// Construct via [`TaskBlockResult::success`] / [`TaskBlockResult::failure`],
+/// or with a struct literal terminated by `..Default::default()` so that
+/// fields added in future remain backward compatible — no call site needs to
+/// change when a new optional field is introduced.
+#[derive(Debug, Default)]
 pub struct TaskBlockResult {
     /// Events to emit downstream (subject to throttle).
     pub events: Vec<Event>,
@@ -49,20 +54,15 @@ impl TaskBlockResult {
             events,
             success: true,
             summary: summary.into(),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
+            ..Self::default()
         }
     }
 
     pub fn failure(summary: impl Into<String>) -> Self {
         Self {
-            events: vec![],
             success: false,
             summary: summary.into(),
-            raw_output: None,
-            exit_code: None,
-            audit_artifacts: vec![],
+            ..Self::default()
         }
     }
 
@@ -295,6 +295,30 @@ mod tests {
         let result = TaskBlockResult::success("ok", vec![])
             .with_audit_artifacts(vec!["/path/to/report.json".to_string()]);
         assert_eq!(result.audit_artifacts, vec!["/path/to/report.json"]);
+    }
+
+    #[test]
+    fn task_block_result_default_is_an_empty_failure() {
+        let result = TaskBlockResult::default();
+        assert!(!result.success);
+        assert!(result.summary.is_empty());
+        assert!(result.events.is_empty());
+        assert!(result.raw_output.is_none());
+        assert!(result.exit_code.is_none());
+        assert!(result.audit_artifacts.is_empty());
+    }
+
+    #[test]
+    fn task_block_result_struct_literal_with_default_spread() {
+        // Call sites use `..Default::default()` so future fields stay additive.
+        let result = TaskBlockResult {
+            success: true,
+            summary: "done".to_string(),
+            ..Default::default()
+        };
+        assert!(result.success);
+        assert_eq!(result.summary, "done");
+        assert!(result.events.is_empty());
     }
 
     #[test]
