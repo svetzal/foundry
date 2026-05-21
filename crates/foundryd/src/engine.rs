@@ -141,6 +141,13 @@ impl Engine {
     /// `id` — recording the direct causal edge in the event graph,
     /// independent of the observability span structure below.
     ///
+    /// # Gather membership
+    ///
+    /// The emitted event inherits the trigger's `gather_id` verbatim — the
+    /// same propagation rule as `trace_id`. This carries fan-out group
+    /// membership all the way down a scattered child's sub-workflow so the
+    /// terminal completion event still identifies its gather.
+    ///
     /// # Span rules
     ///
     /// - **Default** (non-opener events): the emitted event is a peer of the
@@ -159,6 +166,10 @@ impl Engine {
 
         if emitted.trace_id.is_none() {
             emitted.trace_id.clone_from(&trigger.trace_id);
+        }
+
+        if emitted.gather_id.is_none() {
+            emitted.gather_id.clone_from(&trigger.gather_id);
         }
 
         if emitted.event_type.is_span_opener() {
@@ -1344,6 +1355,95 @@ mod tests {
             Some(explicit.as_str()),
             "block-provided causation_id must NOT be overwritten",
         );
+    }
+
+    #[tokio::test]
+    async fn gather_id_propagates_verbatim_through_chain() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_gather_id(Some("gth_group1".to_string()));
+
+        let result = engine.process(trigger).await;
+
+        // Every event in the chain carries the same gather_id verbatim —
+        // unlike causation_id, it is not rewritten at each hop.
+        for event in &result.events {
+            assert_eq!(
+                event.gather_id.as_deref(),
+                Some("gth_group1"),
+                "event {} should carry the inherited gather_id",
+                event.event_type,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn gather_id_survives_span_opener_boundary() {
+        // A scattered child workflow opens with a span opener. The gather_id
+        // must cross that boundary so the child's terminal events still
+        // identify their fan-out group.
+        let trigger = Event::new(
+            EventType::PipelineChecked,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_core::event::mint_span_id()), None)
+        .with_gather_id(Some("gth_outer".to_string()));
+
+        let block = emitting_block(
+            "B",
+            EventType::PipelineChecked,
+            vec![EventType::ProjectIterationRequested],
+        );
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let opener = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ProjectIterationRequested)
+            .expect("opener must be emitted");
+        // The opener gets a fresh span_id but keeps the gather_id verbatim.
+        assert_eq!(
+            opener.gather_id.as_deref(),
+            Some("gth_outer"),
+            "gather_id must propagate across a span-opener boundary",
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_id_none_propagates_as_none() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        for event in &result.events {
+            assert!(
+                event.gather_id.is_none(),
+                "event {} should have no gather_id when root has none",
+                event.event_type,
+            );
+        }
     }
 
     /// Minimal observer block that sinks on `VulnerabilityDetected` and emits

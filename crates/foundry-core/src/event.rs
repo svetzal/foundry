@@ -47,6 +47,19 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
 
+    /// Identifies the fan-out group this event belongs to, when it is part of
+    /// a scatter/gather (map/reduce) coordination. `None` for events outside
+    /// any fan-out.
+    ///
+    /// Unlike `causation_id` (which is rewritten at every hop), `gather_id`
+    /// propagates verbatim to every descendant of a scattered child — across
+    /// span-opener boundaries — exactly like `trace_id`. This ensures the
+    /// terminal `*Completed` event of a child workflow still carries the
+    /// `gather_id`, so the engine can count it toward the gather even though
+    /// it is many causal hops from the scatter that opened the group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gather_id: Option<String>,
+
     /// Event-type-specific payload.
     pub payload: serde_json::Value,
 }
@@ -74,6 +87,7 @@ impl Event {
             span_id: None,
             parent_span_id: None,
             causation_id: None,
+            gather_id: None,
             payload,
         }
     }
@@ -104,6 +118,15 @@ impl Event {
     #[must_use]
     pub fn with_causation_id(mut self, causation_id: Option<String>) -> Self {
         self.causation_id = causation_id;
+        self
+    }
+
+    /// Attach the fan-out group ID to this event (builder pattern).
+    ///
+    /// `gather_id = None` indicates an event outside any scatter/gather group.
+    #[must_use]
+    pub fn with_gather_id(mut self, gather_id: Option<String>) -> Self {
+        self.gather_id = gather_id;
         self
     }
 
@@ -786,6 +809,71 @@ mod tests {
         );
         let with_causation = base.clone().with_causation_id(Some("evt_parent".to_string()));
         assert_eq!(base.id, with_causation.id, "causation_id must not change Event::id");
+    }
+
+    #[test]
+    fn gather_id_defaults_to_none() {
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(event.gather_id.is_none(), "new events belong to no fan-out group");
+    }
+
+    #[test]
+    fn gather_id_omitted_from_json_when_none() {
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("gather_id").is_none(), "gather_id must be absent from JSON when None");
+    }
+
+    #[test]
+    fn gather_id_round_trips_when_present() {
+        let event = Event::new(
+            EventType::GreetingComposed,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_gather_id(Some("gth_abc123".to_string()));
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.gather_id.as_deref(), Some("gth_abc123"));
+    }
+
+    #[test]
+    fn gather_id_deserialized_as_none_when_absent() {
+        // Legacy events written before fan-out coordination must still parse.
+        let json = r#"{
+            "id": "evt_test",
+            "event_type": "greeting_requested",
+            "project": "test",
+            "occurred_at": "2026-01-01T00:00:00Z",
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "throttle": "full",
+            "payload": {}
+        }"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert!(event.gather_id.is_none());
+    }
+
+    #[test]
+    fn event_id_does_not_depend_on_gather_id() {
+        let base = Event::new(
+            EventType::VulnerabilityDetected,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({"x": 1}),
+        );
+        let with_gather = base.clone().with_gather_id(Some("gth_group".to_string()));
+        assert_eq!(base.id, with_gather.id, "gather_id must not change Event::id");
     }
 
     #[test]

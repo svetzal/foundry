@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   it unconditionally on every emitted event ("set if unset"); root events
   carry no `causation_id`. Legacy events without the field continue to
   parse. Groundwork for native fan-out/fan-in coordination.
+- Events now carry an optional `gather_id` — the fan-out (scatter/gather)
+  group the event belongs to. Unlike `causation_id`, it propagates verbatim
+  to every descendant like `trace_id`, so a scattered child workflow's
+  terminal `*Completed` event still identifies its group across span-opener
+  boundaries. `None` outside any fan-out; legacy events continue to parse.
+  Groundwork for the gather/reduce engine primitive.
 
 ## [0.17.1] - 2026-05-20
 

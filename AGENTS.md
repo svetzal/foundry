@@ -158,7 +158,7 @@ trigger.with_payload(EventType::SomethingCompleted, &MyPayload { ... })?
 
 ## Tracing
 
-Foundry uses OpenTelemetry-shaped nested spans. Every event carries `trace_id` (32-char hex), `span_id` (16-char hex), and `parent_span_id` (16-char hex). It also carries `causation_id` — the `id` of the event that triggered the block which emitted it — recording the domain causality edge independent of span structure (`None` for root events). The engine stamps span fields per two rules (default + span-opener registry) and stamps `causation_id` unconditionally; all stamping is "set if unset". Subprocesses inherit `TRACEPARENT`.
+Foundry uses OpenTelemetry-shaped nested spans. Every event carries `trace_id` (32-char hex), `span_id` (16-char hex), and `parent_span_id` (16-char hex). It also carries `causation_id` — the `id` of the event that triggered the block which emitted it — recording the domain causality edge independent of span structure (`None` for root events), and `gather_id` — the fan-out (scatter/gather) group the event belongs to (`None` outside any fan-out). The engine stamps span fields per two rules (default + span-opener registry), stamps `causation_id` unconditionally, and propagates `gather_id` verbatim like `trace_id`; all stamping is "set if unset". Subprocesses inherit `TRACEPARENT`.
 
 See `book/src/architecture/tracing.md` for the full model. When adding a new workflow `*Requested` event, register it as a span opener in `foundry_core::event::EventType::is_span_opener`.
 

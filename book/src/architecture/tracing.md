@@ -61,8 +61,8 @@ spans beneath it — no cycle or project run wraps it.
 
 ## Identifiers
 
-Every event carries four optional identifiers that locate it in the
-trace tree:
+Every event carries up to five optional identifiers that locate it in
+the trace tree and any fan-out coordination:
 
 - **`trace_id`** — 32-character lowercase hex string (OTel format).
   Identifies the entire causal tree. All events under one cycle share
@@ -76,6 +76,9 @@ trace tree:
 - **`causation_id`** — the `id` of the event that triggered the block
   which emitted this one, or `None` for a root event. Points at the
   direct causal parent in the event graph.
+- **`gather_id`** — identifies the fan-out (scatter/gather) group an
+  event belongs to, or `None` when the event is not part of a fan-out.
+  Propagates verbatim like `trace_id` (see below).
 
 A canonical event therefore carries something like:
 
@@ -84,6 +87,7 @@ trace_id        4bf92f3577b34da6a3ce929d0e0e4736
 span_id         00f067aa0ba902b7
 parent_span_id  b9c7c989f97918e1
 causation_id    evt_a1b2c3d4e5f6
+gather_id       gth_9f8e7d6c5b4a
 ```
 
 ### Spans Versus Causation
@@ -161,6 +165,17 @@ emitted event regardless of how spans nest. Like the span fields,
 stamping is "set if unset": a block that emits an event with an explicit
 `causation_id` keeps it. Root events entering the engine directly carry
 no `causation_id`.
+
+### Gather-ID propagation
+
+The engine also propagates `gather_id` onto every emitted event,
+inheriting it verbatim from the trigger — the same rule as `trace_id`,
+and deliberately *unlike* `causation_id`. A scattered child workflow may
+run many causal hops deep, crossing span-opener boundaries; carrying the
+`gather_id` unchanged all the way down means the child's terminal
+`*Completed` event still identifies the fan-out group it belongs to, so
+the engine can count it toward the gather. Stamping is "set if unset",
+and an event outside any fan-out simply carries `None`.
 
 ## Span-Opener Registry
 
