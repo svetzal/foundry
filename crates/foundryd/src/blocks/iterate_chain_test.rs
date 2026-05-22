@@ -270,8 +270,8 @@ async fn preflight_failure_stops_chain() {
 }
 
 #[tokio::test]
-async fn triage_busywork_rejection_stops_chain_as_failure() {
-    // Severity above threshold but rejected as busy-work → chain stops, success=false.
+async fn triage_busywork_rejection_stops_chain_as_success() {
+    // Severity above threshold but rejected as busy-work → chain stops, success=true (no-op).
     let dir = test_helpers::test_project_dir();
     let registry =
         test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
@@ -314,21 +314,18 @@ async fn triage_busywork_rejection_stops_chain_as_failure() {
         .unwrap();
     assert_eq!(triage.payload["accepted"], false);
 
-    // CreatePlan emits a terminal failure event so is_success() is accurate.
+    // CreatePlan emits a terminal success event — a triage rejection is a successful no-op.
     assert!(
         event_types.contains(&"project_iteration_completed"),
-        "should emit terminal failure when high-severity triage is rejected as busy-work"
+        "should emit a terminal event when high-severity triage is rejected as busy-work"
     );
     let completion = result
         .events
         .iter()
         .find(|e| e.event_type == EventType::ProjectIterationCompleted)
         .unwrap();
-    assert_eq!(completion.payload["success"], false, "terminal event must be success=false");
-    assert!(
-        !result.is_success(),
-        "overall chain must be failure when busy-work triage is rejected"
-    );
+    assert_eq!(completion.payload["success"], true, "terminal event must be success=true");
+    assert!(result.is_success(), "overall chain must succeed when triage filters busy-work");
 
     // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(

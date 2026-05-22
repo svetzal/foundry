@@ -14,7 +14,7 @@ description: >
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.18.0"
+  version: "0.18.1"
   author: Stacey Vetzal
 ---
 

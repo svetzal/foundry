@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-05-22
+
+### Fixed
+
+- A triage rejection is now always classified as a successful no-op. Previously
+  `create_plan` split rejections by the assessor's severity number: below the
+  triage threshold was `success: true`, but at-or-above threshold was reported
+  as `success: false`, so a project whose only finding was triaged away as
+  busy-work showed up as a failed maintenance run. Severity is already folded
+  into the triage agent's accept/reject decision, so re-deriving a failure
+  verdict from it in a later block was redundant and wrong. Both rejection
+  paths now emit `ProjectIterationCompleted { success: true }`, carrying the
+  triage agent's reason in the summary.
+
 ## [0.18.0] - 2026-05-21
 
 ### Removed

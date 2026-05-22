@@ -12,7 +12,6 @@ use foundry_core::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentCapability, AgentGateway};
 
-use super::triage_assessment::TRIAGE_SEVERITY_THRESHOLD;
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 agent_block_new!(
@@ -26,64 +25,34 @@ agent_block_new!(
 
 /// Build the terminal result emitted when triage is rejected.
 ///
-/// Two branches depending on the rejection cause:
-///
-/// - **Below-threshold** (`payload.severity < TRIAGE_SEVERITY_THRESHOLD`): triage correctly
-///   filtered a low-severity item. This is a *successful* no-op outcome — the chain worked
-///   as intended. Emits `ProjectIterationCompleted { success: true }`.
-///
-/// - **Other rejection** (severity at-or-above threshold but rejected for busy-work): the
-///   triage agent declined a substantive-severity item as not worth correcting. This is
-///   treated as `success: false` to preserve existing log-scraper behaviour.
-///
-/// Either way, emitting `ProjectIterationCompleted` here gives the trace an accurate
-/// terminal event so `is_success()` and the watch client see the correct outcome
-/// rather than falling back to block-level aggregation.
+/// A triage rejection is the triage stage doing its job: it judged the assessment
+/// not worth correcting — whether for low severity or because the work is busy-work.
+/// Severity is already folded into the triage agent's accept/reject decision, so the
+/// outcome is a *successful* no-op regardless of the assessor's severity number. Emit
+/// a terminal `ProjectIterationCompleted { success: true }` so the trace has an
+/// accurate terminal event rather than falling back to block-level aggregation.
 fn triage_rejection_result(
     payload: &TriageCompletedPayload,
     throttle: foundry_core::throttle::Throttle,
 ) -> anyhow::Result<TaskBlockResult> {
     let project = payload.project.as_str();
+    let summary = format!("no correction warranted — {}", payload.reason);
 
-    if payload.severity < TRIAGE_SEVERITY_THRESHOLD {
-        // Below-threshold: triage did its job correctly — this is a successful no-op.
-        let summary = format!(
-            "no correction warranted (severity {}/10 below threshold {})",
-            payload.severity, TRIAGE_SEVERITY_THRESHOLD
-        );
-        super::emit_event_result(
-            format!("{project}: {summary}"),
-            true,
-            EventType::ProjectIterationCompleted,
-            project,
-            throttle,
-            &ProjectCompletedPayload {
-                project: project.to_string(),
-                success: true,
-                summary: summary.clone(),
-                workflow: WorkflowType::Iterate.to_string(),
-                loop_context: None,
-                changes: None,
-            },
-        )
-    } else {
-        // At-or-above threshold but rejected (busy-work): treat as failure.
-        super::emit_event_result(
-            format!("{project}: triage rejected, no correction warranted"),
-            false,
-            EventType::ProjectIterationCompleted,
-            project,
-            throttle,
-            &ProjectCompletedPayload {
-                project: project.to_string(),
-                success: false,
-                summary: "triage rejected — no correction warranted".to_string(),
-                workflow: WorkflowType::Iterate.to_string(),
-                loop_context: None,
-                changes: None,
-            },
-        )
-    }
+    super::emit_event_result(
+        format!("{project}: {summary}"),
+        true,
+        EventType::ProjectIterationCompleted,
+        project,
+        throttle,
+        &ProjectCompletedPayload {
+            project: project.to_string(),
+            success: true,
+            summary,
+            workflow: WorkflowType::Iterate.to_string(),
+            loop_context: None,
+            changes: None,
+        },
+    )
 }
 
 impl TaskBlock for CreatePlan {
@@ -290,15 +259,17 @@ mod tests {
     );
 
     #[tokio::test]
-    async fn rejected_high_severity_triage_emits_terminal_failure() {
+    async fn high_severity_triage_rejection_emits_terminal_success() {
+        // A triage rejection is a successful no-op even when the assessor's severity
+        // is high — triage already folds severity into its accept/reject decision.
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
         let trigger = test_event!(EventType::TriageCompleted, "my-project", {
             "project": "my-project",
             "accepted": false,
-            "reason": "busy-work cosmetic tweak",
-            "severity": 5,
+            "reason": "purely cosmetic whitespace, busy-work",
+            "severity": 6,
             "principle": "unknown",
             "category": "conventions",
             "assessment": "",
@@ -307,23 +278,32 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(!result.success, "rejected high-severity triage should produce a failing result");
+        assert!(result.success, "triage rejection is a successful no-op regardless of severity");
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
-        assert_eq!(result.events[0].payload["success"], false);
+        assert_eq!(result.events[0].payload["success"], true);
+        let summary = result.events[0].payload["summary"].as_str().unwrap();
+        assert!(
+            summary.contains("no correction warranted"),
+            "summary should mention no correction warranted"
+        );
+        assert!(
+            summary.contains("purely cosmetic whitespace"),
+            "summary should carry the triage agent's reason"
+        );
         // No plan agent invoked
         assert!(agent.invocations().is_empty());
     }
 
     #[tokio::test]
-    async fn below_threshold_triage_emits_terminal_success() {
+    async fn low_severity_triage_rejection_emits_terminal_success() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = CreatePlan::new(agent.clone(), registry);
         let trigger = test_event!(EventType::TriageCompleted, "my-project", {
             "project": "my-project",
             "accepted": false,
-            "reason": "Severity is 3/10, below the 4+ threshold for acceptance",
+            "reason": "too trivial, severity only 3",
             "severity": 3,
             "principle": "unknown",
             "category": "conventions",
@@ -342,32 +322,6 @@ mod tests {
             summary.contains("no correction warranted"),
             "summary should mention no correction warranted"
         );
-        assert!(summary.contains("severity 3/10"), "summary should mention severity");
-        // No plan agent invoked
-        assert!(agent.invocations().is_empty());
-    }
-
-    #[tokio::test]
-    async fn triage_severity_at_threshold_with_rejection_is_failure() {
-        // severity == TRIAGE_SEVERITY_THRESHOLD (4) with accepted=false → failure (< not <=)
-        let agent = FakeAgentGateway::success();
-        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = CreatePlan::new(agent.clone(), registry);
-        let trigger = test_event!(EventType::TriageCompleted, "my-project", {
-            "project": "my-project",
-            "accepted": false,
-            "reason": "busy-work at boundary severity",
-            "severity": 4,
-            "principle": "unknown",
-            "category": "conventions",
-            "assessment": "",
-            "workflow": "iterate",
-        });
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(!result.success, "severity at threshold (4) rejected should still be failure");
-        assert_eq!(result.events[0].payload["success"], false);
         // No plan agent invoked
         assert!(agent.invocations().is_empty());
     }
