@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -40,6 +40,7 @@ pub struct ReleaseOutput {
 /// `ExecuteRelease`.
 pub struct AgentRelease {
     agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl AgentRelease {
@@ -47,7 +48,16 @@ impl AgentRelease {
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
 
     pub fn new(agent: Arc<dyn AgentGateway>) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+        }
+    }
+
+    /// Construct with injected gateways (for tests).
+    #[cfg(test)]
+    pub fn with_gateways(agent: Arc<dyn AgentGateway>, shell: Arc<dyn ShellGateway>) -> Self {
+        Self { agent, shell }
     }
 }
 
@@ -89,52 +99,29 @@ impl WorkBlock for AgentRelease {
             };
 
             let run_result = self.agent.invoke(&request).await;
+            let (raw_output, exit_code) = agent_run_metadata(&run_result);
+            let (cli_success, new_tag, cli_summary) = interpret_agent_result(run_result);
 
-            let (raw_output, exit_code) = match &run_result {
-                Ok(r) => (
-                    Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
-                    Some(r.exit_code),
-                ),
-                Err(_) => (None, None),
-            };
-
-            let (cli_success, new_tag, cli_summary) = match run_result {
-                Ok(r) if r.success => {
-                    let tag = extract_version_tag(&r.stdout);
-                    let s = format!(
-                        "Release completed{}",
-                        tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
-                    );
-                    (true, tag, s)
-                }
-                Ok(r) => {
-                    tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
-                    let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
-                    (
-                        false,
-                        None,
-                        format!(
-                            "Claude CLI exited with code {}; stderr: {first_stderr}",
-                            r.exit_code
-                        ),
-                    )
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
-                    (false, None, format!("claude CLI unavailable: {err}"))
-                }
-            };
+            // If the agent succeeded and extracted a tag, verify the tag points at HEAD.
+            let (success, summary) = check_tag_at_head(
+                cli_success,
+                new_tag.as_deref(),
+                cli_summary,
+                project_dir,
+                self.shell.as_ref(),
+            )
+            .await;
 
             tracing::info!(
                 new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
-                success = cli_success,
+                success,
                 "release step completed"
             );
 
             Ok(ReleaseOutput {
-                success: cli_success,
+                success,
                 new_tag,
-                summary: cli_summary,
+                summary,
                 raw_output,
                 exit_code,
             })
@@ -238,7 +225,12 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
             "Release {project}. Follow the release process documented in AGENTS.md exactly.\n\
              {bump_instruction}\n\
              Complete all steps: run quality gates, update the changelog, bump the version in all \
-             locations, commit, tag, and push. Output the new version tag on a line by itself (e.g. v1.2.3)."
+             locations, commit (the version-bump commit must be the HEAD commit), then create the \
+             git tag pointing at that HEAD commit, and finally push both the commit and the tag. \
+             IMPORTANT: create the git tag ONLY after the version-bump/changelog commit so the \
+             tag points at the correct commit. Verify that `git rev-parse <tag>^{{commit}}` \
+             matches `git rev-parse HEAD` before pushing. \
+             Output the new version tag on a line by itself (e.g. v1.2.3)."
         );
 
         tracing::info!(%project, bump = bump.as_deref().unwrap_or("auto"), "executing release");
@@ -454,6 +446,152 @@ pub fn cut_release_step_with_agent(
         VulnReleaseAdapter::new(registry),
         VulnReleaseMapper::new(),
     )
+}
+
+/// Build an "Execute Release" step with injected agent and shell gateways (for tag verification tests).
+#[cfg(test)]
+pub fn execute_release_step_with_gateways(
+    agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
+    registry: Arc<RwLock<Registry>>,
+) -> ExecuteReleaseStep {
+    ComposedStep::new(
+        "Execute Release",
+        BlockKind::Mutator,
+        vec![EventType::ReleaseRequested],
+        AgentRelease::with_gateways(agent, shell),
+        ManualReleaseAdapter::new(registry),
+        ReleaseOutputMapper::new("manual"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Agent result helpers
+// ---------------------------------------------------------------------------
+
+/// Extract `raw_output` and `exit_code` from a run result reference (before consuming it).
+fn agent_run_metadata(
+    run_result: &anyhow::Result<crate::gateway::AgentResponse>,
+) -> (Option<String>, Option<i32>) {
+    match run_result {
+        Ok(r) => (
+            Some(format!("{}\n{}", r.stdout, r.stderr).trim().to_string()),
+            Some(r.exit_code),
+        ),
+        Err(_) => (None, None),
+    }
+}
+
+/// Interpret a completed agent run into `(cli_success, new_tag, summary)`.
+fn interpret_agent_result(
+    run_result: anyhow::Result<crate::gateway::AgentResponse>,
+) -> (bool, Option<String>, String) {
+    match run_result {
+        Ok(r) if r.success => {
+            let tag = extract_version_tag(&r.stdout);
+            let s = format!(
+                "Release completed{}",
+                tag.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
+            );
+            (true, tag, s)
+        }
+        Ok(r) => {
+            tracing::error!(exit_code = r.exit_code, stderr = %r.stderr, "claude CLI failed");
+            let first_stderr = r.stderr.lines().next().unwrap_or("(empty)");
+            (
+                false,
+                None,
+                format!("Claude CLI exited with code {}; stderr: {first_stderr}", r.exit_code),
+            )
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "claude CLI not available or failed to spawn");
+            (false, None, format!("claude CLI unavailable: {err}"))
+        }
+    }
+}
+
+/// Verify the tag points at HEAD when the agent succeeded and the project is a git repo.
+///
+/// Returns `(success, summary)`. Skips the check when:
+/// - the agent did not succeed (`cli_success == false`)
+/// - no tag was extracted (`new_tag.is_none()`)
+/// - the project path has no `.git` directory (test environment)
+async fn check_tag_at_head(
+    cli_success: bool,
+    new_tag: Option<&str>,
+    cli_summary: String,
+    project_dir: &Path,
+    shell: &dyn ShellGateway,
+) -> (bool, String) {
+    if !cli_success {
+        return (false, cli_summary);
+    }
+    let Some(tag) = new_tag else {
+        return (true, cli_summary);
+    };
+    if !project_dir.join(".git").exists() {
+        // Not a git repo (test environment) — skip verification.
+        return (true, cli_summary);
+    }
+    match verify_tag_at_head(project_dir, tag, shell).await {
+        Ok(true) => (true, cli_summary),
+        Ok(false) => {
+            tracing::error!(
+                tag = %tag,
+                "tag does not point at HEAD; release may have tagged the wrong commit"
+            );
+            (
+                false,
+                format!(
+                    "Tag {tag} does not point at HEAD; \
+                     the release may have tagged the wrong commit"
+                ),
+            )
+        }
+        Err(err) => {
+            tracing::error!(tag = %tag, error = %err, "could not verify tag position");
+            (false, format!("Could not verify tag {tag} position: {err}"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// verify_tag_at_head — git tag verification
+// ---------------------------------------------------------------------------
+
+/// Verify that `tag` points at the same commit as HEAD in `project_dir`.
+///
+/// Returns `Ok(true)` when the tag and HEAD resolve to the same commit,
+/// `Ok(false)` when they differ or when the tag does not exist, and
+/// `Err` on unexpected shell failures.
+async fn verify_tag_at_head(
+    project_dir: &Path,
+    tag: &str,
+    shell: &dyn ShellGateway,
+) -> anyhow::Result<bool> {
+    // Resolve the commit that the tag points to.
+    let tag_ref = format!("{tag}^{{commit}}");
+    let tag_result = shell.run(project_dir, "git", &["rev-parse", &tag_ref], None, None).await?;
+
+    if !tag_result.success {
+        // Tag does not exist or cannot be resolved.
+        tracing::warn!(tag = %tag, stderr = %tag_result.stderr, "git rev-parse tag failed");
+        return Ok(false);
+    }
+
+    let tag_commit = tag_result.stdout.trim().to_string();
+
+    // Resolve HEAD.
+    let head_result = shell.run(project_dir, "git", &["rev-parse", "HEAD"], None, None).await?;
+
+    if !head_result.success {
+        anyhow::bail!("git rev-parse HEAD failed: {}", head_result.stderr);
+    }
+
+    let head_commit = head_result.stdout.trim().to_string();
+
+    Ok(tag_commit == head_commit)
 }
 
 // ---------------------------------------------------------------------------
@@ -762,5 +900,168 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
         assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    // --- Tag verification tests ---
+
+    /// Build [`FakeShellGateway`] responses for git rev-parse calls.
+    ///
+    /// The sequence is:
+    ///   1. `git rev-parse TAG^{commit}` → `tag_commit`
+    ///   2. `git rev-parse HEAD` → `head_commit`
+    fn git_revparse_sequence(
+        tag_commit: &str,
+        head_commit: &str,
+    ) -> Arc<dyn crate::gateway::ShellGateway> {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
+        FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: format!("{tag_commit}\n"),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: format!("{head_commit}\n"),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ])
+    }
+
+    #[tokio::test]
+    async fn execute_release_fails_when_tag_not_at_head() {
+        // Arrange a project dir that IS a git repo (has .git) so verification runs.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agent guidance").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let mut entry = test_helpers::project_entry("my-project", dir.path().to_str().unwrap());
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
+
+        let agent = FakeAgentGateway::success_with("Release complete!\nv3.0.0\nAll done.");
+        // tag points at a different commit than HEAD
+        let shell = git_revparse_sequence("aaaa", "bbbb");
+        let block = execute_release_step_with_gateways(agent, shell, registry);
+
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        assert!(result.summary.contains("does not point at HEAD"));
+    }
+
+    #[tokio::test]
+    async fn execute_release_succeeds_when_tag_at_head() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agent guidance").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let mut entry = test_helpers::project_entry("my-project", dir.path().to_str().unwrap());
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
+
+        let agent = FakeAgentGateway::success_with("Release complete!\nv3.0.0\nAll done.");
+        // tag and HEAD point at the same commit
+        let shell = git_revparse_sequence("aaaa", "aaaa");
+        let block = execute_release_step_with_gateways(agent, shell, registry);
+
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(result.events[0].payload["success"], true);
+        assert_eq!(result.events[0].payload["new_tag"], "v3.0.0");
+    }
+
+    #[tokio::test]
+    async fn execute_release_fails_when_tag_missing_from_git() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agent guidance").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let mut entry = test_helpers::project_entry("my-project", dir.path().to_str().unwrap());
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
+
+        let agent = FakeAgentGateway::success_with("v3.0.0");
+        // First git rev-parse (tag) fails — tag does not exist
+        let shell = FakeShellGateway::sequence(vec![CommandResult {
+            stdout: String::new(),
+            stderr: "fatal: ambiguous argument 'v3.0.0^{commit}'".to_string(),
+            exit_code: 128,
+            success: false,
+        }]);
+        let block = execute_release_step_with_gateways(agent, shell, registry);
+
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn tag_verification_skipped_when_no_git_dir() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+
+        // AGENTS.md present but no .git → not a git repo → skip verification
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.actions = release_actions();
+        let registry = test_helpers::registry_with_entry(entry);
+
+        let agent = FakeAgentGateway::success_with("v4.0.0");
+        // Shell gateway that would fail if called — proves verification was skipped
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: String::new(),
+            stderr: "should not be called".to_string(),
+            exit_code: 1,
+            success: false,
+        });
+        let block = execute_release_step_with_gateways(agent, shell, registry);
+
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // Should succeed because the git check is skipped (no .git dir)
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["new_tag"], "v4.0.0");
     }
 }
