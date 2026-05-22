@@ -490,14 +490,14 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
 ///
 /// For single-project runs, any `project_run_completed` event is terminal.
 ///
-/// For system-level runs, the fan-out orchestrator emits an early
-/// `maintenance_cycle_completed` (with `project_count` in payload) before
-/// per-project chains execute. The true terminal signal is the service-level
-/// broadcast (with `root_event_id` in payload) emitted after all processing
-/// finishes.
+/// For system-level runs, the engine's gather synthesizes
+/// `maintenance_cycle_completed` once all per-project runs finish, but the
+/// summary is rendered in a second phase after that. The true terminal signal
+/// is `maintenance_summary_requested` (carrying `root_event_id`), which the
+/// service broadcasts only after the summary has been written.
 fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) -> bool {
     let expected = if is_system_run {
-        "maintenance_cycle_completed"
+        "maintenance_summary_requested"
     } else {
         "project_run_completed"
     };
@@ -1003,10 +1003,10 @@ mod tests {
 
     #[test]
     fn single_project_run_does_not_exit_on_cycle_completion() {
-        // A system-level `maintenance_cycle_completed` must not terminate a
+        // A system-level `maintenance_summary_requested` must not terminate a
         // single-project run — single-project runs key off `project_run_completed`.
         let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
-        assert!(!is_run_complete("maintenance_cycle_completed", service_payload, false));
+        assert!(!is_run_complete("maintenance_summary_requested", service_payload, false));
     }
 
     #[test]
@@ -1019,9 +1019,11 @@ mod tests {
     }
 
     #[test]
-    fn system_run_ignores_fanout_completion() {
-        let fanout_payload = r#"{"project_count":3,"skipped_count":0,"projects":["a","b","c"]}"#;
-        assert!(!is_run_complete("maintenance_cycle_completed", fanout_payload, true));
+    fn system_run_ignores_gather_cycle_completion() {
+        // The engine's gather emits `maintenance_cycle_completed` before the
+        // summary phase runs — it must not terminate the CLI's wait.
+        let gather_payload = r#"{"gather_id":"gth_x","expected":3,"arrived":3}"#;
+        assert!(!is_run_complete("maintenance_cycle_completed", gather_payload, true));
     }
 
     #[test]
@@ -1033,15 +1035,15 @@ mod tests {
     }
 
     #[test]
-    fn system_run_exits_on_service_completion() {
-        let service_payload = r#"{"success":true,"root_event_id":"evt_abc123"}"#;
-        assert!(is_run_complete("maintenance_cycle_completed", service_payload, true));
+    fn system_run_exits_on_summary_request() {
+        let service_payload = r#"{"root_event_id":"evt_abc123","total_duration_ms":1000}"#;
+        assert!(is_run_complete("maintenance_summary_requested", service_payload, true));
     }
 
     #[test]
     fn system_run_does_not_exit_on_empty_payload() {
-        assert!(!is_run_complete("maintenance_cycle_completed", "{}", true));
-        assert!(!is_run_complete("maintenance_cycle_completed", "", true));
+        assert!(!is_run_complete("maintenance_summary_requested", "{}", true));
+        assert!(!is_run_complete("maintenance_summary_requested", "", true));
     }
 
     // -- extract_status tests --

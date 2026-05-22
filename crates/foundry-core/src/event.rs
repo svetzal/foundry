@@ -341,6 +341,8 @@ pub enum EventType {
     MaintenanceCycleCompleted,
     ProjectRunStarted,
     ProjectRunCompleted,
+    /// Command: per-project traces are persisted, render the run summary.
+    MaintenanceSummaryRequested,
 
     // Release audit
     ReleaseTagAudited,
@@ -410,6 +412,7 @@ impl EventType {
                 | EventType::RemediationStarted
                 | EventType::StrategicCycleStarted
                 | EventType::InnerIterationStarted
+                | EventType::MaintenanceSummaryRequested
         )
     }
 }
@@ -479,6 +482,7 @@ mod tests {
             (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
             (EventType::ProjectRunStarted, "project_run_started"),
             (EventType::ProjectRunCompleted, "project_run_completed"),
+            (EventType::MaintenanceSummaryRequested, "maintenance_summary_requested"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
             (EventType::GateResolutionCompleted, "gate_resolution_completed"),
             (EventType::PreflightCompleted, "preflight_completed"),
@@ -541,6 +545,7 @@ mod tests {
             (EventType::MaintenanceCycleCompleted, "maintenance_cycle_completed"),
             (EventType::ProjectRunStarted, "project_run_started"),
             (EventType::ProjectRunCompleted, "project_run_completed"),
+            (EventType::MaintenanceSummaryRequested, "maintenance_summary_requested"),
             (EventType::ReleaseTagAudited, "release_tag_audited"),
             (EventType::GateResolutionCompleted, "gate_resolution_completed"),
             (EventType::PreflightCompleted, "preflight_completed"),
@@ -914,6 +919,7 @@ mod tests {
         assert!(EventType::RemediationStarted.is_span_opener());
         assert!(EventType::StrategicCycleStarted.is_span_opener());
         assert!(EventType::InnerIterationStarted.is_span_opener());
+        assert!(EventType::MaintenanceSummaryRequested.is_span_opener());
 
         // Negative cases — completion events are NOT openers.
         assert!(!EventType::ProjectIterationCompleted.is_span_opener());

@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
+use foundry_core::scatter::Scatter;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Fans out a system-level maintenance cycle to individual per-project runs.
@@ -11,18 +12,19 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 ///
 /// Sinks on `MaintenanceCycleStarted`. When the triggering event's project is
 /// `"system"` (emitted by `foundry run` without `--project`), the block reads
-/// the registry, collects all active (non-skipped) projects, and emits a
-/// `ProjectRunStarted` event for each one. These per-project events then
-/// trigger the existing chain (`ValidateProject` → `RouteProjectWorkflow` → …).
+/// the registry, collects all active (non-skipped) projects, and **scatters**
+/// a `ProjectRunStarted` event for each one. Each child triggers the existing
+/// per-project chain (`ValidateProject` → `RouteProjectWorkflow` → …), which
+/// terminates in a `ProjectRunCompleted`.
+///
+/// The scatter declares a gather over those `ProjectRunCompleted` events: once
+/// every per-project run completes, the engine synthesizes a single
+/// `MaintenanceCycleCompleted` — a genuine fan-in, no longer hand-aggregated
+/// by the service layer.
 ///
 /// Per-project events do not mint a fresh `trace_id`; the engine propagates
-/// the cycle root's `trace_id` to emitted events, keeping the entire cycle
-/// (cycle root + every per-project sub-trace) on a single OTel-compatible
-/// trace.
-///
-/// `MaintenanceCycleCompleted` is NOT emitted here — it is synthesised by the
-/// service layer after `engine.process()` returns, so that per-project traces
-/// are available on disk when `GenerateSummary` runs.
+/// the cycle root's `trace_id` to emitted events, keeping the entire cycle on
+/// a single OTel-compatible trace.
 ///
 /// When the triggering project is anything other than `"system"`, the block
 /// returns immediately with no emitted events — the per-project event is
@@ -85,13 +87,14 @@ impl TaskBlock for FanOutMaintenance {
                 "fanning out maintenance to active projects"
             );
 
-            let mut events = Vec::with_capacity(active_count);
+            let mut children = Vec::with_capacity(active_count);
 
             for name in &project_names {
-                // Per-project events inherit the cycle root's trace_id via the
-                // engine's propagation pass (`persist_and_broadcast_events`),
-                // so the entire cycle stays on a single trace.
-                events.push(Event::new(
+                // Per-project events inherit the cycle root's trace_id, and the
+                // scatter's freshly minted gather_id, via the engine's
+                // stamping pass — so the entire cycle stays on one trace and
+                // every per-project run is counted toward the gather.
+                children.push(Event::new(
                     EventType::ProjectRunStarted,
                     name.clone(),
                     throttle,
@@ -99,14 +102,19 @@ impl TaskBlock for FanOutMaintenance {
                 ));
             }
 
-            Ok(TaskBlockResult {
-                events,
-                success: true,
-                summary: format!(
-                    "fanned out to {active_count} active projects ({skipped_count} skipped)"
-                ),
-                ..Default::default()
-            })
+            Ok(TaskBlockResult::scattering(
+                format!("fanned out to {active_count} active projects ({skipped_count} skipped)"),
+                Scatter::all(
+                    children,
+                    vec![EventType::ProjectRunCompleted],
+                    EventType::MaintenanceCycleCompleted,
+                    "system",
+                )
+                .with_context(serde_json::json!({
+                    "active": active_count,
+                    "skipped": skipped_count,
+                })),
+            ))
         })
     }
 }
@@ -206,12 +214,13 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
         assert!(result.events.is_empty());
+        assert!(result.scatter.is_none(), "a per-project trigger declares no scatter");
     }
 
     // -- Fan-out tests --
 
     #[tokio::test]
-    async fn system_trigger_emits_per_project_events() {
+    async fn system_trigger_scatters_per_project_runs() {
         let registry = make_registry(vec![
             active_entry("alpha"),
             active_entry("beta"),
@@ -223,14 +232,16 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
 
-        // 3 per-project ProjectRunStarted (no MaintenanceCycleCompleted —
-        // that is synthesised by the service layer after process() returns).
-        assert_eq!(result.events.len(), 3);
-
-        assert!(result.events.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
+        let scatter = result.scatter.expect("system trigger declares a scatter");
+        assert_eq!(scatter.children.len(), 3);
+        assert!(scatter.children.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
+        // The gather collects ProjectRunCompleted and reduces to the cycle event.
+        assert_eq!(scatter.gather.on, vec![EventType::ProjectRunCompleted]);
+        assert_eq!(scatter.gather.reduce_event_type, EventType::MaintenanceCycleCompleted);
+        assert_eq!(scatter.gather.reduce_project, "system");
 
         let mut project_names: Vec<&str> =
-            result.events.iter().map(|e| e.project.as_str()).collect();
+            scatter.children.iter().map(|e| e.project.as_str()).collect();
         project_names.sort_unstable();
         assert_eq!(project_names, vec!["alpha", "beta", "gamma"]);
     }
@@ -248,10 +259,11 @@ mod tests {
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
 
-        // 2 per-project events (beta skipped)
-        assert_eq!(result.events.len(), 2);
-
-        let project_names: Vec<&str> = result.events.iter().map(|e| e.project.as_str()).collect();
+        // 2 scattered children (beta skipped)
+        let scatter = result.scatter.expect("system trigger declares a scatter");
+        let project_names: Vec<&str> =
+            scatter.children.iter().map(|e| e.project.as_str()).collect();
+        assert_eq!(project_names.len(), 2);
         assert!(project_names.contains(&"alpha"));
         assert!(project_names.contains(&"gamma"));
         assert!(!project_names.contains(&"beta"));
@@ -260,21 +272,22 @@ mod tests {
     #[tokio::test]
     async fn per_project_events_have_no_trace_id_set_at_block_emission() {
         // The block no longer mints a fresh trace_id per project; the engine
-        // propagates the cycle root's trace_id to each emitted event during
-        // its persist-and-broadcast pass. At the block level, emitted events
-        // carry no trace_id — the engine fills it in from the trigger.
+        // propagates the cycle root's trace_id to each scattered child during
+        // its stamping pass. At the block level, children carry no trace_id —
+        // the engine fills it in from the trigger.
         let registry = make_registry(vec![active_entry("alpha"), active_entry("beta")]);
         let block = FanOutMaintenance::new(registry);
         let trigger = system_trigger(Throttle::Full);
         assert!(trigger.trace_id.is_some(), "test setup: trigger must have a trace_id");
 
         let result = block.execute(&trigger).await.expect("should succeed");
-        assert_eq!(result.events.len(), 2);
+        let scatter = result.scatter.expect("system trigger declares a scatter");
+        assert_eq!(scatter.children.len(), 2);
 
-        for event in &result.events {
+        for event in &scatter.children {
             assert!(
                 event.trace_id.is_none(),
-                "per-project event should leave trace_id unset; engine inherits it from the cycle root",
+                "scattered child should leave trace_id unset; engine inherits it from the cycle root",
             );
         }
     }
@@ -285,24 +298,27 @@ mod tests {
         let trigger = system_trigger(Throttle::DryRun);
 
         let result = block.execute(&trigger).await.expect("should succeed");
+        let scatter = result.scatter.expect("system trigger declares a scatter");
 
-        for event in &result.events {
+        for event in &scatter.children {
             assert_eq!(event.throttle, Throttle::DryRun);
         }
     }
 
     #[tokio::test]
-    async fn empty_registry_emits_no_events() {
+    async fn empty_registry_scatters_no_children() {
         let block = FanOutMaintenance::new(make_registry(vec![]));
         let trigger = system_trigger(Throttle::Full);
 
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
-        assert!(result.events.is_empty());
+        // An empty scatter is still a scatter — the engine reduces it at once.
+        let scatter = result.scatter.expect("system trigger declares a scatter");
+        assert!(scatter.children.is_empty());
     }
 
     #[tokio::test]
-    async fn fan_out_events_are_all_per_project() {
+    async fn fan_out_children_are_all_per_project() {
         let registry = make_registry(vec![
             active_entry("alpha"),
             skipped_entry("beta"),
@@ -312,9 +328,9 @@ mod tests {
         let trigger = system_trigger(Throttle::Full);
 
         let result = block.execute(&trigger).await.expect("should succeed");
+        let scatter = result.scatter.expect("system trigger declares a scatter");
 
-        // Only per-project events, no MaintenanceCycleCompleted.
-        assert!(result.events.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
+        assert!(scatter.children.iter().all(|e| e.event_type == EventType::ProjectRunStarted));
     }
 
     #[tokio::test]

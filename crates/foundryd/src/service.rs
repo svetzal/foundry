@@ -162,9 +162,13 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
     traces
 }
 
-/// After a system-level maintenance cycle completes, write per-project sub-traces
-/// to disk, then synthesise and process `MaintenanceCycleCompleted` so that
-/// `GenerateSummary` can read the traces.
+/// After a system-level maintenance cycle's `process()` traversal returns,
+/// write per-project sub-traces to disk, then emit and process
+/// `MaintenanceSummaryRequested` so `GenerateSummary` can read those traces.
+///
+/// The cycle's `MaintenanceCycleCompleted` is no longer synthesised here — the
+/// engine's scatter/gather produces it as a genuine fan-in. This function's
+/// remaining job is trace persistence and triggering the summary phase.
 async fn finalise_system_maintenance(
     result: &ProcessResult,
     engine: &Engine,
@@ -203,8 +207,8 @@ async fn finalise_system_maintenance(
         }
     }
 
-    let completed_event = Event::new(
-        EventType::MaintenanceCycleCompleted,
+    let summary_event = Event::new(
+        EventType::MaintenanceSummaryRequested,
         "system".to_string(),
         throttle,
         serde_json::json!({
@@ -215,13 +219,13 @@ async fn finalise_system_maintenance(
         }),
     );
 
-    let summary_result = engine.process(completed_event.clone()).await;
+    let summary_result = engine.process(summary_event.clone()).await;
 
-    if let Err(e) = trace_writer.write(&completed_event.id, &summary_result) {
+    if let Err(e) = trace_writer.write(&summary_event.id, &summary_result) {
         tracing::warn!(error = %e, "failed to write summary trace");
     }
 
-    let _ = event_tx.send(completed_event);
+    let _ = event_tx.send(summary_event);
 }
 
 fn parse_throttle(proto_value: i32) -> Throttle {
@@ -831,7 +835,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_maintenance_cycle_broadcasts_completion_with_root_event_id() {
+    async fn system_maintenance_cycle_broadcasts_summary_request_with_root_event_id() {
         let (service, mut rx) = test_service();
 
         let request = Request::new(EmitRequest {
@@ -847,19 +851,19 @@ mod tests {
         let response = service.emit(request).await.expect("emit should succeed");
         let root_event_id = response.into_inner().event_id;
 
-        let mut saw_completed = false;
-        let mut completed_payload = serde_json::Value::Null;
+        let mut saw_summary = false;
+        let mut summary_payload = serde_json::Value::Null;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let result = tokio::time::timeout_at(deadline, rx.recv()).await;
             match result {
                 Ok(Ok(event)) => {
-                    if event.event_type == EventType::MaintenanceCycleCompleted
+                    if event.event_type == EventType::MaintenanceSummaryRequested
                         && event.project == "system"
                     {
-                        saw_completed = true;
-                        completed_payload = event.payload.clone();
+                        saw_summary = true;
+                        summary_payload = event.payload.clone();
                         break;
                     }
                 }
@@ -867,10 +871,13 @@ mod tests {
             }
         }
 
-        assert!(saw_completed, "system-level MaintenanceCycleCompleted should be broadcast");
+        assert!(
+            saw_summary,
+            "the service should broadcast MaintenanceSummaryRequested after a system cycle"
+        );
         assert_eq!(
-            completed_payload["root_event_id"], root_event_id,
-            "system completion must include root_event_id so CLI can detect run end"
+            summary_payload["root_event_id"], root_event_id,
+            "the summary request must include root_event_id so the CLI can detect run end"
         );
     }
 

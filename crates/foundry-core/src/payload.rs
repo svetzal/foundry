@@ -550,11 +550,14 @@ pub struct ProjectRunStartedPayload {
     // currently empty — the project name lives on the Event itself.
 }
 
-/// Payload for `MaintenanceCycleCompleted` (cycle-level, synthesised by `finalise_system_maintenance`).
+/// Payload for `MaintenanceSummaryRequested`.
+///
+/// Emitted by `finalise_system_maintenance` once a maintenance cycle's
+/// per-project sub-traces are persisted to disk. Carries the locations of
+/// those traces so `GenerateSummary` can read them and render the report.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MaintenanceCycleCompletedPayload {
-    /// Kept during the transition for `GenerateSummary`. Will be removed
-    /// once that block queries `Span` instead.
+pub struct MaintenanceSummaryRequestedPayload {
+    /// Map of project name → on-disk trace event ID.
     #[serde(default)]
     pub project_trace_ids: std::collections::HashMap<String, String>,
     #[serde(default)]

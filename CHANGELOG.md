@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `FanOutMaintenance` now uses the scatter/gather primitive. A system
+  maintenance cycle scatters its per-project `ProjectRunStarted` events and
+  gathers their `ProjectRunCompleted` terminals; the engine synthesizes the
+  cycle's `MaintenanceCycleCompleted` as a genuine fan-in. The service layer
+  no longer hand-aggregates per-project completions — it persists per-project
+  traces and emits a new `MaintenanceSummaryRequested` command that triggers
+  `GenerateSummary`. The `MaintenanceCycleStarted` payload struct
+  `MaintenanceCycleCompletedPayload` is renamed `MaintenanceSummaryRequestedPayload`
+  (same fields). `foundry run` detects cycle completion from
+  `maintenance_summary_requested` rather than `maintenance_cycle_completed`.
+
 ### Added
 
 - Events now carry an optional `causation_id` — the `id` of the event that

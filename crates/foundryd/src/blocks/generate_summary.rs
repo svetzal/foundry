@@ -6,7 +6,7 @@ use chrono::Utc;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    LocalInstallCompletedPayload, MaintenanceCycleCompletedPayload, ProjectCompletedPayload,
+    LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload, ProjectCompletedPayload,
     ReleaseCompletedPayload, ReleaseTagAuditedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -22,9 +22,10 @@ use crate::trace_writer::TraceWriter;
 ///
 /// Observer — always runs regardless of throttle.
 ///
-/// Sinks on `MaintenanceCycleCompleted`. Reads per-project trace data via the
-/// `TraceWriter`, builds a `MaintenanceRunSummary`, renders it as markdown,
-/// and writes it to the audits directory.
+/// Sinks on `MaintenanceSummaryRequested` — emitted by the service layer once
+/// a cycle's per-project traces are persisted. Reads per-project trace data
+/// via the `TraceWriter`, builds a `MaintenanceRunSummary`, renders it as
+/// markdown, and writes it to the audits directory.
 ///
 /// Expected trigger payload:
 /// ```json
@@ -161,7 +162,7 @@ impl TaskBlock for GenerateSummary {
     task_block_meta! {
         name: "Generate Summary",
         kind: Observer,
-        sinks_on: [MaintenanceCycleCompleted],
+        sinks_on: [MaintenanceSummaryRequested],
     }
 
     fn execute(
@@ -169,7 +170,7 @@ impl TaskBlock for GenerateSummary {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let p = parse_payload!(trigger, MaintenanceCycleCompletedPayload);
+        let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();
 
@@ -383,7 +384,7 @@ mod tests {
             make_trace_writer(dir.path()),
             dir.path().to_str().unwrap().to_string(),
         );
-        assert_eq!(block.sinks_on(), &[EventType::MaintenanceCycleCompleted]);
+        assert_eq!(block.sinks_on(), &[EventType::MaintenanceSummaryRequested]);
     }
 
     #[test]
@@ -411,7 +412,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"alpha": "evt_alpha", "beta": "evt_beta"},
@@ -446,7 +447,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"good-project": "evt_good", "bad-project": "evt_bad"},
@@ -475,7 +476,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"alpha": "evt_alpha"},
@@ -502,7 +503,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"missing-project": "evt_missing"},
@@ -530,7 +531,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"my-project": "evt_proj"},
@@ -559,7 +560,7 @@ mod tests {
         let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceCycleCompleted,
+            EventType::MaintenanceSummaryRequested,
             "_system",
             serde_json::json!({}),
         );
