@@ -155,14 +155,14 @@ where
     fn should_emit(&self, throttle: Throttle) -> bool {
         match self.kind {
             BlockKind::Observer => true,
-            BlockKind::Mutator => throttle.allows_mutation(),
+            BlockKind::Mutator => throttle.permits_mutation(),
         }
     }
 
     fn should_execute(&self, throttle: Throttle) -> bool {
         match self.kind {
             BlockKind::Observer => true,
-            BlockKind::Mutator => throttle.allows_side_effects(),
+            BlockKind::Mutator => throttle.permits_mutation(),
         }
     }
 }
@@ -337,7 +337,6 @@ mod tests {
             EchoMapper,
         );
         assert!(TaskBlock::should_emit(&step, Throttle::Full));
-        assert!(TaskBlock::should_emit(&step, Throttle::AuditOnly));
         assert!(TaskBlock::should_emit(&step, Throttle::DryRun));
     }
 
@@ -352,7 +351,6 @@ mod tests {
             EchoMapper,
         );
         assert!(TaskBlock::should_emit(&step, Throttle::Full));
-        assert!(!TaskBlock::should_emit(&step, Throttle::AuditOnly));
         assert!(!TaskBlock::should_emit(&step, Throttle::DryRun));
     }
 }

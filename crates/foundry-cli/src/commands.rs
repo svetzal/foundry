@@ -14,8 +14,7 @@ use crate::proto::{
 
 fn parse_throttle(s: &str) -> i32 {
     match s {
-        "audit_only" => 1,
-        "dry_run" => 2,
+        "dry_run" => 1,
         _ => 0,
     }
 }

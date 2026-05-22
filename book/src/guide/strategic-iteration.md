@@ -247,7 +247,6 @@ a broken codebase.
 | Throttle | Strategic Assessor | Inner Iterate | Commits |
 |----------|-------------------|---------------|---------|
 | `full` | Runs | Runs (modifies files) | Real commits |
-| `audit_only` | Runs | Runs, but mutator events suppressed | No commits |
 | `dry_run` | Runs | Simulated success | No commits |
 
 ## Chaining with Maintenance

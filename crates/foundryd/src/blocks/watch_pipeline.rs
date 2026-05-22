@@ -10,8 +10,7 @@ use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use crate::gateway::ShellGateway;
 
 /// Watches the CI pipeline after a release tag is pushed.
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
+/// Mutator — simulated success at `dry_run`.
 ///
 /// Polls the GitHub Actions API via the `gh` CLI with exponential backoff
 /// (30 s initial, doubling up to 5 min cap, 30 min total timeout).

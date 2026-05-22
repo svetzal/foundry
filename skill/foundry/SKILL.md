@@ -164,7 +164,7 @@ Always use the convenience commands above (`iterate`, `scout`, `validate`, `run`
 Only use `foundry emit` for workflows that lack a convenience command (e.g., vulnerability scanning) or for advanced debugging:
 
 ```bash
-foundry emit <event_type> --project <name> [--throttle full|audit_only|dry_run] [--payload '{"key":"value"}'] [--wait]
+foundry emit <event_type> --project <name> [--throttle full|dry_run] [--payload '{"key":"value"}'] [--wait]
 ```
 
 ## Registry Management
@@ -236,12 +236,11 @@ Every event chain runs under a throttle that controls what blocks can do:
 | Level | Observers | Mutators | Use Case |
 |-------|-----------|----------|----------|
 | `full` | Execute normally | Execute normally | Production runs |
-| `audit_only` | Execute normally | Log but don't deliver downstream | Audit what would happen |
 | `dry_run` | Execute normally | Simulate success, no side effects | Safe preview |
 
 ```bash
 foundry run --throttle dry_run
-foundry run --project alpha --throttle audit_only
+foundry run --project alpha --throttle dry_run
 ```
 
 ## Workflow Status

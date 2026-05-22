@@ -230,8 +230,7 @@ async fn finalise_system_maintenance(
 
 fn parse_throttle(proto_value: i32) -> Throttle {
     match proto_value {
-        1 => Throttle::AuditOnly,
-        2 => Throttle::DryRun,
+        1 => Throttle::DryRun,
         _ => Throttle::Full,
     }
 }
@@ -245,8 +244,7 @@ fn trace_event_from(e: &Event) -> TraceEvent {
         occurred_at: e.occurred_at.to_rfc3339(),
         throttle: match e.throttle {
             Throttle::Full => 0,
-            Throttle::AuditOnly => 1,
-            Throttle::DryRun => 2,
+            Throttle::DryRun => 1,
         },
         trace_id: e.trace_id.clone().unwrap_or_default(),
         span_id: e.span_id.clone().unwrap_or_default(),

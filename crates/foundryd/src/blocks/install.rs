@@ -14,8 +14,7 @@ use crate::gateway::ShellGateway;
 
 task_block_new! {
     /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
-    /// Mutator — events logged but not delivered at `audit_only`;
-    /// simulated success at `dry_run`.
+    /// Mutator — simulated success at `dry_run`.
     ///
     /// Terminal block: this is the end of both the dirty and clean vulnerability
     /// remediation paths.

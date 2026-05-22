@@ -157,7 +157,7 @@ pub trait TaskBlock: Send + Sync {
     fn should_emit(&self, throttle: Throttle) -> bool {
         match self.kind() {
             BlockKind::Observer => true,
-            BlockKind::Mutator => throttle.allows_mutation(),
+            BlockKind::Mutator => throttle.permits_mutation(),
         }
     }
 
@@ -165,7 +165,7 @@ pub trait TaskBlock: Send + Sync {
     fn should_execute(&self, throttle: Throttle) -> bool {
         match self.kind() {
             BlockKind::Observer => true,
-            BlockKind::Mutator => throttle.allows_side_effects(),
+            BlockKind::Mutator => throttle.permits_mutation(),
         }
     }
 
@@ -249,7 +249,6 @@ mod tests {
     fn observer_should_emit_under_all_throttle_levels() {
         let block = StubObserver;
         assert!(block.should_emit(Throttle::Full));
-        assert!(block.should_emit(Throttle::AuditOnly));
         assert!(block.should_emit(Throttle::DryRun));
     }
 
@@ -257,7 +256,6 @@ mod tests {
     fn mutator_should_emit_only_under_full_throttle() {
         let block = StubMutator;
         assert!(block.should_emit(Throttle::Full));
-        assert!(!block.should_emit(Throttle::AuditOnly));
         assert!(!block.should_emit(Throttle::DryRun));
     }
 
@@ -265,7 +263,6 @@ mod tests {
     fn observer_should_execute_under_all_throttle_levels() {
         let block = StubObserver;
         assert!(block.should_execute(Throttle::Full));
-        assert!(block.should_execute(Throttle::AuditOnly));
         assert!(block.should_execute(Throttle::DryRun));
     }
 
@@ -273,7 +270,6 @@ mod tests {
     fn mutator_should_not_execute_in_dry_run() {
         let block = StubMutator;
         assert!(block.should_execute(Throttle::Full));
-        assert!(block.should_execute(Throttle::AuditOnly));
         assert!(!block.should_execute(Throttle::DryRun));
     }
 

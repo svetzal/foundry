@@ -16,8 +16,7 @@ use crate::gateway::ShellGateway;
 
 task_block_new! {
     /// Commits staged changes and pushes to the remote.
-    /// Mutator — events logged but not delivered at `audit_only`;
-    /// simulated success at `dry_run`.
+    /// Mutator — simulated success at `dry_run`.
     ///
     /// Real behaviour:
     /// - Self-filters when the trigger payload explicitly sets `"changes": false`.

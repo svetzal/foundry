@@ -12,8 +12,7 @@ use crate::gateway::AgentGateway;
 
 agent_block_new!(
     /// Attempts to fix a failing GitHub Actions pipeline.
-    /// Mutator -- events logged but not delivered at `audit_only`;
-    /// simulated success at `dry_run`.
+    /// Mutator -- simulated success at `dry_run`.
     ///
     /// Self-filters: only acts when `passing=false` in the trigger payload.
     ///

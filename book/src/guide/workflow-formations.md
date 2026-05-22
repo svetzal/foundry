@@ -299,12 +299,12 @@ commit if they pass.
 
 ### Scan Without Remediation
 
-Emit `scan_requested` with `audit_only` throttle. Scan Dependencies and
+Emit `scan_requested` with `dry_run` throttle. Scan Dependencies and
 the audit blocks run (they are Observers), but Remediate Vulnerability
-and Cut Release (Mutators) suppress their output.
+and Cut Release (Mutators) are simulated rather than executed.
 
 ```bash
-foundry emit scan_requested my-project --throttle audit_only
+foundry emit scan_requested my-project --throttle dry_run
 ```
 
 This tells you what vulnerabilities exist and whether main is dirty,
@@ -373,8 +373,8 @@ haven't built yet. A few principles guide what's possible:
    a payload value changes which blocks fire without changing any code.
 
 3. **Throttle controls depth.** The same formation behaves differently
-   under `full`, `audit_only`, and `dry_run`. This gives you three
-   versions of every formation for free.
+   under `full` and `dry_run`. This gives you two versions of every
+   formation for free.
 
 4. **Shared blocks multiply formations.** `Commit and Push` sinks on
    three different event types. `Install Locally` sinks on two. Every

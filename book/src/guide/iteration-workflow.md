@@ -105,7 +105,7 @@ It invokes an AI agent with coding capability and full filesystem access.
 The agent receives the plan plus gate context (the gates it must satisfy)
 and applies the changes.
 
-Under `audit_only` or `dry_run` throttle, this block returns a simulated
+Under `dry_run` throttle, this block returns a simulated
 success without modifying any files.
 
 **Legitimate no-ops** — When `correctionNeeded` is `false` in the
@@ -193,19 +193,6 @@ The full maintenance lifecycle triggers iteration automatically when
 ```bash
 foundry emit maintenance_run_started my-project
 ```
-
-### Audit only
-
-Observers run and emit, but mutators suppress downstream events:
-
-```bash
-foundry emit iteration_requested my-project \
-  --throttle audit_only \
-  --payload '{"actions":{"iterate":true,"maintain":false}}'
-```
-
-This runs the assessment and triage phases but stops at execution —
-useful for seeing what would be improved without modifying any files.
 
 ### Dry run
 

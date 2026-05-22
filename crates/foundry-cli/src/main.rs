@@ -40,7 +40,7 @@ enum Commands {
         #[arg(long)]
         project: String,
 
-        /// Throttle level: full, `audit_only`, `dry_run`
+        /// Throttle level: full, `dry_run`
         #[arg(long, default_value = "full")]
         throttle: String,
 
@@ -93,7 +93,7 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
 
-        /// Throttle level: full, `audit_only`, `dry_run`
+        /// Throttle level: full, `dry_run`
         #[arg(long, default_value = "full")]
         throttle: String,
     },

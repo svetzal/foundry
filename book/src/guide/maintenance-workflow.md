@@ -76,7 +76,6 @@ foundry emit maintenance_run_started my-project
 | Throttle | Effect |
 |----------|--------|
 | `full` | All blocks execute and emit events |
-| `audit_only` | Observers emit; mutators suppress output |
 | `dry_run` | Observers emit; mutators are skipped entirely |
 
 Under `dry_run`, only `iteration_requested` or `maintenance_requested` are

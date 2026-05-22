@@ -12,7 +12,7 @@ foundry emit <event_type> --project <project> [--throttle <level>] [--payload <j
 |----------|----------|-------------|
 | `event_type` | Yes | Event type name (e.g., `greet_requested`, `vulnerability_detected`) |
 | `--project` | Yes | Target project name |
-| `--throttle` | No | `full` (default), `audit_only`, or `dry_run` |
+| `--throttle` | No | `full` (default) or `dry_run` |
 | `--payload` | No | JSON string with event-specific data |
 | `--addr` | No | Daemon address (default: `http://127.0.0.1:50051`) |
 
@@ -25,10 +25,10 @@ foundry emit greet_requested --project hello
 # With payload
 foundry emit greet_requested --project hello --payload '{"name": "Stacey"}'
 
-# Audit only — observe without mutating
+# Dry run — observe without mutating
 foundry emit vulnerability_detected \
   --project my-tool \
-  --throttle audit_only \
+  --throttle dry_run \
   --payload '{"cve": "CVE-2026-1234", "severity": "high"}'
 
 # Dry run — no side effects at all

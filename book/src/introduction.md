@@ -68,9 +68,8 @@ recompilation.
 - **Task blocks** are reusable units of work. Each block sinks on specific
   event types, does work, and emits new events.
 - **Throttle** sits on a task block's output side. It controls whether
-  downstream events are emitted: `full` (everything propagates),
-  `audit_only` (observers emit, mutators suppress), or `dry_run`
-  (read-only, no side effects).
+  Mutators execute: `full` (everything runs and propagates) or `dry_run`
+  (Mutators are simulated, no side effects).
 - **Workflows** are compositions of task blocks wired together by events.
   They emerge from the emitter/sink relationships — not from a central
   orchestrator.

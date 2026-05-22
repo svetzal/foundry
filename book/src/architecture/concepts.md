@@ -47,8 +47,7 @@ events.
 | Level | Observers | Mutators |
 |-------|-----------|----------|
 | `full` | Execute + emit | Execute + emit |
-| `audit_only` | Execute + emit | Execute + **suppress emission** |
-| `dry_run` | Execute + emit | **Skip execution** + suppress emission |
+| `dry_run` | Execute + emit | **Skip execution** + simulate success |
 
 The throttle is set when an event is first emitted (e.g., via CLI) and
 propagated through the entire chain. This means a single command controls

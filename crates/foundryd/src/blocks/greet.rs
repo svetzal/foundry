@@ -46,8 +46,7 @@ impl TaskBlock for ComposeGreeting {
 }
 
 /// Delivers a composed greeting (simulates a side effect).
-/// Mutator — events logged but not delivered at `audit_only`;
-/// simulated success at `dry_run`.
+/// Mutator — simulated success at `dry_run`.
 pub struct DeliverGreeting;
 
 impl TaskBlock for DeliverGreeting {

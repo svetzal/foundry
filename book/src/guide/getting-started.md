@@ -81,15 +81,16 @@ Three events in the chain: `greet_requested` → `greeting_composed` → `greeti
 ## Try Throttle Control
 
 ```bash
-# Observers run, mutators suppress emission
+# Observers run for real, mutators are simulated
 foundry emit greet_requested \
   --project hello \
-  --throttle audit_only \
+  --throttle dry_run \
   --payload '{"name": "World"}'
 ```
 
-Now you'll see only 2 events — `greeting_delivered` is suppressed because
-Deliver Greeting is a Mutator and the throttle is `audit_only`.
+You'll still see all 3 events, but `greeting_delivered` carries
+`dry_run: true` — Deliver Greeting is a Mutator, so under `dry_run` it is
+simulated via `dry_run_events()` rather than executed.
 
 ## Quality Gates
 

@@ -613,37 +613,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audit_only_logs_mutator_events_but_does_not_deliver() {
-        let mut engine = Engine::new();
-        engine.register(Box::new(TestObserver));
-        engine.register(Box::new(TestMutator));
-
-        let trigger = Event::new(
-            EventType::GreetingRequested,
-            "test-project".to_string(),
-            Throttle::AuditOnly,
-            serde_json::json!({"name": "world"}),
-        );
-
-        let result = engine.process(trigger).await;
-
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        // Mutator executes and its event is logged (in all_events), but not delivered
-        // to downstream blocks. The chain stops at the mutation boundary.
-        assert_eq!(
-            types,
-            [
-                "greeting_requested",
-                "greeting_composed",
-                "greeting_delivered"
-            ]
-        );
-        // The mutator's execution is recorded as successful (it ran for real).
-        assert_eq!(result.block_executions.len(), 2);
-        assert!(result.block_executions.iter().all(|b| b.success));
-    }
-
-    #[tokio::test]
     async fn dry_run_simulates_mutator_success() {
         let mut engine = Engine::new();
         engine.register(Box::new(TestObserver));

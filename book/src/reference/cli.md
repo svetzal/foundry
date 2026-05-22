@@ -20,7 +20,7 @@ foundry emit <event_type> --project <project> [--throttle <level>] [--payload <j
 |----------|----------|-------------|
 | `event_type` | Yes | Event type name (positional) |
 | `--project` | Yes | Target project |
-| `--throttle` | No | `full`, `audit_only`, or `dry_run` (default: `full`) |
+| `--throttle` | No | `full` or `dry_run` (default: `full`) |
 | `--payload` | No | JSON string with event-specific data |
 | `--wait` | No | Block until processing completes, then display the trace |
 
@@ -108,7 +108,7 @@ foundry run [--project <project>] [--throttle <level>]
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--project` | No | Limit run to a single project by name; omit to run all projects |
-| `--throttle` | No | `full`, `audit_only`, or `dry_run` (default: `full`) |
+| `--throttle` | No | `full` or `dry_run` (default: `full`) |
 
 `foundry run` emits a `maintenance_run_started` event which triggers the
 maintenance workflow chain: validate → iterate (if enabled) → maintain (if

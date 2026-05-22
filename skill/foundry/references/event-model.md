@@ -17,7 +17,7 @@ Every event in Foundry has this shape:
 ```
 
 - **id** — Deterministic SHA256 hash of (event_type, project, occurred_at, payload), prefixed `evt_`. Same inputs always produce the same ID.
-- **throttle** — 0 = Full, 1 = AuditOnly, 2 = DryRun. Propagated through the entire chain.
+- **throttle** — 0 = Full, 1 = DryRun. Propagated through the entire chain.
 - **payload** — Event-specific JSON. Completion events use `"success": true/false`.
 
 > **Tracing:** Every event also carries `span_id` and `parent_span_id` fields used for OTel-shaped nested tracing. These let trace renderers reconstruct the hierarchical span tree across chained events. See `book/src/architecture/tracing.md` for details.

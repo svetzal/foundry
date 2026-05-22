@@ -12,7 +12,7 @@ Every event carries these common fields:
 | `project` | string | Project this event relates to |
 | `occurred_at` | RFC 3339 timestamp | When the event happened |
 | `recorded_at` | RFC 3339 timestamp | When the event was logged |
-| `throttle` | string | `full`, `audit_only`, or `dry_run` |
+| `throttle` | string | `full` or `dry_run` |
 | `payload` | JSON object | Event-type-specific fields (see below) |
 
 ## Hello-World (engine validation)

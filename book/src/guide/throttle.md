@@ -8,8 +8,9 @@ It's set at invocation time and propagated through every event in the chain.
 | Level | Observers | Mutators | Use case |
 |-------|-----------|----------|----------|
 | `full` | Execute + emit | Execute + emit | Automated runs, nightly maintenance |
-| `audit_only` | Execute + emit | Execute + suppress emission | "Just check" — audit without releasing |
-| `dry_run` | Execute + emit | Skip execution entirely | Preview what would happen |
+| `dry_run` | Execute + emit | Skip execution, simulate success via `dry_run_events()` | Preview what would happen |
+
+`full` is the default.
 
 ## How It Works
 
@@ -18,13 +19,19 @@ block emits downstream events, those events carry the same throttle as
 the triggering event. This means the throttle decision is made once (at
 invocation) and respected throughout the chain.
 
-```text
-foundry emit vulnerability_detected --project my-tool --throttle audit_only
+Under `dry_run`, Mutator blocks are not executed at all. Instead they
+simulate success via `dry_run_events()`. The simulated events carry
+`dry_run: true` and are still delivered downstream, so the full shape of
+the chain remains visible even though no Mutator actually ran.
 
-  vulnerability_detected (throttle: audit_only)
+```text
+foundry emit vulnerability_detected --project my-tool --throttle dry_run
+
+  vulnerability_detected (throttle: dry_run)
     → Audit Main Branch (Observer) → executes, emits main_branch_audited
-      → Cut Release (Mutator) → executes, but SUPPRESSES release_completed
-        (chain stops here — no further propagation)
+      → Cut Release (Mutator) → NOT executed, emits simulated
+        release_completed (dry_run: true)
+        → downstream blocks still see the chain
 ```
 
 ## Observer vs Mutator
@@ -34,11 +41,10 @@ The key design question for every task block: is it an Observer or a Mutator?
 - **Observer**: reads state, runs scans, checks conditions. Never changes
   the world. Always runs, always emits, regardless of throttle.
 - **Mutator**: writes files, pushes commits, cuts releases, installs tools.
-  Changes the world. Throttle controls whether it runs and emits.
+  Changes the world. Throttle controls whether it runs.
 
-At `audit_only`, a Mutator still **executes** (so you see what it would
-do in the logs) but **suppresses emission** (so downstream blocks don't
-fire). At `dry_run`, Mutators don't execute at all.
+At `dry_run`, Mutators don't execute at all — they simulate success via
+`dry_run_events()`, and the simulated events carry `dry_run: true`.
 
 ## CLI Usage
 
@@ -47,6 +53,5 @@ fire). At `dry_run`, Mutators don't execute at all.
 foundry emit greet_requested --project hello
 
 # Explicit throttle
-foundry emit greet_requested --project hello --throttle audit_only
 foundry emit greet_requested --project hello --throttle dry_run
 ```

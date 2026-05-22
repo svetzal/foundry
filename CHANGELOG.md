@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- The `audit_only` throttle level. It executed Mutator blocks for real but
+  suppressed delivery of their events, so a chain halted at the first
+  mutation — a confusing middle ground whose name implied the opposite of its
+  behaviour. `Throttle` is now binary: `full` (run for real) and `dry_run`
+  (simulate Mutators). The proto throttle encoding is now `0 = full`,
+  `1 = dry_run`. No workflow depended on the halt-at-first-mutation
+  behaviour.
+
 ### Changed
 
 - `FanOutMaintenance` now uses the scatter/gather primitive. A system

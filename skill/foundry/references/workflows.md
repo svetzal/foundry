@@ -180,10 +180,10 @@ Both paths share the same `AgentRelease` work block (ComposedStep architecture) 
 
 ## Task Block Types
 
-| Kind | Throttle: Full | Throttle: AuditOnly | Throttle: DryRun |
-|------|---------------|--------------------|--------------------|
-| **Observer** | Executes and emits | Executes and emits | Executes and emits |
-| **Mutator** | Executes and emits | Logs but doesn't deliver downstream | Simulates success via `dry_run_events()` |
+| Kind | Throttle: Full | Throttle: DryRun |
+|------|---------------|--------------------|
+| **Observer** | Executes and emits | Executes and emits |
+| **Mutator** | Executes and emits | Simulates success via `dry_run_events()` |
 
 ## File Dependencies
 

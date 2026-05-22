@@ -18,7 +18,7 @@ foundry/
 Shared types used by both the daemon and CLI:
 
 - `event.rs` — `Event` struct, `EventType` enum, deterministic ID generation
-- `throttle.rs` — `Throttle` enum (`Full`, `AuditOnly`, `DryRun`)
+- `throttle.rs` — `Throttle` enum (`Full`, `DryRun`)
 - `task_block.rs` — `TaskBlock` trait, `BlockKind`, `TaskBlockResult`, `RetryPolicy`
 - `registry.rs` — `Registry`, `ProjectEntry`, `ActionFlags`, `Stack`, `InstallConfig`
 - `trace.rs` — `TraceIndex`, `BlockExecution`, `ProcessResult` — the structured
