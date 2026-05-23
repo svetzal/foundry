@@ -235,6 +235,95 @@ fn parse_throttle(proto_value: i32) -> Throttle {
     }
 }
 
+fn parse_emit_request(req: EmitRequest) -> Result<Event, Status> {
+    let event_type: EventType =
+        req.event_type.parse().map_err(|e| Status::invalid_argument(format!("{e}")))?;
+
+    let throttle = parse_throttle(req.throttle);
+
+    let payload: serde_json::Value = if req.payload_json.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&req.payload_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid payload JSON: {e}")))?
+    };
+
+    let trace_id = if req.trace_id.is_empty() {
+        foundry_core::event::mint_trace_id()
+    } else {
+        req.trace_id
+    };
+    let request_span_id = if req.span_id.is_empty() {
+        Some(foundry_core::event::mint_span_id())
+    } else {
+        Some(req.span_id)
+    };
+    let request_parent_span_id = if req.parent_span_id.is_empty() {
+        None
+    } else {
+        Some(req.parent_span_id)
+    };
+    Ok(Event::new(event_type, req.project, throttle, payload)
+        .with_trace_id(Some(trace_id))
+        .with_span_ids(request_span_id, request_parent_span_id))
+}
+
+async fn run_workflow(
+    event: Event,
+    engine: Arc<Engine>,
+    trace_store: Arc<TraceStore>,
+    tracker: Arc<WorkflowTracker>,
+    trace_writer: Arc<TraceWriter>,
+    event_tx: broadcast::Sender<Event>,
+    registry: Arc<RwLock<Registry>>,
+) {
+    let event_id = event.id.clone();
+    let root_event_type = event.event_type.clone();
+    let root_project = event.project.clone();
+    let root_throttle = event.throttle;
+
+    let _guard = WorkflowGuard::new(tracker, event_id.clone());
+
+    let result = engine.process(event).await;
+
+    tracing::info!(
+        total_events = result.events.len(),
+        blocks_executed = result.block_executions.len(),
+        "event chain complete"
+    );
+
+    if let Err(e) = trace_writer.write(&event_id, &result) {
+        tracing::warn!(error = %e, event_id = %event_id, "failed to write trace to disk");
+    }
+
+    if root_event_type == EventType::MaintenanceCycleStarted && root_project == "system" {
+        finalise_system_maintenance(
+            &result,
+            &engine,
+            &trace_writer,
+            &registry,
+            root_throttle,
+            &event_tx,
+            &event_id,
+        )
+        .await;
+    } else if root_event_type == EventType::ProjectRunStarted {
+        let success = result.is_success();
+        let completed = Event::new(
+            EventType::ProjectRunCompleted,
+            root_project,
+            root_throttle,
+            serde_json::json!({
+                "success": success,
+                "root_event_id": event_id,
+            }),
+        );
+        let _ = event_tx.send(completed);
+    }
+
+    trace_store.insert(event_id, result);
+}
+
 /// Convert a domain `Event` to the proto `TraceEvent` message.
 fn trace_event_from(e: &Event) -> TraceEvent {
     TraceEvent {
@@ -272,42 +361,11 @@ fn trace_block_from(b: &BlockExecution) -> TraceBlockExecution {
 }
 
 #[tonic::async_trait]
-#[allow(clippy::too_many_lines)]
 impl Foundry for FoundryService {
     async fn emit(&self, request: Request<EmitRequest>) -> Result<Response<EmitResponse>, Status> {
-        let req = request.into_inner();
-
-        let event_type: EventType =
-            req.event_type.parse().map_err(|e| Status::invalid_argument(format!("{e}")))?;
-
-        let throttle = parse_throttle(req.throttle);
-
-        let payload: serde_json::Value = if req.payload_json.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_str(&req.payload_json)
-                .map_err(|e| Status::invalid_argument(format!("invalid payload JSON: {e}")))?
-        };
-
-        let trace_id = if req.trace_id.is_empty() {
-            foundry_core::event::mint_trace_id()
-        } else {
-            req.trace_id
-        };
-        let request_span_id = if req.span_id.is_empty() {
-            Some(foundry_core::event::mint_span_id())
-        } else {
-            Some(req.span_id)
-        };
-        let request_parent_span_id = if req.parent_span_id.is_empty() {
-            None
-        } else {
-            Some(req.parent_span_id)
-        };
-        let event = Event::new(event_type, req.project, throttle, payload)
-            .with_trace_id(Some(trace_id.clone()))
-            .with_span_ids(request_span_id, request_parent_span_id);
+        let event = parse_emit_request(request.into_inner())?;
         let event_id = event.id.clone();
+        let trace_id = event.trace_id.clone().unwrap_or_default();
 
         tracing::info!(
             event_id = %event_id,
@@ -326,16 +384,6 @@ impl Foundry for FoundryService {
             started_at: chrono::Utc::now(),
         });
 
-        let engine = Arc::clone(&self.engine);
-        let trace_store = Arc::clone(&self.trace_store);
-        let tracker = Arc::clone(&self.workflow_tracker);
-        let trace_writer = Arc::clone(&self.trace_writer);
-        let event_tx = self.event_tx.clone();
-        let root_event_type = event.event_type.clone();
-        let root_project = event.project.clone();
-        let root_throttle = event.throttle;
-        let registry = Arc::clone(&self.registry);
-
         let span = tracing::info_span!(
             "process",
             event_id = %event_id,
@@ -343,65 +391,23 @@ impl Foundry for FoundryService {
             project = %event.project,
         );
 
-        let bg_event_id = event_id.clone();
         tokio::spawn(
-            async move {
-                // Guard ensures removal from tracker even on panic.
-                let _guard = WorkflowGuard::new(tracker, bg_event_id.clone());
-
-                let result = engine.process(event).await;
-
-                tracing::info!(
-                    total_events = result.events.len(),
-                    blocks_executed = result.block_executions.len(),
-                    "event chain complete"
-                );
-
-                // Persist trace to disk before inserting into the in-memory store.
-                if let Err(e) = trace_writer.write(&bg_event_id, &result) {
-                    tracing::warn!(error = %e, event_id = %bg_event_id, "failed to write trace to disk");
-                }
-
-                if root_event_type == EventType::MaintenanceCycleStarted
-                    && root_project == "system"
-                {
-                    finalise_system_maintenance(
-                        &result,
-                        &engine,
-                        &trace_writer,
-                        &registry,
-                        root_throttle,
-                        &event_tx,
-                        &bg_event_id,
-                    )
-                    .await;
-                } else if root_event_type == EventType::ProjectRunStarted {
-                    // Per-project maintenance run (not system-level): broadcast
-                    // completion so Watch clients see it.
-                    let success = result.is_success();
-                    let completed = Event::new(
-                        EventType::ProjectRunCompleted,
-                        root_project,
-                        root_throttle,
-                        serde_json::json!({
-                            "success": success,
-                            "root_event_id": bg_event_id,
-                        }),
-                    );
-                    let _ = event_tx.send(completed);
-                }
-
-                trace_store.insert(bg_event_id, result);
-            }
+            run_workflow(
+                event,
+                Arc::clone(&self.engine),
+                Arc::clone(&self.trace_store),
+                Arc::clone(&self.workflow_tracker),
+                Arc::clone(&self.trace_writer),
+                self.event_tx.clone(),
+                Arc::clone(&self.registry),
+            )
             .instrument(span),
         );
 
-        let response = EmitResponse {
+        Ok(Response::new(EmitResponse {
             event_id,
             workflow_id: String::new(),
-        };
-
-        Ok(Response::new(response))
+        }))
     }
 
     async fn status(
@@ -567,6 +573,7 @@ impl Foundry for FoundryService {
         Ok(Response::new(RegistryRemoveResponse {}))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn registry_edit(
         &self,
         request: Request<RegistryEditRequest>,

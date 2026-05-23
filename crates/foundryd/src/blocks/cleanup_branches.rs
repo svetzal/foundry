@@ -75,46 +75,22 @@ async fn cleanup_merged_branches(
     deleted
 }
 
-/// Remove stale git worktrees.
+/// Parse porcelain output from `git worktree list --porcelain` and remove
+/// each non-main worktree. Returns the number of worktrees removed.
 ///
-/// Runs `git worktree prune` to clean up worktree metadata for directories
-/// that no longer exist, then removes any remaining worktree directories
-/// under `.claude/worktrees/` whose branches are fully merged.
-async fn cleanup_stale_worktrees(project: &str, path: &Path, shell: &dyn ShellGateway) -> usize {
-    // First, prune worktree metadata for directories that no longer exist on disk.
-    match shell.run(path, "git", &["worktree", "prune"], None, None).await {
-        Ok(r) if r.success => {
-            tracing::debug!(%project, "git worktree prune succeeded");
-        }
-        Ok(r) => {
-            tracing::warn!(%project, stderr = %r.stderr.trim(), "git worktree prune failed");
-        }
-        Err(err) => {
-            tracing::warn!(%project, error = %err, "git worktree prune error");
-        }
-    }
-
-    // List remaining worktrees and remove any that are not the main working tree.
-    let result =
-        match shell.run(path, "git", &["worktree", "list", "--porcelain"], None, None).await {
-            Ok(r) if r.success => r,
-            Ok(r) => {
-                tracing::warn!(%project, stderr = %r.stderr.trim(), "git worktree list failed");
-                return 0;
-            }
-            Err(err) => {
-                tracing::warn!(%project, error = %err, "git worktree list error");
-                return 0;
-            }
-        };
-
-    // Porcelain format: blocks separated by blank lines.
-    // Each block has "worktree <path>" as the first line.
-    // The main worktree is the first entry — skip it.
+/// The porcelain format is newline-separated blocks (one per worktree). The
+/// first block is the main working tree and is skipped; subsequent blocks are
+/// secondary worktrees eligible for removal.
+async fn remove_worktrees(
+    project: &str,
+    path: &Path,
+    shell: &dyn ShellGateway,
+    porcelain_output: &str,
+) -> usize {
     let mut removed = 0;
     let mut is_first = true;
 
-    for block in result.stdout.split("\n\n") {
+    for block in porcelain_output.split("\n\n") {
         if is_first {
             is_first = false;
             continue;
@@ -150,6 +126,42 @@ async fn cleanup_stale_worktrees(project: &str, path: &Path, shell: &dyn ShellGa
     }
 
     removed
+}
+
+/// Remove stale git worktrees.
+///
+/// Runs `git worktree prune` to clean up worktree metadata for directories
+/// that no longer exist, then removes any remaining secondary worktree
+/// directories reported by `git worktree list --porcelain`.
+async fn cleanup_stale_worktrees(project: &str, path: &Path, shell: &dyn ShellGateway) -> usize {
+    // Prune worktree metadata for directories that no longer exist on disk.
+    match shell.run(path, "git", &["worktree", "prune"], None, None).await {
+        Ok(r) if r.success => {
+            tracing::debug!(%project, "git worktree prune succeeded");
+        }
+        Ok(r) => {
+            tracing::warn!(%project, stderr = %r.stderr.trim(), "git worktree prune failed");
+        }
+        Err(err) => {
+            tracing::warn!(%project, error = %err, "git worktree prune error");
+        }
+    }
+
+    // List remaining worktrees and remove any secondary entries.
+    let result =
+        match shell.run(path, "git", &["worktree", "list", "--porcelain"], None, None).await {
+            Ok(r) if r.success => r,
+            Ok(r) => {
+                tracing::warn!(%project, stderr = %r.stderr.trim(), "git worktree list failed");
+                return 0;
+            }
+            Err(err) => {
+                tracing::warn!(%project, error = %err, "git worktree list error");
+                return 0;
+            }
+        };
+
+    remove_worktrees(project, path, shell, &result.stdout).await
 }
 
 impl TaskBlock for CleanupBranches {

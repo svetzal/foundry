@@ -27,17 +27,17 @@ const MIN_CONTENT_LENGTH: usize = 100;
 pub fn check_charter(project_dir: &Path) -> CharterResult {
     let mut sources = Vec::new();
 
-    // Check CHARTER.md
-    let charter_path = project_dir.join("CHARTER.md");
-    if let Ok(content) = std::fs::read_to_string(&charter_path) {
-        if content.trim().len() >= MIN_CONTENT_LENGTH {
-            sources.push("CHARTER.md".to_string());
+    // Simple content-length checks: read file, verify trimmed length meets threshold.
+    for (filename, label) in &[("CHARTER.md", "CHARTER.md"), ("README.md", "README.md")] {
+        if let Ok(content) = std::fs::read_to_string(project_dir.join(filename)) {
+            if content.trim().len() >= MIN_CONTENT_LENGTH {
+                sources.push((*label).to_string());
+            }
         }
     }
 
-    // Check CLAUDE.md for "## Project Charter" section
-    let claude_path = project_dir.join("CLAUDE.md");
-    if let Ok(content) = std::fs::read_to_string(&claude_path) {
+    // CLAUDE.md: requires section extraction rather than a raw length check.
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("CLAUDE.md")) {
         if let Some(section) = extract_section(&content, "## Project Charter") {
             if section.trim().len() >= MIN_CONTENT_LENGTH {
                 sources.push("CLAUDE.md (Project Charter section)".to_string());
@@ -45,25 +45,15 @@ pub fn check_charter(project_dir: &Path) -> CharterResult {
         }
     }
 
-    // Check README.md
-    let readme_path = project_dir.join("README.md");
-    if let Ok(content) = std::fs::read_to_string(&readme_path) {
-        if content.trim().len() >= MIN_CONTENT_LENGTH {
-            sources.push("README.md".to_string());
-        }
-    }
-
-    // Check Cargo.toml description
-    let cargo_path = project_dir.join("Cargo.toml");
-    if let Ok(content) = std::fs::read_to_string(&cargo_path) {
+    // Cargo.toml: presence of a description field inside [package].
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("Cargo.toml")) {
         if content.contains("[package]") && content.contains("description") {
             sources.push("Cargo.toml (package description)".to_string());
         }
     }
 
-    // Check package.json description
-    let pkg_path = project_dir.join("package.json");
-    if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+    // package.json: non-empty "description" key.
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json")) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
             if json
                 .get("description")

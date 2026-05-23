@@ -74,6 +74,25 @@ async fn execute_with_retry(
     last_result.expect("loop always sets last_result")
 }
 
+fn make_block_execution(
+    block: &dyn TaskBlock,
+    current: &Event,
+    block_span_id: String,
+    workflow_span_id: Option<String>,
+    block_start: std::time::Instant,
+    success: bool,
+    summary: String,
+) -> BlockExecution {
+    let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    BlockExecution {
+        success,
+        summary,
+        span_id: Some(block_span_id),
+        parent_span_id: workflow_span_id,
+        ..BlockExecution::new(block.name(), &current.id, duration_ms, current.payload.clone())
+    }
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
@@ -288,15 +307,10 @@ impl Engine {
         current: &Event,
         state: &mut ProcessState,
     ) -> BlockExecution {
-        // Mint a fresh span for this dispatch. The block's span is a CHILD of
-        // the workflow span carried on the triggering event.
         let block_span_id = foundry_core::event::mint_span_id();
         let workflow_span_id = current.span_id.clone();
 
         let block_start = std::time::Instant::now();
-
-        // DRY-RUN PRETEND-SUCCESS: Mutator blocks under DryRun are not executed.
-        // Instead, we generate synthetic success events via dry_run_events().
         if !block.should_execute(current.throttle)
             && current.throttle == Throttle::DryRun
             && block.kind() == BlockKind::Mutator
@@ -310,46 +324,35 @@ impl Engine {
                 state,
                 true,
             );
-            let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            return BlockExecution {
-                success: true,
-                summary: "dry-run (simulated)".to_string(),
-                emitted_event_ids: emitted_ids,
-                emitted_payloads,
-                span_id: Some(block_span_id),
-                parent_span_id: workflow_span_id,
-                ..BlockExecution::new(
-                    block.name(),
-                    &current.id,
-                    duration_ms,
-                    current.payload.clone(),
-                )
-            };
+            let mut exec = make_block_execution(
+                block,
+                current,
+                block_span_id,
+                workflow_span_id,
+                block_start,
+                true,
+                "dry-run (simulated)".to_string(),
+            );
+            exec.emitted_event_ids = emitted_ids;
+            exec.emitted_payloads = emitted_payloads;
+            return exec;
         }
 
-        // Non-DryRun skip (should not normally happen given current throttle
-        // semantics, but kept as a safety net).
+        // Non-DryRun throttle skip — should not happen in practice, kept as a safety net.
         if !block.should_execute(current.throttle) {
             tracing::info!("skipped (throttle)");
-            let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            return BlockExecution {
-                success: true,
-                summary: "skipped (throttle)".to_string(),
-                span_id: Some(block_span_id),
-                parent_span_id: workflow_span_id,
-                ..BlockExecution::new(
-                    block.name(),
-                    &current.id,
-                    duration_ms,
-                    current.payload.clone(),
-                )
-            };
+            return make_block_execution(
+                block,
+                current,
+                block_span_id,
+                workflow_span_id,
+                block_start,
+                true,
+                "skipped (throttle)".to_string(),
+            );
         }
 
-        // Scope SPAN_CONTEXT for the duration of block execution so that
-        // any subprocess spawn site inside the block (shell.rs,
-        // agent_stream.rs, etc.) can inject `TRACEPARENT` derived from the
-        // active workflow trace and this block's own freshly minted span.
+        // Scope SPAN_CONTEXT so subprocess spawners inside the block can inject TRACEPARENT.
         let exec_future = execute_with_retry(block, current, block.retry_policy());
         let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
             let span_ctx = crate::span_context::SpanContext {
@@ -382,41 +385,33 @@ impl Engine {
                         self.dispatch_scatter(*scatter, current, &block_span_id, state, deliver);
                     emitted_ids.extend(child_ids);
                 }
-                let duration_ms =
-                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                BlockExecution {
-                    success: result.success,
-                    summary: result.summary,
-                    emitted_event_ids: emitted_ids,
-                    raw_output: result.raw_output,
-                    exit_code: result.exit_code,
-                    emitted_payloads,
-                    audit_artifacts: result.audit_artifacts,
-                    span_id: Some(block_span_id),
-                    parent_span_id: workflow_span_id,
-                    ..BlockExecution::new(
-                        block.name(),
-                        &current.id,
-                        duration_ms,
-                        current.payload.clone(),
-                    )
-                }
+                let mut exec = make_block_execution(
+                    block,
+                    current,
+                    block_span_id,
+                    workflow_span_id,
+                    block_start,
+                    result.success,
+                    result.summary,
+                );
+                exec.emitted_event_ids = emitted_ids;
+                exec.raw_output = result.raw_output;
+                exec.exit_code = result.exit_code;
+                exec.emitted_payloads = emitted_payloads;
+                exec.audit_artifacts = result.audit_artifacts;
+                exec
             }
             Err(err) => {
                 tracing::error!(error = %err, "failed");
-                let duration_ms =
-                    u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                BlockExecution {
-                    summary: format!("error: {err}"),
-                    span_id: Some(block_span_id),
-                    parent_span_id: workflow_span_id,
-                    ..BlockExecution::new(
-                        block.name(),
-                        &current.id,
-                        duration_ms,
-                        current.payload.clone(),
-                    )
-                }
+                make_block_execution(
+                    block,
+                    current,
+                    block_span_id,
+                    workflow_span_id,
+                    block_start,
+                    false,
+                    format!("error: {err}"),
+                )
             }
         }
     }
