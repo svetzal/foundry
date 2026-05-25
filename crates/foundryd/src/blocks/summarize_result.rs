@@ -88,21 +88,7 @@ impl TaskBlock for SummarizeResult {
             )
             .await;
 
-            let (headline, summary) = match outcome {
-                AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
-                AgentOutcome::AgentFailed { stderr } => {
-                    tracing::warn!(
-                        project = %project,
-                        stderr = %stderr,
-                        "summary agent failed"
-                    );
-                    (format!("Update {project}"), "Automated maintenance completed.".to_string())
-                }
-                AgentOutcome::Unavailable { error } => {
-                    tracing::warn!(error = %error, "agent invocation failed for summary");
-                    (format!("Update {project}"), "Automated maintenance completed.".to_string())
-                }
-            };
+            let (headline, summary) = extract_headline_summary(outcome, &project);
 
             tracing::info!(
                 project = %project,
@@ -122,6 +108,20 @@ impl TaskBlock for SummarizeResult {
                 },
             )
         })
+    }
+}
+
+fn extract_headline_summary(outcome: AgentOutcome, project: &str) -> (String, String) {
+    match outcome {
+        AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
+        AgentOutcome::AgentFailed { stderr } => {
+            tracing::warn!(project = %project, stderr = %stderr, "summary agent failed");
+            (format!("Update {project}"), "Automated maintenance completed.".to_string())
+        }
+        AgentOutcome::Unavailable { error } => {
+            tracing::warn!(error = %error, "agent invocation failed for summary");
+            (format!("Update {project}"), "Automated maintenance completed.".to_string())
+        }
     }
 }
 

@@ -76,48 +76,11 @@ impl CommitAndPush {
             return Ok(TaskBlockResult::success("No changes to commit", vec![]));
         }
 
-        // Stage everything.
-        shell.run(path, "git", &["add", "-A"], None, None).await?;
-
-        // Commit message varies by the event that triggered this block.
-        let commit_msg = commit_message(&event_type, &project);
-
-        let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
-        if !commit.success {
-            // "nothing to commit" is not an error — can happen when both
-            // iterate and maintain trigger CommitAndPush and the first one
-            // already committed everything, or when git add -A stages
-            // content identical to HEAD.
-            let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
-            if combined.contains("nothing to commit") || combined.contains("no changes added") {
-                tracing::info!(%project, "git commit found nothing to commit");
-                return Ok(TaskBlockResult::success("No changes to commit", vec![]));
-            }
-            return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
-        }
-
-        tracing::info!(%project, "committed changes");
-
-        // Push if permitted, collecting the push payload for event construction.
-        let push_payload = if push_enabled {
-            tracing::info!(%project, "pushing changes");
-            let push = shell.run(path, "git", &["push"], None, None).await?;
-            if push.success {
-                Some(ProjectChangesPushedPayload {
-                    project: project.clone(),
-                    cve: cve.clone(),
-                    message: None,
-                    dry_run: None,
-                    stub: None,
-                })
-            } else {
-                tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
-                None
-            }
-        } else {
-            tracing::info!(%project, "push disabled in registry, skipping");
-            None
+        let Some(commit_msg) = commit_changes(&*shell, path, &project, &event_type).await? else {
+            return Ok(TaskBlockResult::success("No changes to commit", vec![]));
         };
+
+        let push_payload = push_if_enabled(&*shell, path, &project, &cve, push_enabled).await?;
 
         let events = build_commit_push_events(
             &project,
@@ -247,6 +210,63 @@ impl TaskBlock for CommitAndPush {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
+    }
+}
+
+/// Stage all changes and commit; returns the commit message on success, `None` when
+/// git reports nothing to commit (a successful no-op), and `Err` on real failures.
+async fn commit_changes(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    project: &str,
+    event_type: &EventType,
+) -> anyhow::Result<Option<String>> {
+    shell.run(path, "git", &["add", "-A"], None, None).await?;
+
+    let commit_msg = commit_message(event_type, project);
+    let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
+
+    if !commit.success {
+        // "nothing to commit" is not an error — can happen when both iterate and maintain
+        // trigger CommitAndPush and the first one already committed everything, or when
+        // git add -A stages content identical to HEAD.
+        let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
+        if combined.contains("nothing to commit") || combined.contains("no changes added") {
+            tracing::info!(%project, "git commit found nothing to commit");
+            return Ok(None);
+        }
+        return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
+    }
+
+    tracing::info!(%project, "committed changes");
+    Ok(Some(commit_msg))
+}
+
+/// Push the committed changes when `push_enabled`; returns the push payload on success.
+async fn push_if_enabled(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    project: &str,
+    cve: &str,
+    push_enabled: bool,
+) -> anyhow::Result<Option<ProjectChangesPushedPayload>> {
+    if !push_enabled {
+        tracing::info!(%project, "push disabled in registry, skipping");
+        return Ok(None);
+    }
+    tracing::info!(%project, "pushing changes");
+    let push = shell.run(path, "git", &["push"], None, None).await?;
+    if push.success {
+        Ok(Some(ProjectChangesPushedPayload {
+            project: project.to_string(),
+            cve: cve.to_string(),
+            message: None,
+            dry_run: None,
+            stub: None,
+        }))
+    } else {
+        tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
+        Ok(None)
     }
 }
 

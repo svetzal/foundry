@@ -49,43 +49,13 @@ impl TaskBlock for ExecutePlan {
         let plan_payload = parse_payload!(trigger, PlanCompletedPayload);
 
         if !plan_payload.correction_needed {
-            let reason = plan_payload.correction_reason.clone();
-            let summary =
-                "no correction needed — codebase satisfies assessed principle".to_string();
-            let context = LoopContext::extract_from(&payload);
-            let workflow = WorkflowType::from_payload(&payload);
-            let exec_payload = ExecutionCompletedPayload {
-                project: project.clone(),
-                workflow: workflow.to_string(),
-                success: true,
-                summary: summary.clone(),
-                execution_output: if reason.is_empty() {
-                    None
-                } else {
-                    Some(reason)
-                },
-                dry_run: None,
-                retry_count: None,
-                changes_detected: Some(false),
-                files_changed: vec![],
-                context,
-            };
-            let event = match trigger.with_payload(EventType::ExecutionCompleted, &exec_payload) {
-                Ok(e) => e,
-                Err(e) => return Box::pin(async move { Err(e) }),
-            };
-            tracing::info!(
-                project = %project,
-                "iterate plan concluded no correction needed; short-circuiting before agent invocation"
+            let result = build_no_correction_result(
+                &project,
+                trigger,
+                &payload,
+                &plan_payload.correction_reason,
             );
-            return Box::pin(async move {
-                Ok(TaskBlockResult {
-                    events: vec![event],
-                    success: true,
-                    summary: format!("{project}: {summary}"),
-                    ..Default::default()
-                })
-            });
+            return Box::pin(async move { result });
         }
 
         // Read the workflow from the trigger payload so that non-iterate callers
@@ -111,6 +81,44 @@ impl TaskBlock for ExecutePlan {
             Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
         })
     }
+}
+
+fn build_no_correction_result(
+    project: &str,
+    trigger: &Event,
+    payload: &serde_json::Value,
+    reason: &str,
+) -> anyhow::Result<TaskBlockResult> {
+    let summary = "no correction needed — codebase satisfies assessed principle".to_string();
+    let context = LoopContext::extract_from(payload);
+    let workflow = WorkflowType::from_payload(payload);
+    let exec_payload = ExecutionCompletedPayload {
+        project: project.to_string(),
+        workflow: workflow.to_string(),
+        success: true,
+        summary: summary.clone(),
+        execution_output: if reason.is_empty() {
+            None
+        } else {
+            Some(reason.to_string())
+        },
+        dry_run: None,
+        retry_count: None,
+        changes_detected: Some(false),
+        files_changed: vec![],
+        context,
+    };
+    tracing::info!(
+        project = %project,
+        "iterate plan concluded no correction needed; short-circuiting before agent invocation"
+    );
+    let event = trigger.with_payload(EventType::ExecutionCompleted, &exec_payload)?;
+    Ok(TaskBlockResult {
+        events: vec![event],
+        success: true,
+        summary: format!("{project}: {summary}"),
+        ..Default::default()
+    })
 }
 
 fn build_execution_prompt(

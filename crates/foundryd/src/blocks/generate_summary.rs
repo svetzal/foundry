@@ -158,6 +158,70 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .collect()
 }
 
+fn load_project_results(
+    trace_writer: &TraceWriter,
+    project_trace_ids: &std::collections::HashMap<String, String>,
+) -> (
+    Vec<ProjectResult>,
+    Vec<ReleaseAuditEntry>,
+    Vec<AutoReleaseEntry>,
+    Vec<LocalInstallEntry>,
+) {
+    let mut projects = Vec::new();
+    let mut release_audits = Vec::new();
+    let mut auto_releases = Vec::new();
+    let mut local_installs = Vec::new();
+
+    for (project_name, event_id) in project_trace_ids {
+        if let Some(result) = trace_writer.read(event_id) {
+            projects.push(extract_project_result(project_name, &result));
+            release_audits.extend(extract_release_audits(project_name, &result));
+            auto_releases.extend(extract_auto_releases(project_name, &result));
+            local_installs.extend(extract_local_installs(project_name, &result));
+        } else {
+            tracing::warn!(
+                project = %project_name,
+                event_id = %event_id,
+                "trace not found for project"
+            );
+            projects.push(ProjectResult {
+                name: project_name.clone(),
+                status: ProjectStatus::Failed("trace not found".to_string()),
+                duration_secs: None,
+            });
+        }
+    }
+
+    (projects, release_audits, auto_releases, local_installs)
+}
+
+fn write_summary(audits_dir: &std::path::Path, markdown: &str) -> anyhow::Result<String> {
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let runs_dir = audits_dir.join("runs").join(&date);
+    if let Err(e) = std::fs::create_dir_all(&runs_dir) {
+        tracing::error!(
+            error = %e,
+            path = %runs_dir.display(),
+            "failed to create summary directory"
+        );
+        return Err(anyhow::anyhow!("Failed to create directory: {e}"));
+    }
+
+    let summary_path = runs_dir.join("summary.md");
+    if let Err(e) = std::fs::write(&summary_path, markdown) {
+        tracing::error!(
+            error = %e,
+            path = %summary_path.display(),
+            "failed to write summary"
+        );
+        return Err(anyhow::anyhow!("Failed to write summary: {e}"));
+    }
+
+    let path_str = summary_path.to_string_lossy().to_string();
+    tracing::info!(path = %path_str, "maintenance summary written");
+    Ok(path_str)
+}
+
 impl TaskBlock for GenerateSummary {
     task_block_meta! {
         name: "Generate Summary",
@@ -179,33 +243,9 @@ impl TaskBlock for GenerateSummary {
             let skipped_projects = p.skipped_projects;
             let total_duration_ms = p.total_duration_ms;
 
-            let mut projects = Vec::new();
-            let mut release_audits = Vec::new();
-            let mut auto_releases = Vec::new();
-            let mut local_installs = Vec::new();
+            let (mut projects, release_audits, auto_releases, local_installs) =
+                load_project_results(&trace_writer, &project_trace_ids);
 
-            // Load each project's trace and extract results.
-            for (project_name, event_id) in &project_trace_ids {
-                if let Some(result) = trace_writer.read(event_id) {
-                    projects.push(extract_project_result(project_name, &result));
-                    release_audits.extend(extract_release_audits(project_name, &result));
-                    auto_releases.extend(extract_auto_releases(project_name, &result));
-                    local_installs.extend(extract_local_installs(project_name, &result));
-                } else {
-                    tracing::warn!(
-                        project = %project_name,
-                        event_id = %event_id,
-                        "trace not found for project"
-                    );
-                    projects.push(ProjectResult {
-                        name: project_name.clone(),
-                        status: ProjectStatus::Failed("trace not found".to_string()),
-                        duration_secs: None,
-                    });
-                }
-            }
-
-            // Add skipped projects.
             for name in &skipped_projects {
                 projects.push(ProjectResult {
                     name: name.clone(),
@@ -214,7 +254,6 @@ impl TaskBlock for GenerateSummary {
                 });
             }
 
-            // Sort projects by name for stable output.
             projects.sort_by(|a, b| a.name.cmp(&b.name));
 
             let summary = MaintenanceRunSummary {
@@ -228,30 +267,10 @@ impl TaskBlock for GenerateSummary {
 
             let markdown = crate::summary::render(&summary);
 
-            // Write summary to {audits_dir}/runs/YYYY-MM-DD/summary.md
-            let date = Utc::now().format("%Y-%m-%d").to_string();
-            let runs_dir = audits_dir.join("runs").join(&date);
-            if let Err(e) = std::fs::create_dir_all(&runs_dir) {
-                tracing::error!(
-                    error = %e,
-                    path = %runs_dir.display(),
-                    "failed to create summary directory"
-                );
-                return Ok(TaskBlockResult::failure(format!("Failed to create directory: {e}")));
-            }
-
-            let summary_path = runs_dir.join("summary.md");
-            if let Err(e) = std::fs::write(&summary_path, &markdown) {
-                tracing::error!(
-                    error = %e,
-                    path = %summary_path.display(),
-                    "failed to write summary"
-                );
-                return Ok(TaskBlockResult::failure(format!("Failed to write summary: {e}")));
-            }
-
-            let path_str = summary_path.to_string_lossy().to_string();
-            tracing::info!(path = %path_str, "maintenance summary written");
+            let path_str = match write_summary(&audits_dir, &markdown) {
+                Ok(p) => p,
+                Err(e) => return Ok(TaskBlockResult::failure(e.to_string())),
+            };
 
             Ok(TaskBlockResult::success(format!("Summary written to {path_str}"), vec![])
                 .with_output(Some(markdown), None)

@@ -57,50 +57,18 @@ impl TaskBlock for TriageAssessment {
             let category = assessment_payload.category.clone();
             let assessment = assessment_payload.assessment.clone();
 
-            let threshold = TRIAGE_SEVERITY_THRESHOLD;
-            let prompt = format!(
-                "You are triaging an assessment for project '{project}'.\n\n\
-                 Assessment:\n\
-                 - Severity: {severity}/10\n\
-                 - Principle: {principle}\n\
-                 - Category: {category}\n\
-                 - Details: {assessment}\n\n\
-                 Decide whether this assessment should be accepted for correction.\n\
-                 Accept if: severity >= {threshold} AND the work is substantive (not busy-work like \
-                 trivial comment changes, whitespace formatting, or purely cosmetic tweaks).\n\
-                 Reject if: severity < {threshold} OR the work is busy-work.\n\n\
-                 Output ONLY valid JSON in this exact format, nothing else:\n\
-                 {{\"accepted\": true/false, \"reason\": \"<brief explanation>\"}}"
+            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let prompt = build_triage_prompt(
+                &project,
+                severity,
+                &principle,
+                &category,
+                &assessment,
+                TRIAGE_SEVERITY_THRESHOLD,
             );
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
-
-            let outcome = invoke_agent(
-                &*agent,
-                AgentBlockSpec {
-                    prompt,
-                    working_dir: project_path,
-                    access: AgentAccess::ReadOnly,
-                    capability: AgentCapability::Quick,
-                    agent_file,
-                    timeout: std::time::Duration::from_secs(120),
-                },
-                "triage assessment",
-                &project,
-            )
-            .await;
-
-            let (accepted, reason) = match outcome {
-                AgentOutcome::Success { stdout } => parse_triage(&stdout),
-                AgentOutcome::AgentFailed { stderr } => {
-                    tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
-                    // Default to accepting on agent failure — better to attempt the fix
-                    (true, "triage agent failed, defaulting to accept".to_string())
-                }
-                AgentOutcome::Unavailable { error } => {
-                    (true, format!("agent unavailable: {error}, defaulting to accept"))
-                }
-            };
+            let (accepted, reason) =
+                run_triage_agent(&*agent, project_path, agent_file, prompt, &project).await;
 
             tracing::info!(
                 project = %project,
@@ -137,6 +105,65 @@ impl TaskBlock for TriageAssessment {
     }
 }
 
+fn build_triage_prompt(
+    project: &str,
+    severity: i64,
+    principle: &str,
+    category: &str,
+    assessment: &str,
+    threshold: u64,
+) -> String {
+    format!(
+        "You are triaging an assessment for project '{project}'.\n\n\
+         Assessment:\n\
+         - Severity: {severity}/10\n\
+         - Principle: {principle}\n\
+         - Category: {category}\n\
+         - Details: {assessment}\n\n\
+         Decide whether this assessment should be accepted for correction.\n\
+         Accept if: severity >= {threshold} AND the work is substantive (not busy-work like \
+         trivial comment changes, whitespace formatting, or purely cosmetic tweaks).\n\
+         Reject if: severity < {threshold} OR the work is busy-work.\n\n\
+         Output ONLY valid JSON in this exact format, nothing else:\n\
+         {{\"accepted\": true/false, \"reason\": \"<brief explanation>\"}}"
+    )
+}
+
+async fn run_triage_agent(
+    agent: &dyn AgentGateway,
+    project_path: PathBuf,
+    agent_file: Option<std::path::PathBuf>,
+    prompt: String,
+    project: &str,
+) -> (bool, String) {
+    let outcome = invoke_agent(
+        agent,
+        AgentBlockSpec {
+            prompt,
+            working_dir: project_path,
+            access: AgentAccess::ReadOnly,
+            capability: AgentCapability::Quick,
+            agent_file,
+            timeout: std::time::Duration::from_secs(120),
+        },
+        "triage assessment",
+        project,
+    )
+    .await;
+
+    match outcome {
+        AgentOutcome::Success { stdout } => parse_triage(&stdout),
+        AgentOutcome::AgentFailed { stderr } => {
+            tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
+            // Default to accepting on agent failure — better to attempt the fix
+            (true, "triage agent failed, defaulting to accept".to_string())
+        }
+        AgentOutcome::Unavailable { error } => {
+            (true, format!("agent unavailable: {error}, defaulting to accept"))
+        }
+    }
+}
+
 /// Parse the JSON triage output from the agent.
 fn parse_triage(output: &str) -> (bool, String) {
     if let Some(json) = super::parse_agent_json(output) {
@@ -163,7 +190,7 @@ mod tests {
     use foundry_core::task_block::TaskBlock;
 
     use super::super::test_helpers;
-    use super::{TriageAssessment, parse_triage};
+    use super::{TriageAssessment, build_triage_prompt, parse_triage};
 
     assert_block_meta!(
         TriageAssessment::new(
@@ -249,6 +276,18 @@ mod tests {
         assert_eq!(result.events[0].payload["severity"], 7);
         assert_eq!(result.events[0].payload["principle"], "DRY");
         assert_eq!(result.events[0].payload["audit_name"], "fix-duplication");
+    }
+
+    #[test]
+    fn build_triage_prompt_contains_threshold_and_severity() {
+        let prompt =
+            build_triage_prompt("my-project", 7, "DRY", "duplication", "Duplicate logic.", 4);
+        assert!(prompt.contains("my-project"), "expected project name");
+        assert!(prompt.contains("7/10"), "expected severity value");
+        assert!(prompt.contains("DRY"), "expected principle");
+        assert!(prompt.contains("duplication"), "expected category");
+        assert!(prompt.contains("Duplicate logic"), "expected assessment");
+        assert!(prompt.contains('4'.to_string().as_str()), "expected threshold value");
     }
 
     #[test]

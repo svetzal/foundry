@@ -230,37 +230,45 @@ impl TaskBlock for ScoutDrift {
                 }
             };
 
-            tracing::info!(
-                project = %project,
-                candidate_count = result.candidate_count,
-                high_value_count = result.high_value_count,
-                "drift assessment completed"
-            );
-
-            let mut event_payload = serde_json::json!({
-                "project": project,
-                "candidate_count": result.candidate_count,
-                "high_value_count": result.high_value_count,
-                "candidates": result.candidates,
-            });
-            if let Some(err) = &result.parse_error {
-                event_payload["parse_error"] = serde_json::Value::String(err.clone());
-            }
-
-            Ok(TaskBlockResult::success(
-                format!(
-                    "{project}: drift assessment — {} candidates, {} high-value",
-                    result.candidate_count, result.high_value_count
-                ),
-                vec![Event::new(
-                    EventType::DriftAssessmentCompleted,
-                    project.clone(),
-                    throttle,
-                    event_payload,
-                )],
-            ))
+            Ok(build_drift_result(&project, throttle, &result))
         })
     }
+}
+
+fn build_drift_result(
+    project: &str,
+    throttle: foundry_core::throttle::Throttle,
+    result: &DriftAssessmentResult,
+) -> TaskBlockResult {
+    tracing::info!(
+        project = %project,
+        candidate_count = result.candidate_count,
+        high_value_count = result.high_value_count,
+        "drift assessment completed"
+    );
+
+    let mut event_payload = serde_json::json!({
+        "project": project,
+        "candidate_count": result.candidate_count,
+        "high_value_count": result.high_value_count,
+        "candidates": result.candidates,
+    });
+    if let Some(err) = &result.parse_error {
+        event_payload["parse_error"] = serde_json::Value::String(err.clone());
+    }
+
+    TaskBlockResult::success(
+        format!(
+            "{project}: drift assessment — {} candidates, {} high-value",
+            result.candidate_count, result.high_value_count
+        ),
+        vec![Event::new(
+            EventType::DriftAssessmentCompleted,
+            project.to_string(),
+            throttle,
+            event_payload,
+        )],
+    )
 }
 
 struct DriftAssessmentResult {

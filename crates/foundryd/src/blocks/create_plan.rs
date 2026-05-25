@@ -98,27 +98,7 @@ impl TaskBlock for CreatePlan {
             let category = category.as_str();
             let assessment = assessment.as_str();
 
-            let prompt = format!(
-                "You are creating a correction plan for project '{project}'.\n\n\
-                 Assessment:\n\
-                 - Principle violated: {principle}\n\
-                 - Category: {category}\n\
-                 - Details: {assessment}\n\n\
-                 Create a step-by-step plan to correct this violation. Each step should be:\n\
-                 - Specific (name exact files and functions where possible)\n\
-                 - Minimal (only changes needed to address this violation)\n\
-                 - Testable (describe how to verify the step succeeded)\n\n\
-                 Output the plan as a numbered list of concrete steps.\n\n\
-                 At the very end of your response, after the plan, output a fenced JSON block \
-                 (``` json ... ```) containing exactly:\n\
-                 ```json\n\
-                 {{ \"correctionNeeded\": true, \"reason\": \"<one sentence>\" }}\n\
-                 ```\n\
-                 Set `correctionNeeded` to `false` ONLY if you examined the codebase and \
-                 concluded the assessment is inaccurate — the codebase already satisfies \
-                 the principle and no changes are warranted. In that case set `reason` to a \
-                 brief explanation. Otherwise leave it `true`."
-            );
+            let prompt = build_plan_prompt(&project, principle, category, assessment);
 
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
 
@@ -173,6 +153,30 @@ impl TaskBlock for CreatePlan {
             )
         })
     }
+}
+
+fn build_plan_prompt(project: &str, principle: &str, category: &str, assessment: &str) -> String {
+    format!(
+        "You are creating a correction plan for project '{project}'.\n\n\
+         Assessment:\n\
+         - Principle violated: {principle}\n\
+         - Category: {category}\n\
+         - Details: {assessment}\n\n\
+         Create a step-by-step plan to correct this violation. Each step should be:\n\
+         - Specific (name exact files and functions where possible)\n\
+         - Minimal (only changes needed to address this violation)\n\
+         - Testable (describe how to verify the step succeeded)\n\n\
+         Output the plan as a numbered list of concrete steps.\n\n\
+         At the very end of your response, after the plan, output a fenced JSON block \
+         (``` json ... ```) containing exactly:\n\
+         ```json\n\
+         {{ \"correctionNeeded\": true, \"reason\": \"<one sentence>\" }}\n\
+         ```\n\
+         Set `correctionNeeded` to `false` ONLY if you examined the codebase and \
+         concluded the assessment is inaccurate — the codebase already satisfies \
+         the principle and no changes are warranted. In that case set `reason` to a \
+         brief explanation. Otherwise leave it `true`."
+    )
 }
 
 /// Parse the `correctionNeeded` flag from the plan agent's output.
@@ -247,7 +251,7 @@ mod tests {
     use crate::gateway::{AgentAccess, AgentCapability};
 
     use super::super::test_helpers;
-    use super::{CreatePlan, parse_correction_needed};
+    use super::{CreatePlan, build_plan_prompt, parse_correction_needed};
 
     assert_block_meta!(
         CreatePlan::new(
@@ -392,6 +396,25 @@ mod tests {
 
         assert_eq!(result.events[0].payload["audit_name"], "fix-srp");
         assert_eq!(result.events[0].payload["actions"]["maintain"], true);
+    }
+
+    // --- build_plan_prompt unit tests ---
+
+    #[test]
+    fn prompt_contains_plan_instructions() {
+        let prompt = build_plan_prompt(
+            "my-project",
+            "DRY",
+            "duplication",
+            "Duplicate validation found in three locations.",
+        );
+        assert!(prompt.contains("my-project"), "expected project name in prompt");
+        assert!(prompt.contains("DRY"), "expected principle in prompt");
+        assert!(prompt.contains("duplication"), "expected category in prompt");
+        assert!(prompt.contains("Duplicate validation"), "expected assessment in prompt");
+        assert!(prompt.contains("numbered list"), "expected plan format instructions");
+        assert!(prompt.contains("correctionNeeded"), "expected JSON output instructions");
+        assert!(prompt.contains("Specific"), "expected specificity requirement");
     }
 
     // --- parse_correction_needed unit tests ---
