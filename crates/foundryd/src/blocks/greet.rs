@@ -32,15 +32,13 @@ impl TaskBlock for ComposeGreeting {
         tracing::info!(%greeting, "composed greeting");
 
         Box::pin(async move {
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("Composed: {greeting}"),
-                vec![Event::new(
-                    EventType::GreetingComposed,
-                    project,
-                    throttle,
-                    Event::serialize_payload(&GreetingComposedPayload { greeting })?,
-                )],
-            ))
+                EventType::GreetingComposed,
+                &project,
+                throttle,
+                &GreetingComposedPayload { greeting },
+            )
         })
     }
 }
@@ -68,19 +66,17 @@ impl TaskBlock for DeliverGreeting {
         tracing::info!(%greeting, "delivering greeting");
 
         Box::pin(async move {
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("Delivered: {greeting}"),
-                vec![Event::new(
-                    EventType::GreetingDelivered,
-                    project,
-                    throttle,
-                    Event::serialize_payload(&GreetingDeliveredPayload {
-                        delivered: true,
-                        greeting,
-                        dry_run: None,
-                    })?,
-                )],
-            ))
+                EventType::GreetingDelivered,
+                &project,
+                throttle,
+                &GreetingDeliveredPayload {
+                    delivered: true,
+                    greeting,
+                    dry_run: None,
+                },
+            )
         })
     }
 
@@ -88,18 +84,18 @@ impl TaskBlock for DeliverGreeting {
         let greeting = trigger
             .parse_payload::<GreetingComposedPayload>()
             .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
-        let payload = Event::serialize_payload(&GreetingDeliveredPayload {
-            delivered: true,
-            greeting,
-            dry_run: Some(true),
-        })
-        .expect("GreetingDeliveredPayload is infallibly serializable");
-        vec![Event::new(
-            EventType::GreetingDelivered,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
+        vec![
+            trigger
+                .with_payload(
+                    EventType::GreetingDelivered,
+                    &GreetingDeliveredPayload {
+                        delivered: true,
+                        greeting,
+                        dry_run: Some(true),
+                    },
+                )
+                .expect("GreetingDeliveredPayload is infallibly serializable"),
+        ]
     }
 }
 

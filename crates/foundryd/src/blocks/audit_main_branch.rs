@@ -94,20 +94,18 @@ impl TaskBlock for AuditMainBranch {
 
             tracing::info!(%cve, %dirty, "audited main branch");
 
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("Main branch audited: {cve} dirty={dirty}"),
-                vec![Event::new(
-                    EventType::MainBranchAudited,
-                    project.clone(),
-                    throttle,
-                    Event::serialize_payload(&MainBranchAuditedPayload {
-                        project,
-                        cve,
-                        vulnerable: true,
-                        dirty,
-                    })?,
-                )],
-            ))
+                EventType::MainBranchAudited,
+                &project,
+                throttle,
+                &MainBranchAuditedPayload {
+                    project: project.clone(),
+                    cve,
+                    vulnerable: true,
+                    dirty,
+                },
+            )
         })
     }
 }

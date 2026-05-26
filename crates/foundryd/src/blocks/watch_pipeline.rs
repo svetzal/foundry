@@ -138,16 +138,14 @@ async fn poll_pipeline(
     let run_id = loop {
         if start.elapsed() >= timeout {
             tracing::warn!(%repo, "pipeline watch timed out waiting for matching run");
-            return Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ReleasePipelineCompleted,
-                    project,
-                    throttle,
-                    serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
-                )],
-                summary: "Pipeline watch timed out after 30 minutes".to_string(),
-                ..Default::default()
-            });
+            return super::emit_event_result(
+                "Pipeline watch timed out after 30 minutes".to_string(),
+                false,
+                EventType::ReleasePipelineCompleted,
+                &project,
+                throttle,
+                &serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
+            );
         }
 
         match find_release_run_id(repo, new_tag, shell).await {
@@ -170,16 +168,14 @@ async fn poll_pipeline(
     loop {
         if start.elapsed() >= timeout {
             tracing::warn!(%repo, run_id, "pipeline watch timed out after 30 minutes");
-            return Ok(TaskBlockResult {
-                events: vec![Event::new(
-                    EventType::ReleasePipelineCompleted,
-                    project,
-                    throttle,
-                    serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
-                )],
-                summary: "Pipeline watch timed out after 30 minutes".to_string(),
-                ..Default::default()
-            });
+            return super::emit_event_result(
+                "Pipeline watch timed out after 30 minutes".to_string(),
+                false,
+                EventType::ReleasePipelineCompleted,
+                &project,
+                throttle,
+                &serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
+            );
         }
 
         match query_run_by_id(run_id, shell).await {

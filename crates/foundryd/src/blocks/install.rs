@@ -43,18 +43,18 @@ impl TaskBlock for InstallLocally {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
-            success: true,
-            dry_run: Some(true),
-            ..Default::default()
-        })
-        .expect("LocalInstallCompletedPayload is infallibly serializable");
-        vec![Event::new(
-            EventType::LocalInstallCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
-        )]
+        vec![
+            trigger
+                .with_payload(
+                    EventType::LocalInstallCompleted,
+                    &LocalInstallCompletedPayload {
+                        success: true,
+                        dry_run: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .expect("LocalInstallCompletedPayload is infallibly serializable"),
+        ]
     }
 
     fn execute(

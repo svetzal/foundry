@@ -129,14 +129,12 @@ fn handle_assessment_completed(
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    TaskBlockResult::success(
+    super::stub_event_result(
         format!("{project}: strategic loop iteration 1 — {area_name}"),
-        vec![Event::new(
-            EventType::ProjectIterationRequested,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        EventType::ProjectIterationRequested,
+        project.to_string(),
+        throttle,
+        event_payload,
     )
 }
 
@@ -209,14 +207,12 @@ async fn handle_inner_completed(
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    Ok(TaskBlockResult::success(
+    Ok(super::stub_event_result(
         format!("{project}: strategic loop continuing — iteration {next_iteration}"),
-        vec![Event::new(
-            EventType::ProjectIterationRequested,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        EventType::ProjectIterationRequested,
+        project.to_string(),
+        throttle,
+        event_payload,
     ))
 }
 
@@ -235,14 +231,12 @@ fn complete_loop(
     // Forward actions but NOT loop_context — terminal blocks should fire
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    TaskBlockResult::success(
+    super::stub_event_result(
         format!("{project}: strategic loop completed"),
-        vec![Event::new(
-            EventType::ProjectIterationCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        EventType::ProjectIterationCompleted,
+        project.to_string(),
+        throttle,
+        event_payload,
     )
 }
 

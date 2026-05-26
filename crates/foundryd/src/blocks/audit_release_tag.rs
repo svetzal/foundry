@@ -103,18 +103,16 @@ impl AuditReleaseTag {
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());
 
-            Ok(TaskBlockResult::success(
+            Ok(super::stub_event_result(
                 format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
-                vec![Event::new(
-                    EventType::ReleaseTagAudited,
-                    project,
-                    throttle,
-                    serde_json::json!({
-                        "cve": cve,
-                        "vulnerable": vulnerable,
-                        "dirty": false,
-                    }),
-                )],
+                EventType::ReleaseTagAudited,
+                project,
+                throttle,
+                serde_json::json!({
+                    "cve": cve,
+                    "vulnerable": vulnerable,
+                    "dirty": false,
+                }),
             ))
         })
     }

@@ -115,14 +115,12 @@ async fn run_check(
 
     let Some(run) = completed else {
         tracing::info!(project = %project, "no completed runs found");
-        return Ok(TaskBlockResult::success(
+        return Ok(super::stub_event_result(
             "no completed runs found",
-            vec![Event::new(
-                EventType::PipelineChecked,
-                project,
-                throttle,
-                passing_payload("no_runs"),
-            )],
+            EventType::PipelineChecked,
+            project,
+            throttle,
+            passing_payload("no_runs"),
         ));
     };
 
@@ -149,7 +147,7 @@ async fn run_check(
     tracing::info!(project = %project, %passing, %conclusion, "pipeline check complete");
 
     Ok(build_pipeline_result(
-        project,
+        &project,
         &conclusion,
         run_id,
         &run_name,
@@ -160,7 +158,7 @@ async fn run_check(
 }
 
 fn build_pipeline_result(
-    project: String,
+    project: &str,
     conclusion: &str,
     run_id: u64,
     run_name: &str,
@@ -168,30 +166,26 @@ fn build_pipeline_result(
     failure_logs: Option<&str>,
     throttle: foundry_core::throttle::Throttle,
 ) -> TaskBlockResult {
-    let payload = Event::serialize_payload(&PipelineCheckedPayload {
-        passing,
-        conclusion: conclusion.to_string(),
-        run_id: Some(run_id),
-        run_name: Some(run_name.to_string()),
-        failure_logs: failure_logs.map(str::to_string),
-    })
-    .expect("PipelineCheckedPayload is infallibly serializable");
-
     let summary = if passing {
         format!("Pipeline passing: {run_name} (#{run_id})")
     } else {
         format!("Pipeline failing: {run_name} (#{run_id}) conclusion={conclusion}")
     };
 
-    TaskBlockResult::success(
+    super::emit_result(
         summary,
-        vec![Event::new(
-            EventType::PipelineChecked,
-            project,
-            throttle,
-            payload,
-        )],
+        EventType::PipelineChecked,
+        project,
+        throttle,
+        &PipelineCheckedPayload {
+            passing,
+            conclusion: conclusion.to_string(),
+            run_id: Some(run_id),
+            run_name: Some(run_name.to_string()),
+            failure_logs: failure_logs.map(str::to_string),
+        },
     )
+    .expect("PipelineCheckedPayload is infallibly serializable")
 }
 
 /// Fetch the failure logs for a specific run, truncated to 4000 characters.

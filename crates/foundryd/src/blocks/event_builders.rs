@@ -162,20 +162,20 @@ pub(crate) fn dry_run_remediation_event(
     pipeline_fix: Option<bool>,
 ) -> Vec<Event> {
     let summary = cve.as_ref().map(|_| String::new());
-    let payload = Event::serialize_payload(&RemediationCompletedPayload {
-        cve,
-        success: true,
-        summary,
-        dry_run: Some(true),
-        pipeline_fix,
-    })
-    .expect("RemediationCompletedPayload is infallibly serializable");
-    vec![Event::new(
-        EventType::RemediationCompleted,
-        trigger.project.clone(),
-        trigger.throttle,
-        payload,
-    )]
+    vec![
+        trigger
+            .with_payload(
+                EventType::RemediationCompleted,
+                &RemediationCompletedPayload {
+                    cve,
+                    success: true,
+                    summary,
+                    dry_run: Some(true),
+                    pipeline_fix,
+                },
+            )
+            .expect("RemediationCompletedPayload is infallibly serializable"),
+    ]
 }
 
 /// Emit a single-event success result with a raw JSON payload, without serialization.

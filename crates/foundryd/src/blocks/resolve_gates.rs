@@ -38,25 +38,22 @@ fn charter_failure_result(
 ) -> TaskBlockResult {
     tracing::info!(%project, %workflow, "charter check failed, skipping gate resolution");
     if workflow == "iterate" {
-        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
-            project: project.to_string(),
-            success: false,
-            summary: "charter check failed".to_string(),
-            workflow: workflow.to_string(),
-            loop_context: None,
-            changes: None,
-        })
+        return super::emit_event_result(
+            format!("{project}: charter check failed, no gates to resolve"),
+            false,
+            EventType::ProjectIterationCompleted,
+            project,
+            throttle,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: false,
+                summary: "charter check failed".to_string(),
+                workflow: workflow.to_string(),
+                loop_context: None,
+                changes: None,
+            },
+        )
         .expect("ProjectCompletedPayload is infallibly serializable");
-        return TaskBlockResult {
-            events: vec![Event::new(
-                EventType::ProjectIterationCompleted,
-                project.to_string(),
-                throttle,
-                terminal_payload,
-            )],
-            summary: format!("{project}: charter check failed, no gates to resolve"),
-            ..Default::default()
-        };
     }
     TaskBlockResult::success(
         format!("{project}: charter check failed, no gates to resolve"),

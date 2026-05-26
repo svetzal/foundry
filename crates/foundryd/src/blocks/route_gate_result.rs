@@ -174,29 +174,22 @@ fn handle_retry_or_exhaustion(
             "gates failed, requesting retry"
         );
 
-        let event_payload = Event::serialize_payload(&RetryRequestedPayload {
-            project: project.to_string(),
-            workflow: workflow.to_string(),
-            retry_count: retry_count + 1,
-            failure_context,
-            prior_execution_output: execution_output,
-            context,
-        })
+        return super::emit_event_result(
+            format!("{project}: gates failed, retry {}/{max_retries} requested", retry_count + 1),
+            false,
+            EventType::RetryRequested,
+            project,
+            throttle,
+            &RetryRequestedPayload {
+                project: project.to_string(),
+                workflow: workflow.to_string(),
+                retry_count: retry_count + 1,
+                failure_context,
+                prior_execution_output: execution_output,
+                context,
+            },
+        )
         .expect("RetryRequestedPayload is infallibly serializable");
-
-        return TaskBlockResult {
-            events: vec![Event::new(
-                EventType::RetryRequested,
-                project.to_string(),
-                throttle,
-                event_payload,
-            )],
-            summary: format!(
-                "{project}: gates failed, retry {}/{max_retries} requested",
-                retry_count + 1
-            ),
-            ..Default::default()
-        };
     }
 
     // Retries exhausted
@@ -207,26 +200,22 @@ fn handle_retry_or_exhaustion(
     );
 
     let loop_context = context.loop_context;
-    let event_payload = Event::serialize_payload(&ProjectCompletedPayload {
-        project: project.to_string(),
-        success: false,
-        summary: format!("gates failed after {retry_count} retries"),
-        workflow: workflow.to_string(),
-        loop_context,
-        changes: None,
-    })
-    .expect("ProjectCompletedPayload is infallibly serializable");
-
-    TaskBlockResult {
-        events: vec![Event::new(
-            completion_event_type,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
-        summary: format!("{project}: gates failed after {retry_count} retries"),
-        ..Default::default()
-    }
+    super::emit_event_result(
+        format!("{project}: gates failed after {retry_count} retries"),
+        false,
+        completion_event_type,
+        project,
+        throttle,
+        &ProjectCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            summary: format!("gates failed after {retry_count} retries"),
+            workflow: workflow.to_string(),
+            loop_context,
+            changes: None,
+        },
+    )
+    .expect("ProjectCompletedPayload is infallibly serializable")
 }
 
 /// Build a summary of gate failures from the gate results slice.

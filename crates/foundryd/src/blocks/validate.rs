@@ -83,23 +83,20 @@ fn error_result(
     throttle: foundry_core::throttle::Throttle,
     reason: &str,
 ) -> TaskBlockResult {
-    let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
-        project: project.to_string(),
-        status: "error".to_string(),
-        reason: Some(reason.to_string()),
-        ..Default::default()
-    })
-    .expect("ProjectValidationCompletedPayload is infallibly serializable");
-    TaskBlockResult {
-        events: vec![Event::new(
-            EventType::ProjectValidationCompleted,
-            project.to_string(),
-            throttle,
-            payload,
-        )],
-        summary: format!("Validation failed for {project}: {reason}"),
-        ..Default::default()
-    }
+    super::emit_event_result(
+        format!("Validation failed for {project}: {reason}"),
+        false,
+        EventType::ProjectValidationCompleted,
+        project,
+        throttle,
+        &ProjectValidationCompletedPayload {
+            project: project.to_string(),
+            status: "error".to_string(),
+            reason: Some(reason.to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("ProjectValidationCompletedPayload is infallibly serializable")
 }
 
 impl TaskBlock for ValidateProject {
@@ -131,22 +128,18 @@ impl TaskBlock for ValidateProject {
             // Self-filter: only act on active (non-skipped) projects.
             let Some(entry) = entry else {
                 tracing::info!(%project, "project skipped or not in registry, skipping validation");
-                let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
-                    project: project.clone(),
-                    status: "skipped".to_string(),
-                    reason: Some("project skipped or not in registry".to_string()),
-                    ..Default::default()
-                })
-                .expect("ProjectValidationCompletedPayload is infallibly serializable");
-                return Ok(TaskBlockResult::success(
+                return super::emit_result(
                     format!("Project {project} skipped"),
-                    vec![Event::new(
-                        EventType::ProjectValidationCompleted,
-                        project.clone(),
-                        throttle,
-                        payload,
-                    )],
-                ));
+                    EventType::ProjectValidationCompleted,
+                    &project,
+                    throttle,
+                    &ProjectValidationCompletedPayload {
+                        project: project.clone(),
+                        status: "skipped".to_string(),
+                        reason: Some("project skipped or not in registry".to_string()),
+                        ..Default::default()
+                    },
+                );
             };
 
             let path = Path::new(&entry.path);
@@ -172,26 +165,22 @@ impl TaskBlock for ValidateProject {
             }
 
             tracing::info!(%project, %has_gates, "project validated successfully");
-            let payload = Event::serialize_payload(&ProjectValidationCompletedPayload {
-                project: project.clone(),
-                status: "ok".to_string(),
-                has_gates,
-                actions: Some(
-                    serde_json::to_value(&entry.actions)
-                        .expect("ActionFlags is infallibly serializable"),
-                ),
-                ..Default::default()
-            })
-            .expect("ProjectValidationCompletedPayload is infallibly serializable");
-            Ok(TaskBlockResult::success(
+            super::emit_result(
                 format!("Project {project} validated"),
-                vec![Event::new(
-                    EventType::ProjectValidationCompleted,
-                    project.clone(),
-                    throttle,
-                    payload,
-                )],
-            ))
+                EventType::ProjectValidationCompleted,
+                &project,
+                throttle,
+                &ProjectValidationCompletedPayload {
+                    project: project.clone(),
+                    status: "ok".to_string(),
+                    has_gates,
+                    actions: Some(
+                        serde_json::to_value(&entry.actions)
+                            .expect("ActionFlags is infallibly serializable"),
+                    ),
+                    ..Default::default()
+                },
+            )
         })
     }
 }
