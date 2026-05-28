@@ -6,6 +6,7 @@ mod commands;
 mod gates_commands;
 mod init_commands;
 mod registry_commands;
+mod sentinel_commands;
 mod trace_tree;
 
 pub mod proto {
@@ -178,6 +179,34 @@ enum Commands {
     /// Manage the project registry
     #[command(subcommand)]
     Registry(RegistryCommands),
+
+    /// Manage scheduled sentinels (proactive workflow triggers)
+    #[command(subcommand)]
+    Sentinel(SentinelCommands),
+}
+
+#[derive(Subcommand)]
+enum SentinelCommands {
+    /// List all sentinels
+    List,
+
+    /// Show details for a single sentinel
+    Show {
+        /// Sentinel name
+        name: String,
+    },
+
+    /// Mark a sentinel as enabled
+    Enable {
+        /// Sentinel name
+        name: String,
+    },
+
+    /// Mark a sentinel as disabled
+    Disable {
+        /// Sentinel name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -427,6 +456,24 @@ async fn handle_registry_command(
     }
 }
 
+async fn handle_sentinel_command(
+    sub: SentinelCommands,
+    path: &std::path::Path,
+    addr: &str,
+    offline: bool,
+) -> Result<()> {
+    match sub {
+        SentinelCommands::List => sentinel_commands::list(path),
+        SentinelCommands::Show { name } => sentinel_commands::show(path, &name),
+        SentinelCommands::Enable { name } => {
+            sentinel_commands::enable(path, addr, offline, &name).await
+        }
+        SentinelCommands::Disable { name } => {
+            sentinel_commands::disable(path, addr, offline, &name).await
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -481,6 +528,15 @@ async fn main() -> Result<()> {
             handle_registry_command(
                 sub,
                 &foundry_core::paths::registry_path(),
+                &cli.addr,
+                cli.offline,
+            )
+            .await
+        }
+        Commands::Sentinel(sub) => {
+            handle_sentinel_command(
+                sub,
+                &foundry_core::paths::sentinels_path(),
                 &cli.addr,
                 cli.offline,
             )
