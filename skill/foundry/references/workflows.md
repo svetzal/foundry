@@ -102,6 +102,23 @@ MaintenanceCycleStarted {project: "system"}
 
 For single-project runs (`foundry run --project alpha`), there's no fan-out — the project chain runs directly.
 
+## Commit Digest Formation
+
+Fired every day at 17:00 local time by the in-daemon `daily-commit-digest` sentinel, or on demand by `foundry emit commit_digest_started --project system`. Linear chain — no fan-out — across all active registered projects.
+
+```
+CommitDigestStarted {project: "system"}
+  └─ ObserveCommits (Observer)
+       └─ CommitsObserved {window_hours: 24, projects: [{name, branch, commits, error?}, ...]}
+            └─ SummarizeCommits (Observer, AI Reasoning)
+                 └─ CommitSummaryComposed {markdown, project_count, total_commits}
+                      └─ WriteCommitDigest (Observer)
+                           └─ CommitDigestCompleted {success, digest_path?, ...}
+                                └─ writes {FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md
+```
+
+Per-project `git log` failures are captured inline on the `ProjectCommits.error` field and the chain continues. Empty-day firings short-circuit the agent call and write a "No commits across N projects in the last 24 hours" file (absence is a fact too). Dry-run firings run the full chain but skip the final file write.
+
 ## Vulnerability Remediation Workflow
 
 Triggered by `foundry emit scan_requested --project <name>`.

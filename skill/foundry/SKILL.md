@@ -123,7 +123,12 @@ foundry sentinel disable nightly-maintenance
 foundry sentinel enable nightly-maintenance
 ```
 
-`enable` and `disable` go through gRPC by default so the daemon's scheduler wakes immediately; pass `--offline` to mutate `~/.foundry/sentinels.json` directly when the daemon is not running. The file is auto-seeded with the `nightly-maintenance` entry on first daemon start.
+`enable` and `disable` go through gRPC by default so the daemon's scheduler wakes immediately; pass `--offline` to mutate `~/.foundry/sentinels.json` directly when the daemon is not running. The file is auto-seeded with the canonical entries on first daemon start, and the daemon additively merges any missing canonical entries on every restart (so new Foundry releases that ship more sentinels reach existing installs automatically).
+
+**Canonical sentinels that ship today:**
+
+- `nightly-maintenance` (`0 2 * * *`) — emits `maintenance_cycle_started`. Drives the full maintenance run across registered projects.
+- `daily-commit-digest` (`0 17 * * *`) — emits `commit_digest_started`. Renders a markdown digest of every active project's commits in the last 24 hours and writes it to `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md` (default `~/.foundry/digests/`). See `book/src/guide/commit-digest.md` for the full chain.
 
 ### 6. Derive Quality Gates
 

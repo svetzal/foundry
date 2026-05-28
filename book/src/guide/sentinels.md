@@ -43,8 +43,8 @@ sentinel. It blocks on `tokio::select!` between that deadline and a reload
 
 ## The default seed
 
-On first start the daemon writes `~/.foundry/sentinels.json` with a single
-entry:
+On first start the daemon writes `~/.foundry/sentinels.json` with the
+canonical seed set — currently two entries:
 
 ```json
 {
@@ -60,13 +60,31 @@ entry:
         "payload": {}
       },
       "enabled": true
+    },
+    {
+      "name": "daily-commit-digest",
+      "schedule": { "cron": "0 17 * * *" },
+      "emit": {
+        "event_type": "commit_digest_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
     }
   ]
 }
 ```
 
-Restarts skip the seeding step — the file becomes the source of truth and you
-can hand-edit it. The path is overridable via `FOUNDRY_SENTINELS_PATH`.
+The `daily-commit-digest` sentinel drives the [Commit Digest](commit-digest.md)
+formation.
+
+Subsequent starts read the existing file and **additively merge** any seed
+entries whose names are not yet present — so new Foundry releases that
+ship additional canonical sentinels reach existing installs automatically
+on the next restart, without manual JSON edits and without overwriting
+user toggles or hand-edited cron on entries already in the file. The path
+is overridable via `FOUNDRY_SENTINELS_PATH`.
 
 ## Schedule format
 
@@ -129,11 +147,21 @@ you know to restart the daemon to pick up the change).
 
 ## Adding a new sentinel
 
-Slice 1 ships with `list / show / enable / disable` only — there is no
-`foundry sentinel add` yet. To register a new one for now, hand-edit
-`~/.foundry/sentinels.json` and restart the daemon. The schema is the JSON
-shape shown above. Future slices will add `add | remove | edit` plus
-non-cron schedule kinds.
+There are two paths:
+
+- **Canonical sentinels** (the ones every Foundry install should have) are
+  added to `SentinelStore::default_seed()` in `foundry-core`. The additive
+  seed-merge that runs on every daemon start will append them to existing
+  `sentinels.json` files automatically — no JSON editing, no migration
+  step. This is how `daily-commit-digest` reached installs that were
+  already running Slice 1.
+- **One-off, machine-local sentinels** still need a manual edit. Open
+  `~/.foundry/sentinels.json` in your editor, append an entry following
+  the schema shown above, and restart the daemon. `foundry sentinel add
+  | remove | edit` is deferred to a later slice.
+
+Future slices will also bring non-cron schedule kinds (`interval`,
+`event_silence`) so sentinels can be event-driven, not just timer-driven.
 
 ## Relationship to launchd
 

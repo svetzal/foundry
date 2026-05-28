@@ -22,6 +22,7 @@
 - [Strategic Iteration](guide/strategic-iteration.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
+- [Commit Digest](guide/commit-digest.md)
 - [Throttle Control](guide/throttle.md)
 - [Writing Task Blocks](guide/writing-task-blocks.md)
 

@@ -121,7 +121,12 @@ The gRPC RPCs added for registry mutations are `RegistryAdd`, `RegistryRemove`, 
 
 ### Sentinel commands
 
-Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. The shipping example is `nightly-maintenance` (02:00 local, emits `MaintenanceCycleStarted` for project `system`). The daemon auto-seeds `~/.foundry/sentinels.json` on first start. See `book/src/guide/sentinels.md` for the full model.
+Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. Two canonical sentinels ship in the default seed:
+
+- `nightly-maintenance` (02:00 local) — emits `MaintenanceCycleStarted` for project `system`. Drives the maintenance run.
+- `daily-commit-digest` (17:00 local) — emits `CommitDigestStarted` for project `system`. Drives the commit digest formation; output lands at `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md`. See `book/src/guide/commit-digest.md`.
+
+The daemon auto-seeds `~/.foundry/sentinels.json` on first start and **additively merges** missing canonical seed entries on every restart, so new Foundry releases that add canonical sentinels reach existing installs automatically without manual JSON edits. User toggles, hand-edited cron, and user-added entries on the file are never overwritten. See `book/src/guide/sentinels.md` for the full model.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
@@ -130,7 +135,7 @@ Sentinels are declarative, named, scheduled triggers that live inside `foundryd`
 | `foundry sentinel enable <name>` | Yes (or `--offline`) | Enables via gRPC; falls back with a warning when daemon is unreachable |
 | `foundry sentinel disable <name>` | Yes (or `--offline`) | Disables via gRPC; falls back with a warning when daemon is unreachable |
 
-The gRPC RPCs are `SentinelEnable` and `SentinelDisable`. Both wake the daemon's in-process scheduler via a `Notify` so the next firing is recomputed immediately. Adding new sentinels currently means hand-editing `~/.foundry/sentinels.json` and restarting `foundryd` — Slice 1 ships toggles only.
+The gRPC RPCs are `SentinelEnable` and `SentinelDisable`. Both wake the daemon's in-process scheduler via a `Notify` so the next firing is recomputed immediately. Adding non-canonical (machine-local) sentinels still means hand-editing `~/.foundry/sentinels.json` and restarting `foundryd` — `foundry sentinel add | remove | edit` is deferred to a later slice.
 
 ## Payload Conventions
 
@@ -248,9 +253,10 @@ The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must al
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
-- `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the `nightly-maintenance` entry. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
+- `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (currently `nightly-maintenance` and `daily-commit-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
 - `~/.foundry/audits/{project}/` — centralized audit logs
+- `~/.foundry/digests/YYYY-MM-DD.md` — daily commit digest output, one file per day. Override the parent dir via `FOUNDRY_DIGESTS_DIR`; Stacey's setup points it at `~/Work/Operations/Automation/commit-digests` via the launchd plist.
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
 ## Future Direction: Agent Efficacy Retrospectives
@@ -266,3 +272,4 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
 | `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |
+| `FOUNDRY_DIGESTS_DIR` | `~/.foundry/digests` | Daily commit-digest output directory |
