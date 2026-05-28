@@ -5,6 +5,7 @@ pub mod paths;
 pub mod payload;
 pub mod registry;
 pub mod scatter;
+pub mod sentinel;
 pub mod task_block;
 pub mod throttle;
 pub mod trace;

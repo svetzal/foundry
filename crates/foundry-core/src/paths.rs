@@ -23,6 +23,20 @@ pub fn registry_path() -> PathBuf {
     }
 }
 
+/// Returns the sentinels file path.
+///
+/// Sentinels are declarative, named, scheduled triggers that emit events into
+/// the engine when their schedule fires (e.g., the nightly maintenance run).
+///
+/// Override with `FOUNDRY_SENTINELS_PATH`.
+pub fn sentinels_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_SENTINELS_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("sentinels.json")
+    }
+}
+
 /// Returns the JSONL event output directory.
 ///
 /// Override with `FOUNDRY_EVENTS_DIR`.
