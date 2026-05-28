@@ -113,6 +113,9 @@ async fn main() -> Result<()> {
         trace_writer,
         registry,
         registry_path,
+        sentinels,
+        sentinels_path,
+        scheduler_reload,
     );
 
     let addr = "127.0.0.1:50051".parse()?;

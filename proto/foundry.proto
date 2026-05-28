@@ -226,6 +226,44 @@ message RegistryEditResponse {
     Project project = 1;
 }
 
+// Wire form of a sentinel — a scheduled trigger that emits an event when due.
+message Sentinel {
+    string name = 1;
+    // Cron schedule in standard 5-field form (e.g. "0 2 * * *"), evaluated in
+    // local time. The daemon auto-pads 5-field expressions with a leading "0"
+    // for seconds before passing them to the cron parser.
+    string cron = 2;
+    // Event type the sentinel emits when it fires (e.g. "maintenance_cycle_started").
+    string emit_event_type = 3;
+    // Project name set on the emitted event (e.g. "system" for cycle-roots).
+    string emit_project = 4;
+    // Throttle level: 0 = full (default), 1 = dry_run.
+    int32 emit_throttle = 5;
+    // JSON payload attached to the emitted event ("{}" if empty).
+    string emit_payload_json = 6;
+    bool enabled = 7;
+}
+
+// Mark a sentinel as enabled. Wakes the scheduler so the next firing is
+// armed immediately.
+message SentinelEnableRequest {
+    string name = 1;
+}
+
+message SentinelEnableResponse {
+    Sentinel sentinel = 1;
+}
+
+// Mark a sentinel as disabled. Wakes the scheduler so any pending firing
+// for this entry is cancelled.
+message SentinelDisableRequest {
+    string name = 1;
+}
+
+message SentinelDisableResponse {
+    Sentinel sentinel = 1;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -248,6 +286,12 @@ service Foundry {
 
     // Edit a project in the registry.
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
+
+    // Mark a sentinel as enabled. Persists to disk and wakes the scheduler.
+    rpc SentinelEnable(SentinelEnableRequest) returns (SentinelEnableResponse);
+
+    // Mark a sentinel as disabled. Persists to disk and wakes the scheduler.
+    rpc SentinelDisable(SentinelDisableRequest) returns (SentinelDisableResponse);
 
     // Retrieve every event and block execution within a single span.
     rpc Span(SpanRequest) returns (SpanResponse);

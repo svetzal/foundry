@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
@@ -12,6 +12,9 @@ use foundry_core::registry::{
     InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry, RegistryMutationError,
     parse_stack,
 };
+use foundry_core::sentinel::{
+    Schedule as SentinelSchedule, SentinelEntry, SentinelMutationError, SentinelStore,
+};
 use foundry_core::throttle::Throttle;
 use foundry_core::trace::{BlockExecution, ProcessResult};
 
@@ -19,9 +22,10 @@ use crate::engine::Engine;
 use crate::proto::{
     EmitRequest, EmitResponse, Project, RegistryAddRequest, RegistryAddResponse,
     RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse,
-    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceBlockExecution, TraceEvent,
-    TraceRequest, TraceResponse, WatchRequest, WatchResponse, WorkflowStatus,
-    foundry_server::Foundry,
+    Sentinel as ProtoSentinel, SentinelDisableRequest, SentinelDisableResponse,
+    SentinelEnableRequest, SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest,
+    StatusResponse, TraceBlockExecution, TraceEvent, TraceRequest, TraceResponse, WatchRequest,
+    WatchResponse, WorkflowStatus, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::trace_writer::TraceWriter;
@@ -36,9 +40,13 @@ pub struct FoundryService {
     trace_writer: Arc<TraceWriter>,
     registry: Arc<RwLock<Registry>>,
     registry_path: PathBuf,
+    sentinels: Arc<RwLock<SentinelStore>>,
+    sentinels_path: PathBuf,
+    scheduler_reload: Arc<Notify>,
 }
 
 impl FoundryService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: Arc<Engine>,
         trace_store: Arc<TraceStore>,
@@ -47,6 +55,9 @@ impl FoundryService {
         trace_writer: Arc<TraceWriter>,
         registry: Arc<RwLock<Registry>>,
         registry_path: PathBuf,
+        sentinels: Arc<RwLock<SentinelStore>>,
+        sentinels_path: PathBuf,
+        scheduler_reload: Arc<Notify>,
     ) -> Self {
         Self {
             engine,
@@ -56,7 +67,36 @@ impl FoundryService {
             trace_writer,
             registry,
             registry_path,
+            sentinels,
+            sentinels_path,
+            scheduler_reload,
         }
+    }
+}
+
+/// Convert a `SentinelMutationError` to a gRPC `Status`.
+fn sentinel_error_to_status(err: SentinelMutationError) -> Status {
+    match err {
+        SentinelMutationError::NotFound(name) => {
+            Status::not_found(format!("sentinel '{name}' not found"))
+        }
+    }
+}
+
+/// Convert a `SentinelEntry` to the proto `Sentinel` message.
+fn sentinel_to_proto(entry: &SentinelEntry) -> ProtoSentinel {
+    let SentinelSchedule::Cron(cron) = &entry.schedule;
+    ProtoSentinel {
+        name: entry.name.clone(),
+        cron: cron.clone(),
+        emit_event_type: entry.emit.event_type.as_str().to_string(),
+        emit_project: entry.emit.project.clone(),
+        emit_throttle: match entry.emit.throttle {
+            Throttle::Full => 0,
+            Throttle::DryRun => 1,
+        },
+        emit_payload_json: entry.emit.payload.to_string(),
+        enabled: entry.enabled,
     }
 }
 
@@ -716,6 +756,58 @@ impl Foundry for FoundryService {
         }))
     }
 
+    async fn sentinel_enable(
+        &self,
+        request: Request<SentinelEnableRequest>,
+    ) -> Result<Response<SentinelEnableResponse>, Status> {
+        let req = request.into_inner();
+
+        let entry_proto = {
+            let mut store = self.sentinels.write().expect("sentinel store lock poisoned");
+            let entry = store.enable(&req.name).map_err(sentinel_error_to_status)?;
+            let proto = sentinel_to_proto(entry);
+            store
+                .save(&self.sentinels_path)
+                .map_err(|e| Status::internal(format!("failed to save sentinels: {e}")))?;
+            proto
+        };
+
+        // Wake the scheduler so the new state is armed immediately.
+        self.scheduler_reload.notify_one();
+
+        tracing::info!(sentinel = %req.name, "sentinel_enable: sentinel enabled");
+
+        Ok(Response::new(SentinelEnableResponse {
+            sentinel: Some(entry_proto),
+        }))
+    }
+
+    async fn sentinel_disable(
+        &self,
+        request: Request<SentinelDisableRequest>,
+    ) -> Result<Response<SentinelDisableResponse>, Status> {
+        let req = request.into_inner();
+
+        let entry_proto = {
+            let mut store = self.sentinels.write().expect("sentinel store lock poisoned");
+            let entry = store.disable(&req.name).map_err(sentinel_error_to_status)?;
+            let proto = sentinel_to_proto(entry);
+            store
+                .save(&self.sentinels_path)
+                .map_err(|e| Status::internal(format!("failed to save sentinels: {e}")))?;
+            proto
+        };
+
+        // Wake the scheduler so any pending firing is cancelled.
+        self.scheduler_reload.notify_one();
+
+        tracing::info!(sentinel = %req.name, "sentinel_disable: sentinel disabled");
+
+        Ok(Response::new(SentinelDisableResponse {
+            sentinel: Some(entry_proto),
+        }))
+    }
+
     async fn trace(
         &self,
         request: Request<TraceRequest>,
@@ -796,6 +888,10 @@ mod tests {
         }));
         let tmp_registry = tempfile::NamedTempFile::new().expect("tempfile");
         let registry_path = tmp_registry.path().to_path_buf();
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+        let tmp_sentinels = tempfile::NamedTempFile::new().expect("tempfile");
+        let sentinels_path = tmp_sentinels.path().to_path_buf();
+        let scheduler_reload = Arc::new(Notify::new());
         let service = FoundryService::new(
             engine,
             trace_store,
@@ -804,6 +900,9 @@ mod tests {
             trace_writer,
             registry,
             registry_path,
+            sentinels,
+            sentinels_path,
+            scheduler_reload,
         );
         (service, rx)
     }
@@ -1284,6 +1383,110 @@ mod tests {
             .await
             .unwrap_err();
 
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    // -----------------------------------------------------------------
+    // Sentinel RPCs
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn sentinel_disable_flips_in_memory_persists_and_notifies() {
+        let (service, _rx) = test_service();
+        let path = service.sentinels_path.clone();
+        let reload = Arc::clone(&service.scheduler_reload);
+
+        // Pre-arm a waiter so we can confirm the scheduler reload was poked.
+        let notified = tokio::spawn(async move { reload.notified().await });
+
+        let response = service
+            .sentinel_disable(Request::new(SentinelDisableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("disable should succeed")
+            .into_inner();
+
+        let proto = response.sentinel.expect("sentinel echoed back");
+        assert_eq!(proto.name, "nightly-maintenance");
+        assert!(!proto.enabled);
+
+        // In-memory state flipped.
+        {
+            let store = service.sentinels.read().unwrap();
+            assert!(!store.sentinels[0].enabled);
+        }
+
+        // Persisted to disk.
+        let on_disk = SentinelStore::load(&path).expect("load reads what we just saved");
+        assert!(!on_disk.sentinels[0].enabled);
+
+        // Scheduler reload pulse delivered.
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+            .await
+            .expect("reload signal should be delivered")
+            .expect("waiter task should finish");
+    }
+
+    #[tokio::test]
+    async fn sentinel_enable_flips_in_memory_persists_and_notifies() {
+        let (service, _rx) = test_service();
+        let path = service.sentinels_path.clone();
+        let reload = Arc::clone(&service.scheduler_reload);
+
+        // Disable first so re-enable is observable.
+        {
+            let mut store = service.sentinels.write().unwrap();
+            store.sentinels[0].enabled = false;
+        }
+
+        let notified = tokio::spawn(async move { reload.notified().await });
+
+        let response = service
+            .sentinel_enable(Request::new(SentinelEnableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("enable should succeed")
+            .into_inner();
+
+        let proto = response.sentinel.expect("sentinel echoed back");
+        assert!(proto.enabled);
+        assert_eq!(proto.cron, "0 2 * * *");
+        assert_eq!(proto.emit_event_type, "maintenance_cycle_started");
+        assert_eq!(proto.emit_project, "system");
+        assert_eq!(proto.emit_throttle, 0); // full
+
+        let on_disk = SentinelStore::load(&path).expect("load reads what we just saved");
+        assert!(on_disk.sentinels[0].enabled);
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+            .await
+            .expect("reload signal should be delivered")
+            .expect("waiter task should finish");
+    }
+
+    #[tokio::test]
+    async fn sentinel_enable_unknown_returns_not_found() {
+        let (service, _rx) = test_service();
+        let err = service
+            .sentinel_enable(Request::new(SentinelEnableRequest {
+                name: "ghost".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn sentinel_disable_unknown_returns_not_found() {
+        let (service, _rx) = test_service();
+        let err = service
+            .sentinel_disable(Request::new(SentinelDisableRequest {
+                name: "ghost".to_string(),
+            }))
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
     }
 }

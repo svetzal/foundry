@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_core::registry::Registry;
+use foundry_core::sentinel::SentinelStore;
 use foundryd::{
     engine::Engine,
     proto::{
@@ -21,7 +22,7 @@ use foundryd::{
     workflow_tracker::WorkflowTracker,
 };
 use tempfile::{NamedTempFile, TempDir};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tonic::{Code, Request};
 
 /// Construct a minimal `FoundryService` with temporary backing files.
@@ -49,6 +50,11 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
     let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
     let registry_path = tmp_registry.path().to_path_buf();
 
+    let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+    let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
+    let sentinels_path = tmp_sentinels.path().to_path_buf();
+    let scheduler_reload = Arc::new(Notify::new());
+
     let service = FoundryService::new(
         engine,
         trace_store,
@@ -57,6 +63,9 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
         trace_writer,
         registry,
         registry_path,
+        sentinels,
+        sentinels_path,
+        scheduler_reload,
     );
 
     (service, tmp_registry, tmp_traces)
