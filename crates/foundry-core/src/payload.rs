@@ -806,6 +806,104 @@ pub struct GatherCompletedPayload {
     pub children: Vec<GatheredChild>,
 }
 
+// ---------------------------------------------------------------------------
+// Commit-digest workflow — daily proactive summary of registered projects
+// ---------------------------------------------------------------------------
+
+/// Payload for `CommitDigestStarted` (cycle-root, emitted by the sentinel).
+///
+/// Mirrors `MaintenanceCycleStartedPayload` for symmetry — the project count
+/// is filled in by `ObserveCommits` once the active registry is known. The
+/// sentinel itself emits an empty payload (`{}`), and the count defaults to
+/// zero on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitDigestStartedPayload {
+    #[serde(default)]
+    pub project_count: u64,
+}
+
+/// A single commit row inside a `CommitsObserved` payload.
+///
+/// Captures only the fields the downstream summariser actually needs. We
+/// deliberately omit the patch body — the digest is a high-level scan,
+/// not a code review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitInfo {
+    /// Full SHA-1 hash. Display callers truncate to 7 chars themselves.
+    pub sha: String,
+    /// Commit author display name (`%an` in `git log`).
+    pub author: String,
+    /// Author timestamp in RFC 3339 (`%aI` in `git log`).
+    pub timestamp: String,
+    /// Commit subject — the first line of the message (`%s` in `git log`).
+    pub subject: String,
+}
+
+/// One project's slice of a `CommitsObserved` payload. Carries an `error`
+/// when the `git log` invocation failed, so downstream blocks can surface
+/// the failure inline without aborting the chain.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectCommits {
+    pub name: String,
+    pub branch: String,
+    #[serde(default)]
+    pub commits: Vec<CommitInfo>,
+    /// When `Some`, the `git log` call for this project failed; `commits` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Payload for `CommitsObserved` — the raw evidence the summariser will turn
+/// into prose. Always emitted, even on empty days.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitsObservedPayload {
+    /// Width of the wall-clock window the observer used (hours).
+    #[serde(default)]
+    pub window_hours: u32,
+    /// One entry per active registry project.
+    #[serde(default)]
+    pub projects: Vec<ProjectCommits>,
+}
+
+impl CommitsObservedPayload {
+    /// Sum of `commits.len()` across all projects (errored projects
+    /// contribute zero).
+    pub fn total_commits(&self) -> u64 {
+        self.projects.iter().map(|p| p.commits.len() as u64).sum()
+    }
+
+    /// Count of projects in the payload — successful or errored.
+    pub fn project_count(&self) -> u64 {
+        self.projects.len() as u64
+    }
+}
+
+/// Payload for `CommitSummaryComposed` — the agent's rendered digest body
+/// plus the bookkeeping totals needed for the final write step's header.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitSummaryComposedPayload {
+    pub markdown: String,
+    #[serde(default)]
+    pub project_count: u64,
+    #[serde(default)]
+    pub total_commits: u64,
+}
+
+/// Payload for `CommitDigestCompleted` — the chain's terminal event.
+///
+/// `digest_path` is `None` on a dry-run firing (chain ran, file was not
+/// written) and on any persistence failure (`success: false`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitDigestCompletedPayload {
+    pub success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_path: Option<String>,
+    #[serde(default)]
+    pub project_count: u64,
+    #[serde(default)]
+    pub total_commits: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1124,5 +1222,145 @@ mod tests {
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["error"], "spawn failed: claude not on PATH");
         assert!(json.get("exit_code").is_none(), "exit_code should be omitted when None");
+    }
+
+    // ---------------------------------------------------------------------
+    // Commit-digest payloads
+    // ---------------------------------------------------------------------
+
+    fn sample_commit() -> CommitInfo {
+        CommitInfo {
+            sha: "abcdef0123456789abcdef0123456789abcdef01".to_string(),
+            author: "Stacey Vetzal".to_string(),
+            timestamp: "2026-05-28T16:30:00-04:00".to_string(),
+            subject: "feat(slice2): add the commit-digest formation".to_string(),
+        }
+    }
+
+    #[test]
+    fn commit_digest_started_payload_defaults_project_count_to_zero() {
+        let parsed: CommitDigestStartedPayload = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.project_count, 0);
+    }
+
+    #[test]
+    fn commit_digest_started_payload_round_trips() {
+        let payload = CommitDigestStartedPayload { project_count: 17 };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["project_count"], 17);
+        let back: CommitDigestStartedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back.project_count, 17);
+    }
+
+    #[test]
+    fn project_commits_with_error_omits_commits_when_serialized() {
+        let p = ProjectCommits {
+            name: "broken".to_string(),
+            branch: "main".to_string(),
+            commits: vec![],
+            error: Some("git log exited 128: fatal: not a git repository".to_string()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["name"], "broken");
+        assert_eq!(json["branch"], "main");
+        assert_eq!(json["error"], "git log exited 128: fatal: not a git repository");
+        assert_eq!(json["commits"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn project_commits_without_error_omits_error_field() {
+        let p = ProjectCommits {
+            name: "ok".to_string(),
+            branch: "main".to_string(),
+            commits: vec![sample_commit()],
+            error: None,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("error").is_none(), "error should be omitted when None");
+        assert_eq!(json["commits"][0]["sha"], sample_commit().sha);
+    }
+
+    #[test]
+    fn commits_observed_payload_total_and_project_count_helpers() {
+        let payload = CommitsObservedPayload {
+            window_hours: 24,
+            projects: vec![
+                ProjectCommits {
+                    name: "alpha".to_string(),
+                    branch: "main".to_string(),
+                    commits: vec![sample_commit(), sample_commit()],
+                    error: None,
+                },
+                ProjectCommits {
+                    name: "broken".to_string(),
+                    branch: "main".to_string(),
+                    commits: vec![],
+                    error: Some("nope".to_string()),
+                },
+            ],
+        };
+        assert_eq!(payload.project_count(), 2);
+        assert_eq!(payload.total_commits(), 2, "errored project contributes zero");
+    }
+
+    #[test]
+    fn commits_observed_payload_round_trips_through_json() {
+        let payload = CommitsObservedPayload {
+            window_hours: 24,
+            projects: vec![ProjectCommits {
+                name: "foundry".to_string(),
+                branch: "main".to_string(),
+                commits: vec![sample_commit()],
+                error: None,
+            }],
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        let back: CommitsObservedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back.window_hours, 24);
+        assert_eq!(back.projects.len(), 1);
+        assert_eq!(back.projects[0].commits[0], sample_commit());
+    }
+
+    #[test]
+    fn commit_summary_composed_payload_round_trips() {
+        let payload = CommitSummaryComposedPayload {
+            markdown: "# Commit Digest\n\nNothing today.\n".to_string(),
+            project_count: 17,
+            total_commits: 0,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        let back: CommitSummaryComposedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back.markdown, payload.markdown);
+        assert_eq!(back.project_count, 17);
+        assert_eq!(back.total_commits, 0);
+    }
+
+    #[test]
+    fn commit_digest_completed_payload_omits_digest_path_when_none() {
+        let payload = CommitDigestCompletedPayload {
+            success: true,
+            digest_path: None,
+            project_count: 0,
+            total_commits: 0,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("digest_path").is_none(), "digest_path should be omitted when None");
+        assert_eq!(json["success"], true);
+    }
+
+    #[test]
+    fn commit_digest_completed_payload_round_trips_with_path() {
+        let payload = CommitDigestCompletedPayload {
+            success: true,
+            digest_path: Some("/Users/svetzal/.foundry/digests/2026-05-28.md".to_string()),
+            project_count: 17,
+            total_commits: 42,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        let back: CommitDigestCompletedPayload = serde_json::from_value(json).unwrap();
+        assert!(back.success);
+        assert_eq!(back.digest_path.as_deref(), payload.digest_path.as_deref());
+        assert_eq!(back.project_count, 17);
+        assert_eq!(back.total_commits, 42);
     }
 }

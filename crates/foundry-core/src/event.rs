@@ -376,6 +376,12 @@ pub enum EventType {
     PipelineCheckRequested,
     PipelineChecked,
 
+    // Commit-digest workflow (daily proactive summary of registered projects)
+    CommitDigestStarted,
+    CommitsObserved,
+    CommitSummaryComposed,
+    CommitDigestCompleted,
+
     // Hello-world workflow (validates engine mechanics)
     GreetingRequested,
     GreetingComposed,
@@ -413,6 +419,7 @@ impl EventType {
                 | EventType::StrategicCycleStarted
                 | EventType::InnerIterationStarted
                 | EventType::MaintenanceSummaryRequested
+                | EventType::CommitDigestStarted
         )
     }
 }
@@ -503,6 +510,10 @@ mod tests {
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::PipelineCheckRequested, "pipeline_check_requested"),
             (EventType::PipelineChecked, "pipeline_checked"),
+            (EventType::CommitDigestStarted, "commit_digest_started"),
+            (EventType::CommitsObserved, "commits_observed"),
+            (EventType::CommitSummaryComposed, "commit_summary_composed"),
+            (EventType::CommitDigestCompleted, "commit_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -566,6 +577,10 @@ mod tests {
             (EventType::DriftAssessmentCompleted, "drift_assessment_completed"),
             (EventType::PipelineCheckRequested, "pipeline_check_requested"),
             (EventType::PipelineChecked, "pipeline_checked"),
+            (EventType::CommitDigestStarted, "commit_digest_started"),
+            (EventType::CommitsObserved, "commits_observed"),
+            (EventType::CommitSummaryComposed, "commit_summary_composed"),
+            (EventType::CommitDigestCompleted, "commit_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -920,11 +935,15 @@ mod tests {
         assert!(EventType::StrategicCycleStarted.is_span_opener());
         assert!(EventType::InnerIterationStarted.is_span_opener());
         assert!(EventType::MaintenanceSummaryRequested.is_span_opener());
+        assert!(EventType::CommitDigestStarted.is_span_opener());
 
         // Negative cases — completion events are NOT openers.
         assert!(!EventType::ProjectIterationCompleted.is_span_opener());
         assert!(!EventType::VulnerabilityDetected.is_span_opener());
         assert!(!EventType::GreetingDelivered.is_span_opener());
+        assert!(!EventType::CommitsObserved.is_span_opener());
+        assert!(!EventType::CommitSummaryComposed.is_span_opener());
+        assert!(!EventType::CommitDigestCompleted.is_span_opener());
     }
 
     #[test]

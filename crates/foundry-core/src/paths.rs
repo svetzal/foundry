@@ -70,6 +70,19 @@ pub fn audits_dir() -> PathBuf {
     }
 }
 
+/// Returns the daily commit-digest output directory.
+///
+/// Each day's digest lands at `{digests_dir}/{YYYY-MM-DD}.md`. Override with
+/// `FOUNDRY_DIGESTS_DIR`; the typical Operations-side override is to point
+/// this at `~/Work/Operations/Automation/commit-digests`.
+pub fn digests_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_DIGESTS_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("digests")
+    }
+}
+
 /// Returns the directory holding per-session agent transcript JSONL files.
 ///
 /// Defaults to `$HOME/.foundry/agent-sessions`.
@@ -86,5 +99,19 @@ mod tests {
         let dir = agent_sessions_dir();
         let s = dir.to_string_lossy();
         assert!(s.ends_with(".foundry/agent-sessions"), "got: {s}");
+    }
+
+    #[test]
+    fn digests_dir_defaults_under_foundry_home_when_env_unset() {
+        // We do not mutate env in tests (Rust 2024 makes env::set_var unsafe
+        // and racy across the test binary's parallel runners). If a CI shell
+        // exports FOUNDRY_DIGESTS_DIR for some reason, skip the assertion
+        // rather than fight the harness.
+        if env::var("FOUNDRY_DIGESTS_DIR").is_ok() {
+            return;
+        }
+        let dir = digests_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with(".foundry/digests"), "got: {s}");
     }
 }
