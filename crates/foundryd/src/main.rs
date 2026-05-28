@@ -76,10 +76,18 @@ async fn main() -> Result<()> {
         .expect("FOUNDRY_AUDITS_DIR must be valid UTF-8")
         .to_string();
 
+    let digests_dir = foundry_core::paths::digests_dir();
+
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
-    let engine =
-        register_blocks(&registry, event_writer, &event_tx, trace_writer.clone(), audits_dir);
+    let engine = register_blocks(
+        &registry,
+        event_writer,
+        &event_tx,
+        trace_writer.clone(),
+        audits_dir,
+        digests_dir,
+    );
 
     let engine = Arc::new(engine);
     let trace_store = Arc::new(trace_store::TraceStore::with_trace_writer(
@@ -219,6 +227,7 @@ fn register_blocks(
     event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
     trace_writer: Arc<trace_writer::TraceWriter>,
     audits_dir: String,
+    digests_dir: std::path::PathBuf,
 ) -> engine::Engine {
     let mut engine = engine::Engine::new()
         .with_event_writer(event_writer)
@@ -277,7 +286,11 @@ fn register_blocks(
     engine.register(Box::new(blocks::RemediatePipeline::new(agent.clone(), registry.clone())));
     // Drift scout workflow
     engine.register(Box::new(blocks::ScoutDrift::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(blocks::ExecutePlan::new(agent, registry.clone())));
+    engine.register(Box::new(blocks::ExecutePlan::new(agent.clone(), registry.clone())));
     engine.register(Box::new(blocks::GenerateSummary::new(trace_writer, audits_dir)));
+    // Commit-digest formation (daily proactive summary of registered projects)
+    engine.register(Box::new(blocks::ObserveCommits::new(registry.clone())));
+    engine.register(Box::new(blocks::SummarizeCommits::new(agent)));
+    engine.register(Box::new(blocks::WriteCommitDigest::new(digests_dir)));
     engine
 }
