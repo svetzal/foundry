@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-05-28
+
+This release ships the **Sentinel** subsystem and its first two formations:
+the nightly maintenance run (internalised from launchd) and the daily
+commit digest. Sentinels are declarative, named, scheduled triggers that
+live inside `foundryd` and emit configured events when their schedule
+fires, replacing the per-machine launchd plist pattern that previously
+drove proactive workflows.
+
+### Added
+
+- `foundry_core::sentinel` module — `SentinelStore`, `SentinelEntry`,
+  `Schedule` (externally-tagged enum so future kinds extend additively),
+  `EmitSpec` (strongly-typed `EventType` on the wire), and
+  `SentinelMutationError`. `default_seed()` ships the canonical set;
+  `merge_default_seed_into` adds missing-by-name entries to existing
+  stores on every daemon start, so new Foundry releases that ship more
+  canonical sentinels reach existing installs automatically without
+  manual JSON edits.
+- In-process scheduler (`foundryd::scheduler`) — a tokio task that
+  watches `~/.foundry/sentinels.json`, computes the soonest enabled
+  firing across all entries, and emits the configured event when due.
+  `tokio::select!` between the deadline and a `Notify` reload signal so
+  mutations take effect immediately. Standard 5-field cron expressions
+  are auto-padded to the 6-field shape the `cron` crate expects.
+  Catch-up policy is "skip missed firings".
+- Two new gRPC RPCs — `SentinelEnable` and `SentinelDisable` — plus the
+  proto `Sentinel` message. Both wake the scheduler's reload notify so
+  the next firing is recomputed immediately.
+- CLI subcommands: `foundry sentinel list | show | enable | disable`,
+  mirroring the `foundry registry` shape exactly. `list` and `show`
+  always read the file directly; `enable` and `disable` try gRPC and
+  fall back to direct file mutation with a warning when the daemon is
+  unreachable.
+- `nightly-maintenance` sentinel (`0 2 * * *`) in the default seed,
+  internalising the schedule previously held by
+  `launchd/com.mojility.foundry-maintenance.plist`.
+- `daily-commit-digest` sentinel (`0 17 * * *`) in the default seed,
+  driving a new linear formation: `ObserveCommits` (Observer; runs
+  `git log --since="24 hours ago" --no-merges --pretty=format:...` per
+  active project, captures per-project errors inline so the chain
+  continues), `SummarizeCommits` (Observer; agent-invoked Reasoning,
+  ReadOnly access, with Canadian English / `##` per project / 7-char
+  SHA / ⚠ Heads-up section / no-fabrication prompt rules;
+  short-circuits the agent call on empty days), `WriteCommitDigest`
+  (atomic tempfile-then-rename to
+  `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md`; dry-run firings run the full
+  chain but skip the file write).
+- Four new event types: `CommitDigestStarted` (span opener),
+  `CommitsObserved`, `CommitSummaryComposed`, `CommitDigestCompleted`,
+  with matching typed payload structs (`CommitInfo`, `ProjectCommits`,
+  and the four `*Payload` types).
+- New paths: `~/.foundry/sentinels.json` (overridable via
+  `FOUNDRY_SENTINELS_PATH`) and `~/.foundry/digests/YYYY-MM-DD.md`
+  (overridable via `FOUNDRY_DIGESTS_DIR`).
+- mdBook chapters `book/src/guide/sentinels.md` and
+  `book/src/guide/commit-digest.md`, plus AGENTS.md and skill updates.
+
+### Changed
+
+- `service::emit()` now delegates to a shared `service::spawn_workflow`
+  helper that both the gRPC handler and the in-process scheduler use,
+  so sentinel firings appear in `foundry status` and produce traces
+  identically to user-triggered runs.
+
+### Removed
+
+- `launchd/com.mojility.foundry-maintenance.plist`. The nightly
+  schedule now lives in `~/.foundry/sentinels.json`. Upgrade path is in
+  `launchd/README.md` and `book/src/guide/sentinels.md`: unload the
+  legacy plist and `rm` it; the canonical seed merge populates
+  `nightly-maintenance` on the next daemon start.
+
+### Dependencies
+
+- Added `cron = "0.16"` to `foundryd` for parsing sentinel schedules.
+
 ## [0.18.1] - 2026-05-22
 
 ### Fixed
