@@ -92,29 +92,72 @@ impl SentinelStore {
         Ok(entry)
     }
 
-    /// The default seed store written on first daemon start when
-    /// `sentinels.json` does not yet exist.
+    /// The canonical seed set — every sentinel Foundry ships with by default.
     ///
-    /// Seeds exactly one sentinel — `nightly-maintenance` — that emits
-    /// `MaintenanceCycleStarted` (project `"system"`) at 02:00 local time,
-    /// internalising the schedule previously held by
-    /// `launchd/com.mojility.foundry-maintenance.plist`.
+    /// On first daemon start (`sentinels.json` does not yet exist) the whole
+    /// seed is written verbatim. On subsequent starts the daemon calls
+    /// [`merge_default_seed_into`] to **additively** append any seed entries
+    /// missing from the user's file by name, without touching entries that
+    /// already exist. New Foundry releases that ship additional canonical
+    /// sentinels therefore reach existing installs automatically.
+    ///
+    /// Current seed:
+    /// - `nightly-maintenance` — `MaintenanceCycleStarted` at 02:00 local,
+    ///   internalises the schedule that previously lived in
+    ///   `launchd/com.mojility.foundry-maintenance.plist`.
+    /// - `daily-commit-digest` — `CommitDigestStarted` at 17:00 local,
+    ///   the daily commit summary across registered projects.
     pub fn default_seed() -> Self {
         Self {
             version: SENTINEL_STORE_VERSION,
-            sentinels: vec![SentinelEntry {
-                name: "nightly-maintenance".to_string(),
-                schedule: Schedule::Cron("0 2 * * *".to_string()),
-                emit: EmitSpec {
-                    event_type: EventType::MaintenanceCycleStarted,
-                    project: "system".to_string(),
-                    throttle: Throttle::default(),
-                    payload: serde_json::Value::Object(serde_json::Map::new()),
+            sentinels: vec![
+                SentinelEntry {
+                    name: "nightly-maintenance".to_string(),
+                    schedule: Schedule::Cron("0 2 * * *".to_string()),
+                    emit: EmitSpec {
+                        event_type: EventType::MaintenanceCycleStarted,
+                        project: "system".to_string(),
+                        throttle: Throttle::default(),
+                        payload: serde_json::Value::Object(serde_json::Map::new()),
+                    },
+                    enabled: true,
                 },
-                enabled: true,
-            }],
+                SentinelEntry {
+                    name: "daily-commit-digest".to_string(),
+                    schedule: Schedule::Cron("0 17 * * *".to_string()),
+                    emit: EmitSpec {
+                        event_type: EventType::CommitDigestStarted,
+                        project: "system".to_string(),
+                        throttle: Throttle::default(),
+                        payload: serde_json::Value::Object(serde_json::Map::new()),
+                    },
+                    enabled: true,
+                },
+            ],
         }
     }
+}
+
+/// Additive seed-merge: append any canonical seed entries whose names are not
+/// already present in `store`. Returns `true` when at least one entry was
+/// appended (the caller should persist the store back to disk in that case).
+///
+/// **The function only inspects names.** It never mutates entries that are
+/// already present, so user toggles, hand-edited cron expressions, and
+/// payload customisations on existing entries survive untouched. Entries the
+/// user added that are not in the canonical seed are also preserved.
+pub fn merge_default_seed_into(store: &mut SentinelStore) -> bool {
+    let mut changed = false;
+    let seed = SentinelStore::default_seed();
+    let existing: std::collections::HashSet<String> =
+        store.sentinels.iter().map(|s| s.name.clone()).collect();
+    for entry in seed.sentinels {
+        if !existing.contains(&entry.name) {
+            store.sentinels.push(entry);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// A single sentinel — a name, a schedule, and the event it emits when due.
@@ -207,18 +250,30 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn default_seed_has_single_nightly_maintenance_entry() {
+    fn default_seed_includes_nightly_maintenance_and_daily_commit_digest() {
         let store = SentinelStore::default_seed();
         assert_eq!(store.version, SENTINEL_STORE_VERSION);
-        assert_eq!(store.sentinels.len(), 1);
-        let entry = &store.sentinels[0];
-        assert_eq!(entry.name, "nightly-maintenance");
-        assert!(entry.enabled);
-        assert_eq!(entry.schedule, Schedule::Cron("0 2 * * *".to_string()));
-        assert_eq!(entry.emit.event_type, EventType::MaintenanceCycleStarted);
-        assert_eq!(entry.emit.project, "system");
-        assert_eq!(entry.emit.throttle, Throttle::Full);
-        assert!(entry.emit.payload.is_object());
+        assert_eq!(store.sentinels.len(), 2);
+
+        let nightly = store
+            .find_sentinel("nightly-maintenance")
+            .expect("nightly-maintenance present in seed");
+        assert!(nightly.enabled);
+        assert_eq!(nightly.schedule, Schedule::Cron("0 2 * * *".to_string()));
+        assert_eq!(nightly.emit.event_type, EventType::MaintenanceCycleStarted);
+        assert_eq!(nightly.emit.project, "system");
+        assert_eq!(nightly.emit.throttle, Throttle::Full);
+        assert!(nightly.emit.payload.is_object());
+
+        let digest = store
+            .find_sentinel("daily-commit-digest")
+            .expect("daily-commit-digest present in seed");
+        assert!(digest.enabled);
+        assert_eq!(digest.schedule, Schedule::Cron("0 17 * * *".to_string()));
+        assert_eq!(digest.emit.event_type, EventType::CommitDigestStarted);
+        assert_eq!(digest.emit.project, "system");
+        assert_eq!(digest.emit.throttle, Throttle::Full);
+        assert!(digest.emit.payload.is_object());
     }
 
     #[test]
@@ -226,14 +281,23 @@ mod tests {
         let store = SentinelStore::default_seed();
         let json = serde_json::to_value(&store).unwrap();
         assert_eq!(json["version"], 1);
-        let entry = &json["sentinels"][0];
-        assert_eq!(entry["name"], "nightly-maintenance");
-        assert_eq!(entry["schedule"], serde_json::json!({ "cron": "0 2 * * *" }));
-        assert_eq!(entry["emit"]["event_type"], "maintenance_cycle_started");
-        assert_eq!(entry["emit"]["project"], "system");
-        assert_eq!(entry["emit"]["throttle"], "full");
-        assert_eq!(entry["emit"]["payload"], serde_json::json!({}));
-        assert_eq!(entry["enabled"], true);
+        assert_eq!(json["sentinels"].as_array().unwrap().len(), 2);
+
+        let nightly = &json["sentinels"][0];
+        assert_eq!(nightly["name"], "nightly-maintenance");
+        assert_eq!(nightly["schedule"], serde_json::json!({ "cron": "0 2 * * *" }));
+        assert_eq!(nightly["emit"]["event_type"], "maintenance_cycle_started");
+        assert_eq!(nightly["emit"]["project"], "system");
+        assert_eq!(nightly["emit"]["throttle"], "full");
+        assert_eq!(nightly["emit"]["payload"], serde_json::json!({}));
+        assert_eq!(nightly["enabled"], true);
+
+        let digest = &json["sentinels"][1];
+        assert_eq!(digest["name"], "daily-commit-digest");
+        assert_eq!(digest["schedule"], serde_json::json!({ "cron": "0 17 * * *" }));
+        assert_eq!(digest["emit"]["event_type"], "commit_digest_started");
+        assert_eq!(digest["emit"]["project"], "system");
+        assert_eq!(digest["enabled"], true);
     }
 
     // ---------------------------------------------------------------------
@@ -360,6 +424,7 @@ mod tests {
     #[test]
     fn enabled_sentinels_filters_disabled_entries() {
         let mut store = SentinelStore::default_seed();
+        let enabled_at_start = store.enabled_sentinels().len();
         store.sentinels.push(SentinelEntry {
             name: "off".to_string(),
             schedule: Schedule::Cron("0 0 * * *".to_string()),
@@ -373,8 +438,8 @@ mod tests {
         });
 
         let enabled = store.enabled_sentinels();
-        assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0].name, "nightly-maintenance");
+        assert_eq!(enabled.len(), enabled_at_start, "disabled push must not affect enabled count");
+        assert!(enabled.iter().all(|s| s.enabled));
     }
 
     // ---------------------------------------------------------------------
@@ -424,5 +489,111 @@ mod tests {
         let err = SentinelMutationError::NotFound("foo".to_string());
         assert!(err.to_string().contains("foo"));
         assert!(err.to_string().contains("not found"));
+    }
+
+    // ---------------------------------------------------------------------
+    // merge_default_seed_into
+    // ---------------------------------------------------------------------
+
+    /// Build a store containing only the legacy Slice-1 nightly entry. This
+    /// is exactly what an existing install upgrading from Slice 1 has on disk.
+    fn legacy_slice1_store() -> SentinelStore {
+        SentinelStore {
+            version: SENTINEL_STORE_VERSION,
+            sentinels: vec![SentinelEntry {
+                name: "nightly-maintenance".to_string(),
+                schedule: Schedule::Cron("0 2 * * *".to_string()),
+                emit: EmitSpec {
+                    event_type: EventType::MaintenanceCycleStarted,
+                    project: "system".to_string(),
+                    throttle: Throttle::Full,
+                    payload: serde_json::json!({}),
+                },
+                enabled: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn merge_default_seed_into_returns_false_when_already_complete() {
+        let mut store = SentinelStore::default_seed();
+        let len_before = store.sentinels.len();
+        let changed = merge_default_seed_into(&mut store);
+        assert!(!changed, "no missing seed entries → no change");
+        assert_eq!(store.sentinels.len(), len_before);
+    }
+
+    #[test]
+    fn merge_default_seed_into_appends_missing_digest_on_slice1_store() {
+        let mut store = legacy_slice1_store();
+        let changed = merge_default_seed_into(&mut store);
+        assert!(changed, "digest entry was missing → store should be mutated");
+        assert_eq!(store.sentinels.len(), 2);
+        assert!(store.find_sentinel("nightly-maintenance").is_some());
+        assert!(store.find_sentinel("daily-commit-digest").is_some());
+    }
+
+    #[test]
+    fn merge_default_seed_into_appends_all_canonical_entries_when_empty() {
+        let mut store = SentinelStore {
+            version: SENTINEL_STORE_VERSION,
+            sentinels: vec![],
+        };
+        let changed = merge_default_seed_into(&mut store);
+        assert!(changed);
+        assert_eq!(store.sentinels.len(), SentinelStore::default_seed().sentinels.len());
+    }
+
+    #[test]
+    fn merge_default_seed_into_preserves_user_disabled_state_on_existing_entries() {
+        let mut store = legacy_slice1_store();
+        // Simulate Stacey disabling the nightly run before the Slice 2 upgrade.
+        store.sentinels[0].enabled = false;
+
+        merge_default_seed_into(&mut store);
+
+        let nightly = store.find_sentinel("nightly-maintenance").unwrap();
+        assert!(!nightly.enabled, "user toggle on existing entry must not be reset");
+    }
+
+    #[test]
+    fn merge_default_seed_into_preserves_user_added_entries() {
+        let mut store = legacy_slice1_store();
+        store.sentinels.push(SentinelEntry {
+            name: "weekly-finance-audit".to_string(),
+            schedule: Schedule::Cron("0 8 * * 1".to_string()),
+            emit: EmitSpec {
+                event_type: EventType::MaintenanceCycleStarted, // placeholder
+                project: "system".to_string(),
+                throttle: Throttle::Full,
+                payload: serde_json::json!({}),
+            },
+            enabled: true,
+        });
+
+        merge_default_seed_into(&mut store);
+
+        assert!(
+            store.find_sentinel("weekly-finance-audit").is_some(),
+            "user-defined entry must survive the merge"
+        );
+        // And the canonical digest is now present alongside.
+        assert!(store.find_sentinel("daily-commit-digest").is_some());
+    }
+
+    #[test]
+    fn merge_default_seed_into_preserves_cron_edits_on_existing_entries() {
+        let mut store = legacy_slice1_store();
+        // Simulate Stacey moving the nightly run to 03:30.
+        store.sentinels[0].schedule = Schedule::Cron("30 3 * * *".to_string());
+
+        merge_default_seed_into(&mut store);
+
+        let nightly = store.find_sentinel("nightly-maintenance").unwrap();
+        assert_eq!(
+            nightly.schedule,
+            Schedule::Cron("30 3 * * *".to_string()),
+            "hand-edited cron must not be overwritten by the merge"
+        );
     }
 }

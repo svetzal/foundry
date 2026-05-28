@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
-use foundry_core::sentinel::SentinelStore;
+use foundry_core::sentinel::{SentinelStore, merge_default_seed_into};
 
 mod agent_stream;
 mod blocks;
@@ -129,17 +129,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load the sentinel store from disk, auto-seeding with the default nightly
-/// maintenance entry on first start. The seed file is written immediately
-/// so subsequent restarts skip the seeding branch.
+/// Load the sentinel store from disk, auto-seeding the default canonical set
+/// on first start. On subsequent starts the loaded store is additively
+/// merged with the current canonical seed so new Foundry releases that ship
+/// extra default sentinels reach existing installs automatically without
+/// touching user toggles or hand-edited entries.
 fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
     match SentinelStore::load(path) {
-        Ok(s) => {
+        Ok(mut s) => {
             tracing::info!(
                 path = %path.display(),
                 count = s.sentinels.len(),
                 "sentinels loaded",
             );
+            let appended = merge_default_seed_into(&mut s);
+            if appended {
+                s.save(path).map_err(|save_err| {
+                    anyhow::anyhow!(
+                        "failed to persist merged sentinel seed at {}: {save_err}",
+                        path.display()
+                    )
+                })?;
+                tracing::info!(
+                    path = %path.display(),
+                    count = s.sentinels.len(),
+                    "appended new canonical sentinel entries from default seed",
+                );
+            }
             Ok(s)
         }
         Err(load_err) => {
