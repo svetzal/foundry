@@ -2,8 +2,11 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
+use tokio::sync::Notify;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
+
+use foundry_core::sentinel::SentinelStore;
 
 mod agent_stream;
 mod blocks;
@@ -17,6 +20,7 @@ mod gather_store;
 mod legacy_event_check;
 mod orchestrator;
 mod scanner;
+mod scheduler;
 mod service;
 mod shell;
 mod span_context;
@@ -83,6 +87,24 @@ async fn main() -> Result<()> {
         trace_writer.clone(),
     ));
     let workflow_tracker = Arc::new(workflow_tracker::WorkflowTracker::new());
+
+    // Sentinel store — load (or auto-seed on first start) the file-backed
+    // schedule that replaces launchd/com.mojility.foundry-maintenance.plist.
+    let sentinels_path = foundry_core::paths::sentinels_path();
+    let sentinels = Arc::new(RwLock::new(load_or_seed_sentinels(&sentinels_path)?));
+    let scheduler_reload = Arc::new(Notify::new());
+
+    spawn_scheduler(
+        &sentinels,
+        &scheduler_reload,
+        &engine,
+        &trace_store,
+        &workflow_tracker,
+        &trace_writer,
+        &event_tx,
+        &registry,
+    );
+
     let service = service::FoundryService::new(
         engine,
         trace_store,
@@ -102,6 +124,74 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+/// Load the sentinel store from disk, auto-seeding with the default nightly
+/// maintenance entry on first start. The seed file is written immediately
+/// so subsequent restarts skip the seeding branch.
+fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
+    match SentinelStore::load(path) {
+        Ok(s) => {
+            tracing::info!(
+                path = %path.display(),
+                count = s.sentinels.len(),
+                "sentinels loaded",
+            );
+            Ok(s)
+        }
+        Err(load_err) => {
+            let seed = SentinelStore::default_seed();
+            seed.save(path).map_err(|save_err| {
+                anyhow::anyhow!(
+                    "failed to seed sentinels at {}: {save_err} (original load error: {load_err})",
+                    path.display()
+                )
+            })?;
+            tracing::info!(
+                path = %path.display(),
+                count = seed.sentinels.len(),
+                "sentinels seeded on first start",
+            );
+            Ok(seed)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_scheduler(
+    sentinels: &Arc<RwLock<SentinelStore>>,
+    reload: &Arc<Notify>,
+    engine: &Arc<engine::Engine>,
+    trace_store: &Arc<trace_store::TraceStore>,
+    workflow_tracker: &Arc<workflow_tracker::WorkflowTracker>,
+    trace_writer: &Arc<trace_writer::TraceWriter>,
+    event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
+    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
+) {
+    // Pipe sentinel firings through the same trace/workflow_tracker
+    // machinery the gRPC `emit()` handler uses.
+    let emit: scheduler::EmitFn = {
+        let engine = Arc::clone(engine);
+        let trace_store = Arc::clone(trace_store);
+        let workflow_tracker = Arc::clone(workflow_tracker);
+        let trace_writer = Arc::clone(trace_writer);
+        let event_tx = event_tx.clone();
+        let registry = Arc::clone(registry);
+        Arc::new(move |event| {
+            service::spawn_workflow(
+                event,
+                Arc::clone(&engine),
+                Arc::clone(&trace_store),
+                Arc::clone(&workflow_tracker),
+                Arc::clone(&trace_writer),
+                event_tx.clone(),
+                Arc::clone(&registry),
+            );
+        })
+    };
+
+    let scheduler = scheduler::Scheduler::new(Arc::clone(sentinels), Arc::clone(reload), emit);
+    tokio::spawn(scheduler.run());
 }
 
 fn register_blocks(

@@ -53,6 +53,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+cron = "0.16"
 
 # Hashing (deterministic event IDs)
 sha2 = "0.11"

@@ -268,6 +268,42 @@ fn parse_emit_request(req: EmitRequest) -> Result<Event, Status> {
         .with_span_ids(request_span_id, request_parent_span_id))
 }
 
+/// Track the event in the workflow registry and spawn `run_workflow` on the
+/// tokio runtime. Used by both the gRPC `emit()` handler and the in-process
+/// scheduler so every root event flows through the same trace/audit machinery.
+pub(crate) fn spawn_workflow(
+    event: Event,
+    engine: Arc<Engine>,
+    trace_store: Arc<TraceStore>,
+    tracker: Arc<WorkflowTracker>,
+    trace_writer: Arc<TraceWriter>,
+    event_tx: broadcast::Sender<Event>,
+    registry: Arc<RwLock<Registry>>,
+) {
+    let event_id = event.id.clone();
+    let trace_id = event.trace_id.clone().unwrap_or_default();
+
+    tracker.insert(ActiveWorkflow {
+        event_id: event_id.clone(),
+        event_type: event.event_type.to_string(),
+        project: event.project.clone(),
+        trace_id,
+        started_at: chrono::Utc::now(),
+    });
+
+    let span = tracing::info_span!(
+        "process",
+        event_id = %event_id,
+        event_type = %event.event_type,
+        project = %event.project,
+    );
+
+    tokio::spawn(
+        run_workflow(event, engine, trace_store, tracker, trace_writer, event_tx, registry)
+            .instrument(span),
+    );
+}
+
 async fn run_workflow(
     event: Event,
     engine: Arc<Engine>,
@@ -365,7 +401,6 @@ impl Foundry for FoundryService {
     async fn emit(&self, request: Request<EmitRequest>) -> Result<Response<EmitResponse>, Status> {
         let event = parse_emit_request(request.into_inner())?;
         let event_id = event.id.clone();
-        let trace_id = event.trace_id.clone().unwrap_or_default();
 
         tracing::info!(
             event_id = %event_id,
@@ -375,33 +410,14 @@ impl Foundry for FoundryService {
             "event accepted, spawning background processing"
         );
 
-        // Register as active before spawning so status is immediately visible.
-        self.workflow_tracker.insert(ActiveWorkflow {
-            event_id: event_id.clone(),
-            event_type: event.event_type.to_string(),
-            project: event.project.clone(),
-            trace_id,
-            started_at: chrono::Utc::now(),
-        });
-
-        let span = tracing::info_span!(
-            "process",
-            event_id = %event_id,
-            event_type = %event.event_type,
-            project = %event.project,
-        );
-
-        tokio::spawn(
-            run_workflow(
-                event,
-                Arc::clone(&self.engine),
-                Arc::clone(&self.trace_store),
-                Arc::clone(&self.workflow_tracker),
-                Arc::clone(&self.trace_writer),
-                self.event_tx.clone(),
-                Arc::clone(&self.registry),
-            )
-            .instrument(span),
+        spawn_workflow(
+            event,
+            Arc::clone(&self.engine),
+            Arc::clone(&self.trace_store),
+            Arc::clone(&self.workflow_tracker),
+            Arc::clone(&self.trace_writer),
+            self.event_tx.clone(),
+            Arc::clone(&self.registry),
         );
 
         Ok(Response::new(EmitResponse {
