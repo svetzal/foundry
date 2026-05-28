@@ -1,13 +1,10 @@
-pub mod event;
-pub mod gates;
-pub mod loop_context;
-pub mod paths;
-pub mod payload;
-pub mod registry;
-pub mod scatter;
-pub mod sentinel;
-pub mod task_block;
-pub mod throttle;
-pub mod trace;
-pub mod work_block;
-pub mod workflow;
+//! Compatibility shim for the former `foundry-core` crate.
+//!
+//! The contract crate was renamed to [`foundry_sdk`] to make its role — the
+//! stable SDK that third-party blocks and workflows compile against — explicit.
+//! This crate re-exports everything from `foundry_sdk` so existing
+//! `use foundry_core::…` paths keep working unchanged during the transition.
+//!
+//! New code should depend on `foundry-sdk` directly. This shim will be removed
+//! in a future release.
+pub use foundry_sdk::*;

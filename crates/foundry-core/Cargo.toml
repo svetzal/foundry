@@ -1,6 +1,6 @@
 [package]
 name = "foundry-core"
-description = "Shared types for Foundry — events, task blocks, throttle, and workflow definitions"
+description = "Compatibility shim — re-exports the Foundry SDK (foundry-sdk). Prefer depending on foundry-sdk directly; this crate exists to avoid a flag-day rename and will be removed in a future release."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,20 +8,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-chrono = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-uuid = { workspace = true }
-rand = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-strum = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
-tokio = { workspace = true }
+foundry-sdk = { workspace = true }
 
 [lints]
 workspace = true

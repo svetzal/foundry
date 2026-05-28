@@ -21,7 +21,9 @@ missing_panics_doc = "allow"
 unsafe_code = "deny"
 
 [workspace.dependencies]
-# Shared across crates
+# The contributor SDK — the stable contract crate that task blocks compile against.
+foundry-sdk = { path = "crates/foundry-sdk" }
+# Compatibility shim re-exporting foundry-sdk. Prefer foundry-sdk in new code.
 foundry-core = { path = "crates/foundry-core" }
 
 # Async runtime

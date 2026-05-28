@@ -459,6 +459,13 @@ dependencies = [
 name = "foundry-core"
 version = "0.19.0"
 dependencies = [
+ "foundry-sdk",
+]
+
+[[package]]
+name = "foundry-sdk"
+version = "0.19.0"
+dependencies = [
  "anyhow",
  "chrono",
  "hex",
