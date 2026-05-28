@@ -495,7 +495,7 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
         assert_eq!(result.events[0].payload["stub"], true);
     }
@@ -526,7 +526,7 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
     }
 
@@ -561,7 +561,7 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed"]);
     }
 

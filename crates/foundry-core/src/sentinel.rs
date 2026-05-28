@@ -334,15 +334,21 @@ mod tests {
     }
 
     #[test]
-    fn emit_spec_unknown_event_type_fails_to_deserialize() {
+    fn emit_spec_unknown_event_type_deserializes_to_custom() {
+        // The EventType contract is open: an event name the core platform does
+        // not recognize is preserved as a `Custom` event rather than rejected,
+        // so a sentinel can fire a contributor-defined workflow.
         let json = r#"{
-            "event_type": "absolutely_not_a_real_event",
+            "event_type": "third_party_workflow_requested",
             "project": "system",
             "throttle": "full",
             "payload": {}
         }"#;
-        let err = serde_json::from_str::<EmitSpec>(json).unwrap_err();
-        assert!(err.to_string().contains("absolutely_not_a_real_event"));
+        let spec = serde_json::from_str::<EmitSpec>(json).expect("custom event type is accepted");
+        assert_eq!(
+            spec.event_type,
+            crate::event::EventType::Custom("third_party_workflow_requested".to_string()),
+        );
     }
 
     // ---------------------------------------------------------------------

@@ -63,21 +63,21 @@ async fn happy_path_maintain_chain() {
     let engine = maintain_engine(shell, agent, registry);
     let result = engine.process(maintenance_requested_event()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Expected chain:
     // ProjectMaintenanceRequested -> GateResolutionCompleted -> PreflightCompleted (skipped for maintain)
     //   -> ExecutionCompleted -> GateVerificationCompleted -> ProjectMaintenanceCompleted
     //   -> SummarizeCompleted
     assert!(
-        event_types.contains(&"project_maintenance_requested"),
+        event_types.iter().any(|t| t == "project_maintenance_requested"),
         "chain should start with maintenance_requested"
     );
-    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.contains(&"execution_completed"), "should complete execution");
-    assert!(event_types.contains(&"gate_verification_completed"), "should verify gates");
-    assert!(event_types.contains(&"project_maintenance_completed"), "should emit completion");
-    assert!(event_types.contains(&"summarize_completed"), "should summarize result");
+    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
+    assert!(event_types.iter().any(|t| t == "execution_completed"), "should complete execution");
+    assert!(event_types.iter().any(|t| t == "gate_verification_completed"), "should verify gates");
+    assert!(event_types.iter().any(|t| t == "project_maintenance_completed"), "should emit completion");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize result");
 
     // Verify the completion event has success=true
     let completion = result
@@ -96,7 +96,7 @@ async fn happy_path_maintain_chain() {
     assert_eq!(summary.payload["headline"], "Update dependencies");
 
     // Should NOT have any retry events
-    assert!(!event_types.contains(&"retry_requested"), "no retries should be needed");
+    assert!(!event_types.iter().any(|t| t == "retry_requested"), "no retries should be needed");
 }
 
 #[tokio::test]
@@ -138,11 +138,11 @@ async fn retry_loop_on_gate_failure_then_success() {
     let engine = maintain_engine(shell, agent, registry);
     let result = engine.process(maintenance_requested_event()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should have retry flow
     assert!(
-        event_types.contains(&"retry_requested"),
+        event_types.iter().any(|t| t == "retry_requested"),
         "should request retry after first gate failure"
     );
 
@@ -177,7 +177,7 @@ async fn retry_loop_on_gate_failure_then_success() {
     );
 
     // Should have summary
-    assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
 }
 
 #[tokio::test]
@@ -201,7 +201,7 @@ async fn retries_exhausted_emits_failure() {
     let engine = maintain_engine(shell, agent, registry);
     let result = engine.process(maintenance_requested_event()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should have 3 retry attempts (retry_count 1, 2, 3)
     let retry_count = result
@@ -223,7 +223,7 @@ async fn retries_exhausted_emits_failure() {
     assert!(!result.is_success(), "is_success() should be false when retries are exhausted");
 
     // Should NOT have SummarizeCompleted (only on success)
-    assert!(!event_types.contains(&"summarize_completed"), "should not summarize on failure");
+    assert!(!event_types.iter().any(|t| t == "summarize_completed"), "should not summarize on failure");
 }
 
 #[tokio::test]
@@ -239,11 +239,11 @@ async fn no_gates_file_still_completes() {
     let engine = maintain_engine(shell, agent, registry);
     let result = engine.process(maintenance_requested_event()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should still complete successfully (empty gates = all pass)
-    assert!(event_types.contains(&"project_maintenance_completed"));
-    assert!(event_types.contains(&"summarize_completed"));
+    assert!(event_types.iter().any(|t| t == "project_maintenance_completed"));
+    assert!(event_types.iter().any(|t| t == "summarize_completed"));
 
     let completion = result
         .events
@@ -277,11 +277,11 @@ async fn maintain_clean_tree_remains_successful() {
     let engine = maintain_engine(shell, agent, registry);
     let result = engine.process(maintenance_requested_event()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // No retry — clean tree on maintain is not a failure
     assert!(
-        !event_types.contains(&"retry_requested"),
+        !event_types.iter().any(|t| t == "retry_requested"),
         "maintain with clean tree must NOT trigger retry"
     );
 
@@ -297,5 +297,5 @@ async fn maintain_clean_tree_remains_successful() {
     );
 
     // Summary was generated
-    assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
 }

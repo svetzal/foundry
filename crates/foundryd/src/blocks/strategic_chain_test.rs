@@ -166,23 +166,23 @@ async fn strategic_loop_runs_one_iteration_then_stops() {
     let result = engine.process(strategic_iteration_requested()).await;
 
     // Collect event types
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should see the strategic assessment, inner iterate chain, then completion
     assert!(
-        event_types.contains(&"strategic_assessment_completed"),
+        event_types.iter().any(|t| t == "strategic_assessment_completed"),
         "missing strategic_assessment_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"inner_iteration_completed"),
+        event_types.iter().any(|t| t == "inner_iteration_completed"),
         "missing inner_iteration_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "missing project_iteration_completed (terminal) in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"summarize_completed"),
+        event_types.iter().any(|t| t == "summarize_completed"),
         "missing summarize_completed in {event_types:?}"
     );
 
@@ -245,10 +245,10 @@ async fn strategic_loop_stops_at_max_iterations() {
     let engine = strategic_engine(single_iterate_shell(), agent, registry);
     let result = engine.process(trigger).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.contains(&"inner_iteration_completed"));
-    assert!(event_types.contains(&"project_iteration_completed"));
+    assert!(event_types.iter().any(|t| t == "inner_iteration_completed"));
+    assert!(event_types.iter().any(|t| t == "project_iteration_completed"));
 
     // Should NOT have a second iteration_requested (loop stopped at max)
     let iteration_requests: Vec<_> = result
@@ -297,21 +297,21 @@ async fn non_strategic_iteration_still_works() {
     let engine = strategic_engine(single_iterate_shell(), agent, registry);
     let result = engine.process(non_strategic_iteration_requested()).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should NOT see strategic events
     assert!(
-        !event_types.contains(&"strategic_assessment_completed"),
+        !event_types.iter().any(|t| t == "strategic_assessment_completed"),
         "strategic events should not appear in non-strategic flow"
     );
     assert!(
-        !event_types.contains(&"inner_iteration_completed"),
+        !event_types.iter().any(|t| t == "inner_iteration_completed"),
         "inner_iteration_completed should not appear in non-strategic flow"
     );
     // Should see normal iteration completion
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should see normal project_iteration_completed"
     );
-    assert!(event_types.contains(&"summarize_completed"), "should see summarize_completed");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should see summarize_completed");
 }

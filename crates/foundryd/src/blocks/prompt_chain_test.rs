@@ -87,49 +87,49 @@ async fn prompt_workflow_happy_path() {
 
     let result = engine.process(trigger).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should see the full chain minus assess/triage/plan
     assert!(
-        event_types.contains(&"charter_check_completed"),
+        event_types.iter().any(|t| t == "charter_check_completed"),
         "missing charter_check_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"gate_resolution_completed"),
+        event_types.iter().any(|t| t == "gate_resolution_completed"),
         "missing gate_resolution_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"preflight_completed"),
+        event_types.iter().any(|t| t == "preflight_completed"),
         "missing preflight_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"plan_completed"),
+        event_types.iter().any(|t| t == "plan_completed"),
         "missing plan_completed (from DirectPrompt) in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"execution_completed"),
+        event_types.iter().any(|t| t == "execution_completed"),
         "missing execution_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"gate_verification_completed"),
+        event_types.iter().any(|t| t == "gate_verification_completed"),
         "missing gate_verification_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "missing project_iteration_completed in {event_types:?}"
     );
     assert!(
-        event_types.contains(&"summarize_completed"),
+        event_types.iter().any(|t| t == "summarize_completed"),
         "missing summarize_completed in {event_types:?}"
     );
 
     // Should NOT see assessment/triage events
     assert!(
-        !event_types.contains(&"assessment_completed"),
+        !event_types.iter().any(|t| t == "assessment_completed"),
         "assessment_completed should not appear in prompt workflow"
     );
     assert!(
-        !event_types.contains(&"triage_completed"),
+        !event_types.iter().any(|t| t == "triage_completed"),
         "triage_completed should not appear in prompt workflow"
     );
 
@@ -171,12 +171,12 @@ async fn prompt_workflow_charter_failure_stops_chain() {
 
     let result = engine.process(trigger).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Charter check should complete (with success=false)
-    assert!(event_types.contains(&"charter_check_completed"));
+    assert!(event_types.iter().any(|t| t == "charter_check_completed"));
     // Gate resolution should see success=false and skip
     // No execution should happen
-    assert!(!event_types.contains(&"execution_completed"));
-    assert!(!event_types.contains(&"project_iteration_completed"));
+    assert!(!event_types.iter().any(|t| t == "execution_completed"));
+    assert!(!event_types.iter().any(|t| t == "project_iteration_completed"));
 }

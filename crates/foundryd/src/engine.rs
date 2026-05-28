@@ -594,7 +594,7 @@ mod tests {
 
         let result = engine.process(trigger).await;
 
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(
             types,
             [
@@ -622,7 +622,7 @@ mod tests {
 
         let result = engine.process(trigger).await;
 
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         // Full chain completes: Observer emits, Mutator simulates success via dry_run_events.
         assert_eq!(
             types,
@@ -757,7 +757,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         assert_eq!(
             types,
@@ -792,7 +792,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         assert_eq!(
             types,
@@ -822,7 +822,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         // Chain stops after release_tag_audited because AuditMainBranch
         // self-filters when vulnerable=false
@@ -845,7 +845,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         // Full chain completes with simulated mutator events (dirty path).
         // Observers execute for real; Mutators simulate success.
@@ -891,7 +891,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         // Scanner tool unavailable in temp dir — chain ends at scan_requested.
         assert_eq!(types, ["scan_requested"]);
@@ -909,7 +909,7 @@ mod tests {
         );
 
         let result = engine.process(trigger).await;
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
         // Scanner tool unavailable in temp dir — chain ends at scan_requested.
         assert_eq!(types, ["scan_requested"]);
@@ -1075,7 +1075,7 @@ mod tests {
         let result = engine.process(trigger).await;
 
         // Verify all three events were returned in process result.
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(
             types,
             [
@@ -1099,7 +1099,7 @@ mod tests {
             .iter()
             .map(|l| {
                 let e: foundry_core::event::Event = serde_json::from_str(l).unwrap();
-                e.event_type.as_str().to_string()
+                e.event_type.as_str()
             })
             .collect();
         assert_eq!(
@@ -1129,7 +1129,7 @@ mod tests {
 
         let result = engine.process(trigger).await;
 
-        let types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(
             types,
             [

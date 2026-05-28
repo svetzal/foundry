@@ -136,26 +136,26 @@ async fn happy_path_iterate_chain() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Verify the full chain
     assert!(
-        event_types.contains(&"project_iteration_requested"),
+        event_types.iter().any(|t| t == "project_iteration_requested"),
         "chain should start with iteration_requested"
     );
-    assert!(event_types.contains(&"charter_check_completed"), "should check charter");
-    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.contains(&"preflight_completed"), "should complete preflight");
-    assert!(event_types.contains(&"assessment_completed"), "should complete assessment");
-    assert!(event_types.contains(&"triage_completed"), "should complete triage");
-    assert!(event_types.contains(&"plan_completed"), "should complete plan");
-    assert!(event_types.contains(&"execution_completed"), "should complete execution");
-    assert!(event_types.contains(&"gate_verification_completed"), "should verify gates");
+    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
+    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
+    assert!(event_types.iter().any(|t| t == "preflight_completed"), "should complete preflight");
+    assert!(event_types.iter().any(|t| t == "assessment_completed"), "should complete assessment");
+    assert!(event_types.iter().any(|t| t == "triage_completed"), "should complete triage");
+    assert!(event_types.iter().any(|t| t == "plan_completed"), "should complete plan");
+    assert!(event_types.iter().any(|t| t == "execution_completed"), "should complete execution");
+    assert!(event_types.iter().any(|t| t == "gate_verification_completed"), "should verify gates");
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit iterate completion"
     );
-    assert!(event_types.contains(&"summarize_completed"), "should summarize result");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize result");
 
     // Verify completion event has success=true
     let completion = result
@@ -174,7 +174,7 @@ async fn happy_path_iterate_chain() {
     assert_eq!(summary.payload["headline"], "Fix duplicate validation logic");
 
     // No retries needed
-    assert!(!event_types.contains(&"retry_requested"), "no retries should be needed");
+    assert!(!event_types.iter().any(|t| t == "retry_requested"), "no retries should be needed");
 }
 
 #[tokio::test]
@@ -188,10 +188,10 @@ async fn charter_failure_stops_chain() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Charter check should be emitted with passed=false
-    assert!(event_types.contains(&"charter_check_completed"), "should check charter");
+    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
     let charter_event = result
         .events
         .iter()
@@ -201,7 +201,7 @@ async fn charter_failure_stops_chain() {
 
     // ResolveGates emits the terminal failure event so is_success() is accurate.
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit terminal failure when charter check fails"
     );
     let completion = result
@@ -214,11 +214,11 @@ async fn charter_failure_stops_chain() {
 
     // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
-        !event_types.contains(&"gate_resolution_completed"),
+        !event_types.iter().any(|t| t == "gate_resolution_completed"),
         "should NOT resolve gates after charter failure"
     );
     assert!(
-        !event_types.contains(&"assessment_completed"),
+        !event_types.iter().any(|t| t == "assessment_completed"),
         "should NOT assess after charter failure"
     );
 }
@@ -235,11 +235,11 @@ async fn preflight_failure_stops_chain() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.contains(&"charter_check_completed"), "should check charter");
-    assert!(event_types.contains(&"gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.contains(&"preflight_completed"), "should complete preflight");
+    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
+    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
+    assert!(event_types.iter().any(|t| t == "preflight_completed"), "should complete preflight");
 
     // Preflight should have all_passed=false
     let preflight = result
@@ -251,7 +251,7 @@ async fn preflight_failure_stops_chain() {
 
     // RunPreflightGates emits a terminal failure event so is_success() is accurate.
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit terminal failure when preflight fails"
     );
     let completion = result
@@ -264,7 +264,7 @@ async fn preflight_failure_stops_chain() {
 
     // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
-        !event_types.contains(&"assessment_completed"),
+        !event_types.iter().any(|t| t == "assessment_completed"),
         "should NOT assess after preflight failure"
     );
 }
@@ -304,9 +304,9 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.contains(&"triage_completed"), "should complete triage");
+    assert!(event_types.iter().any(|t| t == "triage_completed"), "should complete triage");
     let triage = result
         .events
         .iter()
@@ -316,7 +316,7 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
 
     // CreatePlan emits a terminal success event — a triage rejection is a successful no-op.
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit a terminal event when high-severity triage is rejected as busy-work"
     );
     let completion = result
@@ -329,11 +329,11 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
 
     // Chain should stop at the terminal event — no downstream iterate blocks
     assert!(
-        !event_types.contains(&"plan_completed"),
+        !event_types.iter().any(|t| t == "plan_completed"),
         "should NOT create plan after triage rejection"
     );
     assert!(
-        !event_types.contains(&"execution_completed"),
+        !event_types.iter().any(|t| t == "execution_completed"),
         "should NOT execute after triage rejection"
     );
 }
@@ -373,9 +373,9 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.contains(&"triage_completed"), "should complete triage");
+    assert!(event_types.iter().any(|t| t == "triage_completed"), "should complete triage");
     let triage = result
         .events
         .iter()
@@ -385,7 +385,7 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
 
     // CreatePlan emits a terminal success event — below-threshold is a successful no-op.
     assert!(
-        event_types.contains(&"project_iteration_completed"),
+        event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit terminal event when below-threshold triage is rejected"
     );
     let completion = result
@@ -404,11 +404,11 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
 
     // Chain still stops — no plan or execution
     assert!(
-        !event_types.contains(&"plan_completed"),
+        !event_types.iter().any(|t| t == "plan_completed"),
         "should NOT create plan after below-threshold triage rejection"
     );
     assert!(
-        !event_types.contains(&"execution_completed"),
+        !event_types.iter().any(|t| t == "execution_completed"),
         "should NOT execute after below-threshold triage rejection"
     );
 }
@@ -543,11 +543,11 @@ async fn gate_verification_retry_loop() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should have retry flow
     assert!(
-        event_types.contains(&"retry_requested"),
+        event_types.iter().any(|t| t == "retry_requested"),
         "should request retry after gate failure"
     );
 
@@ -582,7 +582,7 @@ async fn gate_verification_retry_loop() {
     );
 
     // Should have summary
-    assert!(event_types.contains(&"summarize_completed"), "should summarize after success");
+    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
 }
 
 #[tokio::test]
@@ -719,10 +719,10 @@ async fn iterate_with_maintain_chaining() {
 
     let result = engine.process(iteration_requested_event(true)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Verify iterate completed successfully
-    assert!(event_types.contains(&"project_iteration_completed"), "should complete iterate");
+    assert!(event_types.iter().any(|t| t == "project_iteration_completed"), "should complete iterate");
     let completion = result
         .events
         .iter()
@@ -732,13 +732,13 @@ async fn iterate_with_maintain_chaining() {
 
     // Verify ProjectMaintenanceRequested was emitted
     assert!(
-        event_types.contains(&"project_maintenance_requested"),
+        event_types.iter().any(|t| t == "project_maintenance_requested"),
         "should emit maintenance_requested when actions.maintain=true"
     );
 
     // Verify the maintain chain also ran
     assert!(
-        event_types.contains(&"project_maintenance_completed"),
+        event_types.iter().any(|t| t == "project_maintenance_completed"),
         "should complete the chained maintain workflow"
     );
 }
@@ -823,7 +823,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Should have gone through at least 3 RetryRequested events
     let retry_count = result
@@ -846,13 +846,13 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
 
     // No changes were committed
     assert!(
-        !event_types.contains(&"project_changes_committed"),
+        !event_types.iter().any(|t| t == "project_changes_committed"),
         "should NOT commit changes when agent never modifies files"
     );
 
     // No summarize — only emitted on success
     assert!(
-        !event_types.contains(&"summarize_completed"),
+        !event_types.iter().any(|t| t == "summarize_completed"),
         "should NOT summarize when iteration fails"
     );
 }
@@ -955,7 +955,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
     let engine = iterate_engine(shell, agent, registry);
     let result = engine.process(iteration_requested_event(false)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // ExecutionCompleted must be present with success=true
     let execution_completed = result
@@ -997,13 +997,13 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
 
     // No retry — legitimate no-op does not need retrying
     assert!(
-        !event_types.contains(&"retry_requested"),
+        !event_types.iter().any(|t| t == "retry_requested"),
         "should NOT emit retry_requested for legitimate no-op"
     );
 
     // SummarizeCompleted — emitted on success
     assert!(
-        event_types.contains(&"summarize_completed"),
+        event_types.iter().any(|t| t == "summarize_completed"),
         "should emit summarize_completed for legitimate no-op success"
     );
 }

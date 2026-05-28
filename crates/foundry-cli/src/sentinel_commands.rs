@@ -27,10 +27,12 @@ pub fn list(sentinels_path: &Path) -> Result<()> {
     table.set_header(vec!["Name", "Schedule", "Emits", "Project", "Enabled"]);
 
     for s in &store.sentinels {
+        let schedule = schedule_summary(&s.schedule);
+        let event_type = s.emit.event_type.as_str();
         table.add_row(vec![
             s.name.as_str(),
-            schedule_summary(&s.schedule).as_str(),
-            s.emit.event_type.as_str(),
+            schedule.as_str(),
+            event_type.as_str(),
             s.emit.project.as_str(),
             if s.enabled { "yes" } else { "no" },
         ]);

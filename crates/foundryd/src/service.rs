@@ -89,7 +89,7 @@ fn sentinel_to_proto(entry: &SentinelEntry) -> ProtoSentinel {
     ProtoSentinel {
         name: entry.name.clone(),
         cron: cron.clone(),
-        emit_event_type: entry.emit.event_type.as_str().to_string(),
+        emit_event_type: entry.emit.event_type.as_str(),
         emit_project: entry.emit.project.clone(),
         emit_throttle: match entry.emit.throttle {
             Throttle::Full => 0,
@@ -404,7 +404,7 @@ async fn run_workflow(
 fn trace_event_from(e: &Event) -> TraceEvent {
     TraceEvent {
         event_id: e.id.clone(),
-        event_type: e.event_type.as_str().to_string(),
+        event_type: e.event_type.as_str(),
         project: e.project.clone(),
         occurred_at: e.occurred_at.to_rfc3339(),
         throttle: match e.throttle {

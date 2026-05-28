@@ -292,20 +292,19 @@ impl PayloadExt for serde_json::Value {
     }
 }
 
-/// Known event types in the system.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::Display,
-    strum::EnumString,
-    strum::IntoStaticStr,
-)]
-#[serde(rename_all = "snake_case")]
+/// Event types in the system.
+///
+/// The named variants are the **built-in** events shipped by the core
+/// platform. The open-ended [`EventType::Custom`] variant lets third-party
+/// blocks and workflows introduce their own event names without modifying this
+/// enum — the SDK contract is *open* for extension.
+///
+/// The wire format is a single `snake_case` string (e.g. `"scan_requested"`).
+/// Built-in variants serialize to their `snake_case` name; `Custom(s)` serializes
+/// to `s` verbatim. Deserialization maps a known `snake_case` string to its
+/// built-in variant and any other string to `Custom`. This keeps the JSON
+/// representation byte-for-byte identical to the previous closed enum.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum EventType {
     // Vulnerability remediation workflow
@@ -390,11 +389,25 @@ pub enum EventType {
     // Agent session lifecycle (visibility for Foundry-launched agents)
     AgentSessionStarted,
     AgentSessionEnded,
+
+    /// An open-ended, contributor-defined event type. Carries its `snake_case`
+    /// wire name. Lets blocks outside the core platform introduce new events
+    /// (and thus new workflows) without editing this enum.
+    ///
+    /// `#[strum(default)]` makes `FromStr` route any unrecognized string here,
+    /// so parsing is total: every string maps to some `EventType`.
+    #[strum(default)]
+    Custom(String),
 }
 
 impl EventType {
-    pub fn as_str(&self) -> &'static str {
-        self.into()
+    /// The `snake_case` wire name of this event type.
+    ///
+    /// Returns an owned `String` because [`EventType::Custom`] borrows a
+    /// heap-allocated name; built-in variants render via strum `Display`. The
+    /// `Display` impl is the single source of truth for the mapping.
+    pub fn as_str(&self) -> String {
+        self.to_string()
     }
 
     /// True if this event type is a registered **span opener** — meaning the
@@ -421,6 +434,24 @@ impl EventType {
                 | EventType::MaintenanceSummaryRequested
                 | EventType::CommitDigestStarted
         )
+    }
+}
+
+// Hand-rolled serde so the wire format stays a single snake_case string for
+// every variant — including `Custom(s)`, which serializes to `s` verbatim
+// rather than serde's default externally-tagged `{"custom": "s"}`. This keeps
+// the JSON byte-for-byte identical to the previous closed enum.
+impl Serialize for EventType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for EventType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        // `FromStr` is total thanks to the `#[strum(default)]` Custom variant.
+        Ok(s.parse().expect("EventType::from_str is infallible (Custom default)"))
     }
 }
 
@@ -944,6 +975,45 @@ mod tests {
         assert!(!EventType::CommitsObserved.is_span_opener());
         assert!(!EventType::CommitSummaryComposed.is_span_opener());
         assert!(!EventType::CommitDigestCompleted.is_span_opener());
+    }
+
+    #[test]
+    fn builtin_event_type_wire_format_is_snake_case_string() {
+        // Wire format must stay byte-for-byte identical to the previous closed
+        // enum: a bare snake_case JSON string, not an externally-tagged object.
+        let json =
+            serde_json::to_string(&EventType::VulnerabilityDetected).expect("EventType serializes");
+        assert_eq!(json, "\"vulnerability_detected\"");
+
+        let back: EventType =
+            serde_json::from_str("\"vulnerability_detected\"").expect("EventType deserializes");
+        assert_eq!(back, EventType::VulnerabilityDetected);
+    }
+
+    #[test]
+    fn custom_event_type_round_trips_as_bare_string() {
+        let custom = EventType::Custom("widget_polished".to_string());
+        assert_eq!(custom.as_str(), "widget_polished");
+
+        let json = serde_json::to_string(&custom).expect("custom serializes");
+        assert_eq!(json, "\"widget_polished\"", "Custom must serialize as its bare name");
+
+        let back: EventType = serde_json::from_str(&json).expect("custom deserializes");
+        assert_eq!(back, custom);
+    }
+
+    #[test]
+    fn unknown_wire_string_deserializes_to_custom() {
+        // Any string the core platform doesn't recognize becomes a Custom event,
+        // so contributor-defined events survive a serialize/deserialize hop.
+        let back: EventType =
+            serde_json::from_str("\"some_third_party_event\"").expect("unknown deserializes");
+        assert_eq!(back, EventType::Custom("some_third_party_event".to_string()));
+    }
+
+    #[test]
+    fn custom_event_type_is_not_a_span_opener() {
+        assert!(!EventType::Custom("anything_requested".to_string()).is_span_opener());
     }
 
     #[test]

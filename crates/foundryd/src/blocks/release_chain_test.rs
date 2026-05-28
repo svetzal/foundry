@@ -85,20 +85,20 @@ async fn happy_path_release_chain() {
     let engine = release_engine(agent, registry);
     let result = engine.process(release_requested_event(Some("minor"))).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Verify the full chain
     assert!(
-        event_types.contains(&"release_requested"),
+        event_types.iter().any(|t| t == "release_requested"),
         "chain should start with release_requested"
     );
-    assert!(event_types.contains(&"release_completed"), "should emit release_completed");
+    assert!(event_types.iter().any(|t| t == "release_completed"), "should emit release_completed");
     assert!(
-        event_types.contains(&"release_pipeline_completed"),
+        event_types.iter().any(|t| t == "release_pipeline_completed"),
         "should emit release_pipeline_completed"
     );
     assert!(
-        event_types.contains(&"local_install_completed"),
+        event_types.iter().any(|t| t == "local_install_completed"),
         "should emit local_install_completed"
     );
 
@@ -150,19 +150,19 @@ async fn action_flag_guard_stops_chain() {
     let engine = release_engine(agent, registry);
     let result = engine.process(release_requested_event(None)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // ExecuteRelease should skip — no downstream events
     assert!(
-        !event_types.contains(&"release_completed"),
+        !event_types.iter().any(|t| t == "release_completed"),
         "should NOT emit release_completed when action disabled"
     );
     assert!(
-        !event_types.contains(&"release_pipeline_completed"),
+        !event_types.iter().any(|t| t == "release_pipeline_completed"),
         "should NOT emit release_pipeline_completed"
     );
     assert!(
-        !event_types.contains(&"local_install_completed"),
+        !event_types.iter().any(|t| t == "local_install_completed"),
         "should NOT emit local_install_completed"
     );
 }
@@ -196,11 +196,11 @@ async fn missing_agents_md_fails_gracefully() {
     let engine = release_engine(agent, registry);
     let result = engine.process(release_requested_event(None)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // ExecuteRelease should fail — no events emitted, chain stops
     assert!(
-        !event_types.contains(&"release_completed"),
+        !event_types.iter().any(|t| t == "release_completed"),
         "should NOT emit release_completed when AGENTS.md missing"
     );
 
@@ -220,15 +220,15 @@ async fn no_install_config_completes_with_skipped() {
     let engine = release_engine(agent, registry);
     let result = engine.process(release_requested_event(None)).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.contains(&"release_completed"), "should emit release_completed");
+    assert!(event_types.iter().any(|t| t == "release_completed"), "should emit release_completed");
     assert!(
-        event_types.contains(&"release_pipeline_completed"),
+        event_types.iter().any(|t| t == "release_pipeline_completed"),
         "should emit release_pipeline_completed"
     );
     assert!(
-        event_types.contains(&"local_install_completed"),
+        event_types.iter().any(|t| t == "local_install_completed"),
         "should emit local_install_completed"
     );
 
@@ -261,19 +261,19 @@ async fn dry_run_synthetic_events_flow_through_chain() {
 
     let result = engine.process(trigger).await;
 
-    let event_types: Vec<&str> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // All three stages should produce dry_run events
     assert!(
-        event_types.contains(&"release_completed"),
+        event_types.iter().any(|t| t == "release_completed"),
         "dry run should emit release_completed"
     );
     assert!(
-        event_types.contains(&"release_pipeline_completed"),
+        event_types.iter().any(|t| t == "release_pipeline_completed"),
         "dry run should emit release_pipeline_completed"
     );
     assert!(
-        event_types.contains(&"local_install_completed"),
+        event_types.iter().any(|t| t == "local_install_completed"),
         "dry run should emit local_install_completed"
     );
 
