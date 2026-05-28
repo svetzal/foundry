@@ -73,11 +73,26 @@ async fn happy_path_maintain_chain() {
         event_types.iter().any(|t| t == "project_maintenance_requested"),
         "chain should start with maintenance_requested"
     );
-    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.iter().any(|t| t == "execution_completed"), "should complete execution");
-    assert!(event_types.iter().any(|t| t == "gate_verification_completed"), "should verify gates");
-    assert!(event_types.iter().any(|t| t == "project_maintenance_completed"), "should emit completion");
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize result");
+    assert!(
+        event_types.iter().any(|t| t == "gate_resolution_completed"),
+        "should resolve gates"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "execution_completed"),
+        "should complete execution"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "gate_verification_completed"),
+        "should verify gates"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "project_maintenance_completed"),
+        "should emit completion"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should summarize result"
+    );
 
     // Verify the completion event has success=true
     let completion = result
@@ -96,7 +111,10 @@ async fn happy_path_maintain_chain() {
     assert_eq!(summary.payload["headline"], "Update dependencies");
 
     // Should NOT have any retry events
-    assert!(!event_types.iter().any(|t| t == "retry_requested"), "no retries should be needed");
+    assert!(
+        !event_types.iter().any(|t| t == "retry_requested"),
+        "no retries should be needed"
+    );
 }
 
 #[tokio::test]
@@ -177,7 +195,10 @@ async fn retry_loop_on_gate_failure_then_success() {
     );
 
     // Should have summary
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should summarize after success"
+    );
 }
 
 #[tokio::test]
@@ -223,7 +244,10 @@ async fn retries_exhausted_emits_failure() {
     assert!(!result.is_success(), "is_success() should be false when retries are exhausted");
 
     // Should NOT have SummarizeCompleted (only on success)
-    assert!(!event_types.iter().any(|t| t == "summarize_completed"), "should not summarize on failure");
+    assert!(
+        !event_types.iter().any(|t| t == "summarize_completed"),
+        "should not summarize on failure"
+    );
 }
 
 #[tokio::test]
@@ -297,5 +321,8 @@ async fn maintain_clean_tree_remains_successful() {
     );
 
     // Summary was generated
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should summarize after success"
+    );
 }

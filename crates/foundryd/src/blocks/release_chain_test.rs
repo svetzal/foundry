@@ -92,7 +92,10 @@ async fn happy_path_release_chain() {
         event_types.iter().any(|t| t == "release_requested"),
         "chain should start with release_requested"
     );
-    assert!(event_types.iter().any(|t| t == "release_completed"), "should emit release_completed");
+    assert!(
+        event_types.iter().any(|t| t == "release_completed"),
+        "should emit release_completed"
+    );
     assert!(
         event_types.iter().any(|t| t == "release_pipeline_completed"),
         "should emit release_pipeline_completed"
@@ -222,7 +225,10 @@ async fn no_install_config_completes_with_skipped() {
 
     let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.iter().any(|t| t == "release_completed"), "should emit release_completed");
+    assert!(
+        event_types.iter().any(|t| t == "release_completed"),
+        "should emit release_completed"
+    );
     assert!(
         event_types.iter().any(|t| t == "release_pipeline_completed"),
         "should emit release_pipeline_completed"

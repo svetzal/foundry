@@ -48,6 +48,7 @@ fn iterate_engine(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // End-to-end chain assertion; length is inherent.
 async fn happy_path_iterate_chain() {
     let dir = test_helpers::test_project_dir();
     let registry =
@@ -143,19 +144,40 @@ async fn happy_path_iterate_chain() {
         event_types.iter().any(|t| t == "project_iteration_requested"),
         "chain should start with iteration_requested"
     );
-    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
-    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.iter().any(|t| t == "preflight_completed"), "should complete preflight");
-    assert!(event_types.iter().any(|t| t == "assessment_completed"), "should complete assessment");
+    assert!(
+        event_types.iter().any(|t| t == "charter_check_completed"),
+        "should check charter"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "gate_resolution_completed"),
+        "should resolve gates"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "preflight_completed"),
+        "should complete preflight"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "assessment_completed"),
+        "should complete assessment"
+    );
     assert!(event_types.iter().any(|t| t == "triage_completed"), "should complete triage");
     assert!(event_types.iter().any(|t| t == "plan_completed"), "should complete plan");
-    assert!(event_types.iter().any(|t| t == "execution_completed"), "should complete execution");
-    assert!(event_types.iter().any(|t| t == "gate_verification_completed"), "should verify gates");
+    assert!(
+        event_types.iter().any(|t| t == "execution_completed"),
+        "should complete execution"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "gate_verification_completed"),
+        "should verify gates"
+    );
     assert!(
         event_types.iter().any(|t| t == "project_iteration_completed"),
         "should emit iterate completion"
     );
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize result");
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should summarize result"
+    );
 
     // Verify completion event has success=true
     let completion = result
@@ -174,7 +196,10 @@ async fn happy_path_iterate_chain() {
     assert_eq!(summary.payload["headline"], "Fix duplicate validation logic");
 
     // No retries needed
-    assert!(!event_types.iter().any(|t| t == "retry_requested"), "no retries should be needed");
+    assert!(
+        !event_types.iter().any(|t| t == "retry_requested"),
+        "no retries should be needed"
+    );
 }
 
 #[tokio::test]
@@ -191,7 +216,10 @@ async fn charter_failure_stops_chain() {
     let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Charter check should be emitted with passed=false
-    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
+    assert!(
+        event_types.iter().any(|t| t == "charter_check_completed"),
+        "should check charter"
+    );
     let charter_event = result
         .events
         .iter()
@@ -237,9 +265,18 @@ async fn preflight_failure_stops_chain() {
 
     let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
-    assert!(event_types.iter().any(|t| t == "charter_check_completed"), "should check charter");
-    assert!(event_types.iter().any(|t| t == "gate_resolution_completed"), "should resolve gates");
-    assert!(event_types.iter().any(|t| t == "preflight_completed"), "should complete preflight");
+    assert!(
+        event_types.iter().any(|t| t == "charter_check_completed"),
+        "should check charter"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "gate_resolution_completed"),
+        "should resolve gates"
+    );
+    assert!(
+        event_types.iter().any(|t| t == "preflight_completed"),
+        "should complete preflight"
+    );
 
     // Preflight should have all_passed=false
     let preflight = result
@@ -582,7 +619,10 @@ async fn gate_verification_retry_loop() {
     );
 
     // Should have summary
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should summarize after success");
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should summarize after success"
+    );
 }
 
 #[tokio::test]
@@ -722,7 +762,10 @@ async fn iterate_with_maintain_chaining() {
     let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Verify iterate completed successfully
-    assert!(event_types.iter().any(|t| t == "project_iteration_completed"), "should complete iterate");
+    assert!(
+        event_types.iter().any(|t| t == "project_iteration_completed"),
+        "should complete iterate"
+    );
     let completion = result
         .events
         .iter()

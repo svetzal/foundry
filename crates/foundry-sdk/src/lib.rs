@@ -1,5 +1,6 @@
 pub mod event;
 pub mod gates;
+pub mod gateway;
 pub mod loop_context;
 pub mod paths;
 pub mod payload;

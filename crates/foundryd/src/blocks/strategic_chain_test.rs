@@ -313,5 +313,8 @@ async fn non_strategic_iteration_still_works() {
         event_types.iter().any(|t| t == "project_iteration_completed"),
         "should see normal project_iteration_completed"
     );
-    assert!(event_types.iter().any(|t| t == "summarize_completed"), "should see summarize_completed");
+    assert!(
+        event_types.iter().any(|t| t == "summarize_completed"),
+        "should see summarize_completed"
+    );
 }

@@ -180,7 +180,7 @@ pub enum InstallsSkill {
 /// # Examples
 ///
 /// ```
-/// use foundry_core::registry::{InstallConfig, derive_default_skill_install_command};
+/// use foundry_sdk::registry::{InstallConfig, derive_default_skill_install_command};
 ///
 /// let cmd = derive_default_skill_install_command(
 ///     Some(&InstallConfig::Brew("gilt".to_string())),

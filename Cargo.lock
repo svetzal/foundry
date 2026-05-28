@@ -489,6 +489,7 @@ dependencies = [
  "chrono",
  "cron",
  "foundry-core",
+ "foundry-sdk",
  "pastey",
  "prost",
  "prost-types",

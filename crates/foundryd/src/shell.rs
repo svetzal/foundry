@@ -12,19 +12,9 @@ use tokio::process::Command;
 /// The default command timeout: 5 minutes.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// The result of running an external shell command.
-#[derive(Debug, Clone)]
-pub struct CommandResult {
-    /// Captured standard output from the process.
-    pub stdout: String,
-    /// Captured standard error from the process.
-    pub stderr: String,
-    /// The process exit code. Defaults to `-1` if the process was killed or the
-    /// exit status was unavailable.
-    pub exit_code: i32,
-    /// `true` when the process exited with code `0`.
-    pub success: bool,
-}
+// `CommandResult` is part of the SDK gateway contract. Re-exported here so the
+// existing `crate::shell::CommandResult` paths keep resolving.
+pub use foundry_core::gateway::CommandResult;
 
 /// Run an external command asynchronously.
 ///
