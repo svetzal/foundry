@@ -96,7 +96,7 @@ Rules:
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
-| `foundry run` | Full maintenance across registered projects |
+| `foundry run` | Full maintenance across registered projects (the nightly schedule is now driven by the `nightly-maintenance` sentinel inside `foundryd`) |
 | `foundry gates <project>` | Auto-discover quality gates |
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
@@ -118,6 +118,19 @@ Registry **mutations** (`add`, `edit`, `remove`) now go through `foundryd` via g
 The gRPC RPCs added for registry mutations are `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
 
 > **Note for scripts/automation**: If you run `foundry registry add/edit/remove` without `--offline` and `foundryd` is not listening, the command will warn and fall back to direct file editing.  A running daemon will not see that change until it is restarted.  Start `foundryd` before running mutations, or use `--offline` deliberately and restart the daemon afterward.
+
+### Sentinel commands
+
+Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. The shipping example is `nightly-maintenance` (02:00 local, emits `MaintenanceCycleStarted` for project `system`). The daemon auto-seeds `~/.foundry/sentinels.json` on first start. See `book/src/guide/sentinels.md` for the full model.
+
+| Command | Daemon required? | Notes |
+|---------|-----------------|-------|
+| `foundry sentinel list` | No | Reads the file directly |
+| `foundry sentinel show <name>` | No | Reads the file directly |
+| `foundry sentinel enable <name>` | Yes (or `--offline`) | Enables via gRPC; falls back with a warning when daemon is unreachable |
+| `foundry sentinel disable <name>` | Yes (or `--offline`) | Disables via gRPC; falls back with a warning when daemon is unreachable |
+
+The gRPC RPCs are `SentinelEnable` and `SentinelDisable`. Both wake the daemon's in-process scheduler via a `Notify` so the next firing is recomputed immediately. Adding new sentinels currently means hand-editing `~/.foundry/sentinels.json` and restarting `foundryd` — Slice 1 ships toggles only.
 
 ## Payload Conventions
 
@@ -235,6 +248,7 @@ The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must al
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
+- `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the `nightly-maintenance` entry. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
 - `~/.foundry/audits/{project}/` — centralized audit logs
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
@@ -248,6 +262,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
+| `FOUNDRY_SENTINELS_PATH` | `~/.foundry/sentinels.json` | Sentinel store file |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
 | `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |

@@ -84,7 +84,7 @@ DriftAssessmentRequested
 
 ## Full Maintenance Run
 
-Triggered by `foundry run`. Fan-out across all active projects.
+Triggered automatically every night at 02:00 local time by the in-daemon `nightly-maintenance` sentinel (see `~/.foundry/sentinels.json`), or on demand by `foundry run`. Fan-out across all active projects.
 
 ```
 MaintenanceCycleStarted {project: "system"}

@@ -1,76 +1,96 @@
 # launchd LaunchAgent Configuration
 
-This directory contains macOS LaunchAgent plist files for running Foundry components automatically.
+This directory contains the macOS LaunchAgent plist used to keep `foundryd`
+running. With sentinels internalised inside the daemon (see
+`book/src/guide/sentinels.md`), launchd's job is now only "keep the daemon
+alive" — proactive workflows like the nightly maintenance run live in
+`~/.foundry/sentinels.json` instead of in a separate scheduled plist.
 
 ## Files
 
-- `com.mojility.foundryd.plist` — Persistent daemon: keeps `foundryd` running at all times (KeepAlive), started on login.
-- `com.mojility.foundry-maintenance.plist` — Scheduled job: runs `foundry run` nightly at 2:00 AM.
+- `com.mojility.foundryd.plist` — Persistent daemon: keeps `foundryd` running
+  at all times (KeepAlive), started on login.
 
 ## Prerequisites
 
-Both plist files use `YOUR_USERNAME` as a placeholder for your macOS username. You must replace this before loading them.
+The plist uses `YOUR_USERNAME` as a placeholder for your macOS username. You
+must replace it before loading.
 
 ## Installation
 
 ### Step 1: Replace the username placeholder
 
-Run the following command from the project root to substitute your actual username into both plists:
-
 ```bash
 sed -i "" "s/YOUR_USERNAME/$USER/g" launchd/*.plist
 ```
 
-Verify the substitution looks correct:
+Verify:
 
 ```bash
 grep -n "YOUR_USERNAME\|$USER" launchd/*.plist
 ```
 
-### Step 2: Copy the plists to your LaunchAgents directory
+### Step 2: Copy the plist to your LaunchAgents directory
 
 ```bash
 cp launchd/*.plist ~/Library/LaunchAgents/
 ```
 
-### Step 3: Load the agents
-
-Load the foundryd daemon (starts immediately and on every subsequent login):
+### Step 3: Load the daemon
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.mojility.foundryd.plist
 ```
 
-Load the maintenance schedule (triggers `foundry run` at 2:00 AM daily):
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.mojility.foundry-maintenance.plist
-```
-
 ## Unloading
-
-To stop and unload an agent:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.mojility.foundryd.plist
-launchctl unload ~/Library/LaunchAgents/com.mojility.foundry-maintenance.plist
 ```
+
+To pick up a freshly built `foundryd` binary, unload and reload — this is
+the canonical post-`./install.sh` step.
 
 ## Logs
 
-Both agents write stdout and stderr to `~/Library/Logs/`:
-
-- `~/Library/Logs/foundryd.log` — daemon output
-- `~/Library/Logs/foundry-maintenance.log` — maintenance run output
-
-You can tail the daemon log in real time:
+`~/Library/Logs/foundryd.log` collects stdout and stderr from the daemon.
+Tail it in real time:
 
 ```bash
 tail -f ~/Library/Logs/foundryd.log
 ```
 
+## Migration: removing the legacy maintenance plist
+
+Older installs ran the nightly maintenance cycle via a second LaunchAgent,
+`com.mojility.foundry-maintenance.plist`. That plist has been removed from
+the repo as of Slice 1 of the Sentinel work — the same schedule now lives in
+the in-daemon `nightly-maintenance` sentinel.
+
+If you previously installed it, unload and delete it:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.mojility.foundry-maintenance.plist
+rm ~/Library/LaunchAgents/com.mojility.foundry-maintenance.plist
+```
+
+After the next `foundryd` restart, confirm the sentinel is active:
+
+```bash
+foundry sentinel list
+```
+
+You should see `nightly-maintenance` with `Enabled: yes` and schedule
+`cron: 0 2 * * *`. Without this cleanup step the daemon **and** the legacy
+plist would both emit `maintenance_cycle_started` each night, doubling the
+work.
+
 ## Notes
 
-- These are **LaunchAgents** (not LaunchDaemons), so they run in the logged-in user's context and have access to user environment variables and the user's home directory.
-- The binaries are expected at `~/.cargo/bin/foundryd` and `~/.cargo/bin/foundry`. Build and install them with `cargo install --path crates/foundryd` and `cargo install --path crates/foundry-cli` respectively.
-- If you move your Cargo installation (e.g., change `CARGO_HOME`), update the `ProgramArguments` paths in the plist files before loading.
+- This is a **LaunchAgent** (not a LaunchDaemon), so it runs in the
+  logged-in user's context and has access to user environment variables
+  and the home directory.
+- The binary is expected at `~/.cargo/bin/foundryd` (or the Homebrew path
+  if installed via `brew install svetzal/tap/foundry`). Update the
+  `ProgramArguments` path in the plist before loading if your install
+  layout differs.

@@ -4,7 +4,8 @@ description: >
   How to use the Foundry workflow engine for engineering automation.
   Use this skill whenever the user mentions foundry, foundryd, foundry iterate,
   foundry scout, foundry validate, foundry run, foundry pipeline, foundry release,
-  foundry gates, foundry registry, quality gates, maintenance runs, drift assessment,
+  foundry gates, foundry registry, foundry sentinel, sentinels, scheduled triggers,
+  quality gates, maintenance runs, drift assessment,
   pipeline health, CI remediation, release automation, or wants to automate code
   quality workflows across projects. Also use when the user asks about .foundry
   directories, trace files, audit reports, event-driven workflows, managing a
@@ -102,7 +103,29 @@ foundry run --throttle dry_run
 
 Each project goes through validation, then routes to iterate or maintain based on its registry flags.
 
-### 5. Derive Quality Gates
+The same chain fires automatically every night at 02:00 local time via the in-daemon `nightly-maintenance` sentinel. Inspect or toggle it with `foundry sentinel list | show | enable | disable` (see "Sentinels" below).
+
+### 5. Manage Sentinels
+
+Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit an event when their schedule fires. They replace the per-machine launchd plist that used to drive the nightly maintenance run.
+
+```bash
+# List configured sentinels
+foundry sentinel list
+
+# Show full details for one
+foundry sentinel show nightly-maintenance
+
+# Pause the schedule (e.g. before a debug session)
+foundry sentinel disable nightly-maintenance
+
+# Re-enable it
+foundry sentinel enable nightly-maintenance
+```
+
+`enable` and `disable` go through gRPC by default so the daemon's scheduler wakes immediately; pass `--offline` to mutate `~/.foundry/sentinels.json` directly when the daemon is not running. The file is auto-seeded with the `nightly-maintenance` entry on first daemon start.
+
+### 6. Derive Quality Gates
 
 Auto-discover quality gates for a project using AI inspection.
 
@@ -117,7 +140,7 @@ foundry gates --dir /path/to/project
 foundry gates --init <project-name>
 ```
 
-### 6. Check Pipeline Health
+### 7. Check Pipeline Health
 
 Check GitHub Actions pipeline status for a project and auto-remediate failures.
 
@@ -133,7 +156,7 @@ What happens:
 - Invokes Claude with Coding capability and Full access to diagnose and fix CI failures
 - Commits and pushes the fix
 
-### 7. Release a Project
+### 8. Release a Project
 
 Run an agent-driven release workflow: quality gates, changelog, version bump, tag, push, pipeline watch, local install.
 

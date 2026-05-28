@@ -21,6 +21,7 @@
 - [Iteration Workflow](guide/iteration-workflow.md)
 - [Strategic Iteration](guide/strategic-iteration.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)
+- [Sentinels (Scheduled Triggers)](guide/sentinels.md)
 - [Throttle Control](guide/throttle.md)
 - [Writing Task Blocks](guide/writing-task-blocks.md)
 

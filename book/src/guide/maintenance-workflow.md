@@ -2,7 +2,9 @@
 
 The maintenance workflow runs iterate and maintain automation against each
 registered project, committing and pushing any changes they produce. It is
-designed to be triggered nightly via launchd or manually via `foundry emit`.
+triggered nightly by the in-daemon `nightly-maintenance` sentinel (see
+[Sentinels](sentinels.md)) and can also be invoked manually via
+`foundry run` or `foundry emit`.
 
 ## How It Works
 
