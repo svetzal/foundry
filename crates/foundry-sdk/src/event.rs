@@ -381,6 +381,12 @@ pub enum EventType {
     CommitSummaryComposed,
     CommitDigestCompleted,
 
+    // Ops-digest workflow (periodic summary of MBOS operational events)
+    OpsDigestStarted,
+    OpsObserved,
+    OpsSummaryComposed,
+    OpsDigestCompleted,
+
     // Hello-world workflow (validates engine mechanics)
     GreetingRequested,
     GreetingComposed,
@@ -433,6 +439,7 @@ impl EventType {
                 | EventType::InnerIterationStarted
                 | EventType::MaintenanceSummaryRequested
                 | EventType::CommitDigestStarted
+                | EventType::OpsDigestStarted
         )
     }
 }
@@ -545,6 +552,10 @@ mod tests {
             (EventType::CommitsObserved, "commits_observed"),
             (EventType::CommitSummaryComposed, "commit_summary_composed"),
             (EventType::CommitDigestCompleted, "commit_digest_completed"),
+            (EventType::OpsDigestStarted, "ops_digest_started"),
+            (EventType::OpsObserved, "ops_observed"),
+            (EventType::OpsSummaryComposed, "ops_summary_composed"),
+            (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -612,6 +623,10 @@ mod tests {
             (EventType::CommitsObserved, "commits_observed"),
             (EventType::CommitSummaryComposed, "commit_summary_composed"),
             (EventType::CommitDigestCompleted, "commit_digest_completed"),
+            (EventType::OpsDigestStarted, "ops_digest_started"),
+            (EventType::OpsObserved, "ops_observed"),
+            (EventType::OpsSummaryComposed, "ops_summary_composed"),
+            (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -967,6 +982,7 @@ mod tests {
         assert!(EventType::InnerIterationStarted.is_span_opener());
         assert!(EventType::MaintenanceSummaryRequested.is_span_opener());
         assert!(EventType::CommitDigestStarted.is_span_opener());
+        assert!(EventType::OpsDigestStarted.is_span_opener());
 
         // Negative cases — completion events are NOT openers.
         assert!(!EventType::ProjectIterationCompleted.is_span_opener());
@@ -975,6 +991,9 @@ mod tests {
         assert!(!EventType::CommitsObserved.is_span_opener());
         assert!(!EventType::CommitSummaryComposed.is_span_opener());
         assert!(!EventType::CommitDigestCompleted.is_span_opener());
+        assert!(!EventType::OpsObserved.is_span_opener());
+        assert!(!EventType::OpsSummaryComposed.is_span_opener());
+        assert!(!EventType::OpsDigestCompleted.is_span_opener());
     }
 
     #[test]

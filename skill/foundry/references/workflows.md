@@ -119,6 +119,27 @@ CommitDigestStarted {project: "system"}
 
 Per-project `git log` failures are captured inline on the `ProjectCommits.error` field and the chain continues. Empty-day firings short-circuit the agent call and write a "No commits across N projects in the last 24 hours" file (absence is a fact too). Dry-run firings run the full chain but skip the final file write.
 
+## Ops Digest Formation
+
+Fired every three hours by the in-daemon `ops-digest` sentinel (`0 */3 * * *`), or on demand by `foundry emit ops_digest_started --project system`. Linear chain — reads MBOS JSONL events from the intake directory, applies a pressure gate, then summarises.
+
+```
+OpsDigestStarted {project: "system"}
+  └─ ObserveEvents (Observer)
+       ├─ [gate not satisfied] OpsDigestCompleted {success: true, skipped: true}
+       └─ [gate satisfied] OpsObserved {proceed: true, new_event_count, anomaly_present, events: [{...}]}
+            └─ SummarizeEvents (Observer, AI Reasoning)
+                 └─ OpsSummaryComposed {markdown, event_count, new_watermark?}
+                      └─ WriteOpsDigest (Observer)
+                           └─ OpsDigestCompleted {success, digest_path?, event_count}
+                                └─ writes {FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md
+                                   advances ~/.foundry/ops-digest.watermark
+```
+
+**Pressure gate:** The chain short-circuits (`skipped: true`) if fewer than 25 new events have arrived and none are anomalies. Anomalies include P0-urgency events, `ci_pipeline_failure`, `maintenance_intervention_recorded` with `outcome=unresolved`, `dependency_vulnerability_detected` with severity `high`/`critical`, and `maintenance_run_completed` with `reposFailed > 0`.
+
+**Watermark:** The newest event's `occurredAt` timestamp is written to disk after a successful digest so the next run only processes newer events. First-run lookback is 24 hours (no watermark). Dry-run firings do not advance the watermark.
+
 ## Vulnerability Remediation Workflow
 
 Triggered by `foundry emit scan_requested --project <name>`.

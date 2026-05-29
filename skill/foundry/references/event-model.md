@@ -112,6 +112,14 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 |-------|----------|
 | `DriftAssessmentCompleted` | Lifecycle end |
 
+### Ops Digest Formation
+| Event | Category |
+|-------|----------|
+| `OpsDigestStarted` | Lifecycle start (span opener) |
+| `OpsObserved` | Domain fact |
+| `OpsSummaryComposed` | Domain fact |
+| `OpsDigestCompleted` | Lifecycle end |
+
 ## Key Payload Fields by Event
 
 | Event | Key Payload Fields |
@@ -132,3 +140,6 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `ReleaseCompleted` | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only) |
 | `ReleasePipelineCompleted` | `success`, `new_tag` |
 | `LocalInstallCompleted` | `success` |
+| `OpsObserved` | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
+| `OpsSummaryComposed` | `markdown`, `event_count`, `new_watermark?` |
+| `OpsDigestCompleted` | `success`, `skipped`, `digest_path?`, `event_count` |

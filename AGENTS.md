@@ -121,12 +121,15 @@ The gRPC RPCs added for registry mutations are `RegistryAdd`, `RegistryRemove`, 
 
 ### Sentinel commands
 
-Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. Two canonical sentinels ship in the default seed:
+Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. Three canonical sentinels ship in the default seed (see the Sentinel commands section below for full details).
+
+The daemon auto-seeds `~/.foundry/sentinels.json` on first start and **additively merges** missing canonical seed entries on every restart, so new Foundry releases that add canonical sentinels reach existing installs automatically without manual JSON edits. User toggles, hand-edited cron, and user-added entries on the file are never overwritten. See `book/src/guide/sentinels.md` for the full model.
+
+Three canonical sentinels ship in the default seed:
 
 - `nightly-maintenance` (02:00 local) — emits `MaintenanceCycleStarted` for project `system`. Drives the maintenance run.
 - `daily-commit-digest` (17:00 local) — emits `CommitDigestStarted` for project `system`. Drives the commit digest formation; output lands at `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md`. See `book/src/guide/commit-digest.md`.
-
-The daemon auto-seeds `~/.foundry/sentinels.json` on first start and **additively merges** missing canonical seed entries on every restart, so new Foundry releases that add canonical sentinels reach existing installs automatically without manual JSON edits. User toggles, hand-edited cron, and user-added entries on the file are never overwritten. See `book/src/guide/sentinels.md` for the full model.
+- `ops-digest` (every 3 hours, `0 */3 * * *`) — emits `OpsDigestStarted` for project `system`. Reads MBOS JSONL events, applies a pressure gate (≥25 new events or any anomaly), summarises via agent, and writes `{FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md`. See `book/src/guide/ops-digest.md`.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
@@ -253,10 +256,12 @@ The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must al
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
-- `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (currently `nightly-maintenance` and `daily-commit-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
+- `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
 - `~/.foundry/audits/{project}/` — centralized audit logs
 - `~/.foundry/digests/YYYY-MM-DD.md` — daily commit digest output, one file per day. Override the parent dir via `FOUNDRY_DIGESTS_DIR`; Stacey's setup points it at `~/Work/Operations/Automation/commit-digests` via the launchd plist.
+- `~/.foundry/ops-digests/YYYY-MM-DD.md` — ops digest output (periodic summary of MBOS events), one file per day. Override the parent dir via `FOUNDRY_OPS_DIGESTS_DIR`.
+- `~/.foundry/ops-digest.watermark` — ISO 8601 timestamp of the newest MBOS event included in the last successfully written ops digest. Advances atomically after each write so subsequent runs only process newer events.
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
 ## Future Direction: Agent Efficacy Retrospectives
@@ -273,3 +278,5 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
 | `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |
 | `FOUNDRY_DIGESTS_DIR` | `~/.foundry/digests` | Daily commit-digest output directory |
+| `FOUNDRY_OPS_DIGESTS_DIR` | `~/.foundry/ops-digests` | Ops-digest output directory |
+| `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |

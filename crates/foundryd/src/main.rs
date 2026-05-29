@@ -63,6 +63,9 @@ async fn main() -> Result<()> {
         .to_string();
 
     let digests_dir = foundry_core::paths::digests_dir();
+    let ops_digests_dir = foundry_core::paths::ops_digests_dir();
+    let ops_events_intake_dir = foundry_core::paths::ops_events_intake_dir();
+    let ops_watermark_path = foundry_core::paths::ops_watermark_path();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
@@ -73,6 +76,9 @@ async fn main() -> Result<()> {
         trace_writer.clone(),
         audits_dir,
         digests_dir,
+        ops_digests_dir,
+        ops_events_intake_dir,
+        ops_watermark_path,
     );
 
     let engine = Arc::new(engine);
@@ -207,6 +213,7 @@ fn spawn_scheduler(
     tokio::spawn(scheduler.run());
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn register_blocks(
     registry: &Arc<RwLock<foundry_core::registry::Registry>>,
     event_writer: Arc<foundry_engine::event_writer::EventWriter>,
@@ -214,6 +221,9 @@ fn register_blocks(
     trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
     audits_dir: String,
     digests_dir: std::path::PathBuf,
+    ops_digests_dir: std::path::PathBuf,
+    ops_events_intake_dir: std::path::PathBuf,
+    ops_watermark_path: std::path::PathBuf,
 ) -> foundry_engine::engine::Engine {
     let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
@@ -322,7 +332,17 @@ fn register_blocks(
         .register(Box::new(foundry_blocks::blocks::GenerateSummary::new(trace_writer, audits_dir)));
     // Commit-digest formation (daily proactive summary of registered projects)
     engine.register(Box::new(foundry_blocks::blocks::ObserveCommits::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::SummarizeCommits::new(agent)));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeCommits::new(agent.clone())));
     engine.register(Box::new(foundry_blocks::blocks::WriteCommitDigest::new(digests_dir)));
+    // Ops-digest formation (periodic summary of MBOS operational events)
+    engine.register(Box::new(foundry_blocks::blocks::ObserveEvents::new(
+        ops_events_intake_dir,
+        ops_watermark_path.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeEvents::new(agent)));
+    engine.register(Box::new(foundry_blocks::blocks::WriteOpsDigest::new(
+        ops_digests_dir,
+        ops_watermark_path,
+    )));
     engine
 }

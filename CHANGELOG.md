@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Ops-digest formation — a three-block chain (`ObserveEvents` →
+  `SummarizeEvents` → `WriteOpsDigest`) that reads MBOS JSONL event files,
+  applies a pressure gate (≥25 new events or any anomaly), asks the agent to
+  summarise the operational period, and writes
+  `{FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md`. Anomaly classification covers
+  P0 urgency, CI pipeline failures, unresolved maintenance interventions,
+  high/critical vulnerability alerts, and maintenance runs with failed repos.
+- `ops-digest` sentinel (`0 */3 * * *`) added to the canonical default seed,
+  emitting `OpsDigestStarted` every three hours. Existing installs pick it up
+  automatically on the next daemon restart via the additive seed-merge.
+- Four new event types: `OpsDigestStarted` (span opener), `OpsObserved`,
+  `OpsSummaryComposed`, `OpsDigestCompleted`, with matching typed payload
+  structs (`OpsEventDigest`, `OpsObservedPayload`, `OpsSummaryComposedPayload`,
+  `OpsDigestCompletedPayload`).
+- Three new path helpers in `foundry_core::paths`: `ops_digests_dir()`
+  (`FOUNDRY_OPS_DIGESTS_DIR`), `ops_events_intake_dir()`
+  (`FOUNDRY_OPS_EVENTS_DIR`, defaults to
+  `~/Work/Operations/Events/intake`), and `ops_watermark_path()`
+  (`~/.foundry/ops-digest.watermark`). The watermark advances atomically after
+  each successful digest write so subsequent runs only process newer events.
+- Watermark-based incremental ingestion: first-run lookback is 24 hours when
+  no watermark exists. Malformed JSONL lines are skipped silently.
+
 ## [0.19.0] - 2026-05-28
 
 This release ships the **Sentinel** subsystem and its first two formations:

@@ -107,6 +107,8 @@ impl SentinelStore {
     ///   `launchd/com.mojility.foundry-maintenance.plist`.
     /// - `daily-commit-digest` — `CommitDigestStarted` at 17:00 local,
     ///   the daily commit summary across registered projects.
+    /// - `ops-digest` — `OpsDigestStarted` at every 3rd hour (`0 */3 * * *`),
+    ///   a periodic summary of MBOS operational events since the last watermark.
     pub fn default_seed() -> Self {
         Self {
             version: SENTINEL_STORE_VERSION,
@@ -127,6 +129,17 @@ impl SentinelStore {
                     schedule: Schedule::Cron("0 17 * * *".to_string()),
                     emit: EmitSpec {
                         event_type: EventType::CommitDigestStarted,
+                        project: "system".to_string(),
+                        throttle: Throttle::default(),
+                        payload: serde_json::Value::Object(serde_json::Map::new()),
+                    },
+                    enabled: true,
+                },
+                SentinelEntry {
+                    name: "ops-digest".to_string(),
+                    schedule: Schedule::Cron("0 */3 * * *".to_string()),
+                    emit: EmitSpec {
+                        event_type: EventType::OpsDigestStarted,
                         project: "system".to_string(),
                         throttle: Throttle::default(),
                         payload: serde_json::Value::Object(serde_json::Map::new()),
@@ -250,10 +263,10 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn default_seed_includes_nightly_maintenance_and_daily_commit_digest() {
+    fn default_seed_includes_nightly_maintenance_daily_commit_digest_and_ops_digest() {
         let store = SentinelStore::default_seed();
         assert_eq!(store.version, SENTINEL_STORE_VERSION);
-        assert_eq!(store.sentinels.len(), 2);
+        assert_eq!(store.sentinels.len(), 3);
 
         let nightly = store
             .find_sentinel("nightly-maintenance")
@@ -274,6 +287,14 @@ mod tests {
         assert_eq!(digest.emit.project, "system");
         assert_eq!(digest.emit.throttle, Throttle::Full);
         assert!(digest.emit.payload.is_object());
+
+        let ops = store.find_sentinel("ops-digest").expect("ops-digest present in seed");
+        assert!(ops.enabled);
+        assert_eq!(ops.schedule, Schedule::Cron("0 */3 * * *".to_string()));
+        assert_eq!(ops.emit.event_type, EventType::OpsDigestStarted);
+        assert_eq!(ops.emit.project, "system");
+        assert_eq!(ops.emit.throttle, Throttle::Full);
+        assert!(ops.emit.payload.is_object());
     }
 
     #[test]
@@ -281,7 +302,7 @@ mod tests {
         let store = SentinelStore::default_seed();
         let json = serde_json::to_value(&store).unwrap();
         assert_eq!(json["version"], 1);
-        assert_eq!(json["sentinels"].as_array().unwrap().len(), 2);
+        assert_eq!(json["sentinels"].as_array().unwrap().len(), 3);
 
         let nightly = &json["sentinels"][0];
         assert_eq!(nightly["name"], "nightly-maintenance");
@@ -298,6 +319,13 @@ mod tests {
         assert_eq!(digest["emit"]["event_type"], "commit_digest_started");
         assert_eq!(digest["emit"]["project"], "system");
         assert_eq!(digest["enabled"], true);
+
+        let ops = &json["sentinels"][2];
+        assert_eq!(ops["name"], "ops-digest");
+        assert_eq!(ops["schedule"], serde_json::json!({ "cron": "0 */3 * * *" }));
+        assert_eq!(ops["emit"]["event_type"], "ops_digest_started");
+        assert_eq!(ops["emit"]["project"], "system");
+        assert_eq!(ops["enabled"], true);
     }
 
     // ---------------------------------------------------------------------
@@ -530,13 +558,14 @@ mod tests {
     }
 
     #[test]
-    fn merge_default_seed_into_appends_missing_digest_on_slice1_store() {
+    fn merge_default_seed_into_appends_missing_entries_on_slice1_store() {
         let mut store = legacy_slice1_store();
         let changed = merge_default_seed_into(&mut store);
-        assert!(changed, "digest entry was missing → store should be mutated");
-        assert_eq!(store.sentinels.len(), 2);
+        assert!(changed, "digest entries were missing → store should be mutated");
+        assert_eq!(store.sentinels.len(), 3);
         assert!(store.find_sentinel("nightly-maintenance").is_some());
         assert!(store.find_sentinel("daily-commit-digest").is_some());
+        assert!(store.find_sentinel("ops-digest").is_some());
     }
 
     #[test]
@@ -583,8 +612,9 @@ mod tests {
             store.find_sentinel("weekly-finance-audit").is_some(),
             "user-defined entry must survive the merge"
         );
-        // And the canonical digest is now present alongside.
+        // All canonical entries are now present alongside.
         assert!(store.find_sentinel("daily-commit-digest").is_some());
+        assert!(store.find_sentinel("ops-digest").is_some());
     }
 
     #[test]

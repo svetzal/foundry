@@ -70,6 +70,7 @@ mod git_ops;
 mod greet;
 mod install;
 mod observe_commits;
+mod observe_events;
 mod release;
 mod remediate;
 mod remediate_pipeline;
@@ -85,11 +86,13 @@ mod scout_drift;
 mod strategic_assess;
 mod strategic_loop;
 mod summarize_commits;
+mod summarize_events;
 mod summarize_result;
 mod triage_assessment;
 mod validate;
 mod watch_pipeline;
 mod write_commit_digest;
+mod write_ops_digest;
 
 pub use assess_project::AssessProject;
 pub use audit_main_branch::AuditMainBranch;
@@ -107,6 +110,7 @@ pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use install::InstallLocally;
 pub use observe_commits::ObserveCommits;
+pub use observe_events::ObserveEvents;
 pub use release::{cut_release_step, execute_release_step};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
@@ -122,11 +126,13 @@ pub use scout_drift::ScoutDrift;
 pub use strategic_assess::StrategicAssessor;
 pub use strategic_loop::StrategicLoopController;
 pub use summarize_commits::SummarizeCommits;
+pub use summarize_events::SummarizeEvents;
 pub use summarize_result::SummarizeResult;
 pub use triage_assessment::TriageAssessment;
 pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
 pub use write_commit_digest::WriteCommitDigest;
+pub use write_ops_digest::WriteOpsDigest;
 
 // Per-block unit-test fixtures (Engine-free). The full-chain integration tests
 // and their Engine-based register helper live in the host crate (foundryd) to

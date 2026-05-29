@@ -129,6 +129,7 @@ foundry sentinel enable nightly-maintenance
 
 - `nightly-maintenance` (`0 2 * * *`) — emits `maintenance_cycle_started`. Drives the full maintenance run across registered projects.
 - `daily-commit-digest` (`0 17 * * *`) — emits `commit_digest_started`. Renders a markdown digest of every active project's commits in the last 24 hours and writes it to `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md` (default `~/.foundry/digests/`). See `book/src/guide/commit-digest.md` for the full chain.
+- `ops-digest` (`0 */3 * * *`) — emits `ops_digest_started`. Reads MBOS JSONL events from `{FOUNDRY_OPS_EVENTS_DIR}` (default `~/Work/Operations/Events/intake`), applies a pressure gate (≥25 new events or any anomaly), summarises via agent, and writes `{FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md` (default `~/.foundry/ops-digests/`). Anomalies include P0 events, CI failures, unresolved maintenance interventions, high/critical vulnerability alerts, and maintenance runs with failed repos. See `book/src/guide/ops-digest.md` for the full chain.
 
 ### 6. Derive Quality Gates
 

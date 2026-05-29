@@ -83,6 +83,41 @@ pub fn digests_dir() -> PathBuf {
     }
 }
 
+/// Returns the ops-digest output directory.
+///
+/// Each ops digest lands at `{ops_digests_dir}/{YYYY-MM-DD}.md`. Override
+/// with `FOUNDRY_OPS_DIGESTS_DIR`.
+pub fn ops_digests_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_OPS_DIGESTS_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("ops-digests")
+    }
+}
+
+/// Returns the directory containing MBOS JSONL event intake files.
+///
+/// Each file in this directory is named `YYYY-MM.jsonl` and contains
+/// newline-delimited MBOS event JSON objects. Override with
+/// `FOUNDRY_OPS_EVENTS_DIR`; the default points at Stacey's Operations layout.
+pub fn ops_events_intake_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_OPS_EVENTS_DIR") {
+        PathBuf::from(p)
+    } else {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(format!("{home}/Work/Operations/Events/intake"))
+    }
+}
+
+/// Returns the path to the ops-digest watermark file.
+///
+/// The watermark holds the ISO 8601 timestamp of the last MBOS event that was
+/// included in a successfully written ops digest. On the next run only events
+/// with `occurredAt` strictly after this timestamp are considered new.
+pub fn ops_watermark_path() -> PathBuf {
+    foundry_home().join("ops-digest.watermark")
+}
+
 /// Returns the directory holding per-session agent transcript JSONL files.
 ///
 /// Defaults to `$HOME/.foundry/agent-sessions`.
@@ -99,6 +134,33 @@ mod tests {
         let dir = agent_sessions_dir();
         let s = dir.to_string_lossy();
         assert!(s.ends_with(".foundry/agent-sessions"), "got: {s}");
+    }
+
+    #[test]
+    fn ops_digests_dir_defaults_under_foundry_home_when_env_unset() {
+        if env::var("FOUNDRY_OPS_DIGESTS_DIR").is_ok() {
+            return;
+        }
+        let dir = ops_digests_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with(".foundry/ops-digests"), "got: {s}");
+    }
+
+    #[test]
+    fn ops_events_intake_dir_defaults_under_home_work_operations_when_env_unset() {
+        if env::var("FOUNDRY_OPS_EVENTS_DIR").is_ok() {
+            return;
+        }
+        let dir = ops_events_intake_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with("Work/Operations/Events/intake"), "got: {s}");
+    }
+
+    #[test]
+    fn ops_watermark_path_is_under_foundry_home() {
+        let path = ops_watermark_path();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with(".foundry/ops-digest.watermark"), "got: {s}");
     }
 
     #[test]
