@@ -17,6 +17,11 @@ pub struct Engine {
     event_writer: Option<Arc<EventWriter>>,
     /// Optional broadcast channel for real-time event streaming to Watch clients.
     event_tx: Option<broadcast::Sender<Event>>,
+    /// Contributor-registered span-opener event types, in addition to the
+    /// built-in openers ([`EventType::is_span_opener`]). Lets a custom workflow
+    /// declare that its root `*Requested`/`*Started` event opens a trace span,
+    /// without the SDK having to know about it.
+    span_openers: std::collections::HashSet<EventType>,
 }
 
 /// Mutable state threaded through a single [`Engine::process`] traversal.
@@ -105,7 +110,26 @@ impl Engine {
             blocks: vec![],
             event_writer: None,
             event_tx: None,
+            span_openers: std::collections::HashSet::new(),
         }
+    }
+
+    /// Register additional event types that open a new trace span when emitted.
+    ///
+    /// Built-in openers (see [`EventType::is_span_opener`]) are always
+    /// recognized; this is how a contributor-defined workflow declares that its
+    /// own root event (typically an [`EventType::Custom`] `*_requested`) should
+    /// open a span, so the workflow shows up as a proper sub-tree in traces.
+    #[must_use]
+    pub fn with_span_openers(mut self, openers: impl IntoIterator<Item = EventType>) -> Self {
+        self.span_openers.extend(openers);
+        self
+    }
+
+    /// Whether an emitted event of this type should open a new workflow span —
+    /// either a built-in opener or one registered via [`Engine::with_span_openers`].
+    fn opens_span(&self, event_type: &EventType) -> bool {
+        event_type.is_span_opener() || self.span_openers.contains(event_type)
     }
 
     /// Attach an `EventWriter` so every event in a processing chain is
@@ -180,7 +204,7 @@ impl Engine {
         let mut emitted_ids = Vec::new();
         let mut emitted_payloads = Vec::new();
         for mut emitted in events {
-            Self::stamp_context(&mut emitted, trigger, block_span_id);
+            self.stamp_context(&mut emitted, trigger, block_span_id);
             self.persist_one(&emitted);
             emitted_ids.push(emitted.id.clone());
             emitted_payloads.push(emitted.payload.clone());
@@ -263,7 +287,7 @@ impl Engine {
     ///   new workflow span — it inherits the trigger's `trace_id`, receives a
     ///   freshly minted `span_id`, and is parented to the emitting block's
     ///   `block_span_id`.
-    fn stamp_context(emitted: &mut Event, trigger: &Event, block_span_id: &str) {
+    fn stamp_context(&self, emitted: &mut Event, trigger: &Event, block_span_id: &str) {
         use foundry_sdk::event::mint_span_id;
 
         if emitted.causation_id.is_none() {
@@ -278,7 +302,7 @@ impl Engine {
             emitted.gather_id.clone_from(&trigger.gather_id);
         }
 
-        if emitted.event_type.is_span_opener() {
+        if self.opens_span(&emitted.event_type) {
             // New workflow span: child of the emitting block's span.
             if emitted.span_id.is_none() {
                 emitted.span_id = Some(mint_span_id());
@@ -493,6 +517,21 @@ mod tests {
     use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;
+
+    #[test]
+    fn opens_span_recognizes_builtin_and_registered_custom_openers() {
+        let custom = EventType::Custom("my_workflow_requested".to_string());
+        let engine = Engine::new().with_span_openers([custom.clone()]);
+
+        // Built-in openers remain recognized.
+        assert!(engine.opens_span(&EventType::ProjectIterationRequested));
+        // A contributor-registered custom opener is recognized.
+        assert!(engine.opens_span(&custom));
+        // An unregistered custom event does not open a span.
+        assert!(!engine.opens_span(&EventType::Custom("unregistered_event".to_string())));
+        // A default engine has no custom openers (only built-ins).
+        assert!(!Engine::new().opens_span(&custom));
+    }
 
     struct TestObserver;
 
