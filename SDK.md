@@ -77,6 +77,72 @@ migrate *up* into the contract, and the 38 blocks become an *ordinary downstream
 consumer* — the moment they compile against only `foundry-sdk`, a third party
 provably can too.
 
+## Progress log
+
+Commits land directly on `main` (trunk-based), each green through
+`fmt` / `clippy --all-targets -D warnings` / full test suite.
+
+- ✅ **Step 2 — open `EventType`.** `Custom(String)` variant via strum
+  `#[strum(default)]`; hand-rolled serde keeps the wire format a bare
+  snake_case string (byte-identical); unknown strings → `Custom`. `as_str()`
+  now returns `String`. Round-trip + wire-stability tests added.
+- ✅ **Step 1 — rename `foundry-core` → `foundry-sdk`** with a `foundry-core`
+  shim crate (`pub use foundry_sdk::*;`) so existing `use foundry_core::…`
+  paths keep compiling.
+- ✅ **Coupling point #3 — gateway contract into the SDK.** `ShellGateway`,
+  `ScannerGateway`, `AgentGateway` traits + their data types
+  (`CommandResult`, `AuditResult`, `Vulnerability`, `Agent*`) now live in
+  `foundry_sdk::gateway`. In-memory fakes ship in
+  `foundry_sdk::gateway::fakes` behind a `test-support` feature. Production
+  impls stay in the host; old paths preserved via re-exports.
+- ✅ **`span_context` → SDK.** Shared by both engine and block layers; moved
+  to `foundry_sdk::span_context` (SDK gained a `tokio` dependency).
+- ✅ **Step 4 — `foundry-engine` extracted.** `engine` + `event_writer` +
+  `gather_store` now in their own crate depending only on `foundry-sdk`.
+  Engine mechanics tests (local stubs) stay in-crate; the real-block
+  remediation tests relocated to `foundryd::engine_remediation_tests`
+  (`#[cfg(test)]` module — avoids the engine↔blocks dev-dep cycle).
+
+### Remaining
+
+- ⏳ **Step 5 — extract `foundry-blocks`.** Runbook below.
+- ⏳ **Step 3 — declarative span-openers** (fold into step 6 wiring).
+- ⏳ **Step 6 — `BlockRegistration` descriptor** replacing the hand-edited
+  `register_blocks()`.
+
+### Step 5 runbook (foundry-blocks)
+
+Modules to move into `crates/foundry-blocks/src/`: `blocks/` (all ~38 block
+files), `shell.rs`, `scanner.rs`, `agent_stream.rs`, `gateway.rs` (the
+production impls), `gate_runner.rs`, `gate_file.rs`, `summary.rs`,
+`charter.rs`, `trace_writer.rs`. Leave in `foundryd`: `main`, `service`,
+`scheduler`, `trace_store`, `workflow_tracker`, `legacy_event_check`,
+`orchestrator` (host-level fan-out; only uses `foundry_core`), `proto`.
+
+**Churn-minimizing trick:** have `foundry-blocks` depend on the `foundry-core`
+*shim* and keep the same `crate::`-relative module layout. Then
+`foundry_core::…` paths and `crate::shell` / `crate::scanner` references need
+no rewrite. Provide a `crate::gateway` module that re-exports the SDK traits
+*and* houses the moved impls:
+`pub use foundry_core::gateway::*;` + the `ProcessShellGateway` /
+`ClaudeAgentGateway` definitions. Add `foundry-sdk` (test-support) as a
+dev-dependency and `#[cfg(test)] pub use foundry_sdk::gateway::fakes;` so block
+tests keep `crate::gateway::fakes`.
+
+**Cross-crate test relocation:** the chain test files
+(`iterate_chain_test`, `maintain_chain_test`, `prompt_chain_test`,
+`release_chain_test`, `strategic_chain_test`) and `test_helpers` use
+`foundry_engine::Engine` *and* real blocks → relocate to `foundryd` as
+`#[cfg(test)]` modules (same pattern as `engine_remediation_tests`), importing
+`foundry_blocks::…` + `foundry_engine::engine::Engine`.
+
+**Host rewiring:** `foundryd` depends on `foundry-blocks`; repoint
+`crate::blocks` → `foundry_blocks::blocks` (etc.), drop the moved `mod`
+declarations, and update `register_blocks()` in `main.rs`. Acceptance test:
+`foundry-blocks` compiles with only `foundry-core`/`foundry-sdk` +
+`foundry-engine` (dev) in scope — proving a third party can build blocks
+against the SDK alone.
+
 ## Phase 1 — Carve out the SDK, prove it with our own blocks
 
 1. **Birth `foundry-sdk`.** Rename/re-export `foundry-core` → `foundry-sdk`
