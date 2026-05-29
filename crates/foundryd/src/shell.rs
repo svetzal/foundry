@@ -58,7 +58,7 @@ pub async fn run(
 
     // Propagate the active block's span context to the child process as a W3C
     // `TRACEPARENT` env var. No-op when no span context is in scope.
-    crate::span_context::inject_traceparent(&mut cmd);
+    foundry_core::span_context::inject_traceparent(&mut cmd);
 
     if let Some(pairs) = env {
         for (key, value) in pairs {
@@ -198,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_injects_traceparent_when_span_context_set() {
-        use crate::span_context::{SPAN_CONTEXT, SpanContext};
+        use foundry_core::span_context::{SPAN_CONTEXT, SpanContext};
 
         let ctx = SpanContext {
             trace_id: "0123456789abcdef0123456789abcdef".to_string(),

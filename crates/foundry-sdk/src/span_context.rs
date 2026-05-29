@@ -11,7 +11,7 @@
 //! remain staged for future migrations (release/install chains and event
 //! replay) and carry targeted `allow(dead_code)` attributes.
 
-use foundry_core::event::Event;
+use crate::event::Event;
 
 /// The current block's span context.
 #[derive(Debug, Clone)]

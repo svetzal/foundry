@@ -23,7 +23,6 @@ mod scanner;
 mod scheduler;
 mod service;
 mod shell;
-mod span_context;
 mod summary;
 mod trace_store;
 mod trace_writer;

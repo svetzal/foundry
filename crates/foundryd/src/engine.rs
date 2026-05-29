@@ -355,11 +355,11 @@ impl Engine {
         // Scope SPAN_CONTEXT so subprocess spawners inside the block can inject TRACEPARENT.
         let exec_future = execute_with_retry(block, current, block.retry_policy());
         let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
-            let span_ctx = crate::span_context::SpanContext {
+            let span_ctx = foundry_core::span_context::SpanContext {
                 trace_id,
                 span_id: block_span_id.clone(),
             };
-            crate::span_context::SPAN_CONTEXT.scope(span_ctx, exec_future).await
+            foundry_core::span_context::SPAN_CONTEXT.scope(span_ctx, exec_future).await
         } else {
             exec_future.await
         };
@@ -2190,7 +2190,7 @@ mod tests {
         // Task 5.2: the engine wraps `block.execute` in
         // `SPAN_CONTEXT::scope` so subprocess spawners inside the block
         // can read (trace_id, block_span_id) without explicit plumbing.
-        use crate::span_context::SPAN_CONTEXT;
+        use foundry_core::span_context::SPAN_CONTEXT;
         use std::sync::Mutex;
 
         struct ContextProbingBlock {
