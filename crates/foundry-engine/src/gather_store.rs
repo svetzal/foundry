@@ -1,7 +1,7 @@
 //! In-flight scatter/gather coordination state.
 //!
 //! When a task block declares a [`Scatter`], the engine mints a `gather_id`,
-//! registers a [`GatherGroup`] here, and dispatches the children. Every
+//! registers a `GatherGroup` here, and dispatches the children. Every
 //! delivered event is then offered to the store; when a group's
 //! [`GatherPolicy`] is satisfied the store builds the reduce event and the
 //! engine delivers it.

@@ -3,7 +3,7 @@
 //! Task blocks are the *functional core*; gateways are the *imperative shell*.
 //! A block never spawns a process, runs an audit, or invokes an agent
 //! directly — it calls one of these traits. The host (`foundryd`) supplies the
-//! production implementations; tests supply the [`fakes`] (enable the
+//! production implementations; tests supply the `fakes` (enable the
 //! `test-support` feature). This is what lets a contributor write and test a
 //! block without any real I/O.
 //!
