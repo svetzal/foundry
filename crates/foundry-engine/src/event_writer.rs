@@ -1,7 +1,3 @@
-// EventWriter is a public API module; it will be wired into main once the
-// persistence layer is plumbed through. Suppress dead-code lint until then.
-#![allow(dead_code)]
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
