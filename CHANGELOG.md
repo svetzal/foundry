@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-29
+
+This release adds the **ops-digest** formation — a periodic summary of
+business activity from the MBOS event stream, the operational counterpart
+to v0.19.0's commit digest. A new `ops-digest` sentinel fires every three
+hours as a cheap heartbeat; a pressure gate in the first block decides
+whether each tick produces a digest, so the effective cadence tracks
+activity rather than the clock.
+
 ### Added
 
 - Ops-digest formation — a three-block chain (`ObserveEvents` →

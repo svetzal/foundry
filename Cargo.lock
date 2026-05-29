@@ -434,7 +434,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "foundry-blocks"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "foundry-cli"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -473,14 +473,14 @@ dependencies = [
 
 [[package]]
 name = "foundry-core"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "foundry-sdk",
 ]
 
 [[package]]
 name = "foundry-engine"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "foundry-sdk"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "foundryd"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-stream",
