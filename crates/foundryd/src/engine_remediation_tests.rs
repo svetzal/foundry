@@ -4,8 +4,8 @@
 //! crate. These wire the *real* `ScanDependencies` → … → `InstallLocally` blocks
 //! into a `foundry_engine::Engine`, so they belong to the host that owns both
 //! the engine and the blocks — not to either component crate (which would form
-//! a dependency cycle). They keep crate-internal test access (`crate::blocks`,
-//! `crate::gateway::fakes`) by living here as a `#[cfg(test)]` module.
+//! a dependency cycle). They keep crate-internal test access (`foundry_blocks::blocks`,
+//! `foundry_sdk::gateway::fakes`) by living here as a `#[cfg(test)]` module.
 #![cfg(test)]
 
 use std::sync::Arc;
@@ -91,19 +91,21 @@ fn vuln_engine() -> Engine {
         }],
     }));
     let mut engine = Engine::new();
-    engine.register(Box::new(crate::blocks::ScanDependencies::new(Arc::clone(&registry))));
-    engine.register(Box::new(crate::blocks::AuditReleaseTag::with_registry(Arc::clone(&registry))));
-    engine.register(Box::new(crate::blocks::AuditMainBranch::new(Arc::clone(&registry))));
-    let agent: Arc<dyn crate::gateway::AgentGateway> =
-        crate::gateway::fakes::FakeAgentGateway::success();
-    engine.register(Box::new(crate::blocks::RemediateVulnerability::new(
+    engine.register(Box::new(foundry_blocks::blocks::ScanDependencies::new(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::AuditReleaseTag::with_registry(Arc::clone(
+        &registry,
+    ))));
+    engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(Arc::clone(&registry))));
+    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> =
+        foundry_sdk::gateway::fakes::FakeAgentGateway::success();
+    engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
         agent,
         Arc::clone(&registry),
     )));
-    engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));
-    engine.register(Box::new(crate::blocks::cut_release_step(Arc::clone(&registry))));
-    engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
-    engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::cut_release_step(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::stub()));
+    engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(Arc::clone(&registry))));
     engine
 }
 

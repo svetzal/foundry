@@ -14,9 +14,9 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::throttle::Throttle;
 
-use crate::gateway::AgentGateway;
-use crate::gateway::fakes::FakeAgentGateway;
+use foundry_blocks::gateway::AgentGateway;
 use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::FakeAgentGateway;
 
 fn release_actions() -> ActionFlags {
     ActionFlags {
@@ -62,11 +62,12 @@ fn release_engine(agent: Arc<dyn AgentGateway>, registry: Arc<RwLock<Registry>>)
     let mut engine = Engine::new();
 
     // ExecuteRelease (composed step, sinks on ReleaseRequested)
-    engine.register(Box::new(super::execute_release_step(agent, registry.clone())));
+    engine
+        .register(Box::new(foundry_blocks::blocks::execute_release_step(agent, registry.clone())));
     // WatchPipeline (sinks on ReleaseCompleted)
-    engine.register(Box::new(super::WatchPipeline::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::new(registry.clone())));
     // InstallLocally (sinks on ReleasePipelineCompleted, ProjectChangesPushed)
-    engine.register(Box::new(super::InstallLocally::new(registry)));
+    engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(registry)));
 
     engine
 }

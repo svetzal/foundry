@@ -11,11 +11,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
-use crate::blocks::test_helpers;
-use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
-use crate::gateway::{AgentGateway, ShellGateway};
-use crate::shell::CommandResult;
+use super::test_helpers;
+use foundry_blocks::gateway::{AgentGateway, ShellGateway};
+use foundry_blocks::shell::CommandResult;
 use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
 fn maintenance_requested_event() -> Event {
     Event::new(
@@ -35,15 +35,24 @@ fn maintain_engine(
     let mut engine = Engine::new();
 
     // Gate resolution and verification
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
-    engine.register(Box::new(super::RouteGateResult));
+    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
+        shell.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(shell, registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
 
     // Native maintain workflow blocks
-    engine.register(Box::new(super::ExecuteMaintain::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::SummarizeResult::new(agent, registry)));
+    engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::RetryExecution::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeResult::new(agent, registry)));
 
     engine
 }

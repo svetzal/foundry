@@ -25,6 +25,8 @@ unsafe_code = "deny"
 foundry-sdk = { path = "crates/foundry-sdk" }
 # The workflow engine (event dispatch, scatter/gather, retry). Host-side mechanism.
 foundry-engine = { path = "crates/foundry-engine" }
+# Built-in task blocks (the batteries) — a downstream SDK consumer.
+foundry-blocks = { path = "crates/foundry-blocks" }
 # Compatibility shim re-exporting foundry-sdk. Prefer foundry-sdk in new code.
 foundry-core = { path = "crates/foundry-core" }
 

@@ -10,10 +10,9 @@ use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::task_block::TaskBlock;
 use foundry_core::throttle::Throttle;
 
-use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use crate::shell::CommandResult;
-use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
 /// Build a registry containing a single standard test project entry.
 ///
@@ -255,44 +254,4 @@ pub async fn assert_missing_project_fails(
     let result = block.execute(&trigger).await.unwrap();
     assert!(!result.success, "expected failure for missing project");
     assert!(result.events.is_empty(), "expected no events for missing project");
-}
-
-/// Register the standard iterate-chain blocks into `engine`.
-///
-/// Registers: `CheckCharter`, `ResolveGates`, `RunPreflightGates`,
-/// `AssessProject`, `TriageAssessment`, `CreatePlan`, `ExecutePlan`,
-/// `RunVerifyGates`, `RouteGateResult`, `RetryExecution`, `SummarizeResult`.
-///
-/// The `shell` gateway is shared by ALL shell-using blocks, including the
-/// execution blocks (`ExecutePlan`, `RetryExecution`).  This ensures that
-/// `detect_post_execution_changes` uses the fake shell rather than spawning
-/// a real `git` process against the test temp directory.
-///
-/// Chain-specific blocks (e.g. `ExecuteMaintain`, `CommitAndPush`) must be
-/// registered separately by the caller after this call.
-pub fn register_iterate_chain(
-    engine: &mut Engine,
-    shell: Arc<dyn ShellGateway>,
-    agent: Arc<dyn AgentGateway>,
-    registry: Arc<RwLock<Registry>>,
-) {
-    engine.register(Box::new(super::CheckCharter::new(registry.clone())));
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::ExecutePlan::with_gateways(
-        agent.clone(),
-        registry.clone(),
-        shell.clone(),
-    )));
-    engine.register(Box::new(super::RunVerifyGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::RouteGateResult));
-    engine.register(Box::new(super::RetryExecution::with_gateways(
-        agent.clone(),
-        registry.clone(),
-        shell,
-    )));
-    engine.register(Box::new(super::SummarizeResult::new(agent, registry)));
 }

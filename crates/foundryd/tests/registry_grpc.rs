@@ -9,6 +9,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use foundry_blocks::trace_writer::TraceWriter;
 use foundry_core::registry::Registry;
 use foundry_core::sentinel::SentinelStore;
 use foundry_engine::engine::Engine;
@@ -18,7 +19,6 @@ use foundryd::{
     },
     service::FoundryService,
     trace_store::TraceStore,
-    trace_writer::TraceWriter,
     workflow_tracker::WorkflowTracker,
 };
 use tempfile::{NamedTempFile, TempDir};

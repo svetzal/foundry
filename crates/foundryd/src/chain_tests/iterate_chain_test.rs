@@ -17,11 +17,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
-use crate::blocks::test_helpers;
-use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
-use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
-use crate::shell::CommandResult;
+use super::test_helpers;
+use foundry_blocks::gateway::{AgentGateway, AgentResponse, ShellGateway};
+use foundry_blocks::shell::CommandResult;
 use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
 fn iteration_requested_event(maintain: bool) -> Event {
     Event::new(
@@ -755,7 +755,10 @@ async fn iterate_with_maintain_chaining() {
     let mut engine = Engine::new();
     test_helpers::register_iterate_chain(&mut engine, shell, agent.clone(), registry.clone());
     // Also register maintain blocks so the chained ProjectMaintenanceRequested is handled
-    engine.register(Box::new(super::ExecuteMaintain::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
+        agent.clone(),
+        registry.clone(),
+    )));
 
     let result = engine.process(iteration_requested_event(true)).await;
 

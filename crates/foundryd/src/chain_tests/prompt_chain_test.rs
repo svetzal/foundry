@@ -12,10 +12,10 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
-use crate::blocks::test_helpers;
-use crate::gateway::fakes::FakeAgentGateway;
-use crate::gateway::{AgentGateway, ShellGateway};
+use super::test_helpers;
+use foundry_blocks::gateway::{AgentGateway, ShellGateway};
 use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::FakeAgentGateway;
 
 #[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(
@@ -26,28 +26,49 @@ fn prompt_engine(
     let mut engine = Engine::new();
 
     // Charter check (sinks on ProjectIterationRequested + PromptExecutionRequested)
-    engine.register(Box::new(super::CheckCharter::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
     // Gate resolution (sinks on CharterCheckCompleted)
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
     // Preflight gates (sinks on GateResolutionCompleted)
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
+        shell.clone(),
+        registry.clone(),
+    )));
     // Direct prompt (sinks on PreflightCompleted, workflow=prompt only)
-    engine.register(Box::new(super::DirectPrompt));
+    engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
     // Assessment blocks — should NOT fire for prompt workflow
-    engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::AssessProject::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::TriageAssessment::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::CreatePlan::new(
+        agent.clone(),
+        registry.clone(),
+    )));
     // Execution (sinks on PlanCompleted)
-    engine.register(Box::new(super::ExecutePlan::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::new(
+        agent.clone(),
+        registry.clone(),
+    )));
     // Verify gates (sinks on ExecutionCompleted)
-    engine.register(Box::new(super::RunVerifyGates::new(shell, registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(shell, registry.clone())));
     // Routing (sinks on GateVerificationCompleted)
-    engine.register(Box::new(super::RouteGateResult));
+    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
     // Retry (sinks on RetryRequested)
-    engine.register(Box::new(super::RetryExecution::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RetryExecution::new(
+        agent.clone(),
+        registry.clone(),
+    )));
     // Terminal blocks
-    engine.register(Box::new(super::SummarizeResult::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CommitAndPush::new(registry)));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeResult::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry)));
 
     engine
 }

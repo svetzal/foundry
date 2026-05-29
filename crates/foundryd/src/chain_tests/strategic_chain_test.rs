@@ -12,11 +12,11 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
-use crate::blocks::test_helpers;
-use crate::gateway::fakes::FakeShellGateway;
-use crate::gateway::{AgentGateway, ShellGateway};
-use crate::shell::CommandResult;
+use super::test_helpers;
+use foundry_blocks::gateway::{AgentGateway, ShellGateway};
+use foundry_blocks::shell::CommandResult;
 use foundry_engine::engine::Engine;
+use foundry_sdk::gateway::fakes::FakeShellGateway;
 
 /// Build the full strategic loop engine with inner iterate chain.
 #[allow(clippy::needless_pass_by_value)]
@@ -28,31 +28,55 @@ fn strategic_engine(
     let mut engine = Engine::new();
 
     // Strategic loop blocks
-    engine.register(Box::new(super::StrategicAssessor::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::StrategicLoopController::new(agent.clone(), registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::StrategicAssessor::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::StrategicLoopController::new(
+        agent.clone(),
+        registry.clone(),
+    )));
     // Inner iterate chain blocks — share the fake shell with execution blocks so that
     // detect_post_execution_changes does not spawn a real git process against the temp dir.
-    engine.register(Box::new(super::CheckCharter::new(registry.clone())));
-    engine.register(Box::new(super::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(super::RunPreflightGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::AssessProject::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::TriageAssessment::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CreatePlan::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::ExecutePlan::with_gateways(
+    engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
+        shell.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::AssessProject::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::TriageAssessment::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::CreatePlan::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::with_gateways(
         agent.clone(),
         registry.clone(),
         shell.clone(),
     )));
-    engine.register(Box::new(super::RunVerifyGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(super::RouteGateResult));
-    engine.register(Box::new(super::RetryExecution::with_gateways(
+    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(
+        shell.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
+    engine.register(Box::new(foundry_blocks::blocks::RetryExecution::with_gateways(
         agent.clone(),
         registry.clone(),
         shell.clone(),
     )));
     // Terminal blocks
-    engine.register(Box::new(super::SummarizeResult::new(agent.clone(), registry.clone())));
-    engine.register(Box::new(super::CommitAndPush::new(registry)));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeResult::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry)));
 
     engine
 }

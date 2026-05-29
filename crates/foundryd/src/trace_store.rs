@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use foundry_core::event::Event;
 use foundry_core::trace::{BlockExecution, ProcessResult};
 
-use crate::trace_writer::TraceWriter;
+use foundry_blocks::trace_writer::TraceWriter;
 
 /// A stored trace entry with expiry tracking.
 struct TraceEntry {

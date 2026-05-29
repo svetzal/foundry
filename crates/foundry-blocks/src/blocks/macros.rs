@@ -228,8 +228,8 @@ macro_rules! agent_execution_block {
                 }
             }
 
-            #[cfg(test)]
-            pub(super) fn with_gateways(
+            #[cfg(any(test, feature = "test-support"))]
+            pub fn with_gateways(
                 agent: ::std::sync::Arc<dyn AgentGateway>,
                 registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
                 shell: ::std::sync::Arc<dyn ShellGateway>,
@@ -295,8 +295,8 @@ macro_rules! task_block_new {
                 }
             }
 
-            #[cfg(test)]
-            fn with_gateways(
+            #[cfg(any(test, feature = "test-support"))]
+            pub fn with_gateways(
                 registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
                 $gw_field: ::std::sync::Arc<dyn $gw_trait>,
             ) -> Self {
@@ -326,8 +326,8 @@ macro_rules! task_block_new {
                 }
             }
 
-            #[cfg(test)]
-            fn with_gateways(
+            #[cfg(any(test, feature = "test-support"))]
+            pub fn with_gateways(
                 registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
                 $($gw_field: ::std::sync::Arc<dyn $gw_trait>),+
             ) -> Self {

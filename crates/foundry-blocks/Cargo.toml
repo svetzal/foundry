@@ -1,0 +1,33 @@
+[package]
+name = "foundry-blocks"
+description = "Foundry's built-in task blocks and their I/O support (shell, scanner, agent, gateways) — the batteries. A downstream consumer of foundry-sdk, like any third-party block crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Built-in blocks depend only on the SDK contract (via the foundry-core shim
+# during the transition). They do NOT depend on the engine or the host.
+foundry-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+# Exposes the blocks' test-only constructors (with_gateways, stub, …) so the
+# host can wire them into engine-level integration tests in another crate.
+test-support = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Gateway fakes for testing blocks without real I/O.
+foundry-sdk = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

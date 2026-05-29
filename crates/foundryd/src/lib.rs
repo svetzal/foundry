@@ -16,7 +16,6 @@
 
 pub mod service;
 pub mod trace_store;
-pub mod trace_writer;
 pub mod workflow_tracker;
 
 /// Generated gRPC bindings (tonic / prost).
@@ -28,18 +27,11 @@ pub mod proto {
 // All daemon-internal modules.  These are private (not part of the library's
 // public API) but must be declared here so that engine.rs test helpers that
 // reference `crate::blocks` and `crate::gateway` compile under the lib target.
-mod agent_stream;
-mod blocks;
-mod charter;
-mod gate_file;
-mod gate_runner;
-mod gateway;
 mod orchestrator;
-mod scanner;
-mod shell;
-mod summary;
 
-// Engine↔block integration tests relocated here when the engine moved to the
-// foundry-engine crate (they wire real blocks into a foundry_engine::Engine).
+// Engine↔block integration tests relocated here when the engine and blocks
+// moved to their own crates (they wire real blocks into a foundry_engine::Engine).
+#[cfg(test)]
+mod chain_tests;
 #[cfg(test)]
 mod engine_remediation_tests;

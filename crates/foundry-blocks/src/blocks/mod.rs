@@ -128,16 +128,8 @@ pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
 pub use write_commit_digest::WriteCommitDigest;
 
+// Per-block unit-test fixtures (Engine-free). The full-chain integration tests
+// and their Engine-based register helper live in the host crate (foundryd) to
+// avoid a blocks↔engine dependency cycle. See `foundryd::chain_tests`.
 #[cfg(test)]
 mod test_helpers;
-
-#[cfg(test)]
-mod iterate_chain_test;
-#[cfg(test)]
-mod maintain_chain_test;
-#[cfg(test)]
-mod prompt_chain_test;
-#[cfg(test)]
-mod release_chain_test;
-#[cfg(test)]
-mod strategic_chain_test;

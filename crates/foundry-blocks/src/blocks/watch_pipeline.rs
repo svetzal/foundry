@@ -32,7 +32,7 @@ impl WatchPipeline {
     }
 
     /// Create a `WatchPipeline` backed by an empty registry (for tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn stub() -> Self {
         Self {
             registry: Arc::new(RwLock::new(Registry {

@@ -433,6 +433,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "foundry-blocks"
+version = "0.19.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "foundry-core",
+ "foundry-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "foundry-cli"
 version = "0.19.0"
 dependencies = [
@@ -502,6 +518,7 @@ dependencies = [
  "async-stream",
  "chrono",
  "cron",
+ "foundry-blocks",
  "foundry-core",
  "foundry-engine",
  "foundry-sdk",

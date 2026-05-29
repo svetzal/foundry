@@ -27,8 +27,8 @@ use crate::proto::{
     WatchResponse, WorkflowStatus, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
-use crate::trace_writer::TraceWriter;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowGuard, WorkflowTracker};
+use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 
 pub struct FoundryService {

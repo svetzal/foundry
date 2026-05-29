@@ -55,7 +55,7 @@ impl AgentRelease {
     }
 
     /// Construct with injected gateways (for tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_gateways(agent: Arc<dyn AgentGateway>, shell: Arc<dyn ShellGateway>) -> Self {
         Self { agent, shell }
     }
@@ -433,7 +433,7 @@ pub fn execute_release_step(
 }
 
 /// Build a "Cut Release" step with a test agent (for unit/integration tests).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn cut_release_step_with_agent(
     agent: Arc<dyn AgentGateway>,
     registry: Arc<RwLock<Registry>>,
@@ -449,7 +449,7 @@ pub fn cut_release_step_with_agent(
 }
 
 /// Build an "Execute Release" step with injected agent and shell gateways (for tag verification tests).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn execute_release_step_with_gateways(
     agent: Arc<dyn AgentGateway>,
     shell: Arc<dyn ShellGateway>,
