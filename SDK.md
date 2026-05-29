@@ -23,7 +23,7 @@ wire. If the trait stays the contract, Phase 2 never reshapes Phase 1.
 ## Gross components today
 
 | Layer | Crate | Role |
-|---|---|---|
+| --- | --- | --- |
 | Contract | `foundry-core` (~6k LOC) | Domain vocabulary: `Event`, `EventType`, `TaskBlock`, `TaskBlockResult`, `Throttle`, `Scatter`/`GatherSpec`, `Registry`, `Sentinel`, payloads. Already mostly an SDK. |
 | Mechanism + batteries + host | `foundryd` (~29k LOC) | Three fused things: the **engine** (`engine.rs`, dispatch/scatter/gather/retry/tracing), the **38 concrete blocks** (`blocks/`, `orchestrator.rs`), and the **host** (gRPC `service.rs`, scheduler, persistence, `register_blocks()` in `main.rs`). |
 | Client | `foundry-cli` (~3.6k LOC) | Pure gRPC client. Already decoupled — not part of this work. |
@@ -51,7 +51,7 @@ blocks chained by which events they sink and source.
 
 ## Proposed layering
 
-```
+```text
 foundry-sdk      ← THE CONTRACT (published, semver'd). What a block author imports.
   ├─ TaskBlock trait, TaskBlockResult, BlockKind, RetryPolicy
   ├─ Event, EventType (made OPEN), Throttle, Scatter/GatherSpec
@@ -116,7 +116,7 @@ Commits land directly on `main` (trunk-based), each green through
 
 ### Crate graph (Phase 1 complete)
 
-```
+```text
 foundry-sdk      contract: Event/EventType (open), TaskBlock, gateways,
                  throttle, scatter, registry, sentinel, span_context, payloads
    ▲
@@ -128,6 +128,7 @@ foundryd         host: gRPC service, scheduler, persistence, register_blocks(),
                  orchestrator, relocated chain tests
 foundry-cli      gRPC client (unchanged)
 ```
+
 (`foundry-core` is the transitional shim re-exporting `foundry-sdk`.)
 
 ### Deferred
@@ -230,6 +231,11 @@ green at every step (mostly mechanical relocation).
 - Scatter/gather already crosses async boundaries via events, so it survives the
   process hop. New concern: dispatch timeout / worker liveness, which maps onto
   the existing `RetryPolicy`.
+- **Redelivery makes idempotency load-bearing.** A dispatch retry (or crash
+  resume) can re-run a mutator that already performed its side effect. The
+  contract + ledger + self-healing reconciliation design for this lives in
+  `IDEMPOTENCY.md`; its enforcement path is sequenced to land with this phase
+  (its first redelivery source).
 - Capability-scoping the gateways is deferred (trusted contributors). If Foundry
   ever opens to a public ecosystem, workers are where sandboxing lands — they
   already give crash isolation and a natural place to scope gateway access.
@@ -245,4 +251,5 @@ green at every step (mostly mechanical relocation).
   proves the contract; split by domain only when a second consumer or build-time
   reason appears.
 </content>
+
 </invoke>
