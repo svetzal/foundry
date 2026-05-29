@@ -103,12 +103,55 @@ Commits land directly on `main` (trunk-based), each green through
   remediation tests relocated to `foundryd::engine_remediation_tests`
   (`#[cfg(test)]` module — avoids the engine↔blocks dev-dep cycle).
 
-### Remaining
+- ✅ **Step 5 — `foundry-blocks` extracted.** The ~38 blocks + their I/O
+  support (shell, scanner, agent_stream, gateway impls, gate_runner, gate_file,
+  summary, charter, trace_writer) now live in `foundry-blocks`, depending only
+  on the SDK (via the `foundry-core` shim) — **not** on the engine or host.
+  Block test-only constructors moved behind a `test-support` feature; the
+  full-chain integration tests relocated to `foundryd::chain_tests`. **This is
+  the Phase 1 acceptance test, and it passes.**
+- ✅ **Step 3 — declarative span-openers.** `Engine::with_span_openers` lets a
+  custom workflow register its root event as a span opener; built-ins still
+  recognized. The hardcoded SDK list is no longer the *only* source.
 
-- ⏳ **Step 5 — extract `foundry-blocks`.** Runbook below.
-- ⏳ **Step 3 — declarative span-openers** (fold into step 6 wiring).
-- ⏳ **Step 6 — `BlockRegistration` descriptor** replacing the hand-edited
-  `register_blocks()`.
+### Crate graph (Phase 1 complete)
+
+```
+foundry-sdk      contract: Event/EventType (open), TaskBlock, gateways,
+                 throttle, scatter, registry, sentinel, span_context, payloads
+   ▲
+foundry-engine   mechanism: dispatch, scatter/gather, retry, span stamping
+   ▲                         (+ event_writer, gather_store)
+foundry-blocks   batteries: the 38 built-in blocks + shell/scanner/agent/gateways
+   ▲                         — depends ONLY on the SDK
+foundryd         host: gRPC service, scheduler, persistence, register_blocks(),
+                 orchestrator, relocated chain tests
+foundry-cli      gRPC client (unchanged)
+```
+(`foundry-core` is the transitional shim re-exporting `foundry-sdk`.)
+
+### Deferred
+
+- **Step 6 — `BlockRegistration` descriptor / inventory-based discovery.**
+  Deliberately **not** built (YAGNI). After the fission, `register_blocks()` in
+  `foundryd` is already a single, clear extension point: a contributor adds
+  their block crate as a dependency and one `engine.register(Box::new(...))`
+  line. An `inventory`-style auto-collection mechanism adds a dependency and
+  compile-time magic whose only payoff is avoiding that one edit — not worth it
+  for trusted in-org contributors. Revisit when there is a second host binary or
+  genuine out-of-process/plugin discovery (Phase 2), where a data descriptor of
+  `{name, sinks_on, opens_span}` becomes load-bearing.
+
+### How a contributor adds a custom block/workflow today
+
+1. Create a crate depending on `foundry-sdk`; implement `TaskBlock` (use
+   `EventType::Custom("...")` for new event names, and `foundry_sdk::gateway`
+   traits for any I/O — test with `foundry_sdk::gateway::fakes`).
+2. Add the crate as a dependency of `foundryd` and one `engine.register(...)`
+   line in `register_blocks()`; pass any custom span-opener event types to
+   `Engine::with_span_openers(...)`.
+3. Rebuild `foundryd`. (Phase 2 will make this an out-of-process gRPC worker so
+   no `foundryd` rebuild is needed.)
 
 ### Step 5 runbook (foundry-blocks)
 
