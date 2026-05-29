@@ -216,14 +216,20 @@ git tag v0.X.Y
 git push origin main --tags
 
 # 5. Wait for the Release workflow to publish tarballs to the GitHub release page.
-# 6. Swap the running daemon onto the new binary:
-foundry registry show foundry --json | jq -r '.install_command'   # locate install.command
-# run the install.command, then reload the daemon so it picks up the new binary:
+# 6. Swap the running daemon onto the new binary. Use ./install.sh — it does
+#    `cargo install` for both binary crates AND re-signs them on macOS with
+#    stable code-signing identifiers. Do NOT run a bare `cargo install`:
+#    cargo's ad-hoc signature is hash-derived and changes every rebuild, so
+#    macOS TCC sees a brand-new app and re-prompts (or silently denies) the
+#    daemon's privacy grants. (`foundry`'s registry install_command is null —
+#    install.sh is the canonical installer.)
+./install.sh
+# then reload the daemon so the running process picks up the new, stable-signed binary:
 launchctl unload ~/Library/LaunchAgents/com.mojility.foundryd.plist
 launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 ```
 
-Steps 5–6 are required — without them the daemon keeps serving the old binary even after the GitHub release publishes, so the fix doesn't take effect. See `launchd/README.md` for the canonical load/unload commands.
+Steps 5–6 are required — without them the daemon keeps serving the old binary even after the GitHub release publishes, so the fix doesn't take effect. The reload must come *after* `install.sh`, so the live process inherits the stable signature rather than the one it launched with. See `launchd/README.md` for the canonical load/unload commands.
 
 The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
 
