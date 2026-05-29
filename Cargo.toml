@@ -23,6 +23,8 @@ unsafe_code = "deny"
 [workspace.dependencies]
 # The contributor SDK — the stable contract crate that task blocks compile against.
 foundry-sdk = { path = "crates/foundry-sdk" }
+# The workflow engine (event dispatch, scatter/gather, retry). Host-side mechanism.
+foundry-engine = { path = "crates/foundry-engine" }
 # Compatibility shim re-exporting foundry-sdk. Prefer foundry-sdk in new code.
 foundry-core = { path = "crates/foundry-core" }
 

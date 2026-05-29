@@ -10,10 +10,10 @@ use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::task_block::TaskBlock;
 use foundry_core::throttle::Throttle;
 
-use crate::engine::Engine;
 use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use crate::shell::CommandResult;
+use foundry_engine::engine::Engine;
 
 /// Build a registry containing a single standard test project entry.
 ///

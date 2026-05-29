@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
-use foundry_core::event::{Event, EventType, mint_gather_id};
-use foundry_core::scatter::Scatter;
-use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
-use foundry_core::throttle::Throttle;
-pub use foundry_core::trace::{BlockExecution, ProcessResult};
+use foundry_sdk::event::{Event, EventType, mint_gather_id};
+use foundry_sdk::scatter::Scatter;
+use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
+pub use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
 use crate::event_writer::EventWriter;
 use crate::gather_store::{GatherGroup, GatherStore};
@@ -264,7 +264,7 @@ impl Engine {
     ///   freshly minted `span_id`, and is parented to the emitting block's
     ///   `block_span_id`.
     fn stamp_context(emitted: &mut Event, trigger: &Event, block_span_id: &str) {
-        use foundry_core::event::mint_span_id;
+        use foundry_sdk::event::mint_span_id;
 
         if emitted.causation_id.is_none() {
             emitted.causation_id = Some(trigger.id.clone());
@@ -307,7 +307,7 @@ impl Engine {
         current: &Event,
         state: &mut ProcessState,
     ) -> BlockExecution {
-        let block_span_id = foundry_core::event::mint_span_id();
+        let block_span_id = foundry_sdk::event::mint_span_id();
         let workflow_span_id = current.span_id.clone();
 
         let block_start = std::time::Instant::now();
@@ -355,11 +355,11 @@ impl Engine {
         // Scope SPAN_CONTEXT so subprocess spawners inside the block can inject TRACEPARENT.
         let exec_future = execute_with_retry(block, current, block.retry_policy());
         let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
-            let span_ctx = foundry_core::span_context::SpanContext {
+            let span_ctx = foundry_sdk::span_context::SpanContext {
                 trace_id,
                 span_id: block_span_id.clone(),
             };
-            foundry_core::span_context::SPAN_CONTEXT.scope(span_ctx, exec_future).await
+            foundry_sdk::span_context::SPAN_CONTEXT.scope(span_ctx, exec_future).await
         } else {
             exec_future.await
         };
@@ -490,8 +490,8 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+    use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;
 
     struct TestObserver;
@@ -646,278 +646,9 @@ mod tests {
         assert_eq!(delivered.payload["dry_run"], true);
     }
 
-    // -- Vulnerability remediation integration tests --
-
-    fn vuln_engine() -> Engine {
-        use foundry_core::registry::{ActionFlags, ProjectEntry, Stack};
-        use std::sync::RwLock;
-
-        // CutRelease requires AGENTS.md to exist before invoking Claude.
-        // Leak the temp dir so it outlives the test.
-        let dir = tempfile::TempDir::new().unwrap();
-        let project_path = dir.path().to_str().unwrap().to_string();
-        // Initialize a git repo with an uncommitted change so CommitAndPush has work to do.
-        let _ = std::process::Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(&project_path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&project_path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&project_path)
-            .output();
-        // Create an initial commit so there's a HEAD reference
-        std::fs::write(dir.path().join("AGENTS.md"), "# test").unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&project_path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&project_path)
-            .output();
-        // Set up a local bare repo as remote so git push succeeds
-        let remote_dir = tempfile::TempDir::new().unwrap();
-        let remote_path = remote_dir.path().to_str().unwrap().to_string();
-        let _ = std::process::Command::new("git")
-            .args(["init", "--bare"])
-            .current_dir(&remote_path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["remote", "add", "origin", &remote_path])
-            .current_dir(&project_path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["push", "-u", "origin", "main"])
-            .current_dir(&project_path)
-            .output();
-        // Create an uncommitted change so CommitAndPush triggers
-        std::fs::write(dir.path().join("CHANGES.md"), "changes").unwrap();
-        std::mem::forget(dir);
-        std::mem::forget(remote_dir);
-
-        let registry = Arc::new(RwLock::new(foundry_core::registry::Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: "test-project".to_string(),
-                path: project_path,
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags {
-                    iterate: false,
-                    maintain: false,
-                    push: true,
-                    audit: false,
-                    release: false,
-                },
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
-        }));
-        let mut engine = Engine::new();
-        engine.register(Box::new(crate::blocks::ScanDependencies::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::AuditReleaseTag::with_registry(Arc::clone(
-            &registry,
-        ))));
-        engine.register(Box::new(crate::blocks::AuditMainBranch::new(Arc::clone(&registry))));
-        let agent: Arc<dyn crate::gateway::AgentGateway> =
-            crate::gateway::fakes::FakeAgentGateway::success();
-        engine.register(Box::new(crate::blocks::RemediateVulnerability::new(
-            agent,
-            Arc::clone(&registry),
-        )));
-        engine.register(Box::new(crate::blocks::CommitAndPush::new(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::cut_release_step(Arc::clone(&registry))));
-        engine.register(Box::new(crate::blocks::WatchPipeline::stub()));
-        engine.register(Box::new(crate::blocks::InstallLocally::new(Arc::clone(&registry))));
-        engine
-    }
-
-    #[tokio::test]
-    async fn vuln_dirty_path_remediates_and_installs() {
-        let engine = vuln_engine();
-
-        let trigger = Event::new(
-            EventType::VulnerabilityDetected,
-            "test-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "cve": "CVE-2026-1234",
-                "vulnerable": true,
-                "dirty": true,
-            }),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        assert_eq!(
-            types,
-            [
-                "vulnerability_detected",
-                "release_tag_audited",
-                "main_branch_audited",
-                "remediation_completed",
-                "project_changes_committed",
-                "project_changes_pushed",
-                // AuditReleaseTag now sinks on ProjectChangesPushed and performs a
-                // post-push re-audit (stub: reports clean, vulnerable=false).
-                "release_tag_audited",
-                "local_install_completed",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn vuln_clean_path_releases_and_installs() {
-        let engine = vuln_engine();
-
-        let trigger = Event::new(
-            EventType::VulnerabilityDetected,
-            "test-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "cve": "CVE-2026-5678",
-                "vulnerable": true,
-                "dirty": false,
-            }),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        assert_eq!(
-            types,
-            [
-                "vulnerability_detected",
-                "release_tag_audited",
-                "main_branch_audited",
-                "release_completed",
-                "release_pipeline_completed",
-                "local_install_completed",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn vuln_not_vulnerable_stops_at_audit() {
-        let engine = vuln_engine();
-
-        let trigger = Event::new(
-            EventType::VulnerabilityDetected,
-            "test-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "cve": "CVE-2026-9999",
-                "vulnerable": false,
-            }),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        // Chain stops after release_tag_audited because AuditMainBranch
-        // self-filters when vulnerable=false
-        assert_eq!(types, ["vulnerability_detected", "release_tag_audited",]);
-    }
-
-    #[tokio::test]
-    async fn vuln_dry_run_full_chain_with_simulated_events() {
-        let engine = vuln_engine();
-
-        let trigger = Event::new(
-            EventType::VulnerabilityDetected,
-            "test-project".to_string(),
-            Throttle::DryRun,
-            serde_json::json!({
-                "cve": "CVE-2026-1234",
-                "vulnerable": true,
-                "dirty": true,
-            }),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        // Full chain completes with simulated mutator events (dirty path).
-        // Observers execute for real; Mutators simulate success.
-        assert_eq!(
-            types,
-            [
-                "vulnerability_detected",
-                "release_tag_audited",
-                "main_branch_audited",
-                "remediation_completed",     // simulated
-                "project_changes_committed", // simulated
-                "project_changes_pushed",    // simulated
-                // AuditReleaseTag sinks on ProjectChangesPushed (Observer, runs for real)
-                "release_tag_audited",
-                "local_install_completed", // simulated
-            ]
-        );
-
-        // All simulated events carry dry_run: true.
-        let remediation = result
-            .events
-            .iter()
-            .find(|e| e.event_type == EventType::RemediationCompleted)
-            .unwrap();
-        assert_eq!(remediation.payload["dry_run"], true);
-    }
-
-    // -- Scan-triggered workflow integration tests --
-
-    #[tokio::test]
-    async fn scan_triggers_full_remediation_chain() {
-        let engine = vuln_engine();
-
-        // Start from scan_requested instead of vulnerability_detected.
-        // The scanner invokes `cargo audit` in the temp project dir. Since
-        // no real Cargo.lock exists, the scanner reports an error and the
-        // chain stops at scan_requested with no downstream events.
-        let trigger = Event::new(
-            EventType::ScanRequested,
-            "test-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({}),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        // Scanner tool unavailable in temp dir — chain ends at scan_requested.
-        assert_eq!(types, ["scan_requested"]);
-    }
-
-    #[tokio::test]
-    async fn scan_dry_run_scans_and_audits_only() {
-        let engine = vuln_engine();
-
-        let trigger = Event::new(
-            EventType::ScanRequested,
-            "test-project".to_string(),
-            Throttle::DryRun,
-            serde_json::json!({}),
-        );
-
-        let result = engine.process(trigger).await;
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-
-        // Scanner tool unavailable in temp dir — chain ends at scan_requested.
-        assert_eq!(types, ["scan_requested"]);
-    }
-
     // -- Retry logic tests --
 
-    use foundry_core::task_block::RetryPolicy;
+    use foundry_sdk::task_block::RetryPolicy;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -1098,7 +829,7 @@ mod tests {
         let written_types: Vec<String> = lines
             .iter()
             .map(|l| {
-                let e: foundry_core::event::Event = serde_json::from_str(l).unwrap();
+                let e: foundry_sdk::event::Event = serde_json::from_str(l).unwrap();
                 e.event_type.as_str()
             })
             .collect();
@@ -1273,7 +1004,7 @@ mod tests {
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
 
-        let workflow_span = foundry_core::event::mint_span_id();
+        let workflow_span = foundry_sdk::event::mint_span_id();
         let trigger = Event::new(
             EventType::GreetingRequested,
             "test-project".to_string(),
@@ -1384,9 +1115,9 @@ mod tests {
             name: "B",
             sinks: vec![EventType::VulnerabilityDetected],
             emit_type: EventType::ProjectChangesPushed,
-            trace_id: foundry_core::event::mint_trace_id(),
-            span_id: foundry_core::event::mint_span_id(),
-            parent_span_id: foundry_core::event::mint_span_id(),
+            trace_id: foundry_sdk::event::mint_trace_id(),
+            span_id: foundry_sdk::event::mint_span_id(),
+            parent_span_id: foundry_sdk::event::mint_span_id(),
             causation_id: Some(explicit.clone()),
         };
 
@@ -1452,8 +1183,8 @@ mod tests {
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
-        .with_span_ids(Some(foundry_core::event::mint_span_id()), None)
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
         .with_gather_id(Some("gth_outer".to_string()));
 
         let block = emitting_block(
@@ -1669,7 +1400,7 @@ mod tests {
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "the reduce block ran once");
-        let payload: foundry_core::payload::GatherCompletedPayload =
+        let payload: foundry_sdk::payload::GatherCompletedPayload =
             seen[0].parse_payload().unwrap();
         assert_eq!(payload.expected, 3);
         assert_eq!(payload.arrived, 3);
@@ -1768,7 +1499,7 @@ mod tests {
             "an empty scatter still produces its reduce event",
         );
         let seen = seen.lock().unwrap();
-        let payload: foundry_core::payload::GatherCompletedPayload =
+        let payload: foundry_sdk::payload::GatherCompletedPayload =
             seen[0].parse_payload().unwrap();
         assert_eq!(payload.expected, 0);
         assert_eq!(payload.arrived, 0);
@@ -1840,7 +1571,7 @@ mod tests {
         );
 
         let seen = seen.lock().unwrap();
-        let payload: foundry_core::payload::GatherCompletedPayload =
+        let payload: foundry_sdk::payload::GatherCompletedPayload =
             seen[0].parse_payload().unwrap();
         assert_eq!(payload.arrived, 2, "outer gather collected both inner reduces");
     }
@@ -1889,8 +1620,8 @@ mod tests {
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
-        .with_span_ids(Some(foundry_core::event::mint_span_id()), None);
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
 
         let workflow_span = trigger.span_id.clone();
         let result = engine.process(trigger).await;
@@ -1964,8 +1695,8 @@ mod tests {
 
     #[tokio::test]
     async fn default_rule_emitted_event_inherits_trigger_span() {
-        let workflow_span = foundry_core::event::mint_span_id();
-        let trace = foundry_core::event::mint_trace_id();
+        let workflow_span = foundry_sdk::event::mint_span_id();
+        let trace = foundry_sdk::event::mint_trace_id();
         let trigger = Event::new(
             EventType::VulnerabilityDetected,
             "p".to_string(),
@@ -1998,8 +1729,8 @@ mod tests {
 
     #[tokio::test]
     async fn span_opener_rule_mints_fresh_span_parented_to_block() {
-        let workflow_span = foundry_core::event::mint_span_id();
-        let trace = foundry_core::event::mint_trace_id();
+        let workflow_span = foundry_sdk::event::mint_span_id();
+        let trace = foundry_sdk::event::mint_trace_id();
         let trigger = Event::new(
             EventType::PipelineChecked,
             "p".to_string(),
@@ -2128,8 +1859,8 @@ mod tests {
         // populated), the engine must NOT overwrite those values, even though
         // the trigger context is different.
 
-        let trigger_trace = foundry_core::event::mint_trace_id();
-        let trigger_span = foundry_core::event::mint_span_id();
+        let trigger_trace = foundry_sdk::event::mint_trace_id();
+        let trigger_span = foundry_sdk::event::mint_span_id();
         let trigger = Event::new(
             EventType::VulnerabilityDetected,
             "p".to_string(),
@@ -2142,9 +1873,9 @@ mod tests {
         // Block emits a non-opener event with explicit span context.
         // Use a distinct trace_id / span_id from the trigger so any
         // accidental overwrite is observable.
-        let explicit_trace = foundry_core::event::mint_trace_id();
-        let explicit_span = foundry_core::event::mint_span_id();
-        let explicit_parent = foundry_core::event::mint_span_id();
+        let explicit_trace = foundry_sdk::event::mint_trace_id();
+        let explicit_span = foundry_sdk::event::mint_span_id();
+        let explicit_parent = foundry_sdk::event::mint_span_id();
         assert_ne!(explicit_trace, trigger_trace, "test setup: must differ");
         assert_ne!(explicit_span, trigger_span, "test setup: must differ");
 
@@ -2190,7 +1921,7 @@ mod tests {
         // Task 5.2: the engine wraps `block.execute` in
         // `SPAN_CONTEXT::scope` so subprocess spawners inside the block
         // can read (trace_id, block_span_id) without explicit plumbing.
-        use foundry_core::span_context::SPAN_CONTEXT;
+        use foundry_sdk::span_context::SPAN_CONTEXT;
         use std::sync::Mutex;
 
         struct ContextProbingBlock {
@@ -2250,8 +1981,8 @@ mod tests {
             Throttle::Full,
             serde_json::json!({}),
         )
-        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
-        .with_span_ids(Some(foundry_core::event::mint_span_id()), None);
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
 
         let trigger_trace = trigger.trace_id.clone();
         let result = engine.process(trigger).await;
@@ -2277,7 +2008,7 @@ mod tests {
         engine.register(Box::new(TestObserver));
         engine.register(Box::new(TestMutator));
 
-        let workflow_span = foundry_core::event::mint_span_id();
+        let workflow_span = foundry_sdk::event::mint_span_id();
         let trigger = Event::new(
             EventType::GreetingRequested,
             "test-project".to_string(),

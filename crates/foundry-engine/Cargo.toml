@@ -1,0 +1,23 @@
+[package]
+name = "foundry-engine"
+description = "Foundry workflow engine — event dispatch, scatter/gather, retry, and span stamping. Generic over task blocks; knows nothing about specific blocks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+foundry-sdk = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

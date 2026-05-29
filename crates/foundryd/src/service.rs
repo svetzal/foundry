@@ -18,7 +18,6 @@ use foundry_core::sentinel::{
 use foundry_core::throttle::Throttle;
 use foundry_core::trace::{BlockExecution, ProcessResult};
 
-use crate::engine::Engine;
 use crate::proto::{
     EmitRequest, EmitResponse, Project, RegistryAddRequest, RegistryAddResponse,
     RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse,
@@ -30,6 +29,7 @@ use crate::proto::{
 use crate::trace_store::TraceStore;
 use crate::trace_writer::TraceWriter;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowGuard, WorkflowTracker};
+use foundry_engine::engine::Engine;
 
 pub struct FoundryService {
     engine: Arc<Engine>,

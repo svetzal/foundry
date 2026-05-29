@@ -463,6 +463,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "foundry-engine"
+version = "0.19.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "foundry-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "foundry-sdk"
 version = "0.19.0"
 dependencies = [
@@ -489,6 +503,7 @@ dependencies = [
  "chrono",
  "cron",
  "foundry-core",
+ "foundry-engine",
  "foundry-sdk",
  "pastey",
  "prost",

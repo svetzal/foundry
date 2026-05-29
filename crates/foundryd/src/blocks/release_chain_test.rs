@@ -14,9 +14,9 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_core::throttle::Throttle;
 
-use crate::engine::Engine;
 use crate::gateway::AgentGateway;
 use crate::gateway::fakes::FakeAgentGateway;
+use foundry_engine::engine::Engine;
 
 fn release_actions() -> ActionFlags {
     ActionFlags {

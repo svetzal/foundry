@@ -11,12 +11,9 @@ use foundry_core::sentinel::{SentinelStore, merge_default_seed_into};
 mod agent_stream;
 mod blocks;
 mod charter;
-mod engine;
-mod event_writer;
 mod gate_file;
 mod gate_runner;
 mod gateway;
-mod gather_store;
 mod legacy_event_check;
 mod orchestrator;
 mod scanner;
@@ -63,7 +60,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let event_writer = Arc::new(event_writer::EventWriter::new(events_dir));
+    let event_writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir));
 
     let traces_dir = foundry_core::paths::traces_dir();
     let trace_writer = Arc::new(trace_writer::TraceWriter::new(
@@ -187,7 +184,7 @@ fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
 fn spawn_scheduler(
     sentinels: &Arc<RwLock<SentinelStore>>,
     reload: &Arc<Notify>,
-    engine: &Arc<engine::Engine>,
+    engine: &Arc<foundry_engine::engine::Engine>,
     trace_store: &Arc<trace_store::TraceStore>,
     workflow_tracker: &Arc<workflow_tracker::WorkflowTracker>,
     trace_writer: &Arc<trace_writer::TraceWriter>,
@@ -222,13 +219,13 @@ fn spawn_scheduler(
 
 fn register_blocks(
     registry: &Arc<RwLock<foundry_core::registry::Registry>>,
-    event_writer: Arc<event_writer::EventWriter>,
+    event_writer: Arc<foundry_engine::event_writer::EventWriter>,
     event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
     trace_writer: Arc<trace_writer::TraceWriter>,
     audits_dir: String,
     digests_dir: std::path::PathBuf,
-) -> engine::Engine {
-    let mut engine = engine::Engine::new()
+) -> foundry_engine::engine::Engine {
+    let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
         .with_event_broadcaster(event_tx.clone());
     engine.register(Box::new(orchestrator::FanOutMaintenance::new(registry.clone())));

@@ -13,10 +13,10 @@ use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
 use crate::blocks::test_helpers;
-use crate::engine::Engine;
 use crate::gateway::fakes::FakeShellGateway;
 use crate::gateway::{AgentGateway, ShellGateway};
 use crate::shell::CommandResult;
+use foundry_engine::engine::Engine;
 
 /// Build the full strategic loop engine with inner iterate chain.
 #[allow(clippy::needless_pass_by_value)]

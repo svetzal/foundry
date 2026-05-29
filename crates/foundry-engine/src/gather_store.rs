@@ -11,14 +11,14 @@
 //! traversal. A durable, daemon-scoped store (gathers spanning calls and
 //! restarts) is a later step behind this same interface.
 //!
-//! [`Scatter`]: foundry_core::scatter::Scatter
+//! [`Scatter`]: foundry_sdk::scatter::Scatter
 
 use std::collections::{HashMap, HashSet};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{GatherCompletedPayload, GatheredChild};
-use foundry_core::scatter::{GatherPolicy, GatherSpec};
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{GatherCompletedPayload, GatheredChild};
+use foundry_sdk::scatter::{GatherPolicy, GatherSpec};
+use foundry_sdk::throttle::Throttle;
 
 /// One open fan-out group: the children expected, those arrived so far, and
 /// everything needed to synthesize the reduce event when satisfied.
@@ -161,7 +161,7 @@ impl GatherStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::scatter::Scatter;
+    use foundry_sdk::scatter::Scatter;
 
     fn scatter_trigger() -> Event {
         Event::new(

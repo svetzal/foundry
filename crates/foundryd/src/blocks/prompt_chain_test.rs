@@ -13,9 +13,9 @@ use foundry_core::registry::Registry;
 use foundry_core::throttle::Throttle;
 
 use crate::blocks::test_helpers;
-use crate::engine::Engine;
 use crate::gateway::fakes::FakeAgentGateway;
 use crate::gateway::{AgentGateway, ShellGateway};
+use foundry_engine::engine::Engine;
 
 #[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use foundry_core::registry::Registry;
 use foundry_core::sentinel::SentinelStore;
+use foundry_engine::engine::Engine;
 use foundryd::{
-    engine::Engine,
     proto::{
         RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_server::Foundry,
     },

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use foundry_core::event::Event;
+use foundry_sdk::event::Event;
 
 /// Writes events as JSONL lines to monthly files.
 ///
@@ -69,8 +69,8 @@ mod tests {
     use std::fs;
 
     use chrono::{TimeZone, Utc};
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
     use serde_json::Value;
     use tempfile::TempDir;
 
