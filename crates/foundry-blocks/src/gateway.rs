@@ -30,6 +30,12 @@ pub use foundry_core::gateway::{
 #[cfg(test)]
 pub use foundry_sdk::gateway::fakes;
 
+// The opencode-backed agent gateway (OpenAI via the `opencode` CLI). Lives in its
+// own module — a natural seam: a self-contained agent provider that could one day
+// move to an optional provider crate. `ClaudeAgentGateway` stays here unchanged.
+pub mod opencode;
+pub use opencode::OpencodeAgentGateway;
+
 /// Production implementation that delegates to `crate::shell::run`.
 pub struct ProcessShellGateway;
 

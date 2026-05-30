@@ -237,16 +237,41 @@ fn register_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(registry.clone())));
-    // Agent gateway for blocks that invoke Claude CLI
+    // Agent gateway for blocks that invoke an agentic CLI. The provider is
+    // selected by FOUNDRY_AGENT_PROVIDER ("claude" | "opencode"), defaulting to
+    // "claude". The Anthropic subscription stops covering hands-free agent work
+    // on 2026-06-15 — set FOUNDRY_AGENT_PROVIDER=opencode to run on OpenAI via
+    // the `opencode` CLI. Both implement the same AgentGateway trait, so every
+    // downstream block is provider-agnostic.
     let shell_for_agent: Arc<dyn foundry_blocks::gateway::ShellGateway> =
         Arc::new(foundry_blocks::gateway::ProcessShellGateway);
-    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> =
-        Arc::new(foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
-            shell_for_agent,
-            Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner),
-            foundry_core::paths::agent_sessions_dir(),
-            event_tx.clone(),
-        ));
+    let provider = std::env::var("FOUNDRY_AGENT_PROVIDER").unwrap_or_else(|_| "claude".to_string());
+    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> = match provider.as_str() {
+        "opencode" => {
+            tracing::info!("agent provider: opencode (OpenAI)");
+            Arc::new(foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
+                shell_for_agent,
+                Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner),
+                foundry_core::paths::agent_sessions_dir(),
+                event_tx.clone(),
+            ))
+        }
+        other => {
+            if other != "claude" {
+                tracing::warn!(
+                    provider = %other,
+                    "unknown FOUNDRY_AGENT_PROVIDER; falling back to claude"
+                );
+            }
+            tracing::info!("agent provider: claude");
+            Arc::new(foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
+                shell_for_agent,
+                Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner),
+                foundry_core::paths::agent_sessions_dir(),
+                event_tx.clone(),
+            ))
+        }
+    };
     engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
         agent.clone(),
         registry.clone(),

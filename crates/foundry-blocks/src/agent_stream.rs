@@ -74,6 +74,11 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
             let mut cmd = Command::new(command);
             cmd.current_dir(working_dir)
                 .args(args)
+                // Close stdin. Agentic CLIs run non-interactively here, but some
+                // (notably `opencode run`) block forever after bootstrap waiting on
+                // an inherited stdin that never closes. The `claude` CLI in
+                // `--print -p` mode never reads stdin, so closing it is safe for both.
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);

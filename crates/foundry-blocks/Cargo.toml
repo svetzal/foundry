@@ -28,6 +28,9 @@ test-support = []
 tempfile = { workspace = true }
 # Gateway fakes for testing blocks without real I/O.
 foundry-sdk = { workspace = true, features = ["test-support"] }
+# `test-util` (NOT part of tokio's "full") powers `#[tokio::test(start_paused = true)]`
+# used by the watch_pipeline time-advance tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
