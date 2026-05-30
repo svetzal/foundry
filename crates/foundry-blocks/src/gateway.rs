@@ -103,7 +103,7 @@ impl ClaudeAgentGateway {
 
     fn model_for(capability: AgentCapability) -> &'static str {
         match capability {
-            AgentCapability::Reasoning => "claude-opus-4-6",
+            AgentCapability::Reasoning => "claude-opus-4-8",
             AgentCapability::Coding => "claude-sonnet-4-6",
             AgentCapability::Quick => "claude-haiku-4-5-20251001",
         }
@@ -507,7 +507,7 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "stream-json"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--verbose"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--model"), "args: {captured:?}");
-        assert!(captured.iter().any(|a| a == "claude-opus-4-6"), "args: {captured:?}");
+        assert!(captured.iter().any(|a| a == "claude-opus-4-8"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");
     }
 }
