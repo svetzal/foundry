@@ -9,7 +9,8 @@ mod event_builders;
 mod execution;
 
 pub(super) use agent_helpers::{
-    AgentBlockSpec, invoke_agent, invoke_coding_agent, match_agent_text_outcome, parse_agent_json,
+    AgentBlockSpec, chain_agent_provider, invoke_agent, invoke_coding_agent,
+    match_agent_text_outcome, parse_agent_json, parse_agent_provider,
 };
 pub(super) use event_builders::{
     build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,

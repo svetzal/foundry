@@ -95,6 +95,9 @@ impl WorkBlock for AgentRelease {
                 access: AgentAccess::Full,
                 capability: AgentCapability::Coding,
                 agent_file: None,
+                // Release runs on the daemon's default provider; the release
+                // pipeline carries no per-request provider override today.
+                provider: None,
                 timeout: Self::CLAUDE_TIMEOUT,
             };
 

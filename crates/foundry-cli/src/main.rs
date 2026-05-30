@@ -123,18 +123,33 @@ enum Commands {
     Iterate {
         /// Project name from registry
         project: String,
+
+        /// Agent backend to run on: claude, opencode, or codex
+        /// (overrides the daemon default for this run)
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Scout a project for intent drift (bug candidates)
     Scout {
         /// Project name from registry
         project: String,
+
+        /// Agent backend to run on: claude, opencode, or codex
+        /// (overrides the daemon default for this run)
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Check GitHub Actions pipeline health and remediate failures
     Pipeline {
         /// Project name from registry
         project: String,
+
+        /// Agent backend to run on: claude, opencode, or codex
+        /// (overrides the daemon default for this run)
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Run an agent-driven release workflow for a project
@@ -500,9 +515,15 @@ async fn main() -> Result<()> {
             commands::validate(&cli.addr, projects, all, &foundry_core::paths::registry_path())
                 .await
         }
-        Commands::Iterate { project } => commands::iterate(&cli.addr, &project).await,
-        Commands::Scout { project } => commands::scout(&cli.addr, &project).await,
-        Commands::Pipeline { project } => commands::pipeline(&cli.addr, &project).await,
+        Commands::Iterate { project, agent } => {
+            commands::iterate(&cli.addr, &project, agent.as_deref()).await
+        }
+        Commands::Scout { project, agent } => {
+            commands::scout(&cli.addr, &project, agent.as_deref()).await
+        }
+        Commands::Pipeline { project, agent } => {
+            commands::pipeline(&cli.addr, &project, agent.as_deref()).await
+        }
         Commands::Release { project, bump } => commands::release(&cli.addr, &project, bump).await,
         Commands::History { date, project } => {
             commands::history(date.as_deref(), project.as_deref())

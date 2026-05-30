@@ -669,6 +669,7 @@ mod tests {
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
             agent_file: None,
+            provider: None,
             timeout: Duration::from_secs(5),
         };
 
@@ -710,6 +711,7 @@ mod tests {
             access: AgentAccess::Full,
             capability: AgentCapability::Quick,
             agent_file: None,
+            provider: None,
             timeout: Duration::from_secs(5),
         };
 

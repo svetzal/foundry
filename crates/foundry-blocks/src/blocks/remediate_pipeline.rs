@@ -8,7 +8,7 @@ use foundry_core::payload::PipelineCheckedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::AgentGateway;
+use crate::gateway::{AgentGateway, AgentProvider};
 
 agent_block_new!(
     /// Attempts to fix a failing GitHub Actions pipeline.
@@ -63,16 +63,26 @@ impl TaskBlock for RemediatePipeline {
 
         let failure_logs = p.failure_logs.unwrap_or_default();
         let run_name = p.run_name.clone().unwrap_or_default();
+        let provider = super::chain_agent_provider(&trigger.payload);
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
         tracing::info!(%project, %run_name, "remediating pipeline failure");
 
-        Box::pin(run_remediation(project, throttle, run_name, failure_logs, entry, agent))
+        Box::pin(run_remediation(
+            project,
+            throttle,
+            run_name,
+            failure_logs,
+            entry,
+            agent,
+            provider,
+        ))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_remediation(
     project: String,
     throttle: foundry_core::throttle::Throttle,
@@ -80,6 +90,7 @@ async fn run_remediation(
     failure_logs: String,
     entry: foundry_core::registry::ProjectEntry,
     agent: Arc<dyn AgentGateway>,
+    provider: Option<AgentProvider>,
 ) -> anyhow::Result<TaskBlockResult> {
     let project_path = PathBuf::from(&entry.path);
 
@@ -107,6 +118,7 @@ async fn run_remediation(
         project_path,
         prompt,
         agent_file,
+        provider,
         RemediatePipeline::CLAUDE_TIMEOUT,
         "remediate pipeline",
     )

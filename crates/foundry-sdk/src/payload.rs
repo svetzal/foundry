@@ -44,6 +44,12 @@ pub struct ChainContext {
     pub audit_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<serde_json::Value>,
+    /// Per-request agent provider override (`"claude"` | `"opencode"` |
+    /// `"codex"`). Set on the entry request and forwarded unchanged through the
+    /// chain so every agent invocation in the run uses the same backend. Absent
+    /// means "use the daemon's default provider".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_provider: Option<String>,
 }
 
 impl ChainContext {
@@ -58,6 +64,10 @@ impl ChainContext {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             loop_context: payload.get("loop_context").cloned(),
+            agent_provider: payload
+                .get("agent_provider")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         }
     }
 
@@ -79,6 +89,9 @@ impl ChainContext {
         }
         if let Some(v) = &self.loop_context {
             target["loop_context"] = v.clone();
+        }
+        if let Some(v) = &self.agent_provider {
+            target["agent_provider"] = serde_json::json!(v);
         }
     }
 }
@@ -1011,6 +1024,7 @@ mod tests {
             "gates": [{"name": "fmt"}],
             "audit_name": "fix-audit",
             "loop_context": {"strategic": {"iteration": 2}},
+            "agent_provider": "codex",
             "unrelated": "noise",
         });
 
@@ -1020,6 +1034,7 @@ mod tests {
         assert!(chain.gates.is_some());
         assert_eq!(chain.audit_name.as_deref(), Some("fix-audit"));
         assert!(chain.loop_context.is_some());
+        assert_eq!(chain.agent_provider.as_deref(), Some("codex"));
 
         let mut target = serde_json::json!({ "project": "test" });
         chain.merge_into(&mut target);
@@ -1029,6 +1044,7 @@ mod tests {
         assert_eq!(target["gates"][0]["name"], "fmt");
         assert_eq!(target["audit_name"], "fix-audit");
         assert_eq!(target["loop_context"]["strategic"]["iteration"], 2);
+        assert_eq!(target["agent_provider"], "codex");
         assert!(target.get("unrelated").is_none());
     }
 

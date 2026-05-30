@@ -8,7 +8,7 @@ use foundry_core::payload::{InnerIterationCompletedPayload, StrategicAssessmentC
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider};
 
 use super::{AgentBlockSpec, TriggerContext};
 
@@ -176,7 +176,9 @@ async fn handle_inner_completed(
     }
 
     // Use AI to decide whether to continue
-    let should_continue = assess_continue(project, entry.as_ref(), &agent, custom_prompt).await;
+    let provider = super::chain_agent_provider(payload);
+    let should_continue =
+        assess_continue(project, entry.as_ref(), &agent, custom_prompt, provider).await;
 
     if !should_continue {
         tracing::info!(
@@ -246,6 +248,7 @@ async fn assess_continue(
     entry: Option<&foundry_core::registry::ProjectEntry>,
     agent: &Arc<dyn AgentGateway>,
     custom_prompt: Option<&str>,
+    provider: Option<AgentProvider>,
 ) -> bool {
     let Some(entry) = entry else {
         return false;
@@ -276,6 +279,7 @@ async fn assess_continue(
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Quick,
             agent_file,
+            provider,
             timeout: std::time::Duration::from_secs(120),
         },
         "strategic continue assessment",

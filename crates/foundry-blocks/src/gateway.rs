@@ -20,8 +20,8 @@ use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedL
 // throughout the daemon keep resolving. This module now contains only the
 // production *implementations* of those traits.
 pub use foundry_core::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest, AgentResponse,
-    AuditResult, CommandResult, ScannerGateway, ShellGateway,
+    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider, AgentRequest,
+    AgentResponse, AuditResult, CommandResult, ScannerGateway, ShellGateway,
 };
 
 // In-memory fakes for testing also live in the SDK, behind its `test-support`
@@ -35,6 +35,17 @@ pub use foundry_sdk::gateway::fakes;
 // move to an optional provider crate. `ClaudeAgentGateway` stays here unchanged.
 pub mod opencode;
 pub use opencode::OpencodeAgentGateway;
+
+// The codex-backed agent gateway (OpenAI via the `codex` CLI). Same seam as
+// opencode: a self-contained agent provider behind the `AgentGateway` trait.
+pub mod codex;
+pub use codex::CodexAgentGateway;
+
+// Routes an AgentRequest to one of the registered backends based on its
+// per-request provider override (or a default). This is the single gateway the
+// daemon clones into every block.
+pub mod routing;
+pub use routing::RoutingAgentGateway;
 
 /// Production implementation that delegates to `crate::shell::run`.
 pub struct ProcessShellGateway;
@@ -363,6 +374,7 @@ mod claude_agent_gateway_streaming_tests {
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
             agent_file: None,
+            provider: None,
             timeout: Duration::from_secs(60),
         };
 
@@ -430,6 +442,7 @@ mod claude_agent_gateway_streaming_tests {
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
             agent_file: None,
+            provider: None,
             timeout: Duration::from_secs(5),
         };
 
@@ -504,6 +517,7 @@ mod claude_agent_gateway_streaming_tests {
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Reasoning,
             agent_file: None,
+            provider: None,
             timeout: Duration::from_secs(5),
         };
         let _ = gateway.invoke(&request).await.unwrap();

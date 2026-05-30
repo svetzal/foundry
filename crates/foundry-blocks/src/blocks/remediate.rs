@@ -60,6 +60,7 @@ impl TaskBlock for RemediateVulnerability {
         // Resolve project agent and path from registry.
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let provider = super::chain_agent_provider(&trigger.payload);
 
         tracing::info!(%cve, "remediating vulnerability");
 
@@ -81,6 +82,7 @@ impl TaskBlock for RemediateVulnerability {
                 project_path,
                 prompt,
                 agent_file,
+                provider,
                 entry.timeout(),
                 &format!("remediate {cve}"),
             )

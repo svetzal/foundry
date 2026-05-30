@@ -57,6 +57,7 @@ impl TaskBlock for SummarizeResult {
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let provider = super::chain_agent_provider(&payload);
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
@@ -81,6 +82,7 @@ impl TaskBlock for SummarizeResult {
                     access: AgentAccess::ReadOnly,
                     capability: AgentCapability::Quick,
                     agent_file,
+                    provider,
                     timeout: std::time::Duration::from_secs(120),
                 },
                 "summarize result",

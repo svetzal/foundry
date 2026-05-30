@@ -8,7 +8,7 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -67,8 +67,10 @@ impl TaskBlock for TriageAssessment {
                 TRIAGE_SEVERITY_THRESHOLD,
             );
 
+            let provider = super::chain_agent_provider(&payload);
             let (accepted, reason) =
-                run_triage_agent(&*agent, project_path, agent_file, prompt, &project).await;
+                run_triage_agent(&*agent, project_path, agent_file, prompt, provider, &project)
+                    .await;
 
             tracing::info!(
                 project = %project,
@@ -134,6 +136,7 @@ async fn run_triage_agent(
     project_path: PathBuf,
     agent_file: Option<std::path::PathBuf>,
     prompt: String,
+    provider: Option<AgentProvider>,
     project: &str,
 ) -> (bool, String) {
     let outcome = invoke_agent(
@@ -144,6 +147,7 @@ async fn run_triage_agent(
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Quick,
             agent_file,
+            provider,
             timeout: std::time::Duration::from_secs(120),
         },
         "triage assessment",

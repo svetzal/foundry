@@ -514,17 +514,33 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
     }
 }
 
-pub async fn iterate(addr: &str, project: &str) -> Result<()> {
+/// Validate an optional `--agent` provider override and return its canonical
+/// lowercase wire form for injection as `agent_provider` into a request payload.
+/// Errors on an unknown provider name so a typo fails fast at the CLI.
+fn resolve_agent_override(agent: Option<&str>) -> Result<Option<String>> {
+    match agent {
+        None => Ok(None),
+        Some(s) => s
+            .parse::<foundry_core::gateway::AgentProvider>()
+            .map(|p| Some(p.to_string()))
+            .map_err(|e| anyhow::anyhow!("{e} (valid: claude, opencode, codex)")),
+    }
+}
+
+pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<()> {
+    let agent_provider = resolve_agent_override(agent)?;
+    let mut payload = serde_json::json!({
+        "project": project,
+        "actions": { "maintain": false },
+    });
+    if let Some(p) = &agent_provider {
+        payload["agent_provider"] = serde_json::json!(p);
+    }
     let runner = WorkflowRunner::new(addr, project);
     let (event_id, events) = runner
-        .run_workflow(
-            "project_iteration_requested",
-            serde_json::json!({
-                "project": project,
-                "actions": { "maintain": false },
-            }),
-            |t, _| t == "project_iteration_completed",
-        )
+        .run_workflow("project_iteration_requested", payload, |t, _| {
+            t == "project_iteration_completed"
+        })
         .await?;
 
     println!("Iterating {project}...");
@@ -560,10 +576,15 @@ pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<
     Ok(())
 }
 
-pub async fn scout(addr: &str, project: &str) -> Result<()> {
+pub async fn scout(addr: &str, project: &str, agent: Option<&str>) -> Result<()> {
+    let agent_provider = resolve_agent_override(agent)?;
+    let payload = match &agent_provider {
+        Some(p) => serde_json::json!({ "agent_provider": p }),
+        None => serde_json::Value::Null,
+    };
     let runner = WorkflowRunner::new(addr, project);
     let (event_id, events) = runner
-        .run_workflow("drift_assessment_requested", serde_json::Value::Null, |t, _| {
+        .run_workflow("drift_assessment_requested", payload, |t, _| {
             t == "drift_assessment_completed"
         })
         .await?;
@@ -580,10 +601,15 @@ pub async fn scout(addr: &str, project: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn pipeline(addr: &str, project: &str) -> Result<()> {
+pub async fn pipeline(addr: &str, project: &str, agent: Option<&str>) -> Result<()> {
+    let agent_provider = resolve_agent_override(agent)?;
+    let payload = match &agent_provider {
+        Some(p) => serde_json::json!({ "agent_provider": p }),
+        None => serde_json::Value::Null,
+    };
     let runner = WorkflowRunner::new(addr, project);
     let (event_id, events) = runner
-        .run_workflow("pipeline_check_requested", serde_json::Value::Null, |t, p| {
+        .run_workflow("pipeline_check_requested", payload, |t, p| {
             (t == "pipeline_checked"
                 && serde_json::from_str::<serde_json::Value>(p)
                     .is_ok_and(|v| v.bool_or("passing", false)))

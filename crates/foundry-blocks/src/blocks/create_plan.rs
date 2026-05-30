@@ -86,6 +86,7 @@ impl TaskBlock for CreatePlan {
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let provider = super::chain_agent_provider(&payload);
 
         let principle = p.principle.clone();
         let category = p.category.clone();
@@ -110,6 +111,7 @@ impl TaskBlock for CreatePlan {
                     access: AgentAccess::ReadOnly,
                     capability: AgentCapability::Reasoning,
                     agent_file,
+                    provider,
                     timeout: entry.timeout(),
                 },
                 "create plan",

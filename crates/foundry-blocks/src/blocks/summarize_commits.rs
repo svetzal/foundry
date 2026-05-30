@@ -123,6 +123,9 @@ async fn summarize(
             access: AGENT_ACCESS,
             capability: AGENT_CAPABILITY,
             agent_file: None,
+            // Proactive digest formation — not part of a request chain, so there
+            // is no per-request override to honour. Uses the daemon default.
+            provider: None,
             timeout: AGENT_TIMEOUT,
         },
         TRACE_LABEL,

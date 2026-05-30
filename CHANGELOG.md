@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Codex agent backend** — `CodexAgentGateway` drives the `codex` CLI
+  (`codex exec --json -o …`) as a third provider alongside `claude` and
+  `opencode`, all behind the same `AgentGateway` trait. Capability maps to
+  `OpenAI` models with `model_reasoning_effort`; `ReadOnly` access maps to
+  codex's *enforced* `-s read-only` sandbox (a real guarantee opencode's
+  advisory mode lacks), `Full` to `--dangerously-bypass-approvals-and-sandbox`.
+  Validated against `codex-cli` 0.134.0.
+- **Per-request agent provider override.** A run may select its backend via an
+  `agent_provider` field on the request event (`claude` | `opencode` | `codex`),
+  carried through the whole iterate/maintain chain in `ChainContext` and honored
+  by every agent invocation. Surfaced on the CLI as `--agent` for `foundry
+  iterate`, `foundry scout`, and `foundry pipeline` (e.g. `foundry iterate myproj
+  --agent codex`). Unknown names are rejected at the CLI.
+- `AgentProvider` enum and an `AgentRequest.provider` field in the SDK gateway
+  contract; a new `RoutingAgentGateway` dispatches each request to the matching
+  backend, falling back to a process default.
+
+### Changed
+
+- `FOUNDRY_AGENT_PROVIDER` is now the *default* provider rather than the sole
+  selector. The daemon constructs all three backends up front and routes per
+  request; absent an override, requests use this default (still defaulting to
+  `claude`, with a warning on an unknown value).
+
 ## [0.20.0] - 2026-05-29
 
 This release adds the **ops-digest** formation — a periodic summary of

@@ -53,6 +53,7 @@ impl TaskBlock for StrategicAssessor {
         let max_iterations = p.max_iterations.unwrap_or(5);
         let strategic_prompt = p.strategic_prompt.clone();
         let actions = p.chain.actions.clone();
+        let provider = super::parse_agent_provider(p.chain.agent_provider.as_deref());
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
@@ -80,6 +81,7 @@ impl TaskBlock for StrategicAssessor {
                     access: AgentAccess::ReadOnly,
                     capability: AgentCapability::Reasoning,
                     agent_file,
+                    provider,
                     timeout: entry.timeout(),
                 },
                 "strategic assessment",

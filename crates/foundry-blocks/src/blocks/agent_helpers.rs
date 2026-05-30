@@ -3,7 +3,24 @@ use std::time::Duration;
 
 use foundry_core::task_block::TaskBlockResult;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentRequest};
+use crate::gateway::{
+    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider, AgentRequest,
+};
+
+/// Parse a per-request agent provider override from its string form. Returns
+/// `None` when absent or unparseable, so the routing gateway falls back to the
+/// daemon default. Use this with a typed payload's `chain.agent_provider`.
+pub(crate) fn parse_agent_provider(s: Option<&str>) -> Option<AgentProvider> {
+    s.and_then(|s| s.parse().ok())
+}
+
+/// Extract a per-request agent provider override from a raw trigger payload's
+/// chain context (the `agent_provider` field forwarded through the
+/// iterate/maintain chain). Use this when the block holds the raw
+/// `serde_json::Value` payload rather than a typed struct.
+pub(crate) fn chain_agent_provider(payload: &serde_json::Value) -> Option<AgentProvider> {
+    parse_agent_provider(payload.get("agent_provider").and_then(serde_json::Value::as_str))
+}
 
 /// Configuration for an agent invocation within a task block.
 ///
@@ -15,6 +32,9 @@ pub(crate) struct AgentBlockSpec {
     pub access: AgentAccess,
     pub capability: AgentCapability,
     pub agent_file: Option<PathBuf>,
+    /// Per-request provider override (from the run's chain context). `None`
+    /// means the routing gateway uses the daemon default.
+    pub provider: Option<AgentProvider>,
     pub timeout: Duration,
 }
 
@@ -35,6 +55,7 @@ pub(crate) async fn invoke_agent(
         access: spec.access,
         capability: spec.capability,
         agent_file: spec.agent_file,
+        provider: spec.provider,
         timeout: spec.timeout,
     };
     tracing::info!(project = %project, "{trace_label}: invoking agent");
@@ -50,12 +71,14 @@ pub(crate) async fn invoke_agent(
 ///
 /// Convenience wrapper around [`invoke_agent`] for the common pattern used by
 /// execution blocks (`ExecutePlan`, `ExecuteMaintain`, `RemediatePipeline`, `RetryExecution`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn invoke_coding_agent(
     agent: &dyn AgentGateway,
     project: &str,
     working_dir: std::path::PathBuf,
     prompt: String,
     agent_file: Option<std::path::PathBuf>,
+    provider: Option<AgentProvider>,
     timeout: std::time::Duration,
     trace_label: &str,
 ) -> AgentOutcome {
@@ -67,6 +90,7 @@ pub(crate) async fn invoke_coding_agent(
             access: AgentAccess::Full,
             capability: AgentCapability::Coding,
             agent_file,
+            provider,
             timeout,
         },
         trace_label,

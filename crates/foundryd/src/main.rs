@@ -237,40 +237,69 @@ fn register_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(registry.clone())));
-    // Agent gateway for blocks that invoke an agentic CLI. The provider is
-    // selected by FOUNDRY_AGENT_PROVIDER ("claude" | "opencode"), defaulting to
-    // "claude". The Anthropic subscription stops covering hands-free agent work
-    // on 2026-06-15 — set FOUNDRY_AGENT_PROVIDER=opencode to run on OpenAI via
-    // the `opencode` CLI. Both implement the same AgentGateway trait, so every
-    // downstream block is provider-agnostic.
-    let shell_for_agent: Arc<dyn foundry_blocks::gateway::ShellGateway> =
-        Arc::new(foundry_blocks::gateway::ProcessShellGateway);
-    let provider = std::env::var("FOUNDRY_AGENT_PROVIDER").unwrap_or_else(|_| "claude".to_string());
-    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> = match provider.as_str() {
-        "opencode" => {
-            tracing::info!("agent provider: opencode (OpenAI)");
-            Arc::new(foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
-                shell_for_agent,
-                Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner),
-                foundry_core::paths::agent_sessions_dir(),
-                event_tx.clone(),
-            ))
-        }
-        other => {
-            if other != "claude" {
+    // Agent gateway for blocks that invoke an agentic CLI. All supported
+    // backends (claude, opencode, codex) are constructed up front and wired into
+    // a RoutingAgentGateway. Each request may carry a per-request provider
+    // override (`agent_provider` in the request event, e.g. `foundry iterate
+    // --agent codex`), which propagates through the chain; absent an override,
+    // the router uses FOUNDRY_AGENT_PROVIDER (defaulting to "claude").
+    //
+    // The Anthropic subscription stops covering hands-free agent work on
+    // 2026-06-15 — set FOUNDRY_AGENT_PROVIDER=opencode (or codex) to default
+    // unattended runs to an OpenAI backend. All backends implement the same
+    // AgentGateway trait, so every downstream block is provider-agnostic.
+    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> = {
+        use foundry_blocks::gateway::AgentProvider;
+        let make_shell = || -> Arc<dyn foundry_blocks::gateway::ShellGateway> {
+            Arc::new(foundry_blocks::gateway::ProcessShellGateway)
+        };
+        let make_runner = || Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner);
+        let sessions_dir = foundry_core::paths::agent_sessions_dir();
+
+        let default = match std::env::var("FOUNDRY_AGENT_PROVIDER") {
+            Ok(raw) => raw.parse::<AgentProvider>().unwrap_or_else(|_| {
                 tracing::warn!(
-                    provider = %other,
+                    provider = %raw,
                     "unknown FOUNDRY_AGENT_PROVIDER; falling back to claude"
                 );
-            }
-            tracing::info!("agent provider: claude");
+                AgentProvider::Claude
+            }),
+            Err(_) => AgentProvider::Claude,
+        };
+        tracing::info!(default_provider = %default, "agent providers: claude, opencode, codex");
+
+        let mut gateways: std::collections::HashMap<
+            AgentProvider,
+            Arc<dyn foundry_blocks::gateway::AgentGateway>,
+        > = std::collections::HashMap::new();
+        gateways.insert(
+            AgentProvider::Claude,
             Arc::new(foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
-                shell_for_agent,
-                Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner),
-                foundry_core::paths::agent_sessions_dir(),
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
                 event_tx.clone(),
-            ))
-        }
+            )),
+        );
+        gateways.insert(
+            AgentProvider::Opencode,
+            Arc::new(foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
+                event_tx.clone(),
+            )),
+        );
+        gateways.insert(
+            AgentProvider::Codex,
+            Arc::new(foundry_blocks::gateway::CodexAgentGateway::new_with_streaming(
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
+                event_tx.clone(),
+            )),
+        );
+        Arc::new(foundry_blocks::gateway::RoutingAgentGateway::new(gateways, default))
     };
     engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
         agent.clone(),

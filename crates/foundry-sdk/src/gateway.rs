@@ -85,6 +85,61 @@ pub trait ScannerGateway: Send + Sync {
 
 // --- AgentGateway -----------------------------------------------------------
 
+/// Which agentic CLI backend an invocation should run on.
+///
+/// The provider is *not* selected by the block — a block stays
+/// provider-agnostic and merely forwards an optional override pulled from the
+/// request chain. The host wires a single [`AgentGateway`] (in production, a
+/// router) that maps this value to a concrete CLI implementation, falling back
+/// to a process-level default when the request carries no override.
+///
+/// The wire form is the lowercase variant name (`"claude"`, `"opencode"`,
+/// `"codex"`), matching the historical `FOUNDRY_AGENT_PROVIDER` string values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentProvider {
+    /// Anthropic Claude via the `claude` CLI.
+    #[default]
+    Claude,
+    /// `OpenAI` via the `opencode` CLI.
+    Opencode,
+    /// `OpenAI` via the `codex` CLI.
+    Codex,
+}
+
+impl AgentProvider {
+    /// The lowercase wire/CLI string for this provider.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentProvider::Claude => "claude",
+            AgentProvider::Opencode => "opencode",
+            AgentProvider::Codex => "codex",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AgentProvider {
+    type Err = String;
+
+    /// Parse a provider name case-insensitively. Unknown names are an error so
+    /// callers can fall back to a default (rather than silently accepting a
+    /// typo as a valid provider).
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "claude" => Ok(AgentProvider::Claude),
+            "opencode" => Ok(AgentProvider::Opencode),
+            "codex" => Ok(AgentProvider::Codex),
+            other => Err(format!("unknown agent provider: {other}")),
+        }
+    }
+}
+
 /// Access level for an agent invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentAccess {
@@ -121,6 +176,10 @@ pub struct AgentRequest {
     pub capability: AgentCapability,
     /// Optional path to an agent definition file.
     pub agent_file: Option<PathBuf>,
+    /// Optional per-request provider override. `None` means "use the host's
+    /// default provider". The production [`AgentGateway`] is a router that reads
+    /// this field and dispatches to the matching CLI backend.
+    pub provider: Option<AgentProvider>,
     /// Maximum duration for the invocation.
     pub timeout: Duration,
 }
@@ -190,8 +249,8 @@ pub mod fakes {
     use crate::registry::Stack;
 
     use super::{
-        AgentAccess, AgentCapability, AgentGateway, AgentRequest, AgentResponse, AuditResult,
-        CommandResult, ScannerGateway, ShellGateway, Vulnerability,
+        AgentAccess, AgentCapability, AgentGateway, AgentProvider, AgentRequest, AgentResponse,
+        AuditResult, CommandResult, ScannerGateway, ShellGateway, Vulnerability,
     };
 
     /// A recorded shell invocation for use in test assertions.
@@ -357,6 +416,7 @@ pub mod fakes {
         pub access: AgentAccess,
         pub capability: AgentCapability,
         pub agent_file: Option<String>,
+        pub provider: Option<AgentProvider>,
     }
 
     /// Behaviour specification for a single `FakeAgentGateway` response.
@@ -454,10 +514,50 @@ pub mod fakes {
                 access: request.access,
                 capability: request.capability,
                 agent_file: request.agent_file.as_ref().map(|p| p.display().to_string()),
+                provider: request.provider,
             };
             self.invocations.lock().unwrap().push(inv);
             let result = self.next_result();
             Box::pin(async move { Ok(result) })
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::AgentProvider;
+
+    #[test]
+    fn parses_known_providers_case_insensitively() {
+        assert_eq!("claude".parse::<AgentProvider>().unwrap(), AgentProvider::Claude);
+        assert_eq!("opencode".parse::<AgentProvider>().unwrap(), AgentProvider::Opencode);
+        assert_eq!("codex".parse::<AgentProvider>().unwrap(), AgentProvider::Codex);
+        assert_eq!("  CODEX ".parse::<AgentProvider>().unwrap(), AgentProvider::Codex);
+    }
+
+    #[test]
+    fn rejects_unknown_provider() {
+        assert!("gemini".parse::<AgentProvider>().is_err());
+        assert!("".parse::<AgentProvider>().is_err());
+    }
+
+    #[test]
+    fn default_is_claude() {
+        assert_eq!(AgentProvider::default(), AgentProvider::Claude);
+    }
+
+    #[test]
+    fn display_and_as_str_are_lowercase_wire_form() {
+        assert_eq!(AgentProvider::Claude.as_str(), "claude");
+        assert_eq!(AgentProvider::Opencode.to_string(), "opencode");
+        assert_eq!(AgentProvider::Codex.to_string(), "codex");
+    }
+
+    #[test]
+    fn serde_round_trips_lowercase() {
+        let json = serde_json::to_string(&AgentProvider::Codex).unwrap();
+        assert_eq!(json, "\"codex\"");
+        let back: AgentProvider = serde_json::from_str("\"opencode\"").unwrap();
+        assert_eq!(back, AgentProvider::Opencode);
     }
 }

@@ -179,6 +179,7 @@ impl TaskBlock for ScoutDrift {
     {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+        let provider = super::chain_agent_provider(&trigger.payload);
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
@@ -201,6 +202,7 @@ impl TaskBlock for ScoutDrift {
                     access: AgentAccess::ReadOnly,
                     capability: AgentCapability::Reasoning,
                     agent_file,
+                    provider,
                     timeout: entry.timeout(),
                 },
                 "scout drift",

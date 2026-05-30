@@ -16,12 +16,18 @@ pub fn forward_payload_fields(
 
 /// Forward all standard chain-context fields from `source` to `target`.
 ///
-/// Copies `actions`, `prompt`, `gates`, and `audit_name` (if present), then
-/// calls [`forward_loop_context`] to carry nested-loop state. Use this in
-/// every block that constructs event payloads and needs to propagate the
-/// full iteration context to downstream blocks.
+/// Copies `actions`, `prompt`, `gates`, `audit_name`, and `agent_provider` (if
+/// present), then calls [`forward_loop_context`] to carry nested-loop state.
+/// Use this in every block that constructs event payloads and needs to
+/// propagate the full iteration context to downstream blocks. `agent_provider`
+/// is forwarded so a per-request provider override set on the entry event
+/// reaches every agent invocation in the chain.
 pub fn forward_chain_context(source: &serde_json::Value, target: &mut serde_json::Value) {
-    forward_payload_fields(source, target, &["actions", "prompt", "gates", "audit_name"]);
+    forward_payload_fields(
+        source,
+        target,
+        &["actions", "prompt", "gates", "audit_name", "agent_provider"],
+    );
     forward_loop_context(source, target);
 }
 
@@ -74,6 +80,7 @@ mod tests {
             "gates": [{"name": "fmt"}],
             "audit_name": "fix-drY",
             "loop_context": {"strategic": {"iteration": 2}},
+            "agent_provider": "codex",
             "unrelated": "noise",
         });
         let mut target = serde_json::json!({ "project": "test" });
@@ -85,6 +92,7 @@ mod tests {
         assert_eq!(target["gates"][0]["name"], "fmt");
         assert_eq!(target["audit_name"], "fix-drY");
         assert_eq!(target["loop_context"]["strategic"]["iteration"], 2);
+        assert_eq!(target["agent_provider"], "codex", "agent_provider must propagate");
         assert!(target.get("unrelated").is_none(), "unrelated fields must not be copied");
     }
 

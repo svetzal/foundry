@@ -8,7 +8,7 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider};
 
 use super::{AgentBlockSpec, TriggerContext};
 
@@ -52,6 +52,8 @@ impl TaskBlock for AssessProject {
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
 
+        let provider = super::chain_agent_provider(&payload);
+
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
@@ -61,6 +63,7 @@ impl TaskBlock for AssessProject {
                 &project,
                 project_path.clone(),
                 agent_file.clone(),
+                provider,
                 entry.timeout(),
             )
             .await
@@ -71,9 +74,16 @@ impl TaskBlock for AssessProject {
                 }
             };
 
-            let audit_name =
-                run_naming_agent(&agent, &project, &principle, &category, project_path, agent_file)
-                    .await;
+            let audit_name = run_naming_agent(
+                &agent,
+                &project,
+                &principle,
+                &category,
+                project_path,
+                agent_file,
+                provider,
+            )
+            .await;
 
             tracing::info!(
                 project = %project,
@@ -112,6 +122,7 @@ async fn run_assessment_agent(
     project: &str,
     project_path: PathBuf,
     agent_file: Option<PathBuf>,
+    provider: Option<AgentProvider>,
     timeout: std::time::Duration,
 ) -> anyhow::Result<(i64, String, String, String)> {
     let assess_prompt = format!(
@@ -136,6 +147,7 @@ async fn run_assessment_agent(
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Reasoning,
             agent_file,
+            provider,
             timeout,
         },
         "assess project",
@@ -153,6 +165,7 @@ async fn run_assessment_agent(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_naming_agent(
     agent: &Arc<dyn AgentGateway>,
     project: &str,
@@ -160,6 +173,7 @@ async fn run_naming_agent(
     category: &str,
     project_path: PathBuf,
     agent_file: Option<PathBuf>,
+    provider: Option<AgentProvider>,
 ) -> String {
     let name_prompt = format!(
         "Generate a short kebab-case filename (no extension) that describes this assessment: \
@@ -175,6 +189,7 @@ async fn run_naming_agent(
             access: AgentAccess::ReadOnly,
             capability: AgentCapability::Quick,
             agent_file,
+            provider,
             timeout: std::time::Duration::from_secs(60),
         },
         "name assessment",
