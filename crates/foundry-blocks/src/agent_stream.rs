@@ -64,7 +64,7 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                     .with_context(|| format!("failed to create log dir {}", parent.display()))?;
             }
 
-            let mut log_file = tokio::fs::OpenOptions::new()
+            let log_file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(log_path)
@@ -103,29 +103,36 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
             let mut lines: Vec<StreamedLine> = Vec::new();
             let mut bytes_written: u64 = 0;
 
-            let read_loop = async {
-                while let Some(line) = reader.next_line().await? {
-                    let with_newline = format!("{line}\n");
-                    log_file.write_all(with_newline.as_bytes()).await?;
-                    log_file.flush().await?;
-                    bytes_written = bytes_written.saturating_add(with_newline.len() as u64);
-                    lines.push(StreamedLine { raw: line });
-                }
-                Ok::<(), anyhow::Error>(())
-            };
-
-            let stderr_collect = async {
+            // Drain stderr on its OWN task. If stdout and stderr are merely
+            // `tokio::join!`-ed on one task, a disk write on the stdout path
+            // suspends the task and stops draining stderr until it resumes — so
+            // a child that bursts to one pipe while the parent is busy on the
+            // other can fill a 64KB pipe buffer and block mid-run. Independent
+            // tasks drain both pipes continuously.
+            let stderr_handle = tokio::spawn(async move {
                 let mut stderr_reader = BufReader::new(stderr);
                 let mut buf = String::new();
                 stderr_reader.read_to_string(&mut buf).await?;
                 Ok::<String, anyhow::Error>(buf)
-            };
+            });
+
+            // Buffer the log writes. Flushing to disk on every single line
+            // throttled how fast we drained opencode's stdout pipe; the pipe
+            // filled during output bursts and opencode blocked on the write,
+            // hanging the whole run. BufWriter batches syscalls so the pipe is
+            // drained promptly; we flush once at the end.
+            let mut log_writer = tokio::io::BufWriter::new(log_file);
 
             let combined = async {
-                let (read_res, stderr_res) = tokio::join!(read_loop, stderr_collect);
-                read_res?;
-                let stderr_text = stderr_res?;
+                while let Some(line) = reader.next_line().await? {
+                    let with_newline = format!("{line}\n");
+                    log_writer.write_all(with_newline.as_bytes()).await?;
+                    bytes_written = bytes_written.saturating_add(with_newline.len() as u64);
+                    lines.push(StreamedLine { raw: line });
+                }
+                log_writer.flush().await?;
                 let exit = child.wait().await?;
+                let stderr_text = stderr_handle.await??;
                 Ok::<(std::process::ExitStatus, String), anyhow::Error>((exit, stderr_text))
             };
 
