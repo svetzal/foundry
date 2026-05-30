@@ -50,6 +50,10 @@ pub async fn run(
     let mut cmd = Command::new(command);
     cmd.current_dir(working_dir)
         .args(args)
+        // Close stdin. These are non-interactive subprocesses; some commands
+        // (notably `opencode export`) block forever on an inherited open stdin
+        // that never closes. Nothing run through this gateway reads stdin.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Ensure the child is killed when the `Child` handle is dropped (e.g.
