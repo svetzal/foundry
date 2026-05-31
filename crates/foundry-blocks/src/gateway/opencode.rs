@@ -40,7 +40,8 @@ use uuid::Uuid;
 use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
 
 use super::{
-    AgentAccess, AgentCapability, AgentGateway, AgentRequest, AgentResponse, ShellGateway,
+    AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
+    ShellGateway,
 };
 
 /// Production [`AgentGateway`] that invokes the `opencode` CLI and emits
@@ -51,6 +52,8 @@ pub struct OpencodeAgentGateway {
     stream_runner: Arc<dyn AgentStreamRunner>,
     session_log_dir: PathBuf,
     event_tx: broadcast::Sender<Event>,
+    /// Resolved tier→model and effort→`--variant` maps for the opencode provider.
+    models: ProviderModels,
 }
 
 impl OpencodeAgentGateway {
@@ -77,33 +80,15 @@ impl OpencodeAgentGateway {
             stream_runner,
             session_log_dir,
             event_tx,
+            models: ProviderModels::default_for(AgentProvider::Opencode),
         }
     }
 
-    /// Capability → provider-qualified model id.
-    fn model_for(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "openai/gpt-5.5",
-            AgentCapability::Coding => "openai/gpt-5.4",
-            AgentCapability::Quick => "openai/gpt-5.4-mini",
-        }
-    }
-
-    /// Capability → `--variant` (provider reasoning effort).
-    fn variant_for(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "high",
-            AgentCapability::Coding => "medium",
-            AgentCapability::Quick => "low",
-        }
-    }
-
-    fn capability_label(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "reasoning",
-            AgentCapability::Coding => "coding",
-            AgentCapability::Quick => "quick",
-        }
+    /// Override the resolved tier/effort maps (from the agent config).
+    #[must_use]
+    pub fn with_models(mut self, models: ProviderModels) -> Self {
+        self.models = models;
+        self
     }
 
     fn access_label(access: AgentAccess) -> &'static str {
@@ -123,8 +108,8 @@ impl AgentGateway for OpencodeAgentGateway {
             let session_id = Uuid::new_v4().to_string();
             let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
 
-            let model = Self::model_for(request.capability);
-            let variant = Self::variant_for(request.capability);
+            let model = self.models.model(request.tier, AgentProvider::Opencode);
+            let variant = self.models.effort_token(request.effort, AgentProvider::Opencode);
 
             // Inline the agent definition (if any) via OPENCODE_CONFIG_CONTENT and
             // pass `--agent <key>`. opencode's `--agent` wants a name, not a path.
@@ -142,7 +127,7 @@ impl AgentGateway for OpencodeAgentGateway {
                 );
             }
 
-            let args = build_opencode_argv(model, variant, agent_key.as_deref(), &request.prompt);
+            let args = build_opencode_argv(&model, &variant, agent_key.as_deref(), &request.prompt);
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
             let started_payload = AgentSessionStartedPayload {
@@ -151,7 +136,8 @@ impl AgentGateway for OpencodeAgentGateway {
                 project: request.project.clone(),
                 working_dir: request.working_dir.clone(),
                 source_log_path: log_path.clone(),
-                capability: Self::capability_label(request.capability).to_string(),
+                tier: request.tier.as_str().to_string(),
+                effort: request.effort.as_str().to_string(),
                 access: Self::access_label(request.access).to_string(),
                 started_at: Utc::now().to_rfc3339(),
                 trace_id: String::new(),
@@ -447,6 +433,7 @@ fn parse_export_result(stdout: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::{ModelTier, ReasoningEffort};
 
     fn line(s: &str) -> StreamedLine {
         StreamedLine { raw: s.to_string() }
@@ -479,13 +466,14 @@ mod tests {
     }
 
     #[test]
-    fn capability_maps_to_expected_model_and_variant() {
-        assert_eq!(OpencodeAgentGateway::model_for(AgentCapability::Reasoning), "openai/gpt-5.5");
-        assert_eq!(OpencodeAgentGateway::variant_for(AgentCapability::Reasoning), "high");
-        assert_eq!(OpencodeAgentGateway::model_for(AgentCapability::Coding), "openai/gpt-5.4");
-        assert_eq!(OpencodeAgentGateway::variant_for(AgentCapability::Coding), "medium");
-        assert_eq!(OpencodeAgentGateway::model_for(AgentCapability::Quick), "openai/gpt-5.4-mini");
-        assert_eq!(OpencodeAgentGateway::variant_for(AgentCapability::Quick), "low");
+    fn default_tier_and_effort_maps_match_expected() {
+        let pm = ProviderModels::default_for(AgentProvider::Opencode);
+        assert_eq!(pm.model(ModelTier::Deep, AgentProvider::Opencode), "openai/gpt-5.5");
+        assert_eq!(pm.model(ModelTier::Balanced, AgentProvider::Opencode), "openai/gpt-5.4");
+        assert_eq!(pm.model(ModelTier::Fast, AgentProvider::Opencode), "openai/gpt-5.4-mini");
+        assert_eq!(pm.effort_token(ReasoningEffort::High, AgentProvider::Opencode), "high");
+        assert_eq!(pm.effort_token(ReasoningEffort::Medium, AgentProvider::Opencode), "medium");
+        assert_eq!(pm.effort_token(ReasoningEffort::Minimal, AgentProvider::Opencode), "minimal");
     }
 
     #[test]
@@ -667,7 +655,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),
@@ -681,7 +670,8 @@ mod tests {
         let started = rx.recv().await.expect("started");
         assert_eq!(started.event_type, EventType::AgentSessionStarted);
         assert_eq!(started.payload["agent_type"], "opencode");
-        assert_eq!(started.payload["capability"], "coding");
+        assert_eq!(started.payload["tier"], "balanced");
+        assert_eq!(started.payload["effort"], "medium");
 
         let ended = rx.recv().await.expect("ended");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
@@ -709,7 +699,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Quick,
+            tier: ModelTier::Fast,
+            effort: ReasoningEffort::Low,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),

@@ -6,7 +6,7 @@ use foundry_core::event::{Event, EventType};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
 use super::{AgentBlockSpec, invoke_agent};
 
@@ -200,7 +200,8 @@ impl TaskBlock for ScoutDrift {
                     prompt,
                     working_dir: project_path,
                     access: AgentAccess::ReadOnly,
-                    capability: AgentCapability::Reasoning,
+                    tier: ModelTier::Deep,
+                    effort: ReasoningEffort::High,
                     agent_file,
                     provider,
                     timeout: entry.timeout(),
@@ -314,7 +315,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use crate::gateway::fakes::FakeAgentGateway;
-    use crate::gateway::{AgentAccess, AgentCapability};
+    use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
     use foundry_core::event::EventType;
     use foundry_core::registry::Registry;
     use foundry_core::task_block::TaskBlock;
@@ -407,7 +408,8 @@ mod tests {
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
-        assert_eq!(invocations[0].capability, AgentCapability::Reasoning);
+        assert_eq!(invocations[0].tier, ModelTier::Deep);
+        assert_eq!(invocations[0].effort, ReasoningEffort::High);
     }
 
     #[tokio::test]

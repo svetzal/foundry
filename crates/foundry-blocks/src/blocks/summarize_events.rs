@@ -18,7 +18,7 @@ use foundry_core::payload::{
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
 use super::{AgentBlockSpec, emit_result, invoke_agent};
 
@@ -30,7 +30,8 @@ const AGENT_ACCESS: AgentAccess = AgentAccess::ReadOnly;
 
 /// Reasoning capability — we want the agent to identify patterns and surface
 /// actionable signals from the raw event stream.
-const AGENT_CAPABILITY: AgentCapability = AgentCapability::Reasoning;
+const AGENT_TIER: ModelTier = ModelTier::Deep;
+const AGENT_EFFORT: ReasoningEffort = ReasoningEffort::High;
 
 /// Trace label for this block's agent invocation span.
 const TRACE_LABEL: &str = "summarize_events";
@@ -122,7 +123,8 @@ async fn summarize(
             prompt,
             working_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             access: AGENT_ACCESS,
-            capability: AGENT_CAPABILITY,
+            tier: AGENT_TIER,
+            effort: AGENT_EFFORT,
             agent_file: None,
             // Proactive ops-digest formation — not part of a request chain, so
             // there is no per-request override to honour. Uses the daemon default.

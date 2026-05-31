@@ -95,7 +95,9 @@ pub trait ScannerGateway: Send + Sync {
 ///
 /// The wire form is the lowercase variant name (`"claude"`, `"opencode"`,
 /// `"codex"`), matching the historical `FOUNDRY_AGENT_PROVIDER` string values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentProvider {
     /// Anthropic Claude via the `claude` CLI.
@@ -149,16 +151,90 @@ pub enum AgentAccess {
     Full,
 }
 
-/// Capability hint that the block needs from the agent runtime.
-/// The gateway maps this to a concrete model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentCapability {
-    /// Deep reasoning (maps to opus in Claude).
-    Reasoning,
-    /// Code generation and modification (maps to sonnet in Claude).
-    Coding,
-    /// Fast, lightweight tasks (maps to haiku in Claude).
-    Quick,
+/// Abstract model tier — *which* model a block wants, independent of provider.
+///
+/// Each provider maps a tier to a concrete model id (configurable via the agent
+/// config; see [`crate::agent_config`]). Mirrors hopper's `deep/balanced/fast`
+/// vocabulary.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    /// Most capable model — deep reasoning, planning, assessment.
+    Deep,
+    /// General-purpose model — coding and edits. The sensible default.
+    #[default]
+    Balanced,
+    /// Fast, lightweight model — one-shot helpers (naming, triage, summaries).
+    Fast,
+}
+
+/// Abstract reasoning effort — *how hard* the model should think, independent of
+/// provider. Each provider maps a level to its CLI token (configurable; see
+/// [`crate::agent_config`]), clamping levels its CLI does not support.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Minimal thinking — fastest, cheapest.
+    Minimal,
+    /// Low effort.
+    Low,
+    /// Medium effort. The sensible default.
+    #[default]
+    Medium,
+    /// High effort — for hard reasoning.
+    High,
+    /// Maximum effort — the most thorough the provider offers.
+    Max,
+}
+
+impl ModelTier {
+    /// The lowercase wire string for this tier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelTier::Deep => "deep",
+            ModelTier::Balanced => "balanced",
+            ModelTier::Fast => "fast",
+        }
+    }
+    /// All tiers, in order, for iteration (config seeding, completeness checks).
+    pub const ALL: [ModelTier; 3] = [ModelTier::Deep, ModelTier::Balanced, ModelTier::Fast];
+}
+
+impl std::fmt::Display for ModelTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ReasoningEffort {
+    /// The lowercase wire string for this effort level.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Minimal => "minimal",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::Max => "max",
+        }
+    }
+    /// All effort levels, low→high, for iteration (config seeding, completeness).
+    pub const ALL: [ReasoningEffort; 5] = [
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+    ];
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A request to invoke an AI agent.
@@ -172,8 +248,12 @@ pub struct AgentRequest {
     pub working_dir: PathBuf,
     /// Tool access level.
     pub access: AgentAccess,
-    /// Capability needed from the agent.
-    pub capability: AgentCapability,
+    /// Which model tier the block wants. The gateway resolves this to a concrete
+    /// model id for its provider.
+    pub tier: ModelTier,
+    /// How much reasoning effort the block wants. The gateway maps this to its
+    /// provider's CLI token.
+    pub effort: ReasoningEffort,
     /// Optional path to an agent definition file.
     pub agent_file: Option<PathBuf>,
     /// Optional per-request provider override. `None` means "use the host's
@@ -249,8 +329,8 @@ pub mod fakes {
     use crate::registry::Stack;
 
     use super::{
-        AgentAccess, AgentCapability, AgentGateway, AgentProvider, AgentRequest, AgentResponse,
-        AuditResult, CommandResult, ScannerGateway, ShellGateway, Vulnerability,
+        AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, AuditResult,
+        CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway, Vulnerability,
     };
 
     /// A recorded shell invocation for use in test assertions.
@@ -414,7 +494,8 @@ pub mod fakes {
         pub project: String,
         pub working_dir: String,
         pub access: AgentAccess,
-        pub capability: AgentCapability,
+        pub tier: ModelTier,
+        pub effort: ReasoningEffort,
         pub agent_file: Option<String>,
         pub provider: Option<AgentProvider>,
     }
@@ -512,7 +593,8 @@ pub mod fakes {
                 project: request.project.clone(),
                 working_dir: request.working_dir.display().to_string(),
                 access: request.access,
-                capability: request.capability,
+                tier: request.tier,
+                effort: request.effort,
                 agent_file: request.agent_file.as_ref().map(|p| p.display().to_string()),
                 provider: request.provider,
             };

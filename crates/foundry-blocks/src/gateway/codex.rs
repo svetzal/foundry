@@ -50,7 +50,8 @@ use uuid::Uuid;
 use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
 
 use super::{
-    AgentAccess, AgentCapability, AgentGateway, AgentRequest, AgentResponse, ShellGateway,
+    AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
+    ShellGateway,
 };
 
 /// Production [`AgentGateway`] that invokes the `codex` CLI and emits
@@ -64,6 +65,8 @@ pub struct CodexAgentGateway {
     stream_runner: Arc<dyn AgentStreamRunner>,
     session_log_dir: PathBuf,
     event_tx: broadcast::Sender<Event>,
+    /// Resolved tier→model and effort→`model_reasoning_effort` maps for codex.
+    models: ProviderModels,
 }
 
 impl CodexAgentGateway {
@@ -90,33 +93,15 @@ impl CodexAgentGateway {
             stream_runner,
             session_log_dir,
             event_tx,
+            models: ProviderModels::default_for(AgentProvider::Codex),
         }
     }
 
-    /// Capability → model id (bare `OpenAI` names; `codex` is `OpenAI`-native).
-    fn model_for(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "gpt-5.5",
-            AgentCapability::Coding => "gpt-5.4",
-            AgentCapability::Quick => "gpt-5.4-mini",
-        }
-    }
-
-    /// Capability → `model_reasoning_effort`.
-    fn effort_for(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "high",
-            AgentCapability::Coding => "medium",
-            AgentCapability::Quick => "low",
-        }
-    }
-
-    fn capability_label(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "reasoning",
-            AgentCapability::Coding => "coding",
-            AgentCapability::Quick => "quick",
-        }
+    /// Override the resolved tier/effort maps (from the agent config).
+    #[must_use]
+    pub fn with_models(mut self, models: ProviderModels) -> Self {
+        self.models = models;
+        self
     }
 
     fn access_label(access: AgentAccess) -> &'static str {
@@ -137,15 +122,16 @@ impl AgentGateway for CodexAgentGateway {
             let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
             let last_message_path = self.session_log_dir.join(format!("{session_id}.last.txt"));
 
-            let model = Self::model_for(request.capability);
-            let effort = Self::effort_for(request.capability);
+            let model = self.models.model(request.tier, AgentProvider::Codex);
+            let effort = self.models.effort_token(request.effort, AgentProvider::Codex);
 
             // Prepend the agent persona (if any) to the prompt — codex has no
             // `--agent` flag.
             let prompt =
                 build_prompt(request.agent_file.as_deref(), &request.prompt, &request.project);
 
-            let args = build_codex_argv(model, effort, request.access, &last_message_path, &prompt);
+            let args =
+                build_codex_argv(&model, &effort, request.access, &last_message_path, &prompt);
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
             let started_payload = AgentSessionStartedPayload {
@@ -154,7 +140,8 @@ impl AgentGateway for CodexAgentGateway {
                 project: request.project.clone(),
                 working_dir: request.working_dir.clone(),
                 source_log_path: log_path.clone(),
-                capability: Self::capability_label(request.capability).to_string(),
+                tier: request.tier.as_str().to_string(),
+                effort: request.effort.as_str().to_string(),
                 access: Self::access_label(request.access).to_string(),
                 started_at: Utc::now().to_rfc3339(),
                 trace_id: String::new(),
@@ -366,6 +353,7 @@ fn has_failure_event(lines: &[StreamedLine]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::{ModelTier, ReasoningEffort};
     use std::path::Path;
 
     fn line(s: &str) -> StreamedLine {
@@ -407,13 +395,15 @@ mod tests {
     }
 
     #[test]
-    fn capability_maps_to_expected_model_and_effort() {
-        assert_eq!(CodexAgentGateway::model_for(AgentCapability::Reasoning), "gpt-5.5");
-        assert_eq!(CodexAgentGateway::effort_for(AgentCapability::Reasoning), "high");
-        assert_eq!(CodexAgentGateway::model_for(AgentCapability::Coding), "gpt-5.4");
-        assert_eq!(CodexAgentGateway::effort_for(AgentCapability::Coding), "medium");
-        assert_eq!(CodexAgentGateway::model_for(AgentCapability::Quick), "gpt-5.4-mini");
-        assert_eq!(CodexAgentGateway::effort_for(AgentCapability::Quick), "low");
+    fn default_tier_and_effort_maps_match_expected() {
+        let pm = ProviderModels::default_for(AgentProvider::Codex);
+        assert_eq!(pm.model(ModelTier::Deep, AgentProvider::Codex), "gpt-5.5");
+        assert_eq!(pm.model(ModelTier::Balanced, AgentProvider::Codex), "gpt-5.4");
+        assert_eq!(pm.model(ModelTier::Fast, AgentProvider::Codex), "gpt-5.4-mini");
+        assert_eq!(pm.effort_token(ReasoningEffort::High, AgentProvider::Codex), "high");
+        assert_eq!(pm.effort_token(ReasoningEffort::Medium, AgentProvider::Codex), "medium");
+        // codex has no `max`; it clamps to `high`.
+        assert_eq!(pm.effort_token(ReasoningEffort::Max, AgentProvider::Codex), "high");
     }
 
     #[test]
@@ -550,7 +540,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),
@@ -565,7 +556,8 @@ mod tests {
         let started = rx.recv().await.expect("started");
         assert_eq!(started.event_type, EventType::AgentSessionStarted);
         assert_eq!(started.payload["agent_type"], "codex");
-        assert_eq!(started.payload["capability"], "coding");
+        assert_eq!(started.payload["tier"], "balanced");
+        assert_eq!(started.payload["effort"], "medium");
 
         let ended = rx.recv().await.expect("ended");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
@@ -593,7 +585,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::ReadOnly,
-            capability: AgentCapability::Reasoning,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),
@@ -624,7 +617,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Quick,
+            tier: ModelTier::Fast,
+            effort: ReasoningEffort::Low,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),

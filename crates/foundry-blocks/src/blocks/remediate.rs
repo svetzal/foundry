@@ -111,8 +111,8 @@ mod tests {
     use foundry_core::registry::Registry;
     use foundry_core::task_block::TaskBlock;
 
-    use crate::gateway::AgentCapability;
     use crate::gateway::fakes::FakeAgentGateway;
+    use crate::gateway::{ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
     use super::RemediateVulnerability;
@@ -221,6 +221,7 @@ mod tests {
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
         assert!(invocations[0].prompt.contains("CVE-2026-0001"));
-        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].tier, ModelTier::Balanced);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
     }
 }

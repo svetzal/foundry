@@ -37,6 +37,21 @@ pub fn sentinels_path() -> PathBuf {
     }
 }
 
+/// Returns the agent model configuration file path.
+///
+/// This JSON store maps each provider's abstract model tiers and reasoning
+/// effort levels to concrete model ids and CLI tokens (see
+/// [`crate::agent_config`]). Defaults are baked in; this file overrides them.
+///
+/// Override with `FOUNDRY_AGENT_CONFIG_PATH`.
+pub fn agent_config_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_AGENT_CONFIG_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("agents.json")
+    }
+}
+
 /// Returns the JSONL event output directory.
 ///
 /// Override with `FOUNDRY_EVENTS_DIR`.

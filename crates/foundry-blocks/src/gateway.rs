@@ -19,9 +19,10 @@ use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedL
 // shim). Re-exported here so the historical `crate::gateway::…` paths used
 // throughout the daemon keep resolving. This module now contains only the
 // production *implementations* of those traits.
+pub use foundry_core::agent_config::ProviderModels;
 pub use foundry_core::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider, AgentRequest,
-    AgentResponse, AuditResult, CommandResult, ScannerGateway, ShellGateway,
+    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, AgentResponse,
+    AuditResult, CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway,
 };
 
 // In-memory fakes for testing also live in the SDK, behind its `test-support`
@@ -88,6 +89,8 @@ pub struct ClaudeAgentGateway {
     stream_runner: Arc<dyn AgentStreamRunner>,
     session_log_dir: PathBuf,
     event_tx: broadcast::Sender<Event>,
+    /// Resolved tier→model and effort→token maps for the claude provider.
+    models: ProviderModels,
 }
 
 impl ClaudeAgentGateway {
@@ -115,23 +118,15 @@ impl ClaudeAgentGateway {
             stream_runner,
             session_log_dir,
             event_tx,
+            models: ProviderModels::default_for(AgentProvider::Claude),
         }
     }
 
-    fn model_for(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "claude-opus-4-8",
-            AgentCapability::Coding => "claude-sonnet-4-6",
-            AgentCapability::Quick => "claude-haiku-4-5-20251001",
-        }
-    }
-
-    fn capability_label(capability: AgentCapability) -> &'static str {
-        match capability {
-            AgentCapability::Reasoning => "reasoning",
-            AgentCapability::Coding => "coding",
-            AgentCapability::Quick => "quick",
-        }
+    /// Override the resolved tier/effort maps (from the agent config).
+    #[must_use]
+    pub fn with_models(mut self, models: ProviderModels) -> Self {
+        self.models = models;
+        self
     }
 
     fn access_label(access: AgentAccess) -> &'static str {
@@ -151,14 +146,17 @@ impl AgentGateway for ClaudeAgentGateway {
             let session_id = Uuid::new_v4().to_string();
             let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
 
-            let model = Self::model_for(request.capability);
+            let model = self.models.model(request.tier, AgentProvider::Claude);
+            let effort = self.models.effort_token(request.effort, AgentProvider::Claude);
             let mut args: Vec<String> = vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "stream-json".to_string(),
                 "--verbose".to_string(),
                 "--model".to_string(),
-                model.to_string(),
+                model,
+                "--effort".to_string(),
+                effort,
             ];
             if let Some(ref agent_file) = request.agent_file {
                 args.push("--agent".to_string());
@@ -179,7 +177,8 @@ impl AgentGateway for ClaudeAgentGateway {
                 project: request.project.clone(),
                 working_dir: request.working_dir.clone(),
                 source_log_path: log_path.clone(),
-                capability: Self::capability_label(request.capability).to_string(),
+                tier: request.tier.as_str().to_string(),
+                effort: request.effort.as_str().to_string(),
                 access: Self::access_label(request.access).to_string(),
                 started_at: Utc::now().to_rfc3339(),
                 trace_id: String::new(),
@@ -372,7 +371,8 @@ mod claude_agent_gateway_streaming_tests {
             project: "demo-project".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(60),
@@ -387,7 +387,8 @@ mod claude_agent_gateway_streaming_tests {
         assert_eq!(started.event_type, EventType::AgentSessionStarted);
         assert_eq!(started.project, "demo-project");
         assert_eq!(started.payload["agent_type"], "claude-code");
-        assert_eq!(started.payload["capability"], "coding");
+        assert_eq!(started.payload["tier"], "balanced");
+        assert_eq!(started.payload["effort"], "medium");
         assert_eq!(started.payload["access"], "full");
         assert_eq!(started.payload["project"], "demo-project");
         let session_id = started.payload["session_id"].as_str().unwrap().to_string();
@@ -440,7 +441,8 @@ mod claude_agent_gateway_streaming_tests {
             project: String::new(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),
@@ -515,7 +517,8 @@ mod claude_agent_gateway_streaming_tests {
             project: String::new(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::ReadOnly,
-            capability: AgentCapability::Reasoning,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(5),
@@ -528,6 +531,8 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "--verbose"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--model"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "claude-opus-4-8"), "args: {captured:?}");
+        assert!(captured.iter().any(|a| a == "--effort"), "args: {captured:?}");
+        assert!(captured.iter().any(|a| a == "high"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");
     }
 }

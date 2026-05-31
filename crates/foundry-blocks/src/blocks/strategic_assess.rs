@@ -7,7 +7,7 @@ use foundry_core::payload::ProjectIterationRequestedPayload;
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -79,7 +79,8 @@ impl TaskBlock for StrategicAssessor {
                     prompt,
                     working_dir: project_path,
                     access: AgentAccess::ReadOnly,
-                    capability: AgentCapability::Reasoning,
+                    tier: ModelTier::Deep,
+                    effort: ReasoningEffort::High,
                     agent_file,
                     provider,
                     timeout: entry.timeout(),

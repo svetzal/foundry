@@ -1,3 +1,4 @@
+pub mod agent_config;
 pub mod event;
 pub mod gates;
 pub mod gateway;

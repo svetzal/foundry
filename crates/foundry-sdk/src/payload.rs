@@ -759,7 +759,8 @@ pub struct AgentSessionStartedPayload {
     pub project: String,
     pub working_dir: std::path::PathBuf,
     pub source_log_path: std::path::PathBuf,
-    pub capability: String,
+    pub tier: String,
+    pub effort: String,
     pub access: String,
     pub started_at: String,
     pub trace_id: String,
@@ -1281,7 +1282,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp/demo"),
             source_log_path: PathBuf::from("/home/u/.foundry/agent-sessions/11111111.jsonl"),
-            capability: "coding".to_string(),
+            tier: "balanced".to_string(),
+            effort: "medium".to_string(),
             access: "full".to_string(),
             started_at: "2026-05-09T12:00:00Z".to_string(),
             trace_id: "trace-abc".to_string(),
@@ -1293,7 +1295,8 @@ mod tests {
         assert_eq!(json["project"], "demo");
         assert_eq!(json["working_dir"], "/tmp/demo");
         assert_eq!(json["source_log_path"], "/home/u/.foundry/agent-sessions/11111111.jsonl");
-        assert_eq!(json["capability"], "coding");
+        assert_eq!(json["tier"], "balanced");
+        assert_eq!(json["effort"], "medium");
         assert_eq!(json["access"], "full");
         assert_eq!(json["started_at"], "2026-05-09T12:00:00Z");
         assert_eq!(json["trace_id"], "trace-abc");

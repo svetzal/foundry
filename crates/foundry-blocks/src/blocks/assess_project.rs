@@ -8,7 +8,9 @@ use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider};
+use crate::gateway::{
+    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
+};
 
 use super::{AgentBlockSpec, TriggerContext};
 
@@ -145,7 +147,8 @@ async fn run_assessment_agent(
             prompt: assess_prompt,
             working_dir: project_path,
             access: AgentAccess::ReadOnly,
-            capability: AgentCapability::Reasoning,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
             agent_file,
             provider,
             timeout,
@@ -187,7 +190,8 @@ async fn run_naming_agent(
             prompt: name_prompt,
             working_dir: project_path,
             access: AgentAccess::ReadOnly,
-            capability: AgentCapability::Quick,
+            tier: ModelTier::Fast,
+            effort: ReasoningEffort::Low,
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(60),
@@ -247,7 +251,7 @@ mod tests {
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
-    use crate::gateway::{AgentAccess, AgentCapability};
+    use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
     use super::{AssessProject, parse_assessment};
@@ -353,8 +357,10 @@ mod tests {
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 2);
         assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
-        assert_eq!(invocations[0].capability, AgentCapability::Reasoning);
-        assert_eq!(invocations[1].capability, AgentCapability::Quick);
+        assert_eq!(invocations[0].tier, ModelTier::Deep);
+        assert_eq!(invocations[0].effort, ReasoningEffort::High);
+        assert_eq!(invocations[1].tier, ModelTier::Fast);
+        assert_eq!(invocations[1].effort, ReasoningEffort::Low);
     }
 
     #[test]

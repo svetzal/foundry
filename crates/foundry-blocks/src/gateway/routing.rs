@@ -82,7 +82,7 @@ impl AgentGateway for RoutingAgentGateway {
 mod tests {
     use super::*;
     use crate::gateway::fakes::FakeAgentGateway;
-    use foundry_core::gateway::{AgentAccess, AgentCapability};
+    use foundry_core::gateway::{AgentAccess, ModelTier, ReasoningEffort};
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -92,7 +92,8 @@ mod tests {
             project: "demo".to_string(),
             working_dir: PathBuf::from("/tmp"),
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: None,
             provider,
             timeout: Duration::from_secs(5),

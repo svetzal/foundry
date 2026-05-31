@@ -121,7 +121,7 @@ mod tests {
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
-    use crate::gateway::{AgentAccess, AgentCapability};
+    use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
     use super::RetryExecution;
@@ -180,7 +180,8 @@ mod tests {
         assert!(invocations[0].prompt.contains("2 tests failed"));
         assert!(invocations[0].prompt.contains("attempt 2 of 3"));
         assert_eq!(invocations[0].access, AgentAccess::Full);
-        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].tier, ModelTier::Balanced);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
     }
 
     #[tokio::test]

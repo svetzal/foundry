@@ -8,7 +8,9 @@ use foundry_core::payload::{InnerIterationCompletedPayload, StrategicAssessmentC
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider};
+use crate::gateway::{
+    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
+};
 
 use super::{AgentBlockSpec, TriggerContext};
 
@@ -277,7 +279,8 @@ async fn assess_continue(
             prompt,
             working_dir: project_path,
             access: AgentAccess::ReadOnly,
-            capability: AgentCapability::Quick,
+            tier: ModelTier::Fast,
+            effort: ReasoningEffort::Low,
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(120),

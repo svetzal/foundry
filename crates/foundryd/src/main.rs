@@ -6,6 +6,7 @@ use tokio::sync::Notify;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
+use foundry_core::agent_config::AgentConfigStore;
 use foundry_core::sentinel::{SentinelStore, merge_default_seed_into};
 
 mod legacy_event_check;
@@ -176,6 +177,42 @@ fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
     }
 }
 
+/// Load the agent model config, seeding it on first start and additively
+/// merging any provider/tier/effort keys missing from the user's file. Mirrors
+/// [`load_or_seed_sentinels`].
+fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore> {
+    use foundry_core::agent_config::merge_default_seed_into as merge_agent_seed;
+    match AgentConfigStore::load(path) {
+        Ok(mut store) => {
+            tracing::info!(path = %path.display(), "agent config loaded");
+            if merge_agent_seed(&mut store) {
+                store.save(path).map_err(|save_err| {
+                    anyhow::anyhow!(
+                        "failed to persist merged agent config at {}: {save_err}",
+                        path.display()
+                    )
+                })?;
+                tracing::info!(
+                    path = %path.display(),
+                    "filled missing agent config keys from default seed",
+                );
+            }
+            Ok(store)
+        }
+        Err(load_err) => {
+            let seed = AgentConfigStore::default_seed();
+            seed.save(path).map_err(|save_err| {
+                anyhow::anyhow!(
+                    "failed to seed agent config at {}: {save_err} (original load error: {load_err})",
+                    path.display()
+                )
+            })?;
+            tracing::info!(path = %path.display(), "agent config seeded on first start");
+            Ok(seed)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_scheduler(
     sentinels: &Arc<RwLock<SentinelStore>>,
@@ -266,6 +303,15 @@ fn register_blocks(
             }),
             Err(_) => AgentProvider::Claude,
         };
+
+        // Per-provider tier→model and effort→token maps. Defaults are baked in;
+        // ~/.foundry/agents.json overrides them (seed-merged on startup). A
+        // load/seed failure degrades to baked defaults rather than crashing.
+        let agent_config = load_or_seed_agent_config(&foundry_core::paths::agent_config_path())
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load/seed agent config; using baked defaults");
+                AgentConfigStore::default_seed()
+            });
         tracing::info!(default_provider = %default, "agent providers: claude, opencode, codex");
 
         let mut gateways: std::collections::HashMap<
@@ -274,30 +320,39 @@ fn register_blocks(
         > = std::collections::HashMap::new();
         gateways.insert(
             AgentProvider::Claude,
-            Arc::new(foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
-                make_shell(),
-                make_runner(),
-                sessions_dir.clone(),
-                event_tx.clone(),
-            )),
+            Arc::new(
+                foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
+                    make_shell(),
+                    make_runner(),
+                    sessions_dir.clone(),
+                    event_tx.clone(),
+                )
+                .with_models(agent_config.resolved(AgentProvider::Claude)),
+            ),
         );
         gateways.insert(
             AgentProvider::Opencode,
-            Arc::new(foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
-                make_shell(),
-                make_runner(),
-                sessions_dir.clone(),
-                event_tx.clone(),
-            )),
+            Arc::new(
+                foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
+                    make_shell(),
+                    make_runner(),
+                    sessions_dir.clone(),
+                    event_tx.clone(),
+                )
+                .with_models(agent_config.resolved(AgentProvider::Opencode)),
+            ),
         );
         gateways.insert(
             AgentProvider::Codex,
-            Arc::new(foundry_blocks::gateway::CodexAgentGateway::new_with_streaming(
-                make_shell(),
-                make_runner(),
-                sessions_dir.clone(),
-                event_tx.clone(),
-            )),
+            Arc::new(
+                foundry_blocks::gateway::CodexAgentGateway::new_with_streaming(
+                    make_shell(),
+                    make_runner(),
+                    sessions_dir.clone(),
+                    event_tx.clone(),
+                )
+                .with_models(agent_config.resolved(AgentProvider::Codex)),
+            ),
         );
         Arc::new(foundry_blocks::gateway::RoutingAgentGateway::new(gateways, default))
     };

@@ -10,7 +10,8 @@ use foundry_core::task_block::{BlockKind, TaskBlockResult};
 use foundry_core::work_block::{ComposedStep, EventAdapter, OutputMapper, WorkBlock};
 
 use crate::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, AgentRequest, ClaudeAgentGateway, ShellGateway,
+    AgentAccess, AgentGateway, AgentRequest, ClaudeAgentGateway, ModelTier, ReasoningEffort,
+    ShellGateway,
 };
 
 // ---------------------------------------------------------------------------
@@ -93,7 +94,8 @@ impl WorkBlock for AgentRelease {
                 project: input.project.clone(),
                 working_dir: project_dir.clone(),
                 access: AgentAccess::Full,
-                capability: AgentCapability::Coding,
+                tier: ModelTier::Balanced,
+                effort: ReasoningEffort::Medium,
                 agent_file: None,
                 // Release runs on the daemon's default provider; the release
                 // pipeline carries no per-request provider override today.
@@ -720,7 +722,8 @@ mod tests {
         // Verify the agent was invoked with expected capability and access.
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].tier, ModelTier::Balanced);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
         assert_eq!(invocations[0].access, AgentAccess::Full);
         assert!(invocations[0].prompt.contains("CVE-2026-1234"));
     }
@@ -855,7 +858,8 @@ mod tests {
         // Verify the agent was invoked with expected capability and access.
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].capability, AgentCapability::Coding);
+        assert_eq!(invocations[0].tier, ModelTier::Balanced);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
         assert_eq!(invocations[0].access, AgentAccess::Full);
         assert!(invocations[0].prompt.contains("minor"));
         assert!(invocations[0].prompt.contains("AGENTS.md"));

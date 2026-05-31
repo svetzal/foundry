@@ -8,7 +8,7 @@ use foundry_core::payload::{ProjectCompletedPayload, SummarizeCompletedPayload};
 use foundry_core::registry::Registry;
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentCapability, AgentGateway, AgentOutcome};
+use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -80,7 +80,8 @@ impl TaskBlock for SummarizeResult {
                     prompt,
                     working_dir: project_path,
                     access: AgentAccess::ReadOnly,
-                    capability: AgentCapability::Quick,
+                    tier: ModelTier::Fast,
+                    effort: ReasoningEffort::Low,
                     agent_file,
                     provider,
                     timeout: std::time::Duration::from_secs(120),
@@ -167,7 +168,7 @@ mod tests {
     use foundry_core::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
-    use crate::gateway::{AgentAccess, AgentCapability};
+    use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
     use super::{SummarizeResult, parse_summary_output};
@@ -270,7 +271,8 @@ mod tests {
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
-        assert_eq!(invocations[0].capability, AgentCapability::Quick);
+        assert_eq!(invocations[0].tier, ModelTier::Fast);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Low);
     }
 
     #[tokio::test]

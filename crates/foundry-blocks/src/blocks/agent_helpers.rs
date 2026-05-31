@@ -4,7 +4,8 @@ use std::time::Duration;
 use foundry_core::task_block::TaskBlockResult;
 
 use crate::gateway::{
-    AgentAccess, AgentCapability, AgentGateway, AgentOutcome, AgentProvider, AgentRequest,
+    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, ModelTier,
+    ReasoningEffort,
 };
 
 /// Parse a per-request agent provider override from its string form. Returns
@@ -30,7 +31,10 @@ pub(crate) struct AgentBlockSpec {
     pub prompt: String,
     pub working_dir: PathBuf,
     pub access: AgentAccess,
-    pub capability: AgentCapability,
+    /// Which model tier the block wants.
+    pub tier: ModelTier,
+    /// How much reasoning effort the block wants.
+    pub effort: ReasoningEffort,
     pub agent_file: Option<PathBuf>,
     /// Per-request provider override (from the run's chain context). `None`
     /// means the routing gateway uses the daemon default.
@@ -53,7 +57,8 @@ pub(crate) async fn invoke_agent(
         project: project.to_string(),
         working_dir: spec.working_dir,
         access: spec.access,
-        capability: spec.capability,
+        tier: spec.tier,
+        effort: spec.effort,
         agent_file: spec.agent_file,
         provider: spec.provider,
         timeout: spec.timeout,
@@ -67,7 +72,8 @@ pub(crate) async fn invoke_agent(
     outcome
 }
 
-/// Invoke an agent with `Full` access and `Coding` capability.
+/// Invoke an agent with `Full` access at the `Balanced` tier and `Medium`
+/// effort — the general-purpose coding profile.
 ///
 /// Convenience wrapper around [`invoke_agent`] for the common pattern used by
 /// execution blocks (`ExecutePlan`, `ExecuteMaintain`, `RemediatePipeline`, `RetryExecution`).
@@ -88,7 +94,8 @@ pub(crate) async fn invoke_coding_agent(
             prompt,
             working_dir,
             access: AgentAccess::Full,
-            capability: AgentCapability::Coding,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file,
             provider,
             timeout,

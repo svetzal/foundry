@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Abstract model tiers and reasoning effort, configurable per provider.**
+  Blocks now request work in provider-neutral terms — a `ModelTier`
+  (`deep`/`balanced`/`fast`, mirroring hopper) and a `ReasoningEffort`
+  (`minimal`/`low`/`medium`/`high`/`max`) — replacing the conflated
+  `AgentCapability`. Each provider resolves a tier to a concrete model id and an
+  effort to its CLI token (clamping levels it does not support; e.g. claude
+  `--effort` has no `minimal`/`max`). claude now receives an `--effort` flag it
+  previously ignored.
+- **`~/.foundry/agents.json`** — a new seed-merged config store (same discipline
+  as sentinels) that overrides the baked-in per-provider tier→model and
+  effort→token maps without rebuilding. Defaults ship in code so the daemon
+  works with no file; on first start the full seed is written, and upgrades
+  additively fill any missing provider/tier/effort key while preserving
+  hand-edited values. Override the path with `FOUNDRY_AGENT_CONFIG_PATH`.
 - **Codex agent backend** — `CodexAgentGateway` drives the `codex` CLI
   (`codex exec --json -o …`) as a third provider alongside `claude` and
   `opencode`, all behind the same `AgentGateway` trait. Capability maps to
