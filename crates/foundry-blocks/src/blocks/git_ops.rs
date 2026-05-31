@@ -50,9 +50,7 @@ impl CommitAndPush {
     ) -> anyhow::Result<TaskBlockResult> {
         // Resolve the project path and push flag from the registry.
         // Extract synchronously before any .await point so the lock is not held across yields.
-        let entry_data = registry
-            .read()
-            .expect("registry lock poisoned")
+        let entry_data = super::read_registry(&registry)?
             .find_project(&project)
             .map(|e| (e.path.clone(), e.actions.push));
 
@@ -139,12 +137,13 @@ impl TaskBlock for CommitAndPush {
             .unwrap_or_else(|| "unknown".to_string());
 
         // Simulate push if the project has push enabled, or if unknown (stub path).
-        let push_enabled = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .is_none_or(|e| e.actions.push);
+        let push_enabled = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).is_none_or(|e| e.actions.push),
+            Err(e) => {
+                tracing::error!(error = %e, "registry lock poisoned in dry_run_events; defaulting push_enabled=true");
+                true
+            }
+        };
 
         let push_payload = push_enabled.then(|| ProjectChangesPushedPayload {
             project: project.clone(),

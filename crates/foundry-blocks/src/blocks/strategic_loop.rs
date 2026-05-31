@@ -69,12 +69,10 @@ impl TaskBlock for StrategicLoopController {
             None
         };
 
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let agent = Arc::clone(&self.agent);
 
         Box::pin(async move {

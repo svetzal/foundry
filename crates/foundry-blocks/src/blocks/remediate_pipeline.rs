@@ -35,9 +35,13 @@ impl TaskBlock for RemediatePipeline {
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         // Respect the self-filter: only remediate when failing.
-        let p = trigger
-            .parse_payload::<PipelineCheckedPayload>()
-            .expect("dry_run_events called with invalid PipelineChecked payload");
+        let p = match trigger.parse_payload::<PipelineCheckedPayload>() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "dry_run_events: invalid PipelineChecked payload; emitting no events");
+                return vec![];
+            }
+        };
         if p.passing {
             return vec![];
         }

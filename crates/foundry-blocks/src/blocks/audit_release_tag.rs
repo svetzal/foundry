@@ -77,12 +77,10 @@ impl AuditReleaseTag {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let scanner = Arc::clone(&self.scanner);
 
         let Some(entry) = entry else {
@@ -137,12 +135,10 @@ impl AuditReleaseTag {
         let payload_dirty = Some(p.dirty);
 
         // Look up the project entry in the registry.
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let shell = Arc::clone(&self.shell);
         let scanner = Arc::clone(&self.scanner);
 

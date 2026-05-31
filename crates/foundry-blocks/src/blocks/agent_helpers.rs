@@ -111,7 +111,13 @@ pub(crate) async fn invoke_coding_agent(
 /// Returns `None` if no valid JSON object is found. Handles agent responses
 /// that include surrounding prose by locating the first `{` and last `}`.
 pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
-    serde_json::from_str::<serde_json::Value>(&extract_json(output)).ok()
+    match serde_json::from_str::<serde_json::Value>(&extract_json(output)) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(error = %e, "agent output was not valid JSON; treating as no structured result");
+            None
+        }
+    }
 }
 
 fn extract_json(s: &str) -> String {

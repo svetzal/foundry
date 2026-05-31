@@ -163,7 +163,13 @@ impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
         let project = &trigger.project;
         let cve = p.cve.clone();
 
-        let guard = self.registry.read().expect("registry lock poisoned");
+        let guard = match super::read_registry(&self.registry) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!(error = %e, "registry lock poisoned in VulnReleaseAdapter");
+                return None;
+            }
+        };
         let entry = guard.find_project(project)?;
         let project_path = PathBuf::from(&entry.path);
 
@@ -204,7 +210,13 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
     fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
         let project = &trigger.project;
 
-        let guard = self.registry.read().expect("registry lock poisoned");
+        let guard = match super::read_registry(&self.registry) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!(error = %e, "registry lock poisoned in ManualReleaseAdapter");
+                return None;
+            }
+        };
         let Some(entry) = guard.find_project(project) else {
             tracing::warn!(project = %project, "project not found in registry");
             return None;

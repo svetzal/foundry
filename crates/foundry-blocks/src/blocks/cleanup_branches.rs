@@ -183,12 +183,10 @@ impl TaskBlock for CleanupBranches {
         let status_ok = p.status == "ok";
 
         // Extract registry data before the async boundary — the RwLock guard must not cross .await.
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
         Box::pin(async move {
             // Self-filter: only act on successful validations.

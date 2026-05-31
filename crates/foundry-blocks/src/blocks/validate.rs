@@ -114,14 +114,10 @@ impl TaskBlock for ValidateProject {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         // Extract the entry before the async boundary — the RwLock guard must not cross await.
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .active_projects()
-            .into_iter()
-            .find(|p| p.name == project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.active_projects().into_iter().find(|p| p.name == project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {

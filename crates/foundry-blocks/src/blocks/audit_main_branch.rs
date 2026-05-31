@@ -47,12 +47,10 @@ impl TaskBlock for AuditMainBranch {
         let dirty_from_payload = p.dirty.unwrap_or(true);
 
         // Look up the project entry in the registry.
-        let entry = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .cloned();
+        let entry = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(&project).cloned(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {

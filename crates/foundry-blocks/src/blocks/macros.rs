@@ -68,15 +68,16 @@ macro_rules! parse_payload {
 /// let entry = require_project!(self, project);
 /// ```
 macro_rules! require_project {
-    ($self:expr, $project:expr) => {
-        match super::require_project(
-            &$self.registry.read().expect("registry lock poisoned"),
-            &$project,
-        ) {
+    ($self:expr, $project:expr) => {{
+        let _registry_guard = match super::read_registry(&$self.registry) {
+            Ok(g) => g,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        match super::require_project(&_registry_guard, &$project) {
             Ok(e) => e,
             Err(result) => return Box::pin(async { Ok(result) }),
         }
-    };
+    }};
 }
 
 /// Return a skipped-success result from `execute()`.

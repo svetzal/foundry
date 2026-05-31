@@ -109,12 +109,12 @@ impl TaskBlock for RunPreflightGates {
                 );
             }
 
-            let entry = match super::require_project(
-                &registry.read().expect("registry lock poisoned"),
-                &project,
-            ) {
-                Ok(e) => e,
-                Err(result) => return Ok(result),
+            let entry = {
+                let guard = super::read_registry(&registry)?;
+                match super::require_project(&guard, &project) {
+                    Ok(e) => e,
+                    Err(result) => return Ok(result),
+                }
             };
 
             let working_dir = std::path::PathBuf::from(&entry.path);

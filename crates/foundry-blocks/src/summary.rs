@@ -64,11 +64,11 @@ fn render_release_audits(summary: &MaintenanceRunSummary, out: &mut String) {
     if summary.release_audits.is_empty() {
         return;
     }
-    writeln!(out).unwrap();
-    writeln!(out, "## Release Audit").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "| Project | Tag | Status |").unwrap();
-    writeln!(out, "|---------|-----|--------|").unwrap();
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "## Release Audit").expect("writing to a String is infallible");
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "| Project | Tag | Status |").expect("writing to a String is infallible");
+    writeln!(out, "|---------|-----|--------|").expect("writing to a String is infallible");
     for entry in &summary.release_audits {
         let status_icon = if entry.status == "clean" {
             "\u{2705}"
@@ -76,7 +76,7 @@ fn render_release_audits(summary: &MaintenanceRunSummary, out: &mut String) {
             "\u{26a0}\u{fe0f}"
         };
         writeln!(out, "| {} | {} | {} {} |", entry.name, entry.tag, status_icon, entry.status)
-            .unwrap();
+            .expect("writing to a String is infallible");
     }
 }
 
@@ -84,11 +84,11 @@ fn render_auto_releases(summary: &MaintenanceRunSummary, out: &mut String) {
     if summary.auto_releases.is_empty() {
         return;
     }
-    writeln!(out).unwrap();
-    writeln!(out, "## Auto-Releases").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "| Project | Tag | Status |").unwrap();
-    writeln!(out, "|---------|-----|--------|").unwrap();
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "## Auto-Releases").expect("writing to a String is infallible");
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "| Project | Tag | Status |").expect("writing to a String is infallible");
+    writeln!(out, "|---------|-----|--------|").expect("writing to a String is infallible");
     for entry in &summary.auto_releases {
         let status_icon = if entry.success {
             "\u{2705}"
@@ -96,7 +96,8 @@ fn render_auto_releases(summary: &MaintenanceRunSummary, out: &mut String) {
             "\u{274c}"
         };
         let tag_str = entry.new_tag.as_deref().unwrap_or("\u{2014}");
-        writeln!(out, "| {} | {} | {} |", entry.name, tag_str, status_icon).unwrap();
+        writeln!(out, "| {} | {} | {} |", entry.name, tag_str, status_icon)
+            .expect("writing to a String is infallible");
     }
 }
 
@@ -104,18 +105,19 @@ fn render_local_installs(summary: &MaintenanceRunSummary, out: &mut String) {
     if summary.local_installs.is_empty() {
         return;
     }
-    writeln!(out).unwrap();
-    writeln!(out, "## Local Installs").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "| Project | Method | Status |").unwrap();
-    writeln!(out, "|---------|--------|--------|").unwrap();
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "## Local Installs").expect("writing to a String is infallible");
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "| Project | Method | Status |").expect("writing to a String is infallible");
+    writeln!(out, "|---------|--------|--------|").expect("writing to a String is infallible");
     for entry in &summary.local_installs {
         let status_icon = if entry.success {
             "\u{2705}"
         } else {
             "\u{274c}"
         };
-        writeln!(out, "| {} | {} | {} |", entry.name, entry.method, status_icon).unwrap();
+        writeln!(out, "| {} | {} | {} |", entry.name, entry.method, status_icon)
+            .expect("writing to a String is infallible");
     }
 }
 
@@ -125,14 +127,15 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
 
     // Header
     let run_at = summary.run_at.format("%Y-%m-%d %H:%M:%S UTC");
-    writeln!(out, "# Foundry Maintenance Run \u{2014} {run_at}").unwrap();
-    writeln!(out).unwrap();
+    writeln!(out, "# Foundry Maintenance Run \u{2014} {run_at}")
+        .expect("writing to a String is infallible");
+    writeln!(out).expect("writing to a String is infallible");
 
     // Project status table
-    writeln!(out, "## Project Status").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "| Project | Status | Duration |").unwrap();
-    writeln!(out, "|---------|--------|----------|").unwrap();
+    writeln!(out, "## Project Status").expect("writing to a String is infallible");
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "| Project | Status | Duration |").expect("writing to a String is infallible");
+    writeln!(out, "|---------|--------|----------|").expect("writing to a String is infallible");
 
     for project in &summary.projects {
         let status_str = match &project.status {
@@ -141,7 +144,8 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
             ProjectStatus::Skipped(_) => "\u{23ed} skipped".to_string(),
         };
         let duration_str = format_duration(project.duration_secs);
-        writeln!(out, "| {} | {} | {} |", project.name, status_str, duration_str).unwrap();
+        writeln!(out, "| {} | {} | {} |", project.name, status_str, duration_str)
+            .expect("writing to a String is infallible");
     }
 
     // Failures section — only when there are failures
@@ -152,13 +156,13 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
         .collect();
 
     if !failures.is_empty() {
-        writeln!(out).unwrap();
-        writeln!(out, "## Failures").unwrap();
+        writeln!(out).expect("writing to a String is infallible");
+        writeln!(out, "## Failures").expect("writing to a String is infallible");
         for project in failures {
-            writeln!(out).unwrap();
-            writeln!(out, "### {}", project.name).unwrap();
+            writeln!(out).expect("writing to a String is infallible");
+            writeln!(out, "### {}", project.name).expect("writing to a String is infallible");
             if let ProjectStatus::Failed(reason) = &project.status {
-                writeln!(out, "{reason}").unwrap();
+                writeln!(out, "{reason}").expect("writing to a String is infallible");
             }
         }
     }
@@ -189,14 +193,16 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
         Some(projects_with_duration.iter().sum::<u64>() / projects_with_duration.len() as u64)
     };
 
-    writeln!(out).unwrap();
-    writeln!(out, "## Summary").unwrap();
-    writeln!(out, "- Total projects: {total}").unwrap();
-    writeln!(out, "- Succeeded: {succeeded}").unwrap();
-    writeln!(out, "- Failed: {failed}").unwrap();
-    writeln!(out, "- Skipped: {skipped}").unwrap();
-    writeln!(out, "- Total duration: {}", format_duration(summary.total_duration_secs)).unwrap();
-    writeln!(out, "- Average duration: {}", format_duration(average_duration)).unwrap();
+    writeln!(out).expect("writing to a String is infallible");
+    writeln!(out, "## Summary").expect("writing to a String is infallible");
+    writeln!(out, "- Total projects: {total}").expect("writing to a String is infallible");
+    writeln!(out, "- Succeeded: {succeeded}").expect("writing to a String is infallible");
+    writeln!(out, "- Failed: {failed}").expect("writing to a String is infallible");
+    writeln!(out, "- Skipped: {skipped}").expect("writing to a String is infallible");
+    writeln!(out, "- Total duration: {}", format_duration(summary.total_duration_secs))
+        .expect("writing to a String is infallible");
+    writeln!(out, "- Average duration: {}", format_duration(average_duration))
+        .expect("writing to a String is infallible");
 
     out
 }

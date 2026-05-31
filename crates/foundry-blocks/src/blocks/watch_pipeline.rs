@@ -74,13 +74,12 @@ impl TaskBlock for WatchPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let repo = self
-            .registry
-            .read()
-            .expect("registry lock poisoned")
-            .find_project(&project)
-            .map(|p| p.repo.clone())
-            .filter(|r| !r.is_empty());
+        let repo = match super::read_registry(&self.registry) {
+            Ok(guard) => {
+                guard.find_project(&project).map(|p| p.repo.clone()).filter(|r| !r.is_empty())
+            }
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
 
         // Extract the release tag from the trigger payload so we can filter
         // `gh run list` to only the run that was triggered by this release.

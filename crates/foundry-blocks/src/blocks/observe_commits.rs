@@ -60,7 +60,10 @@ impl TaskBlock for ObserveCommits {
 
         // Snapshot the active registry under a short read lock; drop before await.
         let snapshot: Vec<(String, String, PathBuf)> = {
-            let guard = self.registry.read().expect("registry lock poisoned");
+            let guard = match super::read_registry(&self.registry) {
+                Ok(g) => g,
+                Err(e) => return Box::pin(async move { Err(e) }),
+            };
             guard
                 .active_projects()
                 .iter()

@@ -1,6 +1,8 @@
 #[macro_use]
 mod macros;
 
+use std::sync::{Arc, RwLock, RwLockReadGuard};
+
 use foundry_core::task_block::TaskBlockResult;
 
 mod agent_helpers;
@@ -52,6 +54,22 @@ fn require_project(
     registry.find_project(project).cloned().ok_or_else(|| {
         tracing::warn!(project = %project, "project not found in registry");
         TaskBlockResult::project_not_found(project)
+    })
+}
+
+/// Acquire a read guard on the registry, returning a descriptive error instead of panicking
+/// when the lock is poisoned.
+///
+/// Lock poisoning occurs when a writer panicked while holding the write guard. Using this
+/// helper instead of `.expect("registry lock poisoned")` means the daemon continues serving
+/// other events rather than aborting on the affected block.
+fn read_registry(
+    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
+) -> anyhow::Result<RwLockReadGuard<'_, foundry_core::registry::Registry>> {
+    registry.read().map_err(|_| {
+        anyhow::anyhow!(
+            "registry lock poisoned: a prior writer panicked while holding the write lock"
+        )
     })
 }
 
@@ -140,3 +158,33 @@ pub use write_ops_digest::WriteOpsDigest;
 // avoid a blocks↔engine dependency cycle. See `foundryd::chain_tests`.
 #[cfg(test)]
 mod test_helpers;
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use foundry_core::registry::Registry;
+
+    use super::read_registry;
+
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }))
+    }
+
+    #[test]
+    fn read_registry_returns_err_when_poisoned() {
+        let registry = empty_registry();
+        let r2 = Arc::clone(&registry);
+        let _ = std::thread::spawn(move || {
+            let _guard = r2.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        let result = read_registry(&registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("poisoned"));
+    }
+}
