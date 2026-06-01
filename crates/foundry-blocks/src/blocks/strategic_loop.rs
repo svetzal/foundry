@@ -289,8 +289,7 @@ async fn assess_continue(
     .await;
 
     if let AgentOutcome::Success { stdout } = outcome {
-        let trimmed = stdout.trim();
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(parsed) = super::parse_agent_json(&stdout) {
             let should_continue =
                 parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
             let reason =
@@ -302,18 +301,6 @@ async fn assess_continue(
                 "strategic continue assessment"
             );
             return should_continue;
-        }
-        // Try to extract JSON from output
-        if let Some(start) = trimmed.find('{') {
-            if let Some(end) = trimmed.rfind('}') {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
-                {
-                    return parsed
-                        .get("continue")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                }
-            }
         }
         false
     } else {

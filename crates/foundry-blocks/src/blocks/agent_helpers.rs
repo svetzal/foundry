@@ -120,7 +120,7 @@ pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
     }
 }
 
-fn extract_json(s: &str) -> String {
+pub(crate) fn extract_json(s: &str) -> String {
     if let Some(start) = s.find('{') {
         if let Some(end) = s.rfind('}') {
             return s[start..=end].to_string();

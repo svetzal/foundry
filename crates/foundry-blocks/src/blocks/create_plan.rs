@@ -216,10 +216,8 @@ fn parse_correction_needed(output: &str) -> (bool, String) {
         }
         // Also try extracting the outermost {...} object from the whole string
         // (handles bare JSON without fences)
-        if let Some(start) = output.find('{') {
-            if let Some(end) = output.rfind('}') {
-                acc.push(output[start..=end].to_string());
-            }
+        if output.contains('{') {
+            acc.push(super::extract_json(output));
         }
         acc
     };
