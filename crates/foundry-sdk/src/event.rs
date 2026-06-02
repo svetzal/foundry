@@ -329,7 +329,7 @@ pub enum EventType {
     // Maintenance sub-workflow triggers
     ProjectIterationRequested,
     ProjectMaintenanceRequested,
-    PromptExecutionRequested,
+    ExecutionRequested,
 
     // Validation workflow
     ValidationRequested,
@@ -378,13 +378,13 @@ pub enum EventType {
     // Commit-digest workflow (daily proactive summary of registered projects)
     CommitDigestStarted,
     CommitsObserved,
-    CommitSummaryComposed,
+    CommitSummaryCompleted,
     CommitDigestCompleted,
 
     // Ops-digest workflow (periodic summary of MBOS operational events)
     OpsDigestStarted,
     OpsObserved,
-    OpsSummaryComposed,
+    OpsSummaryCompleted,
     OpsDigestCompleted,
 
     // Hello-world workflow (validates engine mechanics)
@@ -520,7 +520,7 @@ mod tests {
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
             (EventType::ProjectIterationRequested, "project_iteration_requested"),
             (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
-            (EventType::PromptExecutionRequested, "prompt_execution_requested"),
+            (EventType::ExecutionRequested, "execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -550,11 +550,11 @@ mod tests {
             (EventType::PipelineChecked, "pipeline_checked"),
             (EventType::CommitDigestStarted, "commit_digest_started"),
             (EventType::CommitsObserved, "commits_observed"),
-            (EventType::CommitSummaryComposed, "commit_summary_composed"),
+            (EventType::CommitSummaryCompleted, "commit_summary_completed"),
             (EventType::CommitDigestCompleted, "commit_digest_completed"),
             (EventType::OpsDigestStarted, "ops_digest_started"),
             (EventType::OpsObserved, "ops_observed"),
-            (EventType::OpsSummaryComposed, "ops_summary_composed"),
+            (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
@@ -591,7 +591,7 @@ mod tests {
             (EventType::ProjectChangesPushed, "project_changes_pushed"),
             (EventType::ProjectIterationRequested, "project_iteration_requested"),
             (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
-            (EventType::PromptExecutionRequested, "prompt_execution_requested"),
+            (EventType::ExecutionRequested, "execution_requested"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -621,11 +621,11 @@ mod tests {
             (EventType::PipelineChecked, "pipeline_checked"),
             (EventType::CommitDigestStarted, "commit_digest_started"),
             (EventType::CommitsObserved, "commits_observed"),
-            (EventType::CommitSummaryComposed, "commit_summary_composed"),
+            (EventType::CommitSummaryCompleted, "commit_summary_completed"),
             (EventType::CommitDigestCompleted, "commit_digest_completed"),
             (EventType::OpsDigestStarted, "ops_digest_started"),
             (EventType::OpsObserved, "ops_observed"),
-            (EventType::OpsSummaryComposed, "ops_summary_composed"),
+            (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
@@ -989,10 +989,10 @@ mod tests {
         assert!(!EventType::VulnerabilityDetected.is_span_opener());
         assert!(!EventType::GreetingDelivered.is_span_opener());
         assert!(!EventType::CommitsObserved.is_span_opener());
-        assert!(!EventType::CommitSummaryComposed.is_span_opener());
+        assert!(!EventType::CommitSummaryCompleted.is_span_opener());
         assert!(!EventType::CommitDigestCompleted.is_span_opener());
         assert!(!EventType::OpsObserved.is_span_opener());
-        assert!(!EventType::OpsSummaryComposed.is_span_opener());
+        assert!(!EventType::OpsSummaryCompleted.is_span_opener());
         assert!(!EventType::OpsDigestCompleted.is_span_opener());
     }
 

@@ -29,7 +29,7 @@ impl TaskBlock for CheckCharter {
     task_block_meta! {
         name: "Check Charter",
         kind: Observer,
-        sinks_on: [ProjectIterationRequested, PromptExecutionRequested],
+        sinks_on: [ProjectIterationRequested, ExecutionRequested],
     }
 
     fn execute(
@@ -46,7 +46,7 @@ impl TaskBlock for CheckCharter {
 
         // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
         // Use .ok() — this block sinks on multiple event types with different payload
-        // shapes (ProjectIterationRequested and PromptExecutionRequested).
+        // shapes (ProjectIterationRequested and ExecutionRequested).
         let iter_payload = trigger.parse_payload::<ProjectIterationRequestedPayload>().ok();
         let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
         if strategic {
@@ -56,7 +56,7 @@ impl TaskBlock for CheckCharter {
         // Derive workflow from typed payload if available; fall back to event type.
         let workflow = iter_payload.as_ref().map_or_else(
             || match event_type {
-                EventType::PromptExecutionRequested => "prompt".to_string(),
+                EventType::ExecutionRequested => "prompt".to_string(),
                 _ => "iterate".to_string(),
             },
             |p| p.workflow.clone(),
@@ -116,7 +116,7 @@ mod tests {
     assert_block_meta!(
         CheckCharter::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
-        sinks_on: [ProjectIterationRequested, PromptExecutionRequested],
+        sinks_on: [ProjectIterationRequested, ExecutionRequested],
     );
 
     #[tokio::test]

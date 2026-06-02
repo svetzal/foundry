@@ -127,7 +127,7 @@ flowchart TD
 
 ### Prompt Formation
 
-Entry event: `prompt_execution_requested`
+Entry event: `execution_requested`
 
 A streamlined formation that executes an arbitrary user-provided prompt
 with gate verification. It skips assessment, triage, and plan creation —
@@ -135,7 +135,7 @@ the user's prompt IS the plan.
 
 ```mermaid
 flowchart TD
-    A([prompt_execution_requested]) --> B[[Check Charter]]
+    A([execution_requested]) --> B[[Check Charter]]
     B -->|passed| C[[Resolve Gates]]
     C --> D[[Run Preflight Gates]]
     D -->|passed| E[[Direct Prompt]]
@@ -152,7 +152,7 @@ flowchart TD
 Usage:
 
 ```bash
-foundry emit prompt_execution_requested my-project \
+foundry emit execution_requested my-project \
   --payload '{"prompt": "Pick the highest priority interaction from et and implement it."}'
 ```
 

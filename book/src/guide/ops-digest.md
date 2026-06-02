@@ -165,7 +165,7 @@ foundry sentinel enable ops-digest
 |---|---|---|
 | `OpsDigestStarted` | `{ event_count }` | Span opener. Sentinel emits with an empty payload. |
 | `OpsObserved` | `{ proceed, new_event_count, anomaly_present, new_watermark?, events: [{id, event_type, occurred_at, domain, urgency?, summary?, client?}] }` | Lean per-event digests. `proceed=false` causes downstream self-filter. |
-| `OpsSummaryComposed` | `{ markdown, event_count, new_watermark? }` | The agent-rendered body, before the file header is prepended. |
+| `OpsSummaryCompleted` | `{ markdown, event_count, new_watermark? }` | The agent-rendered body, before the file header is prepended. |
 | `OpsDigestCompleted` | `{ success, skipped, digest_path?, event_count }` | Terminal. `skipped=true` when the pressure gate was not satisfied. `digest_path` is `None` on dry-run, skip, or failure. |
 
 ## Environment variables

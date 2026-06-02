@@ -135,7 +135,7 @@ foundry sentinel enable daily-commit-digest
 |---|---|---|
 | `CommitDigestStarted` | `{ project_count }` | Span opener. Sentinel emits with an empty payload; observer fills the count once the active registry is known. |
 | `CommitsObserved` | `{ window_hours, projects: [{ name, branch, commits, error? }] }` | Raw evidence. Carries the full SHA per commit so the agent can render the 7-char prefix without truncation ambiguity. |
-| `CommitSummaryComposed` | `{ markdown, project_count, total_commits }` | The agent-rendered body, before the file header is prepended. |
+| `CommitSummaryCompleted` | `{ markdown, project_count, total_commits }` | The agent-rendered body, before the file header is prepended. |
 | `CommitDigestCompleted` | `{ success, digest_path?, project_count, total_commits }` | Terminal. `digest_path` is `None` on a dry-run firing and on persistence failure. |
 
 ## Adding more sentinels later

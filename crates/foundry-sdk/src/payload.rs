@@ -738,9 +738,9 @@ pub struct PipelineCheckedPayload {
 // Prompt execution workflow
 // ---------------------------------------------------------------------------
 
-/// Payload for `PromptExecutionRequested`.
+/// Payload for `ExecutionRequested`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptExecutionRequestedPayload {
+pub struct ExecutionRequestedPayload {
     pub project: String,
     pub prompt: String,
     #[serde(flatten)]
@@ -892,10 +892,10 @@ impl CommitsObservedPayload {
     }
 }
 
-/// Payload for `CommitSummaryComposed` — the agent's rendered digest body
+/// Payload for `CommitSummaryCompleted` — the agent's rendered digest body
 /// plus the bookkeeping totals needed for the final write step's header.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CommitSummaryComposedPayload {
+pub struct CommitSummaryCompletedPayload {
     pub markdown: String,
     #[serde(default)]
     pub project_count: u64,
@@ -983,10 +983,10 @@ pub struct OpsObservedPayload {
     pub events: Vec<OpsEventDigest>,
 }
 
-/// Payload for `OpsSummaryComposed` — the agent's rendered digest body plus
+/// Payload for `OpsSummaryCompleted` — the agent's rendered digest body plus
 /// bookkeeping totals.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpsSummaryComposedPayload {
+pub struct OpsSummaryCompletedPayload {
     pub markdown: String,
     #[serde(default)]
     pub event_count: u64,
@@ -1436,14 +1436,14 @@ mod tests {
     }
 
     #[test]
-    fn commit_summary_composed_payload_round_trips() {
-        let payload = CommitSummaryComposedPayload {
+    fn commit_summary_completed_payload_round_trips() {
+        let payload = CommitSummaryCompletedPayload {
             markdown: "# Commit Digest\n\nNothing today.\n".to_string(),
             project_count: 17,
             total_commits: 0,
         };
         let json = serde_json::to_value(&payload).unwrap();
-        let back: CommitSummaryComposedPayload = serde_json::from_value(json).unwrap();
+        let back: CommitSummaryCompletedPayload = serde_json::from_value(json).unwrap();
         assert_eq!(back.markdown, payload.markdown);
         assert_eq!(back.project_count, 17);
         assert_eq!(back.total_commits, 0);

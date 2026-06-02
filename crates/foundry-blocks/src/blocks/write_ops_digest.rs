@@ -1,6 +1,6 @@
 //! `WriteOpsDigest` — terminal block of the ops-digest formation.
 //!
-//! Sinks on `OpsSummaryComposed`. Atomically writes the markdown body to
+//! Sinks on `OpsSummaryCompleted`. Atomically writes the markdown body to
 //! `{ops_digests_dir}/{YYYY-MM-DD}.md` (date in local time), then advances
 //! the watermark atomically so a subsequent run picks up only newer events.
 //! On a dry-run firing neither the file nor the watermark is written — the
@@ -13,7 +13,7 @@ use std::pin::Pin;
 
 use chrono::Local;
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{OpsDigestCompletedPayload, OpsSummaryComposedPayload};
+use foundry_core::payload::{OpsDigestCompletedPayload, OpsSummaryCompletedPayload};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 
@@ -39,7 +39,7 @@ impl TaskBlock for WriteOpsDigest {
     task_block_meta! {
         name: "Write Ops Digest",
         kind: Observer,
-        sinks_on: [OpsSummaryComposed],
+        sinks_on: [OpsSummaryCompleted],
     }
 
     fn execute(
@@ -47,7 +47,7 @@ impl TaskBlock for WriteOpsDigest {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let p = parse_payload!(trigger, OpsSummaryComposedPayload);
+        let p = parse_payload!(trigger, OpsSummaryCompletedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let digests_dir = self.digests_dir.clone();
@@ -60,7 +60,7 @@ impl TaskBlock for WriteOpsDigest {
 fn write(
     project: &str,
     throttle: Throttle,
-    composed: &OpsSummaryComposedPayload,
+    composed: &OpsSummaryCompletedPayload,
     digests_dir: &Path,
     watermark_path: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
@@ -145,7 +145,7 @@ fn write(
 
 /// Compose the on-disk markdown: a `# Ops Digest — {date}` header, a
 /// one-line totals summary, and the agent's body.
-fn render_full_document(date: &str, composed: &OpsSummaryComposedPayload) -> String {
+fn render_full_document(date: &str, composed: &OpsSummaryCompletedPayload) -> String {
     let mut out = String::with_capacity(composed.markdown.len() + 128);
     writeln!(out, "# Ops Digest — {date}\n").expect("write to String never fails");
     writeln!(
@@ -206,17 +206,17 @@ mod tests {
 
     use super::*;
 
-    fn composed(count: u64, body: &str, watermark: Option<&str>) -> OpsSummaryComposedPayload {
-        OpsSummaryComposedPayload {
+    fn composed(count: u64, body: &str, watermark: Option<&str>) -> OpsSummaryCompletedPayload {
+        OpsSummaryCompletedPayload {
             markdown: body.to_string(),
             event_count: count,
             new_watermark: watermark.map(str::to_string),
         }
     }
 
-    fn trigger(payload: &OpsSummaryComposedPayload, throttle: Throttle) -> Event {
+    fn trigger(payload: &OpsSummaryCompletedPayload, throttle: Throttle) -> Event {
         Event::new(
-            EventType::OpsSummaryComposed,
+            EventType::OpsSummaryCompleted,
             "system".to_string(),
             throttle,
             serde_json::to_value(payload).unwrap(),

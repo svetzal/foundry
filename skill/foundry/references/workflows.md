@@ -111,7 +111,7 @@ CommitDigestStarted {project: "system"}
   └─ ObserveCommits (Observer)
        └─ CommitsObserved {window_hours: 24, projects: [{name, branch, commits, error?}, ...]}
             └─ SummarizeCommits (Observer, AI Reasoning)
-                 └─ CommitSummaryComposed {markdown, project_count, total_commits}
+                 └─ CommitSummaryCompleted {markdown, project_count, total_commits}
                       └─ WriteCommitDigest (Observer)
                            └─ CommitDigestCompleted {success, digest_path?, ...}
                                 └─ writes {FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md
@@ -129,7 +129,7 @@ OpsDigestStarted {project: "system"}
        ├─ [gate not satisfied] OpsDigestCompleted {success: true, skipped: true}
        └─ [gate satisfied] OpsObserved {proceed: true, new_event_count, anomaly_present, events: [{...}]}
             └─ SummarizeEvents (Observer, AI Reasoning)
-                 └─ OpsSummaryComposed {markdown, event_count, new_watermark?}
+                 └─ OpsSummaryCompleted {markdown, event_count, new_watermark?}
                       └─ WriteOpsDigest (Observer)
                            └─ OpsDigestCompleted {success, digest_path?, event_count}
                                 └─ writes {FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md

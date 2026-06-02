@@ -3,7 +3,7 @@
 //! Sinks on `CommitsObserved`. Short-circuits when the window holds zero
 //! commits and writes a "nothing today" stub; otherwise builds a structured
 //! prompt naming every commit's SHA prefix / subject / author and asks the
-//! agent for a markdown digest. Emits `CommitSummaryComposed`.
+//! agent for a markdown digest. Emits `CommitSummaryCompleted`.
 
 use std::fmt::Write as _;
 use std::pin::Pin;
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    CommitInfo, CommitSummaryComposedPayload, CommitsObservedPayload, ProjectCommits,
+    CommitInfo, CommitSummaryCompletedPayload, CommitsObservedPayload, ProjectCommits,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
@@ -98,14 +98,14 @@ async fn summarize(
             plural = if project_count == 1 { "" } else { "s" },
             hours = observed.window_hours,
         );
-        let payload = CommitSummaryComposedPayload {
+        let payload = CommitSummaryCompletedPayload {
             markdown,
             project_count,
             total_commits,
         };
         return emit_result(
             "empty-day short-circuit (no agent call)".to_string(),
-            EventType::CommitSummaryComposed,
+            EventType::CommitSummaryCompleted,
             &project,
             throttle,
             &payload,
@@ -141,7 +141,7 @@ async fn summarize(
         AgentOutcome::Unavailable { error } => fallback_digest(&observed, Some(&error)),
     };
 
-    let payload = CommitSummaryComposedPayload {
+    let payload = CommitSummaryCompletedPayload {
         markdown,
         project_count,
         total_commits,
@@ -149,7 +149,7 @@ async fn summarize(
 
     emit_result(
         format!("Digest composed for {total_commits} commits across {project_count} projects"),
-        EventType::CommitSummaryComposed,
+        EventType::CommitSummaryCompleted,
         &project,
         throttle,
         &payload,
@@ -327,7 +327,7 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block = SummarizeCommits::new(Arc::clone(&agent) as Arc<dyn AgentGateway>);
         let result = block.execute(&trigger_with(&observed_empty())).await.unwrap();
-        let payload: CommitSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        let payload: CommitSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert_eq!(payload.total_commits, 0);
         assert!(payload.markdown.contains("No commits"));
         assert!(payload.markdown.contains("24 hours"));
@@ -348,7 +348,7 @@ mod tests {
             }],
         };
         let result = block.execute(&trigger_with(&payload)).await.unwrap();
-        let out: CommitSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        let out: CommitSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert!(out.markdown.contains("1 project"));
         assert!(!out.markdown.contains("1 projects"), "should pluralise correctly");
     }
@@ -379,7 +379,7 @@ mod tests {
             "no-fabrication clause must be in prompt",
         );
 
-        let payload: CommitSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        let payload: CommitSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert_eq!(payload.total_commits, 1);
         assert_eq!(payload.project_count, 1);
         assert_eq!(payload.markdown, "## Alpha\n- first thing (aaaaaaa)");
@@ -390,7 +390,7 @@ mod tests {
         let agent = FakeAgentGateway::failure("model overloaded");
         let block = SummarizeCommits::new(Arc::clone(&agent) as Arc<dyn AgentGateway>);
         let result = block.execute(&trigger_with(&observed_with_commits())).await.unwrap();
-        let payload: CommitSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        let payload: CommitSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert!(
             payload.markdown.contains("Agent unavailable") || payload.markdown.contains("fallback"),
             "fallback should flag the agent failure: got {}",

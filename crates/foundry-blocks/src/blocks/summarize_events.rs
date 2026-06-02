@@ -4,7 +4,7 @@
 //! `OpsDigestCompleted{skipped: true}` immediately. When proceeding, builds
 //! a structured prompt from the lean event digests and asks the agent for a
 //! markdown summary of the operational period. Falls back to a raw listing
-//! when the agent is unavailable. Emits `OpsSummaryComposed`.
+//! when the agent is unavailable. Emits `OpsSummaryCompleted`.
 
 use std::fmt::Write as _;
 use std::pin::Pin;
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use foundry_core::event::{Event, EventType};
 use foundry_core::payload::{
-    OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload, OpsSummaryComposedPayload,
+    OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload, OpsSummaryCompletedPayload,
 };
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
@@ -102,14 +102,14 @@ async fn summarize(
     // Empty event list — unlikely given pressure gate, but handle it gracefully.
     if observed.events.is_empty() {
         let markdown = "No operational events in the window.\n".to_string();
-        let payload = OpsSummaryComposedPayload {
+        let payload = OpsSummaryCompletedPayload {
             markdown,
             event_count: 0,
             new_watermark,
         };
         return emit_result(
             "ops-digest: no events to summarise".to_string(),
-            EventType::OpsSummaryComposed,
+            EventType::OpsSummaryCompleted,
             &project,
             throttle,
             &payload,
@@ -142,7 +142,7 @@ async fn summarize(
         AgentOutcome::Unavailable { error } => fallback_digest(&observed, Some(&error)),
     };
 
-    let payload = OpsSummaryComposedPayload {
+    let payload = OpsSummaryCompletedPayload {
         markdown,
         event_count,
         new_watermark,
@@ -150,7 +150,7 @@ async fn summarize(
 
     emit_result(
         format!("Ops digest composed for {event_count} event(s)"),
-        EventType::OpsSummaryComposed,
+        EventType::OpsSummaryCompleted,
         &project,
         throttle,
         &payload,
@@ -258,7 +258,7 @@ mod tests {
 
     use foundry_core::event::EventType;
     use foundry_core::payload::{
-        OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload, OpsSummaryComposedPayload,
+        OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload, OpsSummaryCompletedPayload,
     };
     use foundry_core::throttle::Throttle;
 
@@ -322,8 +322,8 @@ mod tests {
         let block = SummarizeEvents::new(Arc::clone(&agent) as Arc<dyn AgentGateway>);
         let observed = observed_with_events(true, vec![sample_event("e1", "ci_pipeline_failure")]);
         let result = block.execute(&trigger_with(&observed)).await.unwrap();
-        assert_eq!(result.events[0].event_type, EventType::OpsSummaryComposed);
-        let p: OpsSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        assert_eq!(result.events[0].event_type, EventType::OpsSummaryCompleted);
+        let p: OpsSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert_eq!(p.event_count, 1);
         assert_eq!(p.new_watermark.as_deref(), Some("2026-05-29T12:00:00Z"));
         assert!(p.markdown.contains("Infrastructure") || p.markdown.contains("ci failed"));
@@ -336,7 +336,7 @@ mod tests {
         let block = SummarizeEvents::new(Arc::clone(&agent) as Arc<dyn AgentGateway>);
         let observed = observed_with_events(true, vec![sample_event("e1", "ci_pipeline_failure")]);
         let result = block.execute(&trigger_with(&observed)).await.unwrap();
-        let p: OpsSummaryComposedPayload = result.events[0].parse_payload().unwrap();
+        let p: OpsSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
         assert!(
             p.markdown.contains("Agent unavailable") || p.markdown.contains("fallback"),
             "fallback must flag the agent failure: {}",
@@ -357,7 +357,7 @@ mod tests {
             ],
         );
         let result = block.execute(&trigger_with(&observed)).await.unwrap();
-        assert_eq!(result.events[0].event_type, EventType::OpsSummaryComposed);
+        assert_eq!(result.events[0].event_type, EventType::OpsSummaryCompleted);
         let invocations = agent.invocations();
         let prompt = &invocations[0].prompt;
         assert!(prompt.contains("ci_pipeline_failure"), "prompt must mention event types");

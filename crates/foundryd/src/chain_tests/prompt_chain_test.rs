@@ -1,7 +1,7 @@
 //! Integration tests for the prompt-driven workflow formation.
 //!
 //! Verifies:
-//! - Happy path: `PromptExecutionRequested` → charter check → gates → preflight
+//! - Happy path: `ExecutionRequested` → charter check → gates → preflight
 //!   → direct prompt → execute → verify → completion → summarise → commit
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
@@ -25,7 +25,7 @@ fn prompt_engine(
 ) -> Engine {
     let mut engine = Engine::new();
 
-    // Charter check (sinks on ProjectIterationRequested + PromptExecutionRequested)
+    // Charter check (sinks on ProjectIterationRequested + ExecutionRequested)
     engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
     // Gate resolution (sinks on CharterCheckCompleted)
     engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
@@ -97,7 +97,7 @@ async fn prompt_workflow_happy_path() {
     let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
 
     let trigger = Event::new(
-        EventType::PromptExecutionRequested,
+        EventType::ExecutionRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({
@@ -181,7 +181,7 @@ async fn prompt_workflow_charter_failure_stops_chain() {
     let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
 
     let trigger = Event::new(
-        EventType::PromptExecutionRequested,
+        EventType::ExecutionRequested,
         "test-project".to_string(),
         Throttle::Full,
         serde_json::json!({

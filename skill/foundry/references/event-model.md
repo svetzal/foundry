@@ -117,7 +117,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 |-------|----------|
 | `OpsDigestStarted` | Lifecycle start (span opener) |
 | `OpsObserved` | Domain fact |
-| `OpsSummaryComposed` | Domain fact |
+| `OpsSummaryCompleted` | Lifecycle end |
 | `OpsDigestCompleted` | Lifecycle end |
 
 ## Key Payload Fields by Event
@@ -141,5 +141,5 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `ReleasePipelineCompleted` | `success`, `new_tag` |
 | `LocalInstallCompleted` | `success` |
 | `OpsObserved` | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
-| `OpsSummaryComposed` | `markdown`, `event_count`, `new_watermark?` |
+| `OpsSummaryCompleted` | `markdown`, `event_count`, `new_watermark?` |
 | `OpsDigestCompleted` | `success`, `skipped`, `digest_path?`, `event_count` |

@@ -1,6 +1,6 @@
 //! `WriteCommitDigest` — terminal block of the daily commit-digest formation.
 //!
-//! Sinks on `CommitSummaryComposed`. Atomically writes the markdown body to
+//! Sinks on `CommitSummaryCompleted`. Atomically writes the markdown body to
 //! `{digests_dir}/{YYYY-MM-DD}.md` (date in local time) and emits
 //! `CommitDigestCompleted`. On a dry-run firing the file is not written —
 //! the chain still terminates cleanly with `digest_path = None`.
@@ -12,7 +12,7 @@ use std::pin::Pin;
 
 use chrono::Local;
 use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{CommitDigestCompletedPayload, CommitSummaryComposedPayload};
+use foundry_core::payload::{CommitDigestCompletedPayload, CommitSummaryCompletedPayload};
 use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_core::throttle::Throttle;
 
@@ -36,7 +36,7 @@ impl TaskBlock for WriteCommitDigest {
     task_block_meta! {
         name: "Write Commit Digest",
         kind: Observer,
-        sinks_on: [CommitSummaryComposed],
+        sinks_on: [CommitSummaryCompleted],
     }
 
     fn execute(
@@ -44,7 +44,7 @@ impl TaskBlock for WriteCommitDigest {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let p = parse_payload!(trigger, CommitSummaryComposedPayload);
+        let p = parse_payload!(trigger, CommitSummaryCompletedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let digests_dir = self.digests_dir.clone();
@@ -56,7 +56,7 @@ impl TaskBlock for WriteCommitDigest {
 fn write(
     project: &str,
     throttle: Throttle,
-    composed: &CommitSummaryComposedPayload,
+    composed: &CommitSummaryCompletedPayload,
     digests_dir: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
     let date = Local::now().format("%Y-%m-%d").to_string();
@@ -130,7 +130,7 @@ fn write(
 
 /// Compose the on-disk markdown: a `# Commit Digest — {date}` header, a
 /// one-line totals summary, and the agent's body.
-fn render_full_document(date: &str, composed: &CommitSummaryComposedPayload) -> String {
+fn render_full_document(date: &str, composed: &CommitSummaryCompletedPayload) -> String {
     let mut out = String::with_capacity(composed.markdown.len() + 128);
     writeln!(out, "# Commit Digest — {date}\n").expect("write to String never fails");
     writeln!(
@@ -175,17 +175,17 @@ mod tests {
 
     use super::*;
 
-    fn composed(total: u64, projects: u64, body: &str) -> CommitSummaryComposedPayload {
-        CommitSummaryComposedPayload {
+    fn composed(total: u64, projects: u64, body: &str) -> CommitSummaryCompletedPayload {
+        CommitSummaryCompletedPayload {
             markdown: body.to_string(),
             project_count: projects,
             total_commits: total,
         }
     }
 
-    fn trigger(payload: &CommitSummaryComposedPayload, throttle: Throttle) -> Event {
+    fn trigger(payload: &CommitSummaryCompletedPayload, throttle: Throttle) -> Event {
         Event::new(
-            EventType::CommitSummaryComposed,
+            EventType::CommitSummaryCompleted,
             "system".to_string(),
             throttle,
             serde_json::to_value(payload).unwrap(),
