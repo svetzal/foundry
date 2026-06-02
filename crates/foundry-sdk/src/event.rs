@@ -320,6 +320,8 @@ pub enum EventType {
     LocalSkillInstallCompleted,
 
     // Project lifecycle (used across workflows)
+    /// Per-project validation lifecycle-end emitted inside maintenance runs.
+    /// Distinct from `ValidationCompleted` (standalone validation workflow).
     ProjectValidationCompleted,
     ProjectIterationCompleted,
     ProjectMaintenanceCompleted,
@@ -333,6 +335,10 @@ pub enum EventType {
 
     // Validation workflow
     ValidationRequested,
+    /// Emitted by the standalone validation workflow (`ValidationRequested` →
+    /// `ValidationCompleted`). Not to be confused with
+    /// `ProjectValidationCompleted`, which is the per-project validation
+    /// lifecycle-end inside maintenance runs.
     ValidationCompleted,
 
     // Run lifecycle — cycle (system-level) and project (per-project) pair
@@ -347,17 +353,35 @@ pub enum EventType {
     ReleaseTagAudited,
 
     // Native gate orchestration workflow
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     GateResolutionCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     PreflightCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     ExecutionCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     GateVerificationCompleted,
     RetryRequested,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     SummarizeCompleted,
 
     // Native iterate workflow (Phase 3)
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     CharterCheckCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     AssessmentCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     TriageCompleted,
+    /// Single-step domain fact; no `*Started` partner required — the block is a
+    /// transform/route, not a multi-step span-opening operation.
     PlanCompleted,
 
     // Strategic loop workflow (nested iteration)
@@ -377,12 +401,20 @@ pub enum EventType {
 
     // Commit-digest workflow (daily proactive summary of registered projects)
     CommitDigestStarted,
+    /// Domain sensing fact: the commit digest workflow has observed/collected
+    /// the commits to summarize. Retained as a specific past participle per the
+    /// taxonomy (like `VulnerabilityDetected`, `MainBranchAudited`) because
+    /// "Observed" adds domain meaning over "Completed".
     CommitsObserved,
     CommitSummaryCompleted,
     CommitDigestCompleted,
 
     // Ops-digest workflow (periodic summary of MBOS operational events)
     OpsDigestStarted,
+    /// Domain sensing fact: the ops digest workflow has observed/collected the
+    /// ops events to summarize. Retained as a specific past participle per the
+    /// taxonomy (like `VulnerabilityDetected`, `MainBranchAudited`) because
+    /// "Observed" adds domain meaning over "Completed".
     OpsObserved,
     OpsSummaryCompleted,
     OpsDigestCompleted,

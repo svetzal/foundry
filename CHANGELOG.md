@@ -46,6 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   selector. The daemon constructs all three backends up front and routes per
   request; absent an override, requests use this default (still defaulting to
   `claude`, with a warning on an unknown value).
+- **Event taxonomy renames** (wire format changes — no aliases, hard cutover):
+  - `PromptExecutionRequested` → `ExecutionRequested`
+    (wire: `prompt_execution_requested` → `execution_requested`)
+  - `CommitSummaryComposed` → `CommitSummaryCompleted`
+    (wire: `commit_summary_composed` → `commit_summary_completed`)
+  - `OpsSummaryComposed` → `OpsSummaryCompleted`
+    (wire: `ops_summary_composed` → `ops_summary_completed`)
+  - `GreetingComposed` is **retained** — it is a genuine domain fact in a
+    two-event sequence (`GreetingComposed` → `GreetingDelivered`), not a
+    lifecycle end.
+  - **Caveat:** pre-rename events persisted in `~/.foundry/events/*.jsonl`
+    carrying the old wire strings will deserialize as `Custom(...)` — this is
+    acceptable for historical records and does not affect current workflow
+    execution.
 
 ## [0.20.0] - 2026-05-29
 
