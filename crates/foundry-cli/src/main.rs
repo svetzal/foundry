@@ -3,11 +3,13 @@ use clap::{Parser, Subcommand};
 use foundry_core::registry::{ProjectEdits, ProjectSpec, parse_stack};
 
 mod commands;
+mod event_commands;
 mod gates_commands;
 mod init_commands;
 mod registry_commands;
 mod sentinel_commands;
 mod trace_tree;
+mod workflow_commands;
 
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
@@ -500,33 +502,42 @@ async fn main() -> Result<()> {
             throttle,
             payload,
             wait,
-        } => commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
+        } => event_commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id, span } => {
-            commands::status(&cli.addr, workflow_id, span).await
+            event_commands::status(&cli.addr, workflow_id, span).await
         }
-        Commands::Watch { project } => commands::watch(&cli.addr, project).await,
+        Commands::Watch { project } => event_commands::watch(&cli.addr, project).await,
         Commands::Trace {
             event_id,
             verbose,
             flat,
-        } => commands::trace(&cli.addr, &event_id, verbose, flat).await,
-        Commands::Run { project, throttle } => commands::run(&cli.addr, project, &throttle).await,
+        } => event_commands::trace(&cli.addr, &event_id, verbose, flat).await,
+        Commands::Run { project, throttle } => {
+            workflow_commands::run(&cli.addr, project, &throttle).await
+        }
         Commands::Validate { projects, all } => {
-            commands::validate(&cli.addr, projects, all, &foundry_core::paths::registry_path())
-                .await
+            workflow_commands::validate(
+                &cli.addr,
+                projects,
+                all,
+                &foundry_core::paths::registry_path(),
+            )
+            .await
         }
         Commands::Iterate { project, agent } => {
-            commands::iterate(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::iterate(&cli.addr, &project, agent.as_deref()).await
         }
         Commands::Scout { project, agent } => {
-            commands::scout(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::scout(&cli.addr, &project, agent.as_deref()).await
         }
         Commands::Pipeline { project, agent } => {
-            commands::pipeline(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::pipeline(&cli.addr, &project, agent.as_deref()).await
         }
-        Commands::Release { project, bump } => commands::release(&cli.addr, &project, bump).await,
+        Commands::Release { project, bump } => {
+            workflow_commands::release(&cli.addr, &project, bump).await
+        }
         Commands::History { date, project } => {
-            commands::history(date.as_deref(), project.as_deref())
+            event_commands::history(date.as_deref(), project.as_deref())
         }
         Commands::Init {
             global,
