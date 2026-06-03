@@ -326,3 +326,141 @@ pub(super) fn watch_rpc(
 
     Response::new(Box::pin(stream))
 }
+
+#[cfg(test)]
+mod tests {
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::throttle::Throttle;
+    use foundry_core::trace::{BlockExecution, ProcessResult};
+
+    use crate::proto::EmitRequest;
+
+    use super::{extract_per_project_traces, parse_emit_request, parse_throttle};
+
+    fn basic_emit_request() -> EmitRequest {
+        EmitRequest {
+            event_type: "project_run_started".to_string(),
+            project: "my-project".to_string(),
+            throttle: 0,
+            payload_json: String::new(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn parse_throttle_one_maps_to_dry_run() {
+        assert_eq!(parse_throttle(1), Throttle::DryRun);
+    }
+
+    #[test]
+    fn parse_throttle_any_other_value_maps_to_full() {
+        assert_eq!(parse_throttle(0), Throttle::Full);
+        assert_eq!(parse_throttle(2), Throttle::Full);
+        assert_eq!(parse_throttle(-1), Throttle::Full);
+    }
+
+    #[test]
+    fn parse_emit_request_valid_parses_event_type_and_project() {
+        let event = parse_emit_request(basic_emit_request()).expect("should parse");
+        assert_eq!(event.event_type, EventType::ProjectRunStarted);
+        assert_eq!(event.project, "my-project");
+        assert_eq!(event.throttle, Throttle::Full);
+    }
+
+    #[test]
+    fn parse_emit_request_invalid_payload_json_returns_invalid_argument() {
+        let mut req = basic_emit_request();
+        req.payload_json = "not valid json {{{".to_string();
+        let err = parse_emit_request(req).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn parse_emit_request_empty_trace_id_mints_32_char_hex() {
+        let event = parse_emit_request(basic_emit_request()).unwrap();
+        let trace_id = event.trace_id.expect("trace_id must be set");
+        assert_eq!(trace_id.len(), 32);
+        assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parse_emit_request_supplied_trace_id_is_preserved() {
+        let mut req = basic_emit_request();
+        req.trace_id = "abcdef0123456789abcdef0123456789".to_string();
+        let event = parse_emit_request(req).unwrap();
+        assert_eq!(event.trace_id.as_deref(), Some("abcdef0123456789abcdef0123456789"));
+    }
+
+    #[test]
+    fn parse_emit_request_empty_span_id_mints_16_char_hex() {
+        let event = parse_emit_request(basic_emit_request()).unwrap();
+        let span_id = event.span_id.expect("span_id must be set");
+        assert_eq!(span_id.len(), 16);
+        assert!(span_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parse_emit_request_empty_parent_span_id_stays_none() {
+        let event = parse_emit_request(basic_emit_request()).unwrap();
+        assert!(event.parent_span_id.is_none());
+    }
+
+    #[test]
+    fn parse_emit_request_supplied_parent_span_id_is_preserved() {
+        let mut req = basic_emit_request();
+        req.parent_span_id = "fedcba9876543210".to_string();
+        let event = parse_emit_request(req).unwrap();
+        assert_eq!(event.parent_span_id.as_deref(), Some("fedcba9876543210"));
+    }
+
+    fn event(event_type: EventType, project: &str) -> Event {
+        Event::new(event_type, project.to_string(), Throttle::Full, serde_json::json!({}))
+    }
+
+    #[test]
+    fn extract_per_project_traces_partitions_events_by_project() {
+        let sys_root = event(EventType::MaintenanceCycleStarted, "system");
+        let proj_a_root = event(EventType::ProjectRunStarted, "proj-a");
+        let proj_a_extra = event(EventType::ProjectRunCompleted, "proj-a");
+        let proj_b_root = event(EventType::ProjectRunStarted, "proj-b");
+
+        let block_a = {
+            let mut b = BlockExecution::new("blk-a", &proj_a_root.id, 100, serde_json::json!({}));
+            b.success = true;
+            b
+        };
+        let block_sys = BlockExecution::new("blk-sys", &sys_root.id, 50, serde_json::json!({}));
+
+        let result = ProcessResult {
+            events: vec![sys_root, proj_a_root, proj_a_extra, proj_b_root],
+            block_executions: vec![block_a, block_sys],
+            total_duration_ms: 250,
+        };
+
+        let traces = extract_per_project_traces(&result);
+
+        assert_eq!(traces.len(), 2, "one trace per non-system project");
+
+        let a = traces.get("proj-a").expect("proj-a must be present");
+        assert_eq!(a.events.len(), 2);
+        assert_eq!(a.block_executions.len(), 1);
+        assert_eq!(a.total_duration_ms, 100);
+
+        let b = traces.get("proj-b").expect("proj-b must be present");
+        assert_eq!(b.events.len(), 1);
+        assert!(b.block_executions.is_empty());
+        assert_eq!(b.total_duration_ms, 0);
+    }
+
+    #[test]
+    fn extract_per_project_traces_excludes_system_project() {
+        let result = ProcessResult {
+            events: vec![event(EventType::MaintenanceCycleStarted, "system")],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(extract_per_project_traces(&result).is_empty());
+    }
+}

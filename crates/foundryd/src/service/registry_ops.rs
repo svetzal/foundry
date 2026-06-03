@@ -284,3 +284,296 @@ pub(super) fn edit(
         project: Some(entry_proto),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use tempfile::NamedTempFile;
+    use tonic::Request;
+
+    use foundry_core::registry::{
+        ActionFlags, InstallConfig, ProjectEntry, Registry, RegistryMutationError, Stack,
+    };
+
+    use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
+
+    use super::{add, edit, mutation_error_to_status, project_to_proto, remove};
+
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }))
+    }
+
+    fn add_request(name: &str) -> Request<RegistryAddRequest> {
+        Request::new(RegistryAddRequest {
+            name: name.to_string(),
+            path: format!("/tmp/{name}"),
+            stack: "rust".to_string(),
+            agent: "claude".to_string(),
+            repo: format!("owner/{name}"),
+            branch: "main".to_string(),
+            iterate: true,
+            maintain: false,
+            push: false,
+            audit: false,
+            release: false,
+            install_command: String::new(),
+            install_brew: String::new(),
+            notes: String::new(),
+            timeout_secs: 0,
+        })
+    }
+
+    fn tmp_path() -> (NamedTempFile, std::path::PathBuf) {
+        let f = NamedTempFile::new().unwrap();
+        let p = f.path().to_path_buf();
+        (f, p)
+    }
+
+    #[test]
+    fn mutation_error_already_exists_maps_to_already_exists_code() {
+        let s = mutation_error_to_status(RegistryMutationError::DuplicateName("p".to_string()));
+        assert_eq!(s.code(), tonic::Code::AlreadyExists);
+        assert!(s.message().contains("p"));
+    }
+
+    #[test]
+    fn mutation_error_not_found_maps_to_not_found_code() {
+        let s = mutation_error_to_status(RegistryMutationError::NotFound("q".to_string()));
+        assert_eq!(s.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn mutation_error_invalid_stack_maps_to_invalid_argument() {
+        let s = mutation_error_to_status(RegistryMutationError::InvalidStack("bad".to_string()));
+        assert_eq!(s.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn mutation_error_conflicting_install_maps_to_invalid_argument() {
+        let s = mutation_error_to_status(RegistryMutationError::ConflictingInstall);
+        assert_eq!(s.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn project_to_proto_no_install_defaults_to_empty_strings() {
+        let entry = ProjectEntry {
+            name: "alpha".to_string(),
+            path: "/tmp/alpha".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: "owner/alpha".to_string(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: None,
+            notes: None,
+            timeout_secs: None,
+        };
+        let proto = project_to_proto(&entry);
+        assert_eq!(proto.install_command, "");
+        assert_eq!(proto.install_brew, "");
+        assert_eq!(proto.skip, "");
+        assert_eq!(proto.notes, "");
+        assert_eq!(proto.timeout_secs, 0);
+    }
+
+    #[test]
+    fn project_to_proto_command_install_splits_correctly() {
+        let entry = ProjectEntry {
+            name: "beta".to_string(),
+            path: "/tmp/beta".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags::default(),
+            install: Some(InstallConfig::Command("./install.sh".to_string())),
+            installs_skill: None,
+            notes: Some("a note".to_string()),
+            timeout_secs: Some(120),
+        };
+        let proto = project_to_proto(&entry);
+        assert_eq!(proto.install_command, "./install.sh");
+        assert_eq!(proto.install_brew, "");
+        assert_eq!(proto.notes, "a note");
+        assert_eq!(proto.timeout_secs, 120);
+    }
+
+    #[test]
+    fn project_to_proto_brew_install_splits_correctly() {
+        let entry = ProjectEntry {
+            name: "gamma".to_string(),
+            path: "/tmp/gamma".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags::default(),
+            install: Some(InstallConfig::Brew("svetzal/tap/foundry".to_string())),
+            installs_skill: None,
+            notes: None,
+            timeout_secs: None,
+        };
+        let proto = project_to_proto(&entry);
+        assert_eq!(proto.install_command, "");
+        assert_eq!(proto.install_brew, "svetzal/tap/foundry");
+    }
+
+    #[test]
+    fn add_inserts_project_and_returns_proto() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+
+        let resp = add(&reg, &path, add_request("proj-a")).expect("add should succeed");
+        let proto = resp.into_inner().project.unwrap();
+
+        assert_eq!(proto.name, "proj-a");
+        assert!(proto.iterate);
+        assert_eq!(reg.read().unwrap().projects.len(), 1);
+    }
+
+    #[test]
+    fn add_with_conflicting_install_returns_invalid_argument() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let req = Request::new(RegistryAddRequest {
+            name: "x".to_string(),
+            path: "/tmp/x".to_string(),
+            stack: "rust".to_string(),
+            agent: String::new(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            iterate: false,
+            maintain: false,
+            push: false,
+            audit: false,
+            release: false,
+            install_command: "cmd".to_string(),
+            install_brew: "brew".to_string(),
+            notes: String::new(),
+            timeout_secs: 0,
+        });
+        let err = add(&reg, &path, req).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn remove_deletes_project() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        add(&reg, &path, add_request("to-rm")).unwrap();
+        remove(
+            &reg,
+            &path,
+            Request::new(RegistryRemoveRequest {
+                name: "to-rm".to_string(),
+            }),
+        )
+        .unwrap();
+        assert!(reg.read().unwrap().projects.is_empty());
+    }
+
+    #[test]
+    fn remove_unknown_project_returns_not_found() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let err = remove(
+            &reg,
+            &path,
+            Request::new(RegistryRemoveRequest {
+                name: "ghost".to_string(),
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn edit_updates_agent_field() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        add(&reg, &path, add_request("editable")).unwrap();
+
+        let resp = edit(
+            &reg,
+            &path,
+            Request::new(RegistryEditRequest {
+                name: "editable".to_string(),
+                path: String::new(),
+                stack: String::new(),
+                agent: "gemini".to_string(),
+                repo: String::new(),
+                branch: String::new(),
+                skip: String::new(),
+                clear_skip: false,
+                iterate: false,
+                clear_iterate: false,
+                maintain: false,
+                clear_maintain: false,
+                push: false,
+                clear_push: false,
+                audit: false,
+                clear_audit: false,
+                release: false,
+                clear_release: false,
+                install_command: String::new(),
+                install_brew: String::new(),
+                clear_install: false,
+                notes: String::new(),
+                clear_notes: false,
+                timeout_secs: 0,
+                clear_timeout: false,
+            }),
+        )
+        .unwrap();
+
+        let proto = resp.into_inner().project.unwrap();
+        assert_eq!(proto.agent, "gemini");
+    }
+
+    #[test]
+    fn edit_unknown_project_returns_not_found() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let err = edit(
+            &reg,
+            &path,
+            Request::new(RegistryEditRequest {
+                name: "ghost".to_string(),
+                path: String::new(),
+                stack: String::new(),
+                agent: String::new(),
+                repo: String::new(),
+                branch: String::new(),
+                skip: String::new(),
+                clear_skip: false,
+                iterate: false,
+                clear_iterate: false,
+                maintain: false,
+                clear_maintain: false,
+                push: false,
+                clear_push: false,
+                audit: false,
+                clear_audit: false,
+                release: false,
+                clear_release: false,
+                install_command: String::new(),
+                install_brew: String::new(),
+                clear_install: false,
+                notes: String::new(),
+                clear_notes: false,
+                timeout_secs: 0,
+                clear_timeout: false,
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+}

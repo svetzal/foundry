@@ -234,3 +234,222 @@ fn build_gate_block_result(
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use foundry_core::event::{Event, EventType};
+    use foundry_core::gateway::AgentOutcome;
+    use foundry_core::throttle::Throttle;
+
+    use super::{
+        build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
+        dry_run_remediation_event, emit_event_result, emit_result, format_gates_context,
+        stub_event_result,
+    };
+
+    fn full() -> Throttle {
+        Throttle::Full
+    }
+
+    fn trigger_event() -> Event {
+        Event::new(
+            EventType::ProjectRunStarted,
+            "test-proj".to_string(),
+            full(),
+            serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn emit_result_produces_success_event_with_correct_type_and_project() {
+        let result = emit_result(
+            "done".to_string(),
+            EventType::ProjectRunCompleted,
+            "my-proj",
+            full(),
+            &serde_json::json!({"success": true}),
+        )
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.summary, "done");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectRunCompleted);
+        assert_eq!(result.events[0].project, "my-proj");
+        assert!(result.raw_output.is_none());
+        assert!(result.exit_code.is_none());
+    }
+
+    #[test]
+    fn emit_event_result_honours_success_flag() {
+        let ok = emit_event_result(
+            "ok".to_string(),
+            true,
+            EventType::ProjectRunCompleted,
+            "p",
+            full(),
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(ok.success);
+
+        let fail = emit_event_result(
+            "fail".to_string(),
+            false,
+            EventType::ProjectRunCompleted,
+            "p",
+            full(),
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(!fail.success);
+    }
+
+    #[test]
+    fn build_agent_remediation_result_success_outcome() {
+        let result = build_agent_remediation_result(
+            "my-proj",
+            full(),
+            AgentOutcome::Success {
+                stdout: "  patched  ".to_string(),
+            },
+            Some("CVE-2024-1234".to_string()),
+            None,
+            "Fixed",
+            "Fix failed",
+        );
+
+        assert!(result.success);
+        assert!(result.summary.starts_with("Fixed:"));
+        assert_eq!(result.raw_output.as_deref(), Some("patched"));
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["cve"], "CVE-2024-1234");
+    }
+
+    #[test]
+    fn build_agent_remediation_result_agent_failed_outcome() {
+        let result = build_agent_remediation_result(
+            "proj",
+            full(),
+            AgentOutcome::AgentFailed {
+                stderr: "error line\nmore".to_string(),
+            },
+            None,
+            None,
+            "Done",
+            "Failed",
+        );
+
+        assert!(!result.success);
+        assert!(result.summary.starts_with("Failed:"));
+        assert!(result.raw_output.is_some());
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], false);
+    }
+
+    #[test]
+    fn build_agent_remediation_result_unavailable_outcome() {
+        let result = build_agent_remediation_result(
+            "proj",
+            full(),
+            AgentOutcome::Unavailable {
+                error: "spawn failed".to_string(),
+            },
+            None,
+            None,
+            "Done",
+            "Failed",
+        );
+
+        assert!(!result.success);
+        assert!(result.raw_output.is_none());
+    }
+
+    #[test]
+    fn dry_run_execution_event_produces_dry_run_true_execution_completed_event() {
+        let trigger = trigger_event();
+        let events =
+            dry_run_execution_event(&trigger, foundry_core::workflow::WorkflowType::Iterate, None);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ExecutionCompleted);
+        assert_eq!(events[0].payload["dry_run"], true);
+        assert_eq!(events[0].payload["success"], true);
+    }
+
+    #[test]
+    fn dry_run_remediation_event_produces_dry_run_true_remediation_completed_event() {
+        let trigger = trigger_event();
+        let events =
+            dry_run_remediation_event(&trigger, Some("CVE-2024-5678".to_string()), Some(true));
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::RemediationCompleted);
+        assert_eq!(events[0].payload["dry_run"], true);
+        assert_eq!(events[0].payload["success"], true);
+        assert_eq!(events[0].payload["cve"], "CVE-2024-5678");
+        assert_eq!(events[0].payload["pipeline_fix"], true);
+    }
+
+    #[test]
+    fn format_gates_context_returns_empty_string_for_none() {
+        assert_eq!(format_gates_context(None), "");
+    }
+
+    #[test]
+    fn format_gates_context_returns_prefixed_block_for_some() {
+        let gates = serde_json::json!([{"name": "fmt"}]);
+        let out = format_gates_context(Some(&gates));
+        assert!(out.contains("quality gates"));
+        assert!(out.contains("fmt"));
+    }
+
+    #[test]
+    fn stub_event_result_passes_payload_through_verbatim() {
+        let payload = serde_json::json!({"reason": "no-repo"});
+        let result = stub_event_result(
+            "skipped",
+            EventType::ProjectRunCompleted,
+            "p".to_string(),
+            full(),
+            payload.clone(),
+        );
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["reason"], "no-repo");
+    }
+
+    #[test]
+    fn build_gate_result_from_payload_formats_summary_with_passed_or_failed() {
+        #[derive(serde::Serialize)]
+        struct FakePayload {
+            passed: bool,
+        }
+
+        let pass_result = build_gate_result_from_payload(
+            "my-proj",
+            EventType::ProjectRunCompleted,
+            true,
+            "fmt",
+            full(),
+            &FakePayload { passed: true },
+        );
+        assert!(pass_result.success);
+        assert_eq!(pass_result.summary, "my-proj: fmt passed");
+
+        let fail_result = build_gate_result_from_payload(
+            "my-proj",
+            EventType::ProjectRunCompleted,
+            false,
+            "fmt",
+            full(),
+            &FakePayload { passed: false },
+        );
+        assert!(!fail_result.success);
+        assert_eq!(fail_result.summary, "my-proj: fmt failed");
+    }
+}
