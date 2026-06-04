@@ -127,13 +127,6 @@ impl ClaudeAgentGateway {
         self.models = models;
         self
     }
-
-    fn access_label(access: AgentAccess) -> &'static str {
-        match access {
-            AgentAccess::ReadOnly => "read_only",
-            AgentAccess::Full => "full",
-        }
-    }
 }
 
 impl AgentGateway for ClaudeAgentGateway {
@@ -170,25 +163,7 @@ impl AgentGateway for ClaudeAgentGateway {
             args.push(request.prompt.clone());
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-            let started_payload = AgentSessionStartedPayload {
-                session_id: session_id.clone(),
-                agent_type: "claude-code".to_string(),
-                project: request.project.clone(),
-                working_dir: request.working_dir.clone(),
-                source_log_path: log_path.clone(),
-                tier: request.tier.as_str().to_string(),
-                effort: request.effort.as_str().to_string(),
-                access: Self::access_label(request.access).to_string(),
-                started_at: Utc::now().to_rfc3339(),
-                trace_id: String::new(),
-            };
-            let started_event = Event::new(
-                EventType::AgentSessionStarted,
-                request.project.clone(),
-                Throttle::Full,
-                serde_json::to_value(&started_payload)?,
-            );
-            let _ = self.event_tx.send(started_event);
+            emit_session_started(&self.event_tx, request, &session_id, "claude-code", &log_path)?;
 
             // CLAUDECODE="" prevents nested-session detection.
             let env = vec![("CLAUDECODE".to_string(), String::new())];
@@ -215,21 +190,15 @@ impl AgentGateway for ClaudeAgentGateway {
                 }
             };
 
-            let ended_payload = AgentSessionEndedPayload {
-                session_id: session_id.clone(),
-                status: status.to_string(),
+            emit_session_ended(
+                &self.event_tx,
+                &request.project,
+                &session_id,
+                status,
                 exit_code,
-                ended_at: Utc::now().to_rfc3339(),
                 bytes_written,
-                error: error_msg,
-            };
-            let ended_event = Event::new(
-                EventType::AgentSessionEnded,
-                request.project.clone(),
-                Throttle::Full,
-                serde_json::to_value(&ended_payload)?,
-            );
-            let _ = self.event_tx.send(ended_event);
+                error_msg,
+            )?;
 
             Ok(AgentResponse {
                 stdout: stdout_text,
@@ -276,6 +245,84 @@ fn extract_final_text(lines: &[StreamedLine]) -> String {
         }
     }
     out
+}
+
+/// Strip a leading YAML frontmatter block (`---` … `---`) from an agent
+/// definition, returning the trimmed body. No frontmatter → trimmed input.
+pub(crate) fn strip_frontmatter(s: &str) -> String {
+    let s = s.trim_start_matches('\u{feff}');
+    if !s.trim_start().starts_with("---") {
+        return s.trim().to_string();
+    }
+    let lines: Vec<&str> = s.lines().collect();
+    let mut seen_open = false;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim() == "---" {
+            if seen_open {
+                return lines[i + 1..].join("\n").trim().to_string();
+            }
+            seen_open = true;
+        }
+    }
+    s.trim().to_string()
+}
+
+/// Emit an `AgentSessionStarted` event on `event_tx`.
+pub(crate) fn emit_session_started(
+    event_tx: &broadcast::Sender<Event>,
+    request: &AgentRequest,
+    session_id: &str,
+    agent_type: &str,
+    log_path: &std::path::Path,
+) -> Result<()> {
+    let started_payload = AgentSessionStartedPayload {
+        session_id: session_id.to_string(),
+        agent_type: agent_type.to_string(),
+        project: request.project.clone(),
+        working_dir: request.working_dir.clone(),
+        source_log_path: log_path.to_path_buf(),
+        tier: request.tier.as_str().to_string(),
+        effort: request.effort.as_str().to_string(),
+        access: request.access.label().to_string(),
+        started_at: Utc::now().to_rfc3339(),
+        trace_id: String::new(),
+    };
+    let started_event = Event::new(
+        EventType::AgentSessionStarted,
+        request.project.clone(),
+        Throttle::Full,
+        serde_json::to_value(&started_payload)?,
+    );
+    let _ = event_tx.send(started_event);
+    Ok(())
+}
+
+/// Emit an `AgentSessionEnded` event on `event_tx`.
+pub(crate) fn emit_session_ended(
+    event_tx: &broadcast::Sender<Event>,
+    project: &str,
+    session_id: &str,
+    status: &str,
+    exit_code: Option<i32>,
+    bytes_written: u64,
+    error: Option<String>,
+) -> Result<()> {
+    let ended_payload = AgentSessionEndedPayload {
+        session_id: session_id.to_string(),
+        status: status.to_string(),
+        exit_code,
+        ended_at: Utc::now().to_rfc3339(),
+        bytes_written,
+        error,
+    };
+    let ended_event = Event::new(
+        EventType::AgentSessionEnded,
+        project.to_string(),
+        Throttle::Full,
+        serde_json::to_value(&ended_payload)?,
+    );
+    let _ = event_tx.send(ended_event);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -332,15 +379,9 @@ mod claude_agent_gateway_streaming_tests {
         }
     }
 
-    fn tmp_dir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("foundry-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&p).unwrap();
-        p
-    }
-
     #[tokio::test]
     async fn invoke_emits_started_then_ended_and_writes_transcript() {
-        let session_log_dir = tmp_dir();
+        let session_log_dir = super::test_support::tmp_dir("foundry-test");
         let (tx, mut rx) = broadcast::channel(16);
 
         let transcript = vec![
@@ -418,7 +459,7 @@ mod claude_agent_gateway_streaming_tests {
 
     #[tokio::test]
     async fn invoke_marks_session_as_agent_failed_on_nonzero_exit() {
-        let session_log_dir = tmp_dir();
+        let session_log_dir = super::test_support::tmp_dir("foundry-test");
         let (tx, mut rx) = broadcast::channel(16);
 
         let runner = Arc::new(FakeAgentStreamRunner {
@@ -507,7 +548,7 @@ mod claude_agent_gateway_streaming_tests {
         let gateway = ClaudeAgentGateway::new_with_streaming(
             FakeShellGateway::success(),
             runner,
-            tmp_dir(),
+            super::test_support::tmp_dir("foundry-test"),
             tx,
         );
 
@@ -533,5 +574,94 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "--effort"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "high"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamedLine};
+
+    pub(crate) struct FakeRunner {
+        pub(crate) transcript: Vec<String>,
+        /// When `Some`, the `-o` path is recovered from argv and this message is written to it
+        /// (codex behaviour). When `None`, no `-o` file is written (opencode behaviour).
+        pub(crate) last_message: Option<String>,
+        pub(crate) outcome: AgentStreamOutcome,
+    }
+
+    impl AgentStreamRunner for FakeRunner {
+        fn run<'a>(
+            &'a self,
+            _working_dir: &'a Path,
+            _command: &'a str,
+            args: &'a [&'a str],
+            _env: Option<&'a [(String, String)]>,
+            _timeout: Option<Duration>,
+            log_path: &'a Path,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
+        > {
+            let transcript = self.transcript.clone();
+            let last_message = self.last_message.clone();
+            let mut outcome = self.outcome.clone();
+            let out_path = args
+                .iter()
+                .position(|a| *a == "-o")
+                .and_then(|i| args.get(i + 1))
+                .map(PathBuf::from);
+            Box::pin(async move {
+                if let Some(parent) = log_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(log_path, transcript.join("\n")).await?;
+                if let (Some(p), Some(msg)) = (out_path, last_message) {
+                    tokio::fs::write(&p, msg).await?;
+                }
+                outcome.lines = transcript.into_iter().map(|raw| StreamedLine { raw }).collect();
+                Ok(outcome)
+            })
+        }
+    }
+
+    pub(crate) fn ok_outcome() -> AgentStreamOutcome {
+        AgentStreamOutcome {
+            exit_code: 0,
+            success: true,
+            stderr: String::new(),
+            bytes_written: 0,
+            lines: vec![],
+        }
+    }
+
+    pub(crate) fn tmp_dir(prefix: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("{}-{}", prefix, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+}
+
+#[cfg(test)]
+mod strip_frontmatter_tests {
+    use super::strip_frontmatter;
+
+    #[test]
+    fn strip_frontmatter_removes_yaml_block() {
+        let md = "---\nname: foo\n---\nYou are helpful.\n";
+        assert_eq!(strip_frontmatter(md), "You are helpful.");
+    }
+
+    #[test]
+    fn strip_frontmatter_removes_yaml_block_with_description() {
+        let md = "---\nname: foo\ndescription: bar\n---\nYou are a helpful agent.\n";
+        assert_eq!(strip_frontmatter(md), "You are a helpful agent.");
+    }
+
+    #[test]
+    fn strip_frontmatter_passthrough_when_absent() {
+        assert_eq!(strip_frontmatter("Just a body."), "Just a body.");
     }
 }

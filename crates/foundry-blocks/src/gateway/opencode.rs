@@ -29,10 +29,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::Utc;
-use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
-use foundry_sdk::throttle::Throttle;
+use foundry_sdk::event::Event;
 use serde_json::Value;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -90,13 +87,6 @@ impl OpencodeAgentGateway {
         self.models = models;
         self
     }
-
-    fn access_label(access: AgentAccess) -> &'static str {
-        match access {
-            AgentAccess::ReadOnly => "read_only",
-            AgentAccess::Full => "full",
-        }
-    }
 }
 
 impl AgentGateway for OpencodeAgentGateway {
@@ -130,25 +120,13 @@ impl AgentGateway for OpencodeAgentGateway {
             let args = build_opencode_argv(&model, &variant, agent_key.as_deref(), &request.prompt);
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-            let started_payload = AgentSessionStartedPayload {
-                session_id: session_id.clone(),
-                agent_type: "opencode".to_string(),
-                project: request.project.clone(),
-                working_dir: request.working_dir.clone(),
-                source_log_path: log_path.clone(),
-                tier: request.tier.as_str().to_string(),
-                effort: request.effort.as_str().to_string(),
-                access: Self::access_label(request.access).to_string(),
-                started_at: Utc::now().to_rfc3339(),
-                trace_id: String::new(),
-            };
-            let started_event = Event::new(
-                EventType::AgentSessionStarted,
-                request.project.clone(),
-                Throttle::Full,
-                serde_json::to_value(&started_payload)?,
-            );
-            let _ = self.event_tx.send(started_event);
+            super::emit_session_started(
+                &self.event_tx,
+                request,
+                &session_id,
+                "opencode",
+                &log_path,
+            )?;
 
             let env_opt = if env.is_empty() {
                 None
@@ -196,21 +174,15 @@ impl AgentGateway for OpencodeAgentGateway {
                 }
             };
 
-            let ended_payload = AgentSessionEndedPayload {
-                session_id: session_id.clone(),
-                status: status.to_string(),
+            super::emit_session_ended(
+                &self.event_tx,
+                &request.project,
+                &session_id,
+                status,
                 exit_code,
-                ended_at: Utc::now().to_rfc3339(),
                 bytes_written,
-                error: error_msg,
-            };
-            let ended_event = Event::new(
-                EventType::AgentSessionEnded,
-                request.project.clone(),
-                Throttle::Full,
-                serde_json::to_value(&ended_payload)?,
-            );
-            let _ = self.event_tx.send(ended_event);
+                error_msg,
+            )?;
 
             Ok(AgentResponse {
                 stdout: stdout_text,
@@ -265,7 +237,7 @@ fn prepare_agent_config(
     match std::fs::read_to_string(agent_file) {
         Ok(body) => {
             let key = derive_agent_key(agent_file);
-            let stripped = strip_frontmatter(&body);
+            let stripped = super::strip_frontmatter(&body);
             let env = vec![(
                 "OPENCODE_CONFIG_CONTENT".to_string(),
                 build_config_content(&key, &stripped),
@@ -331,26 +303,6 @@ fn derive_agent_key(agent_file: &std::path::Path) -> String {
     } else {
         trimmed
     }
-}
-
-/// Strip a leading YAML frontmatter block (`---` … `---`) from an agent
-/// definition, returning the trimmed body. No frontmatter → trimmed input.
-fn strip_frontmatter(s: &str) -> String {
-    let s = s.trim_start_matches('\u{feff}');
-    if !s.trim_start().starts_with("---") {
-        return s.trim().to_string();
-    }
-    let lines: Vec<&str> = s.lines().collect();
-    let mut seen_open = false;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if seen_open {
-                return lines[i + 1..].join("\n").trim().to_string();
-            }
-            seen_open = true;
-        }
-    }
-    s.trim().to_string()
 }
 
 /// Build the `OPENCODE_CONFIG_CONTENT` JSON inlining an agent's system prompt.
@@ -434,6 +386,7 @@ fn parse_export_result(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::gateway::{ModelTier, ReasoningEffort};
+    use foundry_sdk::event::EventType;
 
     fn line(s: &str) -> StreamedLine {
         StreamedLine { raw: s.to_string() }
@@ -485,17 +438,6 @@ mod tests {
         assert_eq!(derive_agent_key(std::path::Path::new("/x/Weird Name.md")), "weird-name");
         // Stem that sanitizes to all-dashes falls back to the default key.
         assert_eq!(derive_agent_key(std::path::Path::new("/x/___.md")), "foundry-agent");
-    }
-
-    #[test]
-    fn strip_frontmatter_removes_yaml_block() {
-        let md = "---\nname: foo\ndescription: bar\n---\nYou are a helpful agent.\n";
-        assert_eq!(strip_frontmatter(md), "You are a helpful agent.");
-    }
-
-    #[test]
-    fn strip_frontmatter_passthrough_when_absent() {
-        assert_eq!(strip_frontmatter("Just a body."), "Just a body.");
     }
 
     #[test]
@@ -572,57 +514,10 @@ mod tests {
 
     // --- Full invoke() flow (offline: fake stream runner + fake shell) -------
 
-    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::time::Duration;
 
-    /// Fake stream runner: tees a canned opencode JSONL transcript to the log
-    /// file and returns it as `outcome.lines`.
-    struct FakeRunner {
-        transcript: Vec<String>,
-        outcome: AgentStreamOutcome,
-    }
-
-    impl AgentStreamRunner for FakeRunner {
-        fn run<'a>(
-            &'a self,
-            _working_dir: &'a Path,
-            _command: &'a str,
-            _args: &'a [&'a str],
-            _env: Option<&'a [(String, String)]>,
-            _timeout: Option<Duration>,
-            log_path: &'a Path,
-        ) -> Pin<
-            Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
-        > {
-            let transcript = self.transcript.clone();
-            let mut outcome = self.outcome.clone();
-            Box::pin(async move {
-                if let Some(parent) = log_path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                tokio::fs::write(log_path, transcript.join("\n")).await?;
-                outcome.lines = transcript.into_iter().map(|raw| StreamedLine { raw }).collect();
-                Ok(outcome)
-            })
-        }
-    }
-
-    fn tmp_dir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("foundry-oc-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&p).unwrap();
-        p
-    }
-
-    fn ok_outcome() -> AgentStreamOutcome {
-        AgentStreamOutcome {
-            exit_code: 0,
-            success: true,
-            stderr: String::new(),
-            bytes_written: 0,
-            lines: vec![],
-        }
-    }
+    use super::super::test_support::{FakeRunner, ok_outcome, tmp_dir};
 
     #[tokio::test]
     async fn invoke_extracts_export_result_and_emits_lifecycle_events() {
@@ -634,6 +529,7 @@ mod tests {
         ];
         let runner = Arc::new(FakeRunner {
             transcript,
+            last_message: None,
             outcome: ok_outcome(),
         });
 
@@ -648,7 +544,8 @@ mod tests {
             });
 
         let (tx, mut rx) = broadcast::channel(16);
-        let gateway = OpencodeAgentGateway::new_with_streaming(shell, runner, tmp_dir(), tx);
+        let gateway =
+            OpencodeAgentGateway::new_with_streaming(shell, runner, tmp_dir("foundry-oc-test"), tx);
 
         let request = AgentRequest {
             prompt: "say something".to_string(),
@@ -687,12 +584,14 @@ mod tests {
         // Process itself exited 0, but an error event is present.
         let runner = Arc::new(FakeRunner {
             transcript,
+            last_message: None,
             outcome: ok_outcome(),
         });
         let shell = crate::gateway::fakes::FakeShellGateway::failure("no session");
 
         let (tx, mut rx) = broadcast::channel(16);
-        let gateway = OpencodeAgentGateway::new_with_streaming(shell, runner, tmp_dir(), tx);
+        let gateway =
+            OpencodeAgentGateway::new_with_streaming(shell, runner, tmp_dir("foundry-oc-test"), tx);
 
         let request = AgentRequest {
             prompt: "x".to_string(),

@@ -151,6 +151,16 @@ pub enum AgentAccess {
     Full,
 }
 
+impl AgentAccess {
+    /// The wire-format label for this access level, used in `AgentSessionStarted` payloads.
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentAccess::ReadOnly => "read_only",
+            AgentAccess::Full => "full",
+        }
+    }
+}
+
 /// Abstract model tier — *which* model a block wants, independent of provider.
 ///
 /// Each provider maps a tier to a concrete model id (configurable via the agent
@@ -602,6 +612,17 @@ pub mod fakes {
             let result = self.next_result();
             Box::pin(async move { Ok(result) })
         }
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::AgentAccess;
+
+    #[test]
+    fn label_returns_wire_strings() {
+        assert_eq!(AgentAccess::ReadOnly.label(), "read_only");
+        assert_eq!(AgentAccess::Full.label(), "full");
     }
 }
 
