@@ -155,18 +155,18 @@ fn decide_action(
         return (Action::Created, None);
     };
 
-    if let Some(installed_ver) = parse_stamp(existing) {
-        if &installed_ver > binary_version {
-            if force {
-                let warning =
-                    format!("Downgrading from v{installed_ver} to v{binary_version} (--force).");
-                return (Action::Updated, Some(warning));
-            }
-            let warning = format!(
-                "Installed v{installed_ver} is newer than binary v{binary_version}. Use --force to downgrade."
-            );
-            return (Action::Skipped, Some(warning));
+    if let Some(installed_ver) = parse_stamp(existing)
+        && &installed_ver > binary_version
+    {
+        if force {
+            let warning =
+                format!("Downgrading from v{installed_ver} to v{binary_version} (--force).");
+            return (Action::Updated, Some(warning));
         }
+        let warning = format!(
+            "Installed v{installed_ver} is newer than binary v{binary_version}. Use --force to downgrade."
+        );
+        return (Action::Skipped, Some(warning));
     }
 
     if existing == stamped_content {

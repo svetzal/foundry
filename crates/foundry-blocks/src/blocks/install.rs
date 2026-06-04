@@ -125,13 +125,12 @@ impl TaskBlock for InstallLocally {
             )];
 
             // Skill install step — only run when binary install succeeded.
-            if success {
-                if let Some(skill_event) =
+            if success
+                && let Some(skill_event) =
                     run_skill_install(&project, throttle, &entry, &install_config, shell.as_ref())
                         .await
-                {
-                    events.push(skill_event);
-                }
+            {
+                events.push(skill_event);
             }
 
             Ok(TaskBlockResult {

@@ -121,10 +121,10 @@ pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
 }
 
 pub(crate) fn extract_json(s: &str) -> String {
-    if let Some(start) = s.find('{') {
-        if let Some(end) = s.rfind('}') {
-            return s[start..=end].to_string();
-        }
+    if let Some(start) = s.find('{')
+        && let Some(end) = s.rfind('}')
+    {
+        return s[start..=end].to_string();
     }
     s.to_string()
 }

@@ -178,10 +178,10 @@ fn build_strategic_result(
 
 /// Parse the agent output as a JSON object with an `areas` array.
 fn parse_strategic_assessment(output: &str) -> Vec<serde_json::Value> {
-    if let Some(parsed) = super::parse_agent_json(output) {
-        if let Some(areas) = parsed.get("areas").and_then(serde_json::Value::as_array) {
-            return areas.clone();
-        }
+    if let Some(parsed) = super::parse_agent_json(output)
+        && let Some(areas) = parsed.get("areas").and_then(serde_json::Value::as_array)
+    {
+        return areas.clone();
     }
 
     // Fallback: single generic area

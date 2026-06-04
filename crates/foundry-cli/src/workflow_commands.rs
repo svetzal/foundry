@@ -379,10 +379,10 @@ pub async fn validate(
 
         if let Some(terminal) = events.iter().find(|e| e.event_type == "validation_completed") {
             print_validation_result(project_name, &terminal.payload_json);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&terminal.payload_json) {
-                if !v.bool_or("success", false) {
-                    any_failed = true;
-                }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&terminal.payload_json)
+                && !v.bool_or("success", false)
+            {
+                any_failed = true;
             }
         }
 
@@ -416,13 +416,12 @@ fn print_validation_result(project: &str, payload_json: &str) {
             let marker = if passed { "ok" } else { "FAILED" };
             let req = if required { "required" } else { "optional" };
             print!("    {name}: {marker} ({req})");
-            if !passed {
-                if let Some(output) = gate.get("output").and_then(serde_json::Value::as_str) {
-                    if !output.is_empty() {
-                        let snippet: String = output.chars().take(200).collect();
-                        print!(" — {snippet}");
-                    }
-                }
+            if !passed
+                && let Some(output) = gate.get("output").and_then(serde_json::Value::as_str)
+                && !output.is_empty()
+            {
+                let snippet: String = output.chars().take(200).collect();
+                print!(" — {snippet}");
             }
             println!();
         }

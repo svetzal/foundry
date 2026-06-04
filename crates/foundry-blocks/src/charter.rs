@@ -29,40 +29,38 @@ pub fn check_charter(project_dir: &Path) -> CharterResult {
 
     // Simple content-length checks: read file, verify trimmed length meets threshold.
     for (filename, label) in &[("CHARTER.md", "CHARTER.md"), ("README.md", "README.md")] {
-        if let Ok(content) = std::fs::read_to_string(project_dir.join(filename)) {
-            if content.trim().len() >= MIN_CONTENT_LENGTH {
-                sources.push((*label).to_string());
-            }
+        if let Ok(content) = std::fs::read_to_string(project_dir.join(filename))
+            && content.trim().len() >= MIN_CONTENT_LENGTH
+        {
+            sources.push((*label).to_string());
         }
     }
 
     // CLAUDE.md: requires section extraction rather than a raw length check.
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("CLAUDE.md")) {
-        if let Some(section) = extract_section(&content, "## Project Charter") {
-            if section.trim().len() >= MIN_CONTENT_LENGTH {
-                sources.push("CLAUDE.md (Project Charter section)".to_string());
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("CLAUDE.md"))
+        && let Some(section) = extract_section(&content, "## Project Charter")
+        && section.trim().len() >= MIN_CONTENT_LENGTH
+    {
+        sources.push("CLAUDE.md (Project Charter section)".to_string());
     }
 
     // Cargo.toml: presence of a description field inside [package].
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("Cargo.toml")) {
-        if content.contains("[package]") && content.contains("description") {
-            sources.push("Cargo.toml (package description)".to_string());
-        }
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("Cargo.toml"))
+        && content.contains("[package]")
+        && content.contains("description")
+    {
+        sources.push("Cargo.toml (package description)".to_string());
     }
 
     // package.json: non-empty "description" key.
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json")) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            if json
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|d| !d.is_empty())
-            {
-                sources.push("package.json (description)".to_string());
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json"))
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+        && json
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|d| !d.is_empty())
+    {
+        sources.push("package.json (description)".to_string());
     }
 
     let passed = !sources.is_empty();

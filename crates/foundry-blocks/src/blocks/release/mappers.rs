@@ -47,12 +47,11 @@ impl ReleaseOutputMapper {
             "success": success,
         });
 
-        if let Some(extra) = &self.extra_payload {
-            if let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
-            {
-                for (k, v) in extra {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = &self.extra_payload
+            && let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
+        {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone());
             }
         }
 
@@ -86,12 +85,11 @@ impl OutputMapper<ReleaseOutput> for ReleaseOutputMapper {
             "dry_run": true,
         });
 
-        if let Some(extra) = &self.extra_payload {
-            if let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
-            {
-                for (k, v) in extra {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = &self.extra_payload
+            && let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
+        {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone());
             }
         }
 

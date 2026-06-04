@@ -45,10 +45,10 @@ impl TraceWriter {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let candidate = entry.path().join(&filename);
-                if candidate.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&candidate) {
-                        return serde_json::from_str(&content).ok();
-                    }
+                if candidate.exists()
+                    && let Ok(content) = std::fs::read_to_string(&candidate)
+                {
+                    return serde_json::from_str(&content).ok();
                 }
             }
         }

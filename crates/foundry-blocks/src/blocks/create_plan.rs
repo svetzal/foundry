@@ -223,12 +223,12 @@ fn parse_correction_needed(output: &str) -> (bool, String) {
     };
 
     for candidate in candidates {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
-            if let Some(serde_json::Value::Bool(b)) = v.get("correctionNeeded") {
-                let reason =
-                    v.get("reason").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                return (*b, reason);
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate)
+            && let Some(serde_json::Value::Bool(b)) = v.get("correctionNeeded")
+        {
+            let reason =
+                v.get("reason").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+            return (*b, reason);
         }
     }
 

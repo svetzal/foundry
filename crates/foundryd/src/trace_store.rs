@@ -121,10 +121,10 @@ impl TraceStore {
         // Memory lookup
         {
             let state = self.state.read().expect("trace store lock poisoned");
-            if let Some(entry) = state.entries.get(event_id) {
-                if Instant::now().duration_since(entry.stored_at) < self.ttl {
-                    return Some(entry.result.clone());
-                }
+            if let Some(entry) = state.entries.get(event_id)
+                && Instant::now().duration_since(entry.stored_at) < self.ttl
+            {
+                return Some(entry.result.clone());
             }
         }
 
@@ -213,24 +213,23 @@ impl TraceStore {
         for block in &result.block_executions {
             // The block's own span_id is its child span; its trace_id comes
             // from the trigger event.
-            if let Some(span_id) = block.span_id.as_deref() {
-                if let Some(trace_id) =
+            if let Some(span_id) = block.span_id.as_deref()
+                && let Some(trace_id) =
                     event_trace_by_id.get(block.trigger_event_id.as_str()).copied()
-                {
-                    state
-                        .span_to_trace
-                        .entry(span_id.to_string())
-                        .or_insert_with(|| trace_id.to_string());
-                    state
-                        .trace_to_spans
-                        .entry(trace_id.to_string())
-                        .or_default()
-                        .insert(span_id.to_string());
-                    state
-                        .trace_to_root_event
-                        .entry(trace_id.to_string())
-                        .or_insert_with(|| event_id.to_string());
-                }
+            {
+                state
+                    .span_to_trace
+                    .entry(span_id.to_string())
+                    .or_insert_with(|| trace_id.to_string());
+                state
+                    .trace_to_spans
+                    .entry(trace_id.to_string())
+                    .or_default()
+                    .insert(span_id.to_string());
+                state
+                    .trace_to_root_event
+                    .entry(trace_id.to_string())
+                    .or_insert_with(|| event_id.to_string());
             }
         }
     }
@@ -261,16 +260,15 @@ impl TraceStore {
         }
 
         for block in &result.block_executions {
-            if let Some(span_id) = block.span_id.as_deref() {
-                if let Some(trace_id) =
+            if let Some(span_id) = block.span_id.as_deref()
+                && let Some(trace_id) =
                     event_trace_by_id.get(block.trigger_event_id.as_str()).copied()
-                {
-                    state.span_to_trace.remove(span_id);
-                    if let Some(spans) = state.trace_to_spans.get_mut(trace_id) {
-                        spans.remove(span_id);
-                    }
-                    affected_traces.insert(trace_id.to_string());
+            {
+                state.span_to_trace.remove(span_id);
+                if let Some(spans) = state.trace_to_spans.get_mut(trace_id) {
+                    spans.remove(span_id);
                 }
+                affected_traces.insert(trace_id.to_string());
             }
         }
 

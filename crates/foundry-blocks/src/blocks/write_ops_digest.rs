@@ -97,14 +97,14 @@ fn write(
                 "ops digest written",
             );
             // Advance the watermark so the next run doesn't re-process events.
-            if let Some(wm) = &composed.new_watermark {
-                if let Err(e) = write_watermark(watermark_path, wm) {
-                    tracing::warn!(
-                        path = %watermark_path.display(),
-                        error = %e,
-                        "ops digest written but watermark advance failed",
-                    );
-                }
+            if let Some(wm) = &composed.new_watermark
+                && let Err(e) = write_watermark(watermark_path, wm)
+            {
+                tracing::warn!(
+                    path = %watermark_path.display(),
+                    error = %e,
+                    "ops digest written but watermark advance failed",
+                );
             }
             let payload = OpsDigestCompletedPayload {
                 success: true,

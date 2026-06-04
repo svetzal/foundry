@@ -159,10 +159,10 @@ impl Engine {
     /// Both are best-effort: write failures are logged, and a broadcast with
     /// no receivers is normal. Neither ever interrupts event processing.
     fn persist_one(&self, event: &Event) {
-        if let Some(writer) = &self.event_writer {
-            if let Err(e) = writer.write(event) {
-                tracing::warn!(error = %e, event_id = %event.id, "failed to write event to JSONL");
-            }
+        if let Some(writer) = &self.event_writer
+            && let Err(e) = writer.write(event)
+        {
+            tracing::warn!(error = %e, event_id = %event.id, "failed to write event to JSONL");
         }
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event.clone());
@@ -249,13 +249,13 @@ impl Engine {
             self.persist_and_broadcast_events(children, trigger, block_span_id, state, deliver);
         tracing::info!(gather_id = %gather_id, children = child_count, "scatter dispatched");
         // An empty scatter is satisfied on registration — deliver its reduce.
-        if let Some(reduce) = immediate {
-            if deliver {
-                self.persist_one(&reduce);
-                state.all_events.push(reduce.clone());
-                state.queue.push(reduce.clone());
-                self.deliver_reduce_if_satisfied(&reduce, state);
-            }
+        if let Some(reduce) = immediate
+            && deliver
+        {
+            self.persist_one(&reduce);
+            state.all_events.push(reduce.clone());
+            state.queue.push(reduce.clone());
+            self.deliver_reduce_if_satisfied(&reduce, state);
         }
         child_ids
     }
@@ -454,10 +454,10 @@ impl Engine {
 
         // Persist the root event before processing begins so it is recorded
         // even if a downstream block panics.
-        if let Some(writer) = &self.event_writer {
-            if let Err(e) = writer.write(&event) {
-                tracing::warn!(error = %e, "failed to write root event to JSONL");
-            }
+        if let Some(writer) = &self.event_writer
+            && let Err(e) = writer.write(&event)
+        {
+            tracing::warn!(error = %e, "failed to write root event to JSONL");
         }
 
         // Broadcast the root event immediately so Watch clients see it in real time.

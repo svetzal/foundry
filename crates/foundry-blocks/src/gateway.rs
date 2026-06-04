@@ -217,29 +217,27 @@ impl AgentGateway for ClaudeAgentGateway {
 fn extract_final_text(lines: &[StreamedLine]) -> String {
     use serde_json::Value;
     for line in lines.iter().rev() {
-        if let Ok(v) = serde_json::from_str::<Value>(&line.raw) {
-            if v.get("type").and_then(Value::as_str) == Some("result") {
-                if let Some(s) = v.get("result").and_then(Value::as_str) {
-                    return s.to_string();
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(&line.raw)
+            && v.get("type").and_then(Value::as_str) == Some("result")
+            && let Some(s) = v.get("result").and_then(Value::as_str)
+        {
+            return s.to_string();
         }
     }
     let mut out = String::new();
     for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(&line.raw) {
-            if v.get("type").and_then(Value::as_str) == Some("assistant") {
-                if let Some(content) = v.pointer("/message/content").and_then(Value::as_array) {
-                    for block in content {
-                        if block.get("type").and_then(Value::as_str) == Some("text") {
-                            if let Some(t) = block.get("text").and_then(Value::as_str) {
-                                if !out.is_empty() {
-                                    out.push('\n');
-                                }
-                                out.push_str(t);
-                            }
-                        }
+        if let Ok(v) = serde_json::from_str::<Value>(&line.raw)
+            && v.get("type").and_then(Value::as_str) == Some("assistant")
+            && let Some(content) = v.pointer("/message/content").and_then(Value::as_array)
+        {
+            for block in content {
+                if block.get("type").and_then(Value::as_str) == Some("text")
+                    && let Some(t) = block.get("text").and_then(Value::as_str)
+                {
+                    if !out.is_empty() {
+                        out.push('\n');
                     }
+                    out.push_str(t);
                 }
             }
         }

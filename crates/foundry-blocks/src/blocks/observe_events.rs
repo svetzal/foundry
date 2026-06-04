@@ -299,10 +299,10 @@ fn read_jsonl_file(path: &Path, cutoff: DateTime<FixedOffset>, out: &mut Vec<Mbo
         match serde_json::from_str::<MbosEvent>(trimmed) {
             Ok(event) => {
                 // Only include events strictly after the cutoff.
-                if let Ok(ts) = DateTime::parse_from_rfc3339(&event.occurred_at) {
-                    if ts > cutoff {
-                        out.push(event);
-                    }
+                if let Ok(ts) = DateTime::parse_from_rfc3339(&event.occurred_at)
+                    && ts > cutoff
+                {
+                    out.push(event);
                 }
                 // Events with unparseable timestamps are silently skipped.
             }

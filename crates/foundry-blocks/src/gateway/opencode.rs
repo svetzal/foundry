@@ -323,10 +323,10 @@ fn build_config_content(agent_key: &str, body: &str) -> String {
 /// First `sessionID` seen in the JSONL stream.
 fn extract_session_id(lines: &[StreamedLine]) -> Option<String> {
     for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(&line.raw) {
-            if let Some(s) = v.get("sessionID").and_then(Value::as_str) {
-                return Some(s.to_string());
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(&line.raw)
+            && let Some(s) = v.get("sessionID").and_then(Value::as_str)
+        {
+            return Some(s.to_string());
         }
     }
     None
@@ -349,12 +349,11 @@ fn count_error_events(lines: &[StreamedLine]) -> usize {
 fn extract_text_from_stream(lines: &[StreamedLine]) -> String {
     let mut out = String::new();
     for line in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(&line.raw) {
-            if v.get("type").and_then(Value::as_str) == Some("text") {
-                if let Some(t) = v.pointer("/part/text").and_then(Value::as_str) {
-                    out.push_str(t);
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(&line.raw)
+            && v.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(t) = v.pointer("/part/text").and_then(Value::as_str)
+        {
+            out.push_str(t);
         }
     }
     out.trim().to_string()
@@ -373,10 +372,10 @@ fn parse_export_result(stdout: &str) -> Option<String> {
     let parts = last_assistant.get("parts")?.as_array()?;
     let mut out = String::new();
     for p in parts {
-        if p.get("type").and_then(Value::as_str) == Some("text") {
-            if let Some(t) = p.get("text").and_then(Value::as_str) {
-                out.push_str(t);
-            }
+        if p.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(t) = p.get("text").and_then(Value::as_str)
+        {
+            out.push_str(t);
         }
     }
     Some(out.trim().to_string())

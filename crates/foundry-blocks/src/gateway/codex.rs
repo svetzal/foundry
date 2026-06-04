@@ -267,14 +267,12 @@ async fn read_last_message(path: &std::path::Path) -> Option<String> {
 /// `item.completed` event in the JSONL stream.
 fn extract_agent_message(lines: &[StreamedLine]) -> String {
     for line in lines.iter().rev() {
-        if let Ok(v) = serde_json::from_str::<Value>(&line.raw) {
-            if v.get("type").and_then(Value::as_str) == Some("item.completed")
-                && v.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
-            {
-                if let Some(t) = v.pointer("/item/text").and_then(Value::as_str) {
-                    return t.trim().to_string();
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(&line.raw)
+            && v.get("type").and_then(Value::as_str) == Some("item.completed")
+            && v.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+            && let Some(t) = v.pointer("/item/text").and_then(Value::as_str)
+        {
+            return t.trim().to_string();
         }
     }
     String::new()

@@ -333,10 +333,10 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
             .first()
             .map(|e| (e.event_type.to_string(), e.project.clone()))
             .unwrap_or_default();
-        if let Some(filter) = project_filter {
-            if project != filter {
-                continue;
-            }
+        if let Some(filter) = project_filter
+            && project != filter
+        {
+            continue;
         }
         let success = result.is_success();
         let trace_id = result.events.first().and_then(|e| e.trace_id.clone());

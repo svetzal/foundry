@@ -161,18 +161,18 @@ fn gather_context(project_dir: &Path) -> String {
     // CI configurations
     let mut found_ci = Vec::new();
     let workflows_dir = project_dir.join(".github/workflows");
-    if workflows_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&workflows_dir) {
-            for entry in entries.flatten() {
-                let file_name = entry.file_name();
-                let path = Path::new(&file_name);
-                let is_yaml = path.extension().is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
-                });
-                if is_yaml {
-                    let name = file_name.to_string_lossy();
-                    found_ci.push(format!(".github/workflows/{name}"));
-                }
+    if workflows_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&workflows_dir)
+    {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let path = Path::new(&file_name);
+            let is_yaml = path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+            });
+            if is_yaml {
+                let name = file_name.to_string_lossy();
+                found_ci.push(format!(".github/workflows/{name}"));
             }
         }
     }
