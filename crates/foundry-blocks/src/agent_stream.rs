@@ -86,7 +86,7 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
             // Propagate the active block's span context to the child process as
             // a W3C `TRACEPARENT` env var. No-op when no span context is in
             // scope. Caller-provided env (below) wins if it sets TRACEPARENT.
-            foundry_core::span_context::inject_traceparent(&mut cmd);
+            foundry_sdk::span_context::inject_traceparent(&mut cmd);
 
             if let Some(pairs) = env {
                 for (k, v) in pairs {
@@ -196,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_injects_traceparent_when_span_context_set() {
-        use foundry_core::span_context::{SPAN_CONTEXT, SpanContext};
+        use foundry_sdk::span_context::{SPAN_CONTEXT, SpanContext};
 
         let ctx = SpanContext {
             trace_id: "0123456789abcdef0123456789abcdef".to_string(),

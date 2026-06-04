@@ -2,9 +2,11 @@
 
 ## Project Overview
 
-Foundry is an event-driven workflow engine for engineering automation. It consists of a Rust workspace with three crates:
+Foundry is an event-driven workflow engine for engineering automation. It consists of a Rust workspace with five crates:
 
-- **foundry-core** — Shared domain types (Event, TaskBlock trait, Throttle)
+- **foundry-sdk** — Stable SDK contract (Event, TaskBlock trait, Throttle, payloads)
+- **foundry-engine** — Core event processing engine
+- **foundry-blocks** — Task block implementations
 - **foundryd** — Daemon/service binary (gRPC server, engine, task blocks, trace store)
 - **foundry-cli** — CLI controller binary (gRPC client)
 
@@ -142,7 +144,7 @@ The gRPC RPCs are `SentinelEnable` and `SentinelDisable`. Both wake the daemon's
 
 ## Payload Conventions
 
-Task blocks in `foundryd` use typed `*Payload` structs from `foundry_core::payload` rather than untyped `serde_json` access.
+Task blocks in `foundryd` use typed `*Payload` structs from `foundry_sdk::payload` rather than untyped `serde_json` access.
 
 **Reading a trigger payload:**
 
@@ -181,7 +183,7 @@ trigger.with_payload(EventType::SomethingCompleted, &MyPayload { ... })?
 
 Foundry uses OpenTelemetry-shaped nested spans. Every event carries `trace_id` (32-char hex), `span_id` (16-char hex), and `parent_span_id` (16-char hex). It also carries `causation_id` — the `id` of the event that triggered the block which emitted it — recording the domain causality edge independent of span structure (`None` for root events), and `gather_id` — the fan-out (scatter/gather) group the event belongs to (`None` outside any fan-out). The engine stamps span fields per two rules (default + span-opener registry), stamps `causation_id` unconditionally, and propagates `gather_id` verbatim like `trace_id`; all stamping is "set if unset". Subprocesses inherit `TRACEPARENT`.
 
-See `book/src/architecture/tracing.md` for the full model. When adding a new workflow `*Requested` event, register it as a span opener in `foundry_core::event::EventType::is_span_opener`.
+See `book/src/architecture/tracing.md` for the full model. When adding a new workflow `*Requested` event, register it as a span opener in `foundry_sdk::event::EventType::is_span_opener`.
 
 ## Key Conventions
 

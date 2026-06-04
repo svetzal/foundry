@@ -6,9 +6,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_engine::engine::Engine;
 use foundry_sdk::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
+use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 
 use foundry_blocks::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use foundry_blocks::shell::CommandResult;

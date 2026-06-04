@@ -1,19 +1,21 @@
 # Crate Structure
 
-Foundry is organised as a Cargo workspace with three crates:
+Foundry is organised as a Cargo workspace with five crates:
 
 ```text
 foundry/
 ├── Cargo.toml              # Workspace root
 ├── proto/foundry.proto     # gRPC service definition
 ├── crates/
-│   ├── foundry-core/       # Shared types (library)
+│   ├── foundry-sdk/        # Stable SDK contract (library)
+│   ├── foundry-engine/     # Core event processing engine (library)
+│   ├── foundry-blocks/     # Built-in task block implementations (library)
 │   ├── foundryd/           # Daemon (binary)
 │   └── foundry-cli/        # CLI controller (binary)
 └── book/                   # This documentation
 ```
 
-## foundry-core
+## foundry-sdk
 
 Shared types used by both the daemon and CLI:
 
@@ -114,7 +116,7 @@ The CLI controller. Connects to `foundryd` over gRPC.
   directly from `~/.foundry/traces/` without a daemon connection
 - `registry_commands.rs` — pure I/O implementations of the `registry`
   subcommands (`init`, `list`, `show`, `add`, `remove`, `edit`); reads and
-  writes `~/.foundry/registry.json` using `foundry_core::registry` types
+  writes `~/.foundry/registry.json` using `foundry_sdk::registry` types
 
 ## proto/foundry.proto
 

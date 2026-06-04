@@ -2,15 +2,15 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::gates::GateDefinition;
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gates::GateDefinition;
+use foundry_sdk::payload::{
     ChainContext, GateResolutionCompletedPayload, PreflightCompletedPayload,
     ProjectCompletedPayload,
 };
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::ShellGateway;
 
@@ -129,9 +129,9 @@ impl TaskBlock for RunPreflightGates {
 fn build_preflight_result(
     project: &str,
     workflow: WorkflowType,
-    run_result: &foundry_core::gates::GatesRunResult,
+    run_result: &foundry_sdk::gates::GatesRunResult,
     chain: ChainContext,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> TaskBlockResult {
     let results = run_result.results.clone();
     let success = run_result.required_passed;
@@ -211,10 +211,10 @@ fn parse_gates_from_value(gates_array: Option<&Vec<serde_json::Value>>) -> Vec<G
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
 

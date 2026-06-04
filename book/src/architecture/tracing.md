@@ -105,7 +105,7 @@ causation, not spans.
 
 Events emitted by Foundry prior to OTel-shaped tracing carry IDs in the
 `trc_<uuid>` form. These remain valid and queryable — Foundry continues
-to recognize them via `foundry_core::is_legacy_trace_id`, which returns
+to recognize them via `foundry_sdk::is_legacy_trace_id`, which returns
 true for any ID starting with `trc_`. Tooling that renders trace trees
 falls back to a flat chronological view when it detects a legacy trace.
 
@@ -180,7 +180,7 @@ and an event outside any fan-out simply carries `None`.
 ## Span-Opener Registry
 
 The span-opener registry is defined as `EventType::is_span_opener` in
-`foundry-core`. The current openers are:
+`foundry-sdk`. The current openers are:
 
 - **Cycle and project-run openers**
   - `MaintenanceCycleStarted`
@@ -292,7 +292,7 @@ Foundry retains read-side compatibility with traces emitted before the
 nested model existed. Specifically:
 
 - Events with `trc_*` IDs (the pre-OTel format) are still queryable.
-  `foundry_core::is_legacy_trace_id` identifies them, and both the
+  `foundry_sdk::is_legacy_trace_id` identifies them, and both the
   `Trace` and `Span` RPCs accept them.
 - `foundry trace` detects legacy traces — events that carry a
   `trace_id` but no `span_id` — and automatically falls back to the

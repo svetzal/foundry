@@ -6,9 +6,9 @@ use tokio::sync::{Notify, broadcast};
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
-use foundry_core::event::Event;
-use foundry_core::registry::Registry;
-use foundry_core::sentinel::SentinelStore;
+use foundry_sdk::event::Event;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
     EmitRequest, EmitResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
@@ -267,7 +267,7 @@ mod tests {
                     if event.id == root_event_id {
                         saw_root = true;
                     }
-                    if event.event_type == foundry_core::event::EventType::ProjectRunCompleted {
+                    if event.event_type == foundry_sdk::event::EventType::ProjectRunCompleted {
                         saw_completed = true;
                         completed_payload = event.payload.clone();
                         break;
@@ -309,7 +309,7 @@ mod tests {
             match result {
                 Ok(Ok(event)) => {
                     if event.event_type
-                        == foundry_core::event::EventType::MaintenanceSummaryRequested
+                        == foundry_sdk::event::EventType::MaintenanceSummaryRequested
                         && event.project == "system"
                     {
                         saw_summary = true;
@@ -401,7 +401,7 @@ mod tests {
             let result = tokio::time::timeout_at(deadline, rx.recv()).await;
             match result {
                 Ok(Ok(event)) => {
-                    if event.event_type == foundry_core::event::EventType::ProjectRunCompleted {
+                    if event.event_type == foundry_sdk::event::EventType::ProjectRunCompleted {
                         saw_completed = true;
                         break;
                     }
@@ -491,8 +491,8 @@ mod tests {
         // Drain all events — none should be MaintenanceCycleCompleted or ProjectRunCompleted.
         let mut saw_completed = false;
         while let Ok(event) = rx.try_recv() {
-            if event.event_type == foundry_core::event::EventType::MaintenanceCycleCompleted
-                || event.event_type == foundry_core::event::EventType::ProjectRunCompleted
+            if event.event_type == foundry_sdk::event::EventType::MaintenanceCycleCompleted
+                || event.event_type == foundry_sdk::event::EventType::ProjectRunCompleted
             {
                 saw_completed = true;
             }

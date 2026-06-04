@@ -82,7 +82,7 @@ impl AgentGateway for RoutingAgentGateway {
 mod tests {
     use super::*;
     use crate::gateway::fakes::FakeAgentGateway;
-    use foundry_core::gateway::{AgentAccess, ModelTier, ReasoningEffort};
+    use foundry_sdk::gateway::{AgentAccess, ModelTier, ReasoningEffort};
     use std::path::PathBuf;
     use std::time::Duration;
 

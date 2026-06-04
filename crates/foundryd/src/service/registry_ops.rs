@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use tonic::{Request, Response, Status};
 
-use foundry_core::registry::{
+use foundry_sdk::registry::{
     InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry, RegistryMutationError,
     parse_stack,
 };
@@ -30,7 +30,7 @@ fn mutation_error_to_status(err: RegistryMutationError) -> Status {
     }
 }
 
-pub(super) fn project_to_proto(entry: &foundry_core::registry::ProjectEntry) -> Project {
+pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> Project {
     let (install_command, install_brew) = match &entry.install {
         Some(InstallConfig::Command(cmd)) => (cmd.clone(), String::new()),
         Some(InstallConfig::Brew(formula)) => (String::new(), formula.clone()),
@@ -292,7 +292,7 @@ mod tests {
     use tempfile::NamedTempFile;
     use tonic::Request;
 
-    use foundry_core::registry::{
+    use foundry_sdk::registry::{
         ActionFlags, InstallConfig, ProjectEntry, Registry, RegistryMutationError, Stack,
     };
 

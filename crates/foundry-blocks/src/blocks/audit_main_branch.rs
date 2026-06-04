@@ -1,10 +1,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{MainBranchAuditedPayload, ReleaseTagAuditedPayload};
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{MainBranchAuditedPayload, ReleaseTagAuditedPayload};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ScannerGateway;
 
@@ -112,8 +112,8 @@ impl TaskBlock for AuditMainBranch {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::EventType;
-    use foundry_core::registry::Registry;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::registry::Registry;
 
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;

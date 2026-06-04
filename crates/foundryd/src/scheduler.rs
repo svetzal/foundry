@@ -35,8 +35,8 @@ use cron::Schedule as CronSchedule;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use foundry_core::event::{Event, mint_span_id, mint_trace_id};
-use foundry_core::sentinel::{Schedule as SentinelSchedule, SentinelEntry, SentinelStore};
+use foundry_sdk::event::{Event, mint_span_id, mint_trace_id};
+use foundry_sdk::sentinel::{Schedule as SentinelSchedule, SentinelEntry, SentinelStore};
 
 /// Fire-and-forget hook for handing a freshly-built root event to whatever
 /// machinery actually runs it. In production this calls
@@ -212,9 +212,9 @@ mod tests {
     use std::sync::Mutex;
 
     use chrono::TimeZone;
-    use foundry_core::event::EventType;
-    use foundry_core::sentinel::{EmitSpec, Schedule, SentinelEntry, SentinelStore};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::sentinel::{EmitSpec, Schedule, SentinelEntry, SentinelStore};
+    use foundry_sdk::throttle::Throttle;
 
     use super::*;
 

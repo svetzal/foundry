@@ -1,8 +1,8 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ProjectCompletedPayload, ProjectRunCompletedPayload};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{ProjectCompletedPayload, ProjectRunCompletedPayload};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Emits a uniform `ProjectRunCompleted` terminal for a per-project run that
 /// is part of a scattered maintenance cycle.
@@ -68,8 +68,8 @@ impl TaskBlock for CompleteProjectRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     fn terminal(event_type: EventType, success: bool, gather_id: Option<&str>) -> Event {
         Event::new(

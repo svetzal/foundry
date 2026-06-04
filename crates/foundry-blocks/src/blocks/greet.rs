@@ -1,10 +1,10 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     GreetingComposedPayload, GreetingDeliveredPayload, GreetingRequestedPayload,
 };
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Composes a greeting message from a greet request.
 /// Observer — always runs regardless of throttle.
@@ -101,10 +101,10 @@ impl TaskBlock for DeliverGreeting {
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::payload::{GreetingComposedPayload, GreetingRequestedPayload};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::payload::{GreetingComposedPayload, GreetingRequestedPayload};
+    use foundry_sdk::task_block::{BlockKind, TaskBlock};
+    use foundry_sdk::throttle::Throttle;
 
     use super::{ComposeGreeting, DeliverGreeting};
 

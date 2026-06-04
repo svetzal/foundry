@@ -10,9 +10,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_blocks::trace_writer::TraceWriter;
-use foundry_core::registry::Registry;
-use foundry_core::sentinel::SentinelStore;
 use foundry_engine::engine::Engine;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
     proto::{
         RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_server::Foundry,

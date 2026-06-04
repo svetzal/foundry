@@ -12,7 +12,7 @@ name = "foundry"
 path = "src/main.rs"
 
 [dependencies]
-foundry-core = { workspace = true }
+foundry-sdk = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }

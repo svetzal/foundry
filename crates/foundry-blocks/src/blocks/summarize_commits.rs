@@ -10,12 +10,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     CommitInfo, CommitSummaryCompletedPayload, CommitsObservedPayload, ProjectCommits,
 };
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::throttle::Throttle;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 

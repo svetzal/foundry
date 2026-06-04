@@ -3,7 +3,7 @@ mod macros;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use foundry_core::task_block::TaskBlockResult;
+use foundry_sdk::task_block::TaskBlockResult;
 
 mod agent_helpers;
 mod change_detection;
@@ -29,12 +29,12 @@ pub(super) use execution::{ExecutionContext, execute_agent_block};
 /// ```
 pub(super) struct TriggerContext {
     pub project: String,
-    pub throttle: foundry_core::throttle::Throttle,
+    pub throttle: foundry_sdk::throttle::Throttle,
     pub payload: serde_json::Value,
 }
 
 impl TriggerContext {
-    pub fn from_trigger(trigger: &foundry_core::event::Event) -> Self {
+    pub fn from_trigger(trigger: &foundry_sdk::event::Event) -> Self {
         Self {
             project: trigger.project.clone(),
             throttle: trigger.throttle,
@@ -48,9 +48,9 @@ impl TriggerContext {
 /// Replaces the two-phase pattern of cloning `Option<ProjectEntry>` before `Box::pin`
 /// and then unwrapping inside the async block.
 fn require_project(
-    registry: &foundry_core::registry::Registry,
+    registry: &foundry_sdk::registry::Registry,
     project: &str,
-) -> Result<foundry_core::registry::ProjectEntry, TaskBlockResult> {
+) -> Result<foundry_sdk::registry::ProjectEntry, TaskBlockResult> {
     registry.find_project(project).cloned().ok_or_else(|| {
         tracing::warn!(project = %project, "project not found in registry");
         TaskBlockResult::project_not_found(project)
@@ -64,8 +64,8 @@ fn require_project(
 /// helper instead of `.expect("registry lock poisoned")` means the daemon continues serving
 /// other events rather than aborting on the affected block.
 fn read_registry(
-    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
-) -> anyhow::Result<RwLockReadGuard<'_, foundry_core::registry::Registry>> {
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) -> anyhow::Result<RwLockReadGuard<'_, foundry_sdk::registry::Registry>> {
     registry.read().map_err(|_| {
         anyhow::anyhow!(
             "registry lock poisoned: a prior writer panicked while holding the write lock"
@@ -163,7 +163,7 @@ mod test_helpers;
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::registry::Registry;
+    use foundry_sdk::registry::Registry;
 
     use super::read_registry;
 

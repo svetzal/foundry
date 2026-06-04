@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use comfy_table::{ContentArrangement, Table};
-use foundry_core::gates::{GateDefinition, read_gates_file, write_gates_file};
+use foundry_sdk::gates::{GateDefinition, read_gates_file, write_gates_file};
 
 /// Display current gates for a project in table format.
 pub fn show(project_dir: &Path) -> Result<()> {
@@ -378,7 +378,7 @@ pub fn resolve_project_dir(
         }
         (Some(name), None) => {
             let registry =
-                foundry_core::registry::Registry::load(registry_path).with_context(|| {
+                foundry_sdk::registry::Registry::load(registry_path).with_context(|| {
                     format!("failed to load registry from {}", registry_path.display())
                 })?;
             let entry = registry

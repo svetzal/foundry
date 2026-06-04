@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     ChainContext, PlanCompletedPayload, ProjectCompletedPayload, TriageCompletedPayload,
 };
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
 
@@ -33,7 +33,7 @@ agent_block_new!(
 /// accurate terminal event rather than falling back to block-level aggregation.
 fn triage_rejection_result(
     payload: &TriageCompletedPayload,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> anyhow::Result<TaskBlockResult> {
     let project = payload.project.as_str();
     let summary = format!("no correction warranted — {}", payload.reason);
@@ -243,10 +243,10 @@ fn parse_correction_needed(output: &str) -> (bool, String) {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};

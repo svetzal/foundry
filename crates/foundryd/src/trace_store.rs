@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use foundry_core::event::Event;
-use foundry_core::trace::{BlockExecution, ProcessResult};
+use foundry_sdk::event::Event;
+use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
 use foundry_blocks::trace_writer::TraceWriter;
 
@@ -287,9 +287,9 @@ impl TraceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
-    use foundry_core::trace::BlockExecution;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::trace::BlockExecution;
 
     fn sample_result() -> ProcessResult {
         let event = Event::new(

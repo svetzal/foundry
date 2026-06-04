@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use foundry_core::gates::{GateDefinition, GateResult, GatesRunResult};
+use foundry_sdk::gates::{GateDefinition, GateResult, GatesRunResult};
 
 use crate::gateway::ShellGateway;
 
@@ -71,7 +71,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use foundry_core::gates::GateDefinition;
+    use foundry_sdk::gates::GateDefinition;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;

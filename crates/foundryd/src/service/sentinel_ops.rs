@@ -4,10 +4,10 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use tonic::{Request, Response, Status};
 
-use foundry_core::sentinel::{
+use foundry_sdk::sentinel::{
     Schedule as SentinelSchedule, SentinelEntry, SentinelMutationError, SentinelStore,
 };
-use foundry_core::throttle::Throttle;
+use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     Sentinel as ProtoSentinel, SentinelDisableRequest, SentinelDisableResponse,
@@ -102,7 +102,7 @@ mod tests {
     use tokio::sync::Notify;
     use tonic::Request;
 
-    use foundry_core::sentinel::{SentinelMutationError, SentinelStore};
+    use foundry_sdk::sentinel::{SentinelMutationError, SentinelStore};
 
     use crate::proto::{SentinelDisableRequest, SentinelEnableRequest};
 

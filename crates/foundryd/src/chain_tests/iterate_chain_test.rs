@@ -13,9 +13,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::throttle::Throttle;
 
 use super::test_helpers;
 use foundry_blocks::gateway::{AgentGateway, AgentResponse, ShellGateway};
@@ -1058,7 +1058,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
 ///
 /// Used by regression tests to assert the invariant: every trace must end with
 /// exactly one terminal event whose `success` field accurately reflects the run.
-fn count_terminal_events(result: &foundry_core::trace::ProcessResult) -> usize {
+fn count_terminal_events(result: &foundry_sdk::trace::ProcessResult) -> usize {
     result
         .events
         .iter()

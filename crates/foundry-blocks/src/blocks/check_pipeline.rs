@@ -2,10 +2,10 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::PipelineCheckedPayload;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::PipelineCheckedPayload;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
@@ -55,8 +55,8 @@ fn passing_payload(conclusion: &str) -> serde_json::Value {
 
 async fn run_check(
     project: String,
-    throttle: foundry_core::throttle::Throttle,
-    entry: foundry_core::registry::ProjectEntry,
+    throttle: foundry_sdk::throttle::Throttle,
+    entry: foundry_sdk::registry::ProjectEntry,
     shell: Arc<dyn ShellGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     if entry.repo.is_empty() {
@@ -164,7 +164,7 @@ fn build_pipeline_result(
     run_name: &str,
     passing: bool,
     failure_logs: Option<&str>,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> TaskBlockResult {
     let summary = if passing {
         format!("Pipeline passing: {run_name} (#{run_id})")
@@ -218,9 +218,9 @@ async fn fetch_failure_logs(run_id: u64, repo: &str, shell: &dyn ShellGateway) -
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::task_block::TaskBlock;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_sdk::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;

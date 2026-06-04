@@ -1,6 +1,6 @@
 # Event Types
 
-All event types are defined in `foundry-core/src/event.rs` as the `EventType`
+All event types are defined in `foundry-sdk/src/event.rs` as the `EventType`
 enum. The string representation uses `snake_case`.
 
 Every event carries these common fields:

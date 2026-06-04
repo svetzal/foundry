@@ -150,7 +150,7 @@ you know to restart the daemon to pick up the change).
 There are two paths:
 
 - **Canonical sentinels** (the ones every Foundry install should have) are
-  added to `SentinelStore::default_seed()` in `foundry-core`. The additive
+  added to `SentinelStore::default_seed()` in `foundry-sdk`. The additive
   seed-merge that runs on every daemon start will append them to existing
   `sentinels.json` files automatically — no JSON editing, no migration
   step. This is how `daily-commit-digest` reached installs that were

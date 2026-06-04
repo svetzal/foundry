@@ -27,8 +27,6 @@ foundry-sdk = { path = "crates/foundry-sdk" }
 foundry-engine = { path = "crates/foundry-engine" }
 # Built-in task blocks (the batteries) — a downstream SDK consumer.
 foundry-blocks = { path = "crates/foundry-blocks" }
-# Compatibility shim re-exporting foundry-sdk. Prefer foundry-sdk in new code.
-foundry-core = { path = "crates/foundry-core" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

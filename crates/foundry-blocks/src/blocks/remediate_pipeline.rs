@@ -3,10 +3,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::PipelineCheckedPayload;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::PipelineCheckedPayload;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentGateway, AgentProvider};
 
@@ -89,10 +89,10 @@ impl TaskBlock for RemediatePipeline {
 #[allow(clippy::too_many_arguments)]
 async fn run_remediation(
     project: String,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     run_name: String,
     failure_logs: String,
-    entry: foundry_core::registry::ProjectEntry,
+    entry: foundry_sdk::registry::ProjectEntry,
     agent: Arc<dyn AgentGateway>,
     provider: Option<AgentProvider>,
 ) -> anyhow::Result<TaskBlockResult> {
@@ -143,9 +143,9 @@ async fn run_remediation(
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::EventType;
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeAgentGateway;
 

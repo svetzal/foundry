@@ -4,12 +4,12 @@
 //! with Foundry, plus the I/O modules they lean on (shell execution, audit
 //! scanning, agent invocation, gateway implementations, gate running).
 //!
-//! Crucially, it depends only on the SDK contract (`foundry-sdk`, via the
-//! `foundry-core` shim) — **not** on the engine or the host. That is the proof
-//! that a third party can build their own block crate the same way: implement
-//! [`TaskBlock`], depend on the SDK, and nothing else.
+//! Crucially, it depends only on the SDK contract (`foundry-sdk`) — **not** on
+//! the engine or the host. That is the proof that a third party can build their
+//! own block crate the same way: implement [`TaskBlock`], depend on the SDK,
+//! and nothing else.
 //!
-//! [`TaskBlock`]: foundry_core::task_block::TaskBlock
+//! [`TaskBlock`]: foundry_sdk::task_block::TaskBlock
 #![allow(dead_code)]
 #![warn(clippy::unwrap_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]

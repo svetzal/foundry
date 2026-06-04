@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{AssessmentCompletedPayload, ChainContext, PreflightCompletedPayload};
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{AssessmentCompletedPayload, ChainContext, PreflightCompletedPayload};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{
     AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
@@ -245,10 +245,10 @@ fn parse_assessment(output: &str) -> (i64, String, String, String) {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};

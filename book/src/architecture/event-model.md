@@ -7,7 +7,7 @@ no opinion about what should happen next — task blocks make those decisions.
 ## Authoritative Source
 
 The canonical event type definitions live in
-`foundry-core/src/event.rs` (`EventType` enum). The implementation
+`foundry-sdk/src/event.rs` (`EventType` enum). The implementation
 roadmap for completing all task blocks and workflows is in
 `IMPLEMENTATION_PLAN.md` at the project root.
 

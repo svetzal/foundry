@@ -1,13 +1,13 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::has_loop_context;
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::loop_context::has_loop_context;
+use foundry_sdk::payload::{
     ChainContext, GateVerificationCompletedPayload, LoopContext, ProjectCompletedPayload,
     ProjectMaintenanceRequestedPayload, RetryRequestedPayload,
 };
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::workflow::WorkflowType;
 
 use super::TriggerContext;
 
@@ -97,10 +97,10 @@ impl TaskBlock for RouteGateResult {
 fn handle_gates_passed(
     project: &str,
     workflow: WorkflowType,
-    completion_event_type: foundry_core::event::EventType,
+    completion_event_type: foundry_sdk::event::EventType,
     in_loop: bool,
     context: &LoopContext,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> TaskBlockResult {
     tracing::info!(project = %project, workflow = %workflow, "all required gates passed");
 
@@ -158,12 +158,12 @@ fn handle_gates_passed(
 fn handle_retry_or_exhaustion(
     project: &str,
     workflow: WorkflowType,
-    completion_event_type: foundry_core::event::EventType,
+    completion_event_type: foundry_sdk::event::EventType,
     retry_count: u64,
-    results: &[foundry_core::gates::GateResult],
+    results: &[foundry_sdk::gates::GateResult],
     execution_output: Option<String>,
-    context: foundry_core::payload::LoopContext,
-    throttle: foundry_core::throttle::Throttle,
+    context: foundry_sdk::payload::LoopContext,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> TaskBlockResult {
     let max_retries: u64 = 3;
     if retry_count < max_retries {
@@ -219,7 +219,7 @@ fn handle_retry_or_exhaustion(
 }
 
 /// Build a summary of gate failures from the gate results slice.
-fn build_failure_context(results: &[foundry_core::gates::GateResult]) -> String {
+fn build_failure_context(results: &[foundry_sdk::gates::GateResult]) -> String {
     let failures: Vec<String> = results
         .iter()
         .filter(|r| !r.passed)
@@ -241,9 +241,9 @@ fn build_failure_context(results: &[foundry_core::gates::GateResult]) -> String 
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use super::RouteGateResult;
 

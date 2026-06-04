@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table};
 
-use foundry_core::trace::{ProcessResult, TraceIndex};
+use foundry_sdk::trace::{ProcessResult, TraceIndex};
 
 use crate::commands::parse_traceparent_from_env;
 use crate::proto::{
@@ -290,7 +290,7 @@ fn print_event_tree(
 
 /// Render a `local_skill_install_completed` event in compact inline format.
 fn print_skill_install_event(payload_json: &str, indent: &str) {
-    use foundry_core::event::PayloadExt;
+    use foundry_sdk::event::PayloadExt;
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
         let success = v.bool_or("success", false);
         let command = v.str_or("command", "(unknown command)");
@@ -378,7 +378,7 @@ fn print_trace_table(date: &str, indices: &[TraceIndex]) {
 // though this function's current body never fails.
 #[allow(clippy::unnecessary_wraps)]
 pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
-    let base_dir = foundry_core::paths::traces_dir();
+    let base_dir = foundry_sdk::paths::traces_dir();
 
     if let Some(date_str) = date {
         let dir = base_dir.join(date_str);

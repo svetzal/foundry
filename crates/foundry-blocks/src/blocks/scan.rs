@@ -1,10 +1,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::VulnerabilityDetectedPayload;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::VulnerabilityDetectedPayload;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ScannerGateway;
 
@@ -92,9 +92,9 @@ mod tests {
 
     use crate::gateway::fakes::FakeScannerGateway;
     use crate::scanner::Vulnerability;
-    use foundry_core::event::EventType;
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
 
     use super::super::test_helpers;
     use super::ScanDependencies;

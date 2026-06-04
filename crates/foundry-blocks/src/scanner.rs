@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use anyhow::Result;
-use foundry_core::registry::Stack;
+use foundry_sdk::registry::Stack;
 use serde_json::Value;
 
 // `AuditResult` and `Vulnerability` are part of the SDK gateway contract.
 // Re-exported here so the existing `crate::scanner::…` paths keep resolving.
-pub use foundry_core::gateway::{AuditResult, Vulnerability};
+pub use foundry_sdk::gateway::{AuditResult, Vulnerability};
 
 /// Run the appropriate audit tool for the given stack and return parsed results.
 ///

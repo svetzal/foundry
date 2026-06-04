@@ -14,7 +14,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 // `CommandResult` is part of the SDK gateway contract. Re-exported here so the
 // existing `crate::shell::CommandResult` paths keep resolving.
-pub use foundry_core::gateway::CommandResult;
+pub use foundry_sdk::gateway::CommandResult;
 
 /// Run an external command asynchronously.
 ///
@@ -62,7 +62,7 @@ pub async fn run(
 
     // Propagate the active block's span context to the child process as a W3C
     // `TRACEPARENT` env var. No-op when no span context is in scope.
-    foundry_core::span_context::inject_traceparent(&mut cmd);
+    foundry_sdk::span_context::inject_traceparent(&mut cmd);
 
     if let Some(pairs) = env {
         for (key, value) in pairs {
@@ -202,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_injects_traceparent_when_span_context_set() {
-        use foundry_core::span_context::{SPAN_CONTEXT, SpanContext};
+        use foundry_sdk::span_context::{SPAN_CONTEXT, SpanContext};
 
         let ctx = SpanContext {
             trace_id: "0123456789abcdef0123456789abcdef".to_string(),

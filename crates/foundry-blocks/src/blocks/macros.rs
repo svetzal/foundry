@@ -92,7 +92,7 @@ macro_rules! require_project {
 /// ```
 macro_rules! skip {
     ($msg:expr) => {
-        Box::pin(async { Ok(foundry_core::task_block::TaskBlockResult::success($msg, vec![])) })
+        Box::pin(async { Ok(foundry_sdk::task_block::TaskBlockResult::success($msg, vec![])) })
     };
 }
 
@@ -146,10 +146,10 @@ macro_rules! agent_block_new {
 #[cfg(test)]
 macro_rules! test_event {
     ($event_type:expr, $project:expr, { $($json:tt)* }) => {
-        foundry_core::event::Event::new(
+        foundry_sdk::event::Event::new(
             $event_type,
             $project.to_string(),
-            foundry_core::throttle::Throttle::Full,
+            foundry_sdk::throttle::Throttle::Full,
             serde_json::json!({ $($json)* }),
         )
     };
@@ -179,7 +179,7 @@ macro_rules! assert_block_meta {
         fn kind_is() {
             assert_eq!(
                 { $block_expr }.kind(),
-                foundry_core::task_block::BlockKind::$kind,
+                foundry_sdk::task_block::BlockKind::$kind,
             );
         }
 
@@ -187,7 +187,7 @@ macro_rules! assert_block_meta {
         fn sinks_on_expected() {
             assert_eq!(
                 { $block_expr }.sinks_on(),
-                &[$(foundry_core::event::EventType::$event),+],
+                &[$(foundry_sdk::event::EventType::$event),+],
             );
         }
     };

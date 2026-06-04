@@ -2,10 +2,10 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::ProjectValidationCompletedPayload;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::ProjectValidationCompletedPayload;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
@@ -80,7 +80,7 @@ async fn check_git_branch(
 
 fn error_result(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     reason: &str,
 ) -> TaskBlockResult {
     super::emit_event_result(
@@ -185,8 +185,8 @@ impl TaskBlock for ValidateProject {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::registry::{ProjectEntry, Registry};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::registry::{ProjectEntry, Registry};
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
@@ -213,13 +213,13 @@ mod tests {
         ProjectEntry {
             name: name.to_string(),
             path: path.to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -230,13 +230,13 @@ mod tests {
         ProjectEntry {
             name: name.to_string(),
             path: path.to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: Some("test skip".to_string()),
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -335,13 +335,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags {
+            actions: foundry_sdk::registry::ActionFlags {
                 iterate: true,
                 maintain: true,
                 push: false,
@@ -375,13 +375,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -406,13 +406,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -444,13 +444,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -483,13 +483,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "my-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -522,13 +522,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "test-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,
@@ -558,13 +558,13 @@ mod tests {
         let registry = make_registry(vec![ProjectEntry {
             name: "test-project".to_string(),
             path: path.to_string_lossy().to_string(),
-            stack: foundry_core::registry::Stack::Rust,
+            stack: foundry_sdk::registry::Stack::Rust,
             agent: String::new(),
             repo: String::new(),
             branch: "main".to_string(),
             skip: None,
             notes: None,
-            actions: foundry_core::registry::ActionFlags::default(),
+            actions: foundry_sdk::registry::ActionFlags::default(),
             install: None,
             installs_skill: None,
             timeout_secs: None,

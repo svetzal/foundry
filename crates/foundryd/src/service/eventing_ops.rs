@@ -5,10 +5,10 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tonic::{Request, Response, Status};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
-use foundry_core::throttle::Throttle;
-use foundry_core::trace::ProcessResult;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::throttle::Throttle;
+use foundry_sdk::trace::ProcessResult;
 
 use crate::proto::{
     EmitRequest, EmitResponse, StatusRequest, StatusResponse, WatchRequest, WatchResponse,
@@ -40,12 +40,12 @@ pub(super) fn parse_emit_request(req: EmitRequest) -> Result<Event, Status> {
     };
 
     let trace_id = if req.trace_id.is_empty() {
-        foundry_core::event::mint_trace_id()
+        foundry_sdk::event::mint_trace_id()
     } else {
         req.trace_id
     };
     let request_span_id = if req.span_id.is_empty() {
-        Some(foundry_core::event::mint_span_id())
+        Some(foundry_sdk::event::mint_span_id())
     } else {
         Some(req.span_id)
     };
@@ -329,9 +329,9 @@ pub(super) fn watch_rpc(
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
-    use foundry_core::trace::{BlockExecution, ProcessResult};
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
     use crate::proto::EmitRequest;
 

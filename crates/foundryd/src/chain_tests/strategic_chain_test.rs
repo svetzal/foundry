@@ -8,9 +8,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::throttle::Throttle;
 
 use super::test_helpers;
 use foundry_blocks::gateway::{AgentGateway, ShellGateway};

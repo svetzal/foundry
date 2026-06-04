@@ -8,9 +8,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-# Built-in blocks depend only on the SDK contract (via the foundry-core shim
-# during the transition). They do NOT depend on the engine or the host.
-foundry-core = { workspace = true }
+# Built-in blocks depend only on the SDK contract. They do NOT depend on the
+# engine or the host.
+foundry-sdk = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

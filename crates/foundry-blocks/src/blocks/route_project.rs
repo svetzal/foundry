@@ -1,11 +1,11 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     ChainContext, ProjectIterationRequestedPayload, ProjectMaintenanceRequestedPayload,
     ProjectRunCompletedPayload, ProjectValidationCompletedPayload,
 };
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Routes a validated project to the correct maintenance sub-workflow.
 ///
@@ -130,8 +130,8 @@ impl TaskBlock for RouteProjectWorkflow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     fn validation_event(status: &str, iterate: bool, maintain: bool) -> Event {
         Event::new(
@@ -254,7 +254,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectRunCompleted);
-        let payload: foundry_core::payload::ProjectRunCompletedPayload =
+        let payload: foundry_sdk::payload::ProjectRunCompletedPayload =
             result.events[0].parse_payload().unwrap();
         assert!(!payload.success, "a failed validation completes the run unsuccessfully");
     }
@@ -267,7 +267,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectRunCompleted);
-        let payload: foundry_core::payload::ProjectRunCompletedPayload =
+        let payload: foundry_sdk::payload::ProjectRunCompletedPayload =
             result.events[0].parse_payload().unwrap();
         assert!(payload.success, "validated-but-no-work still completes the run");
     }

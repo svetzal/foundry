@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use foundry_core::task_block::TaskBlockResult;
+use foundry_sdk::task_block::TaskBlockResult;
 
 use crate::gateway::{
     AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, ModelTier,

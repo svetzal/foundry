@@ -10,7 +10,7 @@
 //! the CLI crate.
 
 use foundry_cli::registry_commands;
-use foundry_core::registry::{ProjectEdits, ProjectSpec, Registry, Stack};
+use foundry_sdk::registry::{ProjectEdits, ProjectSpec, Registry, Stack};
 use tempfile::NamedTempFile;
 
 /// Write an empty but valid registry JSON file and return the temp file handle.

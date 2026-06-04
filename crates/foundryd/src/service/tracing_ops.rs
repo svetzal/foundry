@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use tonic::{Request, Response};
 
-use foundry_core::event::Event;
-use foundry_core::throttle::Throttle;
-use foundry_core::trace::BlockExecution;
+use foundry_sdk::event::Event;
+use foundry_sdk::throttle::Throttle;
+use foundry_sdk::trace::BlockExecution;
 
 use crate::proto::{
     SpanRequest, SpanResponse, TraceBlockExecution, TraceEvent, TraceRequest, TraceResponse,
@@ -114,9 +114,9 @@ mod tests {
 
     use tonic::Request;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
-    use foundry_core::trace::{BlockExecution, ProcessResult};
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
     use crate::proto::{SpanRequest, TraceRequest};
     use crate::trace_store::TraceStore;

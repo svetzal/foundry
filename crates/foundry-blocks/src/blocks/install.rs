@@ -3,12 +3,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{LocalInstallCompletedPayload, LocalSkillInstallCompletedPayload};
-use foundry_core::registry::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{LocalInstallCompletedPayload, LocalSkillInstallCompletedPayload};
+use foundry_sdk::registry::{
     InstallConfig, InstallsSkill, Registry, derive_default_skill_install_command,
 };
-use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
@@ -157,9 +157,9 @@ impl TaskBlock for InstallLocally {
 /// that the caller should return immediately with the given (success) result.
 fn resolve_install(
     project: &str,
-    entry: Option<foundry_core::registry::ProjectEntry>,
-    throttle: foundry_core::throttle::Throttle,
-) -> Result<(foundry_core::registry::ProjectEntry, InstallConfig), TaskBlockResult> {
+    entry: Option<foundry_sdk::registry::ProjectEntry>,
+    throttle: foundry_sdk::throttle::Throttle,
+) -> Result<(foundry_sdk::registry::ProjectEntry, InstallConfig), TaskBlockResult> {
     let Some(entry) = entry else {
         tracing::warn!(project = %project, "project not found in registry, skipping install");
         let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
@@ -212,8 +212,8 @@ fn resolve_install(
 /// already succeeded; skill drift is a soft warning only.
 async fn run_skill_install(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
-    entry: &foundry_core::registry::ProjectEntry,
+    throttle: foundry_sdk::throttle::Throttle,
+    entry: &foundry_sdk::registry::ProjectEntry,
     install_config: &InstallConfig,
     shell: &dyn ShellGateway,
 ) -> Option<Event> {
@@ -294,12 +294,12 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{
         ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, Registry, Stack,
     };
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;

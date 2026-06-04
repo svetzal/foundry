@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use comfy_table::{ContentArrangement, Table};
-use foundry_core::registry::{
+use foundry_sdk::registry::{
     ActionFlags, InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry,
     derive_default_skill_install_command,
 };
@@ -314,7 +314,7 @@ fn load_or_init(path: &Path) -> Result<Registry> {
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::registry::{InstallConfig, InstallsSkill};
+    use foundry_sdk::registry::{InstallConfig, InstallsSkill};
 
     use super::{format_installs_skill_cell, format_installs_skill_line};
 

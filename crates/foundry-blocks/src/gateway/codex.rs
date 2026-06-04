@@ -40,9 +40,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
+use foundry_sdk::throttle::Throttle;
 use serde_json::Value;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -77,7 +77,7 @@ impl CodexAgentGateway {
         Self::new_with_streaming(
             shell,
             Arc::new(ProcessAgentStreamRunner),
-            foundry_core::paths::agent_sessions_dir(),
+            foundry_sdk::paths::agent_sessions_dir(),
             event_tx,
         )
     }

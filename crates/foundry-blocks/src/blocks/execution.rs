@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ExecutionCompletedPayload, LoopContext};
-use foundry_core::registry::ProjectEntry;
-use foundry_core::task_block::TaskBlockResult;
-use foundry_core::throttle::Throttle;
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
+use foundry_sdk::registry::ProjectEntry;
+use foundry_sdk::task_block::TaskBlockResult;
+use foundry_sdk::throttle::Throttle;
+use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway};
 
@@ -146,7 +146,7 @@ pub(crate) async fn build_execution_outcome(
     ctx: &ExecutionContext<'_>,
     outcome: AgentOutcome,
     pre_execution_sha: Option<String>,
-) -> foundry_core::task_block::TaskBlockResult {
+) -> foundry_sdk::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
         detect_post_execution_changes(shell, project_path, pre_execution_sha.as_deref()).await;
     build_agent_execution_result(ctx, outcome, changes_detected, files_changed)
@@ -184,8 +184,8 @@ pub(crate) async fn execute_agent_block(
 mod tests {
     use std::path::Path;
 
-    use foundry_core::throttle::Throttle;
-    use foundry_core::workflow::WorkflowType;
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::workflow::WorkflowType;
 
     use crate::gateway::AgentOutcome;
     use crate::gateway::fakes::FakeShellGateway;

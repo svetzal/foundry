@@ -1,12 +1,12 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     ChainContext, CharterCheckCompletedPayload, ProjectIterationRequestedPayload,
 };
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use super::TriggerContext;
 
@@ -105,10 +105,10 @@ impl TaskBlock for CheckCharter {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use super::super::test_helpers;
     use super::CheckCharter;

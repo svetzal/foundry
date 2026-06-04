@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::Event;
-use foundry_core::payload::{MainBranchAuditedPayload, ReleaseRequestedPayload};
-use foundry_core::registry::Registry;
-use foundry_core::work_block::EventAdapter;
+use foundry_sdk::event::Event;
+use foundry_sdk::payload::{MainBranchAuditedPayload, ReleaseRequestedPayload};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::work_block::EventAdapter;
 
 use super::ReleaseInput;
 

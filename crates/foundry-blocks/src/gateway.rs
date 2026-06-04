@@ -5,22 +5,21 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
-use foundry_core::registry::Stack;
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
+use foundry_sdk::registry::Stack;
+use foundry_sdk::throttle::Throttle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
 
 // The gateway *contract* — the traits and the data types they exchange — lives
-// in the SDK (`foundry_sdk::gateway`, re-exported through the `foundry_core`
-// shim). Re-exported here so the historical `crate::gateway::…` paths used
-// throughout the daemon keep resolving. This module now contains only the
-// production *implementations* of those traits.
-pub use foundry_core::agent_config::ProviderModels;
-pub use foundry_core::gateway::{
+// in the SDK (`foundry_sdk::gateway`). Re-exported here so `crate::gateway::…`
+// paths used throughout the daemon keep resolving. This module contains only
+// the production *implementations* of those traits.
+pub use foundry_sdk::agent_config::ProviderModels;
+pub use foundry_sdk::gateway::{
     AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, AgentResponse,
     AuditResult, CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway,
 };
@@ -102,7 +101,7 @@ impl ClaudeAgentGateway {
         Self::new_with_streaming(
             shell,
             Arc::new(ProcessAgentStreamRunner),
-            foundry_core::paths::agent_sessions_dir(),
+            foundry_sdk::paths::agent_sessions_dir(),
             event_tx,
         )
     }
@@ -284,7 +283,7 @@ mod claude_agent_gateway_streaming_tests {
     use super::fakes::FakeShellGateway;
     use super::*;
     use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamedLine};
-    use foundry_core::event::EventType;
+    use foundry_sdk::event::EventType;
     use std::path::{Path, PathBuf};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};

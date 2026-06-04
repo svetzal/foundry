@@ -1,7 +1,7 @@
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::MainBranchAuditedPayload;
-use foundry_core::task_block::TaskBlockResult;
-use foundry_core::work_block::OutputMapper;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::MainBranchAuditedPayload;
+use foundry_sdk::task_block::TaskBlockResult;
+use foundry_sdk::work_block::OutputMapper;
 
 use super::ReleaseOutput;
 

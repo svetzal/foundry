@@ -1,14 +1,14 @@
 use std::path::Path;
 
 use anyhow::Result;
-use foundry_core::gates::GateDefinition;
+use foundry_sdk::gates::GateDefinition;
 
 /// Read gate definitions from `.hone-gates.json` in `project_dir`.
 ///
 /// Returns an empty vec if the file does not exist.
 /// Returns an error if the file exists but contains malformed JSON.
 pub fn read_gates(project_dir: &Path) -> Result<Vec<GateDefinition>> {
-    foundry_core::gates::read_gates_file(project_dir)
+    foundry_sdk::gates::read_gates_file(project_dir)
 }
 
 #[cfg(test)]

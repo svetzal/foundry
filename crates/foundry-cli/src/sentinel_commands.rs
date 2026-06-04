@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use comfy_table::{ContentArrangement, Table};
-use foundry_core::sentinel::{Schedule, SentinelStore};
+use foundry_sdk::sentinel::{Schedule, SentinelStore};
 
 use crate::proto::{SentinelDisableRequest, SentinelEnableRequest, foundry_client::FoundryClient};
 
@@ -128,7 +128,7 @@ fn schedule_summary(schedule: &Schedule) -> String {
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::sentinel::SentinelStore;
+    use foundry_sdk::sentinel::SentinelStore;
     use tempfile::NamedTempFile;
 
     use super::*;

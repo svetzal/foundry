@@ -5,7 +5,7 @@ defined once and can participate in multiple workflows.
 
 ## Implementing the TaskBlock Trait
 
-Every task block implements `foundry_core::task_block::TaskBlock`:
+Every task block implements `foundry_sdk::task_block::TaskBlock`:
 
 ```rust
 pub trait TaskBlock: Send + Sync {
@@ -211,7 +211,7 @@ Blocks can declare automatic retry behaviour by overriding `retry_policy()`:
 
 ```rust
 use std::time::Duration;
-use foundry_core::task_block::RetryPolicy;
+use foundry_sdk::task_block::RetryPolicy;
 
 fn retry_policy(&self) -> RetryPolicy {
     RetryPolicy {

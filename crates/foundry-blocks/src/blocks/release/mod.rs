@@ -3,10 +3,10 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use foundry_core::event::EventType;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::BlockKind;
-use foundry_core::work_block::{ComposedStep, WorkBlock};
+use foundry_sdk::event::EventType;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::BlockKind;
+use foundry_sdk::work_block::{ComposedStep, WorkBlock};
 
 use crate::gateway::{
     AgentAccess, AgentGateway, AgentRequest, ClaudeAgentGateway, ModelTier, ReasoningEffort,
@@ -260,10 +260,10 @@ fn interpret_agent_result(
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, Registry};
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{ActionFlags, Registry};
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 

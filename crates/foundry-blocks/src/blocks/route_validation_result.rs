@@ -1,9 +1,9 @@
 use std::pin::Pin;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{PreflightCompletedPayload, ValidationCompletedPayload};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{PreflightCompletedPayload, ValidationCompletedPayload};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::workflow::WorkflowType;
 
 /// Routes preflight results for the validation workflow to `ValidationCompleted`.
 ///
@@ -69,9 +69,9 @@ impl TaskBlock for RouteValidationResult {
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use super::RouteValidationResult;
 

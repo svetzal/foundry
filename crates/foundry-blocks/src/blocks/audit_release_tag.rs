@@ -1,10 +1,10 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::VulnerabilityDetectedPayload;
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::VulnerabilityDetectedPayload;
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{ScannerGateway, ShellGateway};
 
@@ -229,10 +229,10 @@ impl TaskBlock for AuditReleaseTag {
 #[allow(clippy::too_many_arguments)]
 async fn perform_tag_checkout_and_scan(
     path: &std::path::Path,
-    stack: &foundry_core::registry::Stack,
+    stack: &foundry_sdk::registry::Stack,
     original_branch: &str,
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     payload_cve: &str,
     payload_vulnerable: bool,
     payload_dirty: Option<bool>,
@@ -305,7 +305,7 @@ async fn perform_tag_checkout_and_scan(
 /// state without performing any real git operations.
 fn emit_payload_result(
     project: String,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     cve: &str,
     vulnerable: bool,
     dirty: Option<bool>,
@@ -328,7 +328,7 @@ fn emit_payload_result(
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::EventType;
+    use foundry_sdk::event::EventType;
 
     use crate::gateway::fakes::{FakeScannerGateway, FakeShellGateway};
     use crate::scanner::Vulnerability;

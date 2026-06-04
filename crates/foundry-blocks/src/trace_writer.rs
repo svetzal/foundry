@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use chrono::Utc;
 
-use foundry_core::trace::ProcessResult;
+use foundry_sdk::trace::ProcessResult;
 #[cfg(test)]
-use foundry_core::trace::TraceIndex;
+use foundry_sdk::trace::TraceIndex;
 
 /// Writes and reads completed process results to disk as JSON files, organised
 /// by date (`YYYY-MM-DD/{event_id}.json` under `base_dir`).
@@ -125,9 +125,9 @@ impl TraceWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
-    use foundry_core::trace::BlockExecution;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::trace::BlockExecution;
 
     fn sample_result(event_type: EventType, project: &str) -> ProcessResult {
         let event =

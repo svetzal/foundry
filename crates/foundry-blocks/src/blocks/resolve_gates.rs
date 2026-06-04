@@ -1,12 +1,12 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     CharterCheckCompletedPayload, GateResolutionCompletedPayload, ProjectCompletedPayload,
 };
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use super::TriggerContext;
 
@@ -34,7 +34,7 @@ impl ResolveGates {
 fn charter_failure_result(
     project: &str,
     workflow: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
 ) -> TaskBlockResult {
     tracing::info!(%project, %workflow, "charter check failed, skipping gate resolution");
     if workflow == "iterate" {
@@ -138,7 +138,7 @@ impl TaskBlock for ResolveGates {
                 "gates resolved"
             );
 
-            let chain = foundry_core::payload::ChainContext::extract_from(&payload);
+            let chain = foundry_sdk::payload::ChainContext::extract_from(&payload);
             super::emit_result(
                 format!("{project}: resolved {} gates for {workflow} workflow", gates.len()),
                 EventType::GateResolutionCompleted,
@@ -159,10 +159,10 @@ impl TaskBlock for ResolveGates {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
 
     use super::super::test_helpers;
     use super::ResolveGates;

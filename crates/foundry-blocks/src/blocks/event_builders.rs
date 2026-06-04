@@ -1,8 +1,8 @@
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
-use foundry_core::task_block::TaskBlockResult;
-use foundry_core::throttle::Throttle;
-use foundry_core::workflow::WorkflowType;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
+use foundry_sdk::task_block::TaskBlockResult;
+use foundry_sdk::throttle::Throttle;
+use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::AgentOutcome;
 
@@ -237,9 +237,9 @@ fn build_gate_block_result(
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::gateway::AgentOutcome;
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::gateway::AgentOutcome;
+    use foundry_sdk::throttle::Throttle;
 
     use super::{
         build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
@@ -372,7 +372,7 @@ mod tests {
     fn dry_run_execution_event_produces_dry_run_true_execution_completed_event() {
         let trigger = trigger_event();
         let events =
-            dry_run_execution_event(&trigger, foundry_core::workflow::WorkflowType::Iterate, None);
+            dry_run_execution_event(&trigger, foundry_sdk::workflow::WorkflowType::Iterate, None);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::ExecutionCompleted);

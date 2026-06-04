@@ -10,9 +10,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+use foundry_sdk::throttle::Throttle;
 
 use foundry_blocks::gateway::AgentGateway;
 use foundry_engine::engine::Engine;

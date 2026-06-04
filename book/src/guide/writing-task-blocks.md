@@ -9,8 +9,8 @@ To add a new task block to Foundry:
 
 ```rust
 use std::pin::Pin;
-use foundry_core::event::{Event, EventType};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 pub struct MyBlock;
 
@@ -98,7 +98,7 @@ The default is zero retries (execute exactly once).
 
 ```rust
 use std::time::Duration;
-use foundry_core::task_block::RetryPolicy;
+use foundry_sdk::task_block::RetryPolicy;
 
 fn retry_policy(&self) -> RetryPolicy {
     RetryPolicy {

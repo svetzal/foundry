@@ -5,10 +5,10 @@
 
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-use foundry_core::task_block::TaskBlock;
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+use foundry_sdk::task_block::TaskBlock;
+use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::{AgentGateway, AgentResponse, ShellGateway};
 use crate::shell::CommandResult;
@@ -67,7 +67,7 @@ pub fn project_entry(name: &str, path: &str) -> ProjectEntry {
 pub fn project_entry_with_install(
     name: &str,
     path: &str,
-    install: Option<foundry_core::registry::InstallConfig>,
+    install: Option<foundry_sdk::registry::InstallConfig>,
 ) -> ProjectEntry {
     ProjectEntry {
         install,
@@ -247,8 +247,8 @@ pub async fn assert_tolerates_git_failure(
 /// Constructs a trigger with event type `event_type` and project `"unknown-project"`,
 /// executes the block, and asserts `!result.success && result.events.is_empty()`.
 pub async fn assert_missing_project_fails(
-    block: &dyn foundry_core::task_block::TaskBlock,
-    event_type: foundry_core::event::EventType,
+    block: &dyn foundry_sdk::task_block::TaskBlock,
+    event_type: foundry_sdk::event::EventType,
 ) {
     let trigger = make_trigger(event_type, "unknown-project", serde_json::json!({}));
     let result = block.execute(&trigger).await.unwrap();

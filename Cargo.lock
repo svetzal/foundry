@@ -438,7 +438,6 @@ version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
- "foundry-core",
  "foundry-sdk",
  "serde",
  "serde_json",
@@ -456,7 +455,7 @@ dependencies = [
  "chrono",
  "clap",
  "comfy-table",
- "foundry-core",
+ "foundry-sdk",
  "prost",
  "prost-types",
  "semver",
@@ -469,13 +468,6 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "foundry-core"
-version = "0.20.0"
-dependencies = [
- "foundry-sdk",
 ]
 
 [[package]]
@@ -519,7 +511,6 @@ dependencies = [
  "chrono",
  "cron",
  "foundry-blocks",
- "foundry-core",
  "foundry-engine",
  "foundry-sdk",
  "pastey",

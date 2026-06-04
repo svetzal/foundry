@@ -12,7 +12,7 @@ name = "foundryd"
 path = "src/main.rs"
 
 [dependencies]
-foundry-core = { workspace = true }
+foundry-sdk = { workspace = true }
 foundry-engine = { workspace = true }
 foundry-blocks = { workspace = true }
 tokio = { workspace = true }

@@ -2,15 +2,15 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     ProjectChangesCommittedPayload, ProjectChangesPushedPayload, ProjectCompletedPayload,
     RemediationCompletedPayload,
 };
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
-use foundry_core::loop_context::has_loop_context;
+use foundry_sdk::loop_context::has_loop_context;
 
 use crate::gateway::ShellGateway;
 
@@ -44,7 +44,7 @@ impl CommitAndPush {
         registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
         project: String,
-        throttle: foundry_core::throttle::Throttle,
+        throttle: foundry_sdk::throttle::Throttle,
         event_type: EventType,
         cve: String,
     ) -> anyhow::Result<TaskBlockResult> {
@@ -275,7 +275,7 @@ async fn push_if_enabled(
 /// path, `dry_run_events`, and the stub fallback.
 fn build_commit_push_events(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     commit_payload: &ProjectChangesCommittedPayload,
     push_payload: Option<&ProjectChangesPushedPayload>,
 ) -> anyhow::Result<Vec<Event>> {
@@ -311,7 +311,7 @@ fn commit_message(event_type: &EventType, project: &str) -> String {
 /// Emit stub committed+pushed events when the project has no registry entry.
 fn stub_result(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     cve: &str,
 ) -> TaskBlockResult {
     let events = build_commit_push_events(
@@ -341,12 +341,12 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry};
+    use foundry_sdk::throttle::Throttle;
     use tempfile::TempDir;
 
-    use foundry_core::task_block::TaskBlock;
+    use foundry_sdk::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
@@ -388,7 +388,7 @@ mod tests {
             projects: vec![ProjectEntry {
                 name: name.to_string(),
                 path: path.to_string(),
-                stack: foundry_core::registry::Stack::Rust,
+                stack: foundry_sdk::registry::Stack::Rust,
                 agent: String::new(),
                 repo: String::new(),
                 branch: "main".to_string(),

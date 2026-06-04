@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use foundry_core::event::PayloadExt;
+use foundry_sdk::event::PayloadExt;
 
 use crate::commands::parse_throttle;
 use crate::proto::{EmitRequest, WatchRequest, WatchResponse, foundry_client::FoundryClient};
@@ -191,7 +191,7 @@ fn resolve_agent_override(agent: Option<&str>) -> Result<Option<String>> {
     match agent {
         None => Ok(None),
         Some(s) => s
-            .parse::<foundry_core::gateway::AgentProvider>()
+            .parse::<foundry_sdk::gateway::AgentProvider>()
             .map(|p| Some(p.to_string()))
             .map_err(|e| anyhow::anyhow!("{e} (valid: claude, opencode, codex)")),
     }
@@ -353,7 +353,7 @@ pub async fn validate(
     registry_path: &Path,
 ) -> Result<()> {
     let project_names = if all {
-        let registry = foundry_core::registry::Registry::load(registry_path)?;
+        let registry = foundry_sdk::registry::Registry::load(registry_path)?;
         registry.active_projects().iter().map(|p| p.name.clone()).collect::<Vec<_>>()
     } else if projects.is_empty() {
         anyhow::bail!("specify one or more project names, or use --all");

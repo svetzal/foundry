@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use chrono::Local;
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{OpsDigestCompletedPayload, OpsSummaryCompletedPayload};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::throttle::Throttle;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsSummaryCompletedPayload};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
 
 use super::emit_result;
 
@@ -202,7 +202,7 @@ fn write_watermark(path: &Path, watermark: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use foundry_core::event::EventType;
+    use foundry_sdk::event::EventType;
 
     use super::*;
 

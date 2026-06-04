@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use chrono::{DateTime, FixedOffset};
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload};
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use serde::Deserialize;
 
 use super::emit_result;
@@ -66,7 +66,7 @@ impl TaskBlock for ObserveEvents {
 
 fn observe(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     intake_dir: &Path,
     watermark_path: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
@@ -326,9 +326,9 @@ fn read_jsonl_file(path: &Path, cutoff: DateTime<FixedOffset>, out: &mut Vec<Mbo
 mod tests {
     use std::io::Write as _;
 
-    use foundry_core::event::EventType;
-    use foundry_core::payload::{OpsDigestCompletedPayload, OpsObservedPayload};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsObservedPayload};
+    use foundry_sdk::throttle::Throttle;
     use tempfile::TempDir;
 
     use super::*;

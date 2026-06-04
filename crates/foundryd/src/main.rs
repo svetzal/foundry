@@ -6,8 +6,8 @@ use tokio::sync::Notify;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
-use foundry_core::agent_config::AgentConfigStore;
-use foundry_core::sentinel::{SentinelStore, merge_default_seed_into};
+use foundry_sdk::agent_config::AgentConfigStore;
+use foundry_sdk::sentinel::{SentinelStore, merge_default_seed_into};
 
 mod legacy_event_check;
 mod orchestrator;
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
 
-    let events_dir = foundry_core::paths::events_dir();
+    let events_dir = foundry_sdk::paths::events_dir();
     if let Some(legacy) = legacy_event_check::detect_legacy_event_names(&events_dir) {
         eprintln!(
             "ERROR: foundryd 0.17.0 detected legacy event-type name '{legacy}' on disk.\n\
@@ -36,15 +36,15 @@ async fn main() -> Result<()> {
         std::process::exit(2);
     }
 
-    let registry_path = foundry_core::paths::registry_path();
-    let registry = match foundry_core::registry::Registry::load(&registry_path) {
+    let registry_path = foundry_sdk::paths::registry_path();
+    let registry = match foundry_sdk::registry::Registry::load(&registry_path) {
         Ok(r) => {
             tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
             Arc::new(RwLock::new(r))
         }
         Err(e) => {
             tracing::warn!(path = %registry_path.display(), error = %e, "registry not found, using empty registry");
-            Arc::new(RwLock::new(foundry_core::registry::Registry {
+            Arc::new(RwLock::new(foundry_sdk::registry::Registry {
                 version: 2,
                 projects: vec![],
             }))
@@ -53,20 +53,20 @@ async fn main() -> Result<()> {
 
     let event_writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir));
 
-    let traces_dir = foundry_core::paths::traces_dir();
+    let traces_dir = foundry_sdk::paths::traces_dir();
     let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
         traces_dir.to_str().expect("FOUNDRY_TRACES_DIR must be valid UTF-8"),
     ));
 
-    let audits_dir = foundry_core::paths::audits_dir()
+    let audits_dir = foundry_sdk::paths::audits_dir()
         .to_str()
         .expect("FOUNDRY_AUDITS_DIR must be valid UTF-8")
         .to_string();
 
-    let digests_dir = foundry_core::paths::digests_dir();
-    let ops_digests_dir = foundry_core::paths::ops_digests_dir();
-    let ops_events_intake_dir = foundry_core::paths::ops_events_intake_dir();
-    let ops_watermark_path = foundry_core::paths::ops_watermark_path();
+    let digests_dir = foundry_sdk::paths::digests_dir();
+    let ops_digests_dir = foundry_sdk::paths::ops_digests_dir();
+    let ops_events_intake_dir = foundry_sdk::paths::ops_events_intake_dir();
+    let ops_watermark_path = foundry_sdk::paths::ops_watermark_path();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
 
     // Sentinel store — load (or auto-seed on first start) the file-backed
     // schedule that replaces launchd/com.mojility.foundry-maintenance.plist.
-    let sentinels_path = foundry_core::paths::sentinels_path();
+    let sentinels_path = foundry_sdk::paths::sentinels_path();
     let sentinels = Arc::new(RwLock::new(load_or_seed_sentinels(&sentinels_path)?));
     let scheduler_reload = Arc::new(Notify::new());
 
@@ -181,7 +181,7 @@ fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
 /// merging any provider/tier/effort keys missing from the user's file. Mirrors
 /// [`load_or_seed_sentinels`].
 fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore> {
-    use foundry_core::agent_config::merge_default_seed_into as merge_agent_seed;
+    use foundry_sdk::agent_config::merge_default_seed_into as merge_agent_seed;
     match AgentConfigStore::load(path) {
         Ok(mut store) => {
             tracing::info!(path = %path.display(), "agent config loaded");
@@ -221,8 +221,8 @@ fn spawn_scheduler(
     trace_store: &Arc<trace_store::TraceStore>,
     workflow_tracker: &Arc<workflow_tracker::WorkflowTracker>,
     trace_writer: &Arc<foundry_blocks::trace_writer::TraceWriter>,
-    event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
-    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
+    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
 ) {
     // Pipe sentinel firings through the same trace/workflow_tracker
     // machinery the gRPC `emit()` handler uses.
@@ -252,9 +252,9 @@ fn spawn_scheduler(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn register_blocks(
-    registry: &Arc<RwLock<foundry_core::registry::Registry>>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
     event_writer: Arc<foundry_engine::event_writer::EventWriter>,
-    event_tx: &tokio::sync::broadcast::Sender<foundry_core::event::Event>,
+    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
     trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
     audits_dir: String,
     digests_dir: std::path::PathBuf,
@@ -291,7 +291,7 @@ fn register_blocks(
             Arc::new(foundry_blocks::gateway::ProcessShellGateway)
         };
         let make_runner = || Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner);
-        let sessions_dir = foundry_core::paths::agent_sessions_dir();
+        let sessions_dir = foundry_sdk::paths::agent_sessions_dir();
 
         let default = match std::env::var("FOUNDRY_AGENT_PROVIDER") {
             Ok(raw) => raw.parse::<AgentProvider>().unwrap_or_else(|_| {
@@ -307,7 +307,7 @@ fn register_blocks(
         // Per-provider tier→model and effort→token maps. Defaults are baked in;
         // ~/.foundry/agents.json overrides them (seed-merged on startup). A
         // load/seed failure degrades to baked defaults rather than crashing.
-        let agent_config = load_or_seed_agent_config(&foundry_core::paths::agent_config_path())
+        let agent_config = load_or_seed_agent_config(&foundry_sdk::paths::agent_config_path())
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to load/seed agent config; using baked defaults");
                 AgentConfigStore::default_seed()

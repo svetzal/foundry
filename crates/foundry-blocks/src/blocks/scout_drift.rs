@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
@@ -240,7 +240,7 @@ impl TaskBlock for ScoutDrift {
 
 fn build_drift_result(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     result: &DriftAssessmentResult,
 ) -> TaskBlockResult {
     tracing::info!(
@@ -316,9 +316,9 @@ mod tests {
 
     use crate::gateway::fakes::FakeAgentGateway;
     use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
-    use foundry_core::event::EventType;
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::TaskBlock;
+    use foundry_sdk::event::EventType;
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::TaskBlock;
 
     use super::super::test_helpers;
     use super::{ScoutDrift, parse_drift_assessment};

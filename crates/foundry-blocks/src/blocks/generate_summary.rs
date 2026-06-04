@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::payload::{
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
     LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload, ProjectCompletedPayload,
     ReleaseCompletedPayload, ReleaseTagAuditedPayload,
 };
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_core::trace::ProcessResult;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::trace::ProcessResult;
 
 use crate::summary::{
     AutoReleaseEntry, LocalInstallEntry, MaintenanceRunSummary, ProjectResult, ProjectStatus,
@@ -51,7 +51,7 @@ impl GenerateSummary {
 
 /// Terminal event types whose `success` payload field determines overall outcome.
 ///
-/// Must stay in sync with `foundry_core::trace::TERMINAL_EVENT_TYPES`.
+/// Must stay in sync with `foundry_sdk::trace::TERMINAL_EVENT_TYPES`.
 const TERMINAL_EVENT_TYPES: &[EventType] = &[
     EventType::ProjectIterationCompleted,
     EventType::ProjectMaintenanceCompleted,
@@ -282,9 +282,9 @@ impl TaskBlock for GenerateSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::throttle::Throttle;
-    use foundry_core::trace::{BlockExecution, ProcessResult};
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
     use super::super::test_helpers;
 

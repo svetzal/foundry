@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use foundry_core::registry::{ProjectEdits, ProjectSpec, parse_stack};
+use foundry_sdk::registry::{ProjectEdits, ProjectSpec, parse_stack};
 
 mod commands;
 mod event_commands;
@@ -520,7 +520,7 @@ async fn main() -> Result<()> {
                 &cli.addr,
                 projects,
                 all,
-                &foundry_core::paths::registry_path(),
+                &foundry_sdk::paths::registry_path(),
             )
             .await
         }
@@ -548,7 +548,7 @@ async fn main() -> Result<()> {
             let project_dir = gates_commands::resolve_project_dir(
                 project.as_deref(),
                 dir.as_deref(),
-                &foundry_core::paths::registry_path(),
+                &foundry_sdk::paths::registry_path(),
             )?;
             if init {
                 gates_commands::init(&project_dir)
@@ -559,7 +559,7 @@ async fn main() -> Result<()> {
         Commands::Registry(sub) => {
             handle_registry_command(
                 sub,
-                &foundry_core::paths::registry_path(),
+                &foundry_sdk::paths::registry_path(),
                 &cli.addr,
                 cli.offline,
             )
@@ -568,7 +568,7 @@ async fn main() -> Result<()> {
         Commands::Sentinel(sub) => {
             handle_sentinel_command(
                 sub,
-                &foundry_core::paths::sentinels_path(),
+                &foundry_sdk::paths::sentinels_path(),
                 &cli.addr,
                 cli.offline,
             )

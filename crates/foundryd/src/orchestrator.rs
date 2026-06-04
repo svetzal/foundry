@@ -1,10 +1,10 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::registry::Registry;
-use foundry_core::scatter::Scatter;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::scatter::Scatter;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 /// Fans out a system-level maintenance cycle to individual per-project runs.
 ///
@@ -123,10 +123,10 @@ impl TaskBlock for FanOutMaintenance {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::{ActionFlags, ProjectEntry, Registry, Stack};
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_sdk::task_block::{BlockKind, TaskBlock};
+    use foundry_sdk::throttle::Throttle;
 
     use super::*;
 
@@ -178,7 +178,7 @@ mod tests {
             throttle,
             serde_json::json!({}),
         )
-        .with_trace_id(Some(foundry_core::event::mint_trace_id()))
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
     }
 
     fn project_trigger(project: &str) -> Event {

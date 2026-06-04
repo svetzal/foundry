@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use foundry_core::event::{Event, EventType};
-use foundry_core::loop_context::forward_payload_fields;
-use foundry_core::payload::{InnerIterationCompletedPayload, StrategicAssessmentCompletedPayload};
-use foundry_core::registry::Registry;
-use foundry_core::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::loop_context::forward_payload_fields;
+use foundry_sdk::payload::{InnerIterationCompletedPayload, StrategicAssessmentCompletedPayload};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{
     AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
@@ -94,7 +94,7 @@ impl TaskBlock for StrategicLoopController {
 /// First call: pick the first area and enter the inner loop.
 fn handle_assessment_completed(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     payload: &serde_json::Value,
     p: &StrategicAssessmentCompletedPayload,
 ) -> TaskBlockResult {
@@ -141,10 +141,10 @@ fn handle_assessment_completed(
 /// Subsequent calls: re-assess and decide whether to continue.
 async fn handle_inner_completed(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     payload: &serde_json::Value,
     p: &InnerIterationCompletedPayload,
-    entry: Option<foundry_core::registry::ProjectEntry>,
+    entry: Option<foundry_sdk::registry::ProjectEntry>,
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let loop_context = p.loop_context.clone();
@@ -222,7 +222,7 @@ async fn handle_inner_completed(
 /// terminal blocks (`SummarizeResult`, `CommitAndPush`).
 fn complete_loop(
     project: &str,
-    throttle: foundry_core::throttle::Throttle,
+    throttle: foundry_sdk::throttle::Throttle,
     payload: &serde_json::Value,
 ) -> TaskBlockResult {
     let mut event_payload = serde_json::json!({
@@ -245,7 +245,7 @@ fn complete_loop(
 /// Ask the AI agent whether further iteration is warranted.
 async fn assess_continue(
     project: &str,
-    entry: Option<&foundry_core::registry::ProjectEntry>,
+    entry: Option<&foundry_sdk::registry::ProjectEntry>,
     agent: &Arc<dyn AgentGateway>,
     custom_prompt: Option<&str>,
     provider: Option<AgentProvider>,
@@ -313,10 +313,10 @@ async fn assess_continue(
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_core::event::{Event, EventType};
-    use foundry_core::registry::Registry;
-    use foundry_core::task_block::{BlockKind, TaskBlock};
-    use foundry_core::throttle::Throttle;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::Registry;
+    use foundry_sdk::task_block::{BlockKind, TaskBlock};
+    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
