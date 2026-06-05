@@ -150,3 +150,56 @@ pub(crate) fn match_agent_text_outcome(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_provider_returns_none_for_none_input() {
+        assert_eq!(parse_agent_provider(None), None);
+    }
+
+    #[test]
+    fn parse_agent_provider_parses_known_providers() {
+        assert_eq!(parse_agent_provider(Some("claude")), Some(AgentProvider::Claude));
+        assert_eq!(parse_agent_provider(Some("opencode")), Some(AgentProvider::Opencode));
+        assert_eq!(parse_agent_provider(Some("codex")), Some(AgentProvider::Codex));
+    }
+
+    #[test]
+    fn parse_agent_provider_is_case_insensitive() {
+        assert_eq!(parse_agent_provider(Some("Claude")), Some(AgentProvider::Claude));
+        assert_eq!(parse_agent_provider(Some("OPENCODE")), Some(AgentProvider::Opencode));
+    }
+
+    #[test]
+    fn parse_agent_provider_returns_none_for_unknown() {
+        assert_eq!(parse_agent_provider(Some("gpt")), None);
+        assert_eq!(parse_agent_provider(Some("")), None);
+    }
+
+    #[test]
+    fn chain_agent_provider_extracts_from_payload() {
+        let payload = serde_json::json!({ "agent_provider": "claude" });
+        assert_eq!(chain_agent_provider(&payload), Some(AgentProvider::Claude));
+    }
+
+    #[test]
+    fn chain_agent_provider_returns_none_when_key_missing() {
+        let payload = serde_json::json!({ "other_key": "value" });
+        assert_eq!(chain_agent_provider(&payload), None);
+    }
+
+    #[test]
+    fn chain_agent_provider_returns_none_when_value_not_a_string() {
+        let payload = serde_json::json!({ "agent_provider": 42 });
+        assert_eq!(chain_agent_provider(&payload), None);
+    }
+
+    #[test]
+    fn chain_agent_provider_returns_none_for_unknown_provider() {
+        let payload = serde_json::json!({ "agent_provider": "unknown-provider" });
+        assert_eq!(chain_agent_provider(&payload), None);
+    }
+}

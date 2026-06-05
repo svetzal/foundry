@@ -125,3 +125,154 @@ impl EventAdapter<ReleaseInput> for ManualReleaseAdapter {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::work_block::EventAdapter;
+
+    use super::*;
+
+    fn make_registry(entry: ProjectEntry) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![entry],
+        }))
+    }
+
+    fn empty_registry() -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }))
+    }
+
+    fn project_entry(name: &str, path: &str) -> ProjectEntry {
+        ProjectEntry {
+            name: name.to_string(),
+            path: path.to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            notes: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: None,
+            timeout_secs: None,
+        }
+    }
+
+    fn make_trigger(event_type: EventType, project: &str, payload: serde_json::Value) -> Event {
+        Event::new(event_type, project.to_string(), Throttle::Full, payload)
+    }
+
+    // --- VulnReleaseAdapter ---
+
+    #[test]
+    fn vuln_adapter_returns_some_for_clean_branch_in_registry() {
+        let entry = project_entry("my-project", "/path/to/project");
+        let adapter = VulnReleaseAdapter::new(make_registry(entry));
+        let trigger = make_trigger(
+            EventType::MainBranchAudited,
+            "my-project",
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-1234" }),
+        );
+
+        let input = adapter.adapt(&trigger);
+        assert!(input.is_some());
+        let input = input.unwrap();
+        assert_eq!(input.project, "my-project");
+        assert_eq!(input.project_path, PathBuf::from("/path/to/project"));
+        assert!(input.prompt.contains("CVE-2026-1234"));
+    }
+
+    #[test]
+    fn vuln_adapter_returns_none_when_dirty() {
+        let entry = project_entry("my-project", "/path/to/project");
+        let adapter = VulnReleaseAdapter::new(make_registry(entry));
+        let trigger = make_trigger(
+            EventType::MainBranchAudited,
+            "my-project",
+            serde_json::json!({ "dirty": true, "cve": "CVE-2026-5678" }),
+        );
+
+        assert!(adapter.adapt(&trigger).is_none());
+    }
+
+    #[test]
+    fn vuln_adapter_returns_none_when_project_not_in_registry() {
+        let adapter = VulnReleaseAdapter::new(empty_registry());
+        let trigger = make_trigger(
+            EventType::MainBranchAudited,
+            "unknown-project",
+            serde_json::json!({ "dirty": false, "cve": "CVE-2026-0001" }),
+        );
+
+        assert!(adapter.adapt(&trigger).is_none());
+    }
+
+    // --- ManualReleaseAdapter ---
+
+    #[test]
+    fn manual_adapter_returns_some_when_release_enabled() {
+        let mut entry = project_entry("my-project", "/path/to/project");
+        entry.actions = ActionFlags {
+            release: true,
+            ..ActionFlags::default()
+        };
+        let adapter = ManualReleaseAdapter::new(make_registry(entry));
+        let trigger = make_trigger(
+            EventType::ReleaseRequested,
+            "my-project",
+            serde_json::json!({ "bump": "minor" }),
+        );
+
+        let input = adapter.adapt(&trigger);
+        assert!(input.is_some());
+        let input = input.unwrap();
+        assert_eq!(input.project, "my-project");
+        assert_eq!(input.project_path, PathBuf::from("/path/to/project"));
+        assert!(input.prompt.contains("minor"));
+    }
+
+    #[test]
+    fn manual_adapter_returns_none_when_release_disabled() {
+        let entry = project_entry("my-project", "/path/to/project");
+        // ActionFlags::default() has release=false
+        let adapter = ManualReleaseAdapter::new(make_registry(entry));
+        let trigger =
+            make_trigger(EventType::ReleaseRequested, "my-project", serde_json::json!({}));
+
+        assert!(adapter.adapt(&trigger).is_none());
+    }
+
+    #[test]
+    fn manual_adapter_returns_none_when_project_not_in_registry() {
+        let adapter = ManualReleaseAdapter::new(empty_registry());
+        let trigger =
+            make_trigger(EventType::ReleaseRequested, "unknown-project", serde_json::json!({}));
+
+        assert!(adapter.adapt(&trigger).is_none());
+    }
+
+    #[test]
+    fn manual_adapter_uses_auto_bump_when_bump_absent() {
+        let mut entry = project_entry("my-project", "/path/to/project");
+        entry.actions = ActionFlags {
+            release: true,
+            ..ActionFlags::default()
+        };
+        let adapter = ManualReleaseAdapter::new(make_registry(entry));
+        let trigger =
+            make_trigger(EventType::ReleaseRequested, "my-project", serde_json::json!({}));
+
+        let input = adapter.adapt(&trigger).unwrap();
+        assert!(input.prompt.contains("Determine the appropriate version bump"));
+    }
+}
