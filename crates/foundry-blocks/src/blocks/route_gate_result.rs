@@ -1,12 +1,14 @@
 use std::pin::Pin;
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gates::GateResult;
 use foundry_sdk::loop_context::has_loop_context;
 use foundry_sdk::payload::{
     ChainContext, GateVerificationCompletedPayload, LoopContext, ProjectCompletedPayload,
     ProjectMaintenanceRequestedPayload, RetryRequestedPayload,
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
 use foundry_sdk::workflow::WorkflowType;
 
 use super::TriggerContext;
@@ -77,16 +79,16 @@ impl TaskBlock for RouteGateResult {
                     throttle,
                 )
             } else {
-                handle_retry_or_exhaustion(
-                    &project,
+                handle_retry_or_exhaustion(RetryDecision {
+                    project: &project,
                     workflow,
                     completion_event_type,
                     retry_count,
-                    &results,
+                    results: &results,
                     execution_output,
                     context,
                     throttle,
-                )
+                })
             };
 
             Ok(result)
@@ -154,17 +156,28 @@ fn handle_gates_passed(
     TaskBlockResult::success(format!("{project}: all required gates passed"), events)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_retry_or_exhaustion(
-    project: &str,
+struct RetryDecision<'a> {
+    project: &'a str,
     workflow: WorkflowType,
-    completion_event_type: foundry_sdk::event::EventType,
+    completion_event_type: EventType,
     retry_count: u64,
-    results: &[foundry_sdk::gates::GateResult],
+    results: &'a [GateResult],
     execution_output: Option<String>,
-    context: foundry_sdk::payload::LoopContext,
-    throttle: foundry_sdk::throttle::Throttle,
-) -> TaskBlockResult {
+    context: LoopContext,
+    throttle: Throttle,
+}
+
+fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
+    let RetryDecision {
+        project,
+        workflow,
+        completion_event_type,
+        retry_count,
+        results,
+        execution_output,
+        context,
+        throttle,
+    } = decision;
     let max_retries: u64 = 3;
     if retry_count < max_retries {
         let failure_context = build_failure_context(results);

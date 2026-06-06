@@ -79,11 +79,13 @@ impl TaskBlock for AssessProject {
             let audit_name = run_naming_agent(
                 &agent,
                 &project,
-                &principle,
-                &category,
-                project_path,
-                agent_file,
-                provider,
+                NamingAgentArgs {
+                    principle: principle.clone(),
+                    category: category.clone(),
+                    project_path,
+                    agent_file,
+                    provider,
+                },
             )
             .await;
 
@@ -168,16 +170,26 @@ async fn run_assessment_agent(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_naming_agent(
-    agent: &Arc<dyn AgentGateway>,
-    project: &str,
-    principle: &str,
-    category: &str,
+struct NamingAgentArgs {
+    principle: String,
+    category: String,
     project_path: PathBuf,
     agent_file: Option<PathBuf>,
     provider: Option<AgentProvider>,
+}
+
+async fn run_naming_agent(
+    agent: &Arc<dyn AgentGateway>,
+    project: &str,
+    args: NamingAgentArgs,
 ) -> String {
+    let NamingAgentArgs {
+        principle,
+        category,
+        project_path,
+        agent_file,
+        provider,
+    } = args;
     let name_prompt = format!(
         "Generate a short kebab-case filename (no extension) that describes this assessment: \
          principle={principle}, category={category}. \

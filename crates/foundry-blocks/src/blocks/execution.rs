@@ -9,7 +9,7 @@ use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway};
 
-use super::agent_helpers::invoke_coding_agent;
+use super::agent_helpers::{CodingAgentSpec, invoke_coding_agent};
 use super::change_detection::{
     capture_pre_execution_sha, detect_post_execution_changes, only_auxiliary_changes,
 };
@@ -169,11 +169,13 @@ pub(crate) async fn execute_agent_block(
     let outcome = invoke_coding_agent(
         agent,
         ctx.project,
-        project_path.clone(),
-        prompt,
-        agent_file,
-        provider,
-        entry.timeout(),
+        CodingAgentSpec {
+            working_dir: project_path.clone(),
+            prompt,
+            agent_file,
+            provider,
+            timeout: entry.timeout(),
+        },
         ctx.label,
     )
     .await;

@@ -222,12 +222,7 @@ pub(super) async fn run_workflow(
 }
 
 pub(super) fn emit_rpc(
-    engine: &Arc<Engine>,
-    trace_store: &Arc<TraceStore>,
-    workflow_tracker: &Arc<WorkflowTracker>,
-    trace_writer: &Arc<TraceWriter>,
-    event_tx: &broadcast::Sender<Event>,
-    registry: &Arc<RwLock<Registry>>,
+    ctx: &super::RuntimeContext,
     request: Request<EmitRequest>,
 ) -> Result<Response<EmitResponse>, Status> {
     let event = parse_emit_request(request.into_inner())?;
@@ -241,15 +236,7 @@ pub(super) fn emit_rpc(
         "event accepted, spawning background processing"
     );
 
-    super::spawn_workflow(
-        event,
-        Arc::clone(engine),
-        Arc::clone(trace_store),
-        Arc::clone(workflow_tracker),
-        Arc::clone(trace_writer),
-        event_tx.clone(),
-        Arc::clone(registry),
-    );
+    super::spawn_workflow(event, ctx);
 
     Ok(Response::new(EmitResponse {
         event_id,

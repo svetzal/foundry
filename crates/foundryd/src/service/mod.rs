@@ -27,14 +27,30 @@ mod registry_ops;
 mod sentinel_ops;
 mod tracing_ops;
 
+/// The Arc cluster shared between `spawn_workflow`, `spawn_scheduler`, and
+/// `FoundryService`. Grouping them here eliminates recurring long positional
+/// argument lists across all three call sites.
+#[derive(Clone)]
+pub struct RuntimeContext {
+    pub engine: Arc<Engine>,
+    pub trace_store: Arc<TraceStore>,
+    pub workflow_tracker: Arc<WorkflowTracker>,
+    pub trace_writer: Arc<TraceWriter>,
+    pub event_tx: broadcast::Sender<Event>,
+    pub registry: Arc<RwLock<Registry>>,
+}
+
+/// Store-level configuration for `FoundryService` that is not part of the
+/// runtime event-processing cluster.
+pub struct StoreConfig {
+    pub registry_path: PathBuf,
+    pub sentinels: Arc<RwLock<SentinelStore>>,
+    pub sentinels_path: PathBuf,
+    pub scheduler_reload: Arc<Notify>,
+}
+
 pub struct FoundryService {
-    engine: Arc<Engine>,
-    trace_store: Arc<TraceStore>,
-    workflow_tracker: Arc<WorkflowTracker>,
-    /// Sender held so new receivers can be created for each Watch subscriber.
-    event_tx: broadcast::Sender<Event>,
-    trace_writer: Arc<TraceWriter>,
-    registry: Arc<RwLock<Registry>>,
+    ctx: RuntimeContext,
     registry_path: PathBuf,
     sentinels: Arc<RwLock<SentinelStore>>,
     sentinels_path: PathBuf,
@@ -42,30 +58,13 @@ pub struct FoundryService {
 }
 
 impl FoundryService {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        engine: Arc<Engine>,
-        trace_store: Arc<TraceStore>,
-        event_tx: broadcast::Sender<Event>,
-        workflow_tracker: Arc<WorkflowTracker>,
-        trace_writer: Arc<TraceWriter>,
-        registry: Arc<RwLock<Registry>>,
-        registry_path: PathBuf,
-        sentinels: Arc<RwLock<SentinelStore>>,
-        sentinels_path: PathBuf,
-        scheduler_reload: Arc<Notify>,
-    ) -> Self {
+    pub fn new(ctx: RuntimeContext, stores: StoreConfig) -> Self {
         Self {
-            engine,
-            trace_store,
-            workflow_tracker,
-            event_tx,
-            trace_writer,
-            registry,
-            registry_path,
-            sentinels,
-            sentinels_path,
-            scheduler_reload,
+            ctx,
+            registry_path: stores.registry_path,
+            sentinels: stores.sentinels,
+            sentinels_path: stores.sentinels_path,
+            scheduler_reload: stores.scheduler_reload,
         }
     }
 }
@@ -73,19 +72,11 @@ impl FoundryService {
 /// Track the event in the workflow registry and spawn `run_workflow` on the
 /// tokio runtime. Used by both the gRPC `emit()` handler and the in-process
 /// scheduler so every root event flows through the same trace/audit machinery.
-pub(crate) fn spawn_workflow(
-    event: Event,
-    engine: Arc<Engine>,
-    trace_store: Arc<TraceStore>,
-    tracker: Arc<WorkflowTracker>,
-    trace_writer: Arc<TraceWriter>,
-    event_tx: broadcast::Sender<Event>,
-    registry: Arc<RwLock<Registry>>,
-) {
+pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
     let event_id = event.id.clone();
     let trace_id = event.trace_id.clone().unwrap_or_default();
 
-    tracker.insert(ActiveWorkflow {
+    ctx.workflow_tracker.insert(ActiveWorkflow {
         event_id: event_id.clone(),
         event_type: event.event_type.to_string(),
         project: event.project.clone(),
@@ -103,12 +94,12 @@ pub(crate) fn spawn_workflow(
     tokio::spawn(
         eventing_ops::run_workflow(
             event,
-            engine,
-            trace_store,
-            tracker,
-            trace_writer,
-            event_tx,
-            registry,
+            Arc::clone(&ctx.engine),
+            Arc::clone(&ctx.trace_store),
+            Arc::clone(&ctx.workflow_tracker),
+            Arc::clone(&ctx.trace_writer),
+            ctx.event_tx.clone(),
+            Arc::clone(&ctx.registry),
         )
         .instrument(span),
     );
@@ -117,22 +108,14 @@ pub(crate) fn spawn_workflow(
 #[tonic::async_trait]
 impl Foundry for FoundryService {
     async fn emit(&self, request: Request<EmitRequest>) -> Result<Response<EmitResponse>, Status> {
-        eventing_ops::emit_rpc(
-            &self.engine,
-            &self.trace_store,
-            &self.workflow_tracker,
-            &self.trace_writer,
-            &self.event_tx,
-            &self.registry,
-            request,
-        )
+        eventing_ops::emit_rpc(&self.ctx, request)
     }
 
     async fn status(
         &self,
         request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
-        Ok(eventing_ops::status_rpc(&self.workflow_tracker, request))
+        Ok(eventing_ops::status_rpc(&self.ctx.workflow_tracker, request))
     }
 
     type WatchStream =
@@ -142,28 +125,28 @@ impl Foundry for FoundryService {
         &self,
         request: Request<WatchRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
-        Ok(eventing_ops::watch_rpc(&self.event_tx, request))
+        Ok(eventing_ops::watch_rpc(&self.ctx.event_tx, request))
     }
 
     async fn registry_add(
         &self,
         request: Request<RegistryAddRequest>,
     ) -> Result<Response<RegistryAddResponse>, Status> {
-        registry_ops::add(&self.registry, &self.registry_path, request)
+        registry_ops::add(&self.ctx.registry, &self.registry_path, request)
     }
 
     async fn registry_remove(
         &self,
         request: Request<RegistryRemoveRequest>,
     ) -> Result<Response<RegistryRemoveResponse>, Status> {
-        registry_ops::remove(&self.registry, &self.registry_path, request)
+        registry_ops::remove(&self.ctx.registry, &self.registry_path, request)
     }
 
     async fn registry_edit(
         &self,
         request: Request<RegistryEditRequest>,
     ) -> Result<Response<RegistryEditResponse>, Status> {
-        registry_ops::edit(&self.registry, &self.registry_path, request)
+        registry_ops::edit(&self.ctx.registry, &self.registry_path, request)
     }
 
     async fn sentinel_enable(
@@ -189,11 +172,11 @@ impl Foundry for FoundryService {
         &self,
         request: Request<TraceRequest>,
     ) -> Result<Response<TraceResponse>, Status> {
-        Ok(tracing_ops::trace_rpc(&self.trace_store, request))
+        Ok(tracing_ops::trace_rpc(&self.ctx.trace_store, request))
     }
 
     async fn span(&self, request: Request<SpanRequest>) -> Result<Response<SpanResponse>, Status> {
-        Ok(tracing_ops::span_rpc(&self.trace_store, request))
+        Ok(tracing_ops::span_rpc(&self.ctx.trace_store, request))
     }
 }
 
@@ -221,18 +204,21 @@ mod tests {
         let tmp_sentinels = tempfile::NamedTempFile::new().expect("tempfile");
         let sentinels_path = tmp_sentinels.path().to_path_buf();
         let scheduler_reload = Arc::new(Notify::new());
-        let service = FoundryService::new(
+        let ctx = RuntimeContext {
             engine,
             trace_store,
-            event_tx,
             workflow_tracker,
             trace_writer,
+            event_tx,
             registry,
+        };
+        let stores = StoreConfig {
             registry_path,
             sentinels,
             sentinels_path,
             scheduler_reload,
-        );
+        };
+        let service = FoundryService::new(ctx, stores);
         (service, rx)
     }
 
@@ -532,7 +518,7 @@ mod tests {
         assert!(project.iterate);
 
         // In-memory registry should now have the project.
-        let reg = service.registry.read().unwrap();
+        let reg = service.ctx.registry.read().unwrap();
         assert_eq!(reg.projects.len(), 1);
         assert_eq!(reg.projects[0].name, "my-project");
     }
@@ -599,7 +585,7 @@ mod tests {
             .await
             .expect("remove should succeed");
 
-        let reg = service.registry.read().unwrap();
+        let reg = service.ctx.registry.read().unwrap();
         assert!(reg.projects.is_empty());
     }
 

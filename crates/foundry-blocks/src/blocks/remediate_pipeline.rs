@@ -75,27 +75,40 @@ impl TaskBlock for RemediatePipeline {
         tracing::info!(%project, %run_name, "remediating pipeline failure");
 
         Box::pin(run_remediation(
-            project,
-            throttle,
-            run_name,
-            failure_logs,
-            entry,
+            RemediationRequest {
+                project,
+                throttle,
+                run_name,
+                failure_logs,
+                entry,
+                provider,
+            },
             agent,
-            provider,
         ))
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_remediation(
+struct RemediationRequest {
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
     run_name: String,
     failure_logs: String,
     entry: foundry_sdk::registry::ProjectEntry,
-    agent: Arc<dyn AgentGateway>,
     provider: Option<AgentProvider>,
+}
+
+async fn run_remediation(
+    request: RemediationRequest,
+    agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
+    let RemediationRequest {
+        project,
+        throttle,
+        run_name,
+        failure_logs,
+        entry,
+        provider,
+    } = request;
     let project_path = PathBuf::from(&entry.path);
 
     // Verify AGENTS.md exists -- required by Claude Code for agentic automation.
@@ -119,11 +132,13 @@ async fn run_remediation(
     let outcome = super::invoke_coding_agent(
         &*agent,
         &project,
-        project_path,
-        prompt,
-        agent_file,
-        provider,
-        RemediatePipeline::CLAUDE_TIMEOUT,
+        super::CodingAgentSpec {
+            working_dir: project_path,
+            prompt,
+            agent_file,
+            provider,
+            timeout: RemediatePipeline::CLAUDE_TIMEOUT,
+        },
         "remediate pipeline",
     )
     .await;

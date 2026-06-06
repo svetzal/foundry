@@ -72,33 +72,40 @@ pub(crate) async fn invoke_agent(
     outcome
 }
 
+/// Parameters for a coding-agent invocation.
+///
+/// Pass to [`invoke_coding_agent`] — the `Full`/`Balanced`/`Medium` profile
+/// is applied automatically.
+pub(crate) struct CodingAgentSpec {
+    pub working_dir: PathBuf,
+    pub prompt: String,
+    pub agent_file: Option<PathBuf>,
+    pub provider: Option<AgentProvider>,
+    pub timeout: Duration,
+}
+
 /// Invoke an agent with `Full` access at the `Balanced` tier and `Medium`
 /// effort — the general-purpose coding profile.
 ///
 /// Convenience wrapper around [`invoke_agent`] for the common pattern used by
 /// execution blocks (`ExecutePlan`, `ExecuteMaintain`, `RemediatePipeline`, `RetryExecution`).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn invoke_coding_agent(
     agent: &dyn AgentGateway,
     project: &str,
-    working_dir: std::path::PathBuf,
-    prompt: String,
-    agent_file: Option<std::path::PathBuf>,
-    provider: Option<AgentProvider>,
-    timeout: std::time::Duration,
+    spec: CodingAgentSpec,
     trace_label: &str,
 ) -> AgentOutcome {
     invoke_agent(
         agent,
         AgentBlockSpec {
-            prompt,
-            working_dir,
+            prompt: spec.prompt,
+            working_dir: spec.working_dir,
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
-            agent_file,
-            provider,
-            timeout,
+            agent_file: spec.agent_file,
+            provider: spec.provider,
+            timeout: spec.timeout,
         },
         trace_label,
         project,

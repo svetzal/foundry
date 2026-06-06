@@ -190,11 +190,15 @@ impl AuditReleaseTag {
                 &original_branch,
                 &project,
                 throttle,
-                &payload_cve,
-                payload_vulnerable,
-                payload_dirty,
-                shell.as_ref(),
-                scanner.as_ref(),
+                PayloadFallback {
+                    cve: payload_cve,
+                    vulnerable: payload_vulnerable,
+                    dirty: payload_dirty,
+                },
+                ScanGateways {
+                    shell: shell.as_ref(),
+                    scanner: scanner.as_ref(),
+                },
             )
             .await
         })
@@ -221,24 +225,32 @@ impl TaskBlock for AuditReleaseTag {
     }
 }
 
+struct PayloadFallback {
+    cve: String,
+    vulnerable: bool,
+    dirty: Option<bool>,
+}
+
+struct ScanGateways<'a> {
+    shell: &'a dyn ShellGateway,
+    scanner: &'a dyn ScannerGateway,
+}
+
 /// Checks out the latest release tag, runs the scanner, restores the original
 /// branch, and returns a `TaskBlockResult` with a `ReleaseTagAudited` event.
 ///
 /// Falls back to the payload values when no release tags exist or when the
 /// scanner cannot run.
-#[allow(clippy::too_many_arguments)]
 async fn perform_tag_checkout_and_scan(
     path: &std::path::Path,
     stack: &foundry_sdk::registry::Stack,
     original_branch: &str,
     project: &str,
     throttle: foundry_sdk::throttle::Throttle,
-    payload_cve: &str,
-    payload_vulnerable: bool,
-    payload_dirty: Option<bool>,
-    shell: &dyn ShellGateway,
-    scanner: &dyn ScannerGateway,
+    fallback: PayloadFallback,
+    gateways: ScanGateways<'_>,
 ) -> anyhow::Result<TaskBlockResult> {
+    let ScanGateways { shell, scanner } = gateways;
     // Fetch tags from the remote (best-effort; don't abort on failure).
     let _ = shell.run(path, "git", &["fetch", "--tags"], None, None).await;
 
@@ -269,9 +281,9 @@ async fn perform_tag_checkout_and_scan(
         return Ok(emit_payload_result(
             project.to_string(),
             throttle,
-            payload_cve,
-            payload_vulnerable,
-            payload_dirty,
+            &fallback.cve,
+            fallback.vulnerable,
+            fallback.dirty,
         ));
     }; // vulnerabilities assigned above
 
@@ -280,13 +292,13 @@ async fn perform_tag_checkout_and_scan(
     let cve = vulnerabilities
         .first()
         .and_then(|v| v.cve.clone())
-        .unwrap_or_else(|| payload_cve.to_string());
+        .unwrap_or_else(|| fallback.cve.clone());
 
     tracing::info!(%cve, %vulnerable, "audited release tag");
 
     let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
     // Preserve dirty flag from upstream payload for downstream blocks.
-    if let Some(dirty) = payload_dirty {
+    if let Some(dirty) = fallback.dirty {
         payload["dirty"] = serde_json::Value::Bool(dirty);
     }
 

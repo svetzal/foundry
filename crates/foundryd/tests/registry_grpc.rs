@@ -17,7 +17,7 @@ use foundryd::{
     proto::{
         RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_server::Foundry,
     },
-    service::FoundryService,
+    service::{FoundryService, RuntimeContext, StoreConfig},
     trace_store::TraceStore,
     workflow_tracker::WorkflowTracker,
 };
@@ -55,18 +55,21 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
     let sentinels_path = tmp_sentinels.path().to_path_buf();
     let scheduler_reload = Arc::new(Notify::new());
 
-    let service = FoundryService::new(
+    let ctx = RuntimeContext {
         engine,
         trace_store,
-        event_tx,
         workflow_tracker,
         trace_writer,
+        event_tx,
         registry,
+    };
+    let stores = StoreConfig {
         registry_path,
         sentinels,
         sentinels_path,
         scheduler_reload,
-    );
+    };
+    let service = FoundryService::new(ctx, stores);
 
     (service, tmp_registry, tmp_traces)
 }

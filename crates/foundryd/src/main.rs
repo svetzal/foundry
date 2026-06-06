@@ -75,11 +75,13 @@ async fn main() -> Result<()> {
         event_writer,
         &event_tx,
         trace_writer.clone(),
-        audits_dir,
-        digests_dir,
-        ops_digests_dir,
-        ops_events_intake_dir,
-        ops_watermark_path,
+        BlockPaths {
+            audits_dir,
+            digests_dir,
+            ops_digests_dir,
+            ops_events_intake_dir,
+            ops_watermark_path,
+        },
     );
 
     let engine = Arc::new(engine);
@@ -95,28 +97,25 @@ async fn main() -> Result<()> {
     let sentinels = Arc::new(RwLock::new(load_or_seed_sentinels(&sentinels_path)?));
     let scheduler_reload = Arc::new(Notify::new());
 
-    spawn_scheduler(
-        &sentinels,
-        &scheduler_reload,
-        &engine,
-        &trace_store,
-        &workflow_tracker,
-        &trace_writer,
-        &event_tx,
-        &registry,
-    );
-
-    let service = service::FoundryService::new(
+    let ctx = service::RuntimeContext {
         engine,
         trace_store,
-        event_tx,
         workflow_tracker,
         trace_writer,
+        event_tx,
         registry,
-        registry_path,
-        sentinels,
-        sentinels_path,
-        scheduler_reload,
+    };
+
+    spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
+
+    let service = service::FoundryService::new(
+        ctx,
+        service::StoreConfig {
+            registry_path,
+            sentinels,
+            sentinels_path,
+            scheduler_reload,
+        },
     );
 
     let addr = "127.0.0.1:50051".parse()?;
@@ -213,55 +212,45 @@ fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_scheduler(
+    ctx: &service::RuntimeContext,
     sentinels: &Arc<RwLock<SentinelStore>>,
     reload: &Arc<Notify>,
-    engine: &Arc<foundry_engine::engine::Engine>,
-    trace_store: &Arc<trace_store::TraceStore>,
-    workflow_tracker: &Arc<workflow_tracker::WorkflowTracker>,
-    trace_writer: &Arc<foundry_blocks::trace_writer::TraceWriter>,
-    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
-    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
 ) {
     // Pipe sentinel firings through the same trace/workflow_tracker
     // machinery the gRPC `emit()` handler uses.
-    let emit: scheduler::EmitFn = {
-        let engine = Arc::clone(engine);
-        let trace_store = Arc::clone(trace_store);
-        let workflow_tracker = Arc::clone(workflow_tracker);
-        let trace_writer = Arc::clone(trace_writer);
-        let event_tx = event_tx.clone();
-        let registry = Arc::clone(registry);
-        Arc::new(move |event| {
-            service::spawn_workflow(
-                event,
-                Arc::clone(&engine),
-                Arc::clone(&trace_store),
-                Arc::clone(&workflow_tracker),
-                Arc::clone(&trace_writer),
-                event_tx.clone(),
-                Arc::clone(&registry),
-            );
-        })
-    };
+    let ctx = ctx.clone();
+    let emit: scheduler::EmitFn = Arc::new(move |event| {
+        service::spawn_workflow(event, &ctx);
+    });
 
     let scheduler = scheduler::Scheduler::new(Arc::clone(sentinels), Arc::clone(reload), emit);
     tokio::spawn(scheduler.run());
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn register_blocks(
-    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
-    event_writer: Arc<foundry_engine::event_writer::EventWriter>,
-    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
-    trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
+struct BlockPaths {
     audits_dir: String,
     digests_dir: std::path::PathBuf,
     ops_digests_dir: std::path::PathBuf,
     ops_events_intake_dir: std::path::PathBuf,
     ops_watermark_path: std::path::PathBuf,
+}
+
+#[allow(clippy::too_many_lines)]
+fn register_blocks(
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+    event_writer: Arc<foundry_engine::event_writer::EventWriter>,
+    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
+    trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
+    paths: BlockPaths,
 ) -> foundry_engine::engine::Engine {
+    let BlockPaths {
+        audits_dir,
+        digests_dir,
+        ops_digests_dir,
+        ops_events_intake_dir,
+        ops_watermark_path,
+    } = paths;
     let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
         .with_event_broadcaster(event_tx.clone());

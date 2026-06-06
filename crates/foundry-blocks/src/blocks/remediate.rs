@@ -79,11 +79,13 @@ impl TaskBlock for RemediateVulnerability {
             let outcome = super::invoke_coding_agent(
                 &*agent,
                 &project,
-                project_path,
-                prompt,
-                agent_file,
-                provider,
-                entry.timeout(),
+                super::CodingAgentSpec {
+                    working_dir: project_path,
+                    prompt,
+                    agent_file,
+                    provider,
+                    timeout: entry.timeout(),
+                },
                 &format!("remediate {cve}"),
             )
             .await;
