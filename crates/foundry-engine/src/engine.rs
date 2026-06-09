@@ -1448,7 +1448,7 @@ mod tests {
             payload.children.iter().all(|c| c.success == Some(true)),
             "every child reported success",
         );
-        assert_eq!(seen[0].project, "system", "reduce event carries the GatherSpec's project",);
+        assert_eq!(seen[0].project, "system", "reduce event carries the GatherSpec's project");
     }
 
     #[tokio::test]

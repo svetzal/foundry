@@ -43,7 +43,7 @@ impl TraceWriter {
             return None;
         };
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 let candidate = entry.path().join(&filename);
                 if candidate.exists()
                     && let Ok(content) = std::fs::read_to_string(&candidate)

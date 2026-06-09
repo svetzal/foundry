@@ -262,7 +262,7 @@ mod tests {
         let child = completion("gth_3", "alpha", true);
         assert!(store.record(&child).is_none());
         // The very same event arriving again must not count a second time.
-        assert!(store.record(&child).is_none(), "duplicate event id must not advance the gather",);
+        assert!(store.record(&child).is_none(), "duplicate event id must not advance the gather");
     }
 
     #[test]

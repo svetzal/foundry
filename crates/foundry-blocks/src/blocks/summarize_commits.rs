@@ -369,7 +369,7 @@ mod tests {
         assert!(prompt.contains("alpha"), "project name must appear in prompt");
         assert!(prompt.contains("aaaaaaa1111"), "full SHA must be in prompt");
         assert!(prompt.contains("first thing"), "subject must be in prompt");
-        assert!(prompt.contains("Canadian English"), "spelling instruction must be in prompt",);
+        assert!(prompt.contains("Canadian English"), "spelling instruction must be in prompt");
         assert!(
             prompt.contains("Heads-up"),
             "risky-changes section instruction must be in prompt",

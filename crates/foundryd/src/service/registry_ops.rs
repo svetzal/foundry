@@ -337,7 +337,7 @@ mod tests {
     fn mutation_error_already_exists_maps_to_already_exists_code() {
         let s = mutation_error_to_status(RegistryMutationError::DuplicateName("p".to_string()));
         assert_eq!(s.code(), tonic::Code::AlreadyExists);
-        assert!(s.message().contains("p"));
+        assert!(s.message().contains('p'));
     }
 
     #[test]

@@ -141,7 +141,7 @@ fn render_node(node: &SpanNode, prefix: &str, is_last: bool, out: &mut String) {
     for (i, e) in node.events.iter().enumerate() {
         let last = i + 1 == event_count && block_count == 0 && child_count == 0;
         let conn = if last { "└── " } else { "├── " };
-        let _ = writeln!(out, "{child_prefix}{conn}{}  project={}", e.event_type, e.project,);
+        let _ = writeln!(out, "{child_prefix}{conn}{}  project={}", e.event_type, e.project);
     }
 
     for (i, b) in node.blocks.iter().enumerate() {

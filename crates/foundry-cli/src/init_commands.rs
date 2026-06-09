@@ -128,10 +128,8 @@ fn parse_stamp(content: &str) -> Option<Version> {
 
     let frontmatter = if let Some(pos) = rest.find("\n---\n") {
         &rest[..pos]
-    } else if let Some(stripped) = rest.strip_suffix("\n---") {
-        stripped
     } else {
-        return None;
+        rest.strip_suffix("\n---")?
     };
 
     for line in frontmatter.lines() {
