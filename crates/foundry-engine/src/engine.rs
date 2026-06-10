@@ -79,6 +79,25 @@ async fn execute_with_retry(
     last_result.expect("loop always sets last_result")
 }
 
+#[derive(Debug, PartialEq)]
+enum Dispatch {
+    DryRunSimulate,
+    ThrottleSkip,
+    Execute,
+}
+
+/// Classify how the engine should handle a block invocation based on its kind,
+/// the event throttle, and whether the block says it should execute.
+fn classify_dispatch(kind: BlockKind, throttle: Throttle, should_execute: bool) -> Dispatch {
+    if !should_execute && throttle == Throttle::DryRun && kind == BlockKind::Mutator {
+        Dispatch::DryRunSimulate
+    } else if !should_execute {
+        Dispatch::ThrottleSkip
+    } else {
+        Dispatch::Execute
+    }
+}
+
 fn make_block_execution(
     block: &dyn TaskBlock,
     current: &Event,
@@ -321,61 +340,18 @@ impl Engine {
         }
     }
 
-    /// Execute one block against a triggering event, persist any emitted events,
-    /// and return the [`BlockExecution`] record.  Mutates `state` in place so
-    /// downstream events continue to be processed.
-    #[allow(clippy::too_many_lines)]
-    async fn run_block(
+    /// Run the `Execute` path: retry the block, emit events, handle scatter, and
+    /// return the resulting [`BlockExecution`].  Extracted from [`run_block`] to
+    /// keep that method within the line budget.
+    async fn execute_block(
         &self,
         block: &dyn TaskBlock,
         current: &Event,
+        block_span_id: String,
+        workflow_span_id: Option<String>,
+        block_start: std::time::Instant,
         state: &mut ProcessState,
     ) -> BlockExecution {
-        let block_span_id = foundry_sdk::event::mint_span_id();
-        let workflow_span_id = current.span_id.clone();
-
-        let block_start = std::time::Instant::now();
-        if !block.should_execute(current.throttle)
-            && current.throttle == Throttle::DryRun
-            && block.kind() == BlockKind::Mutator
-        {
-            let simulated_events = block.dry_run_events(current);
-            tracing::info!(simulated = simulated_events.len(), "dry-run: simulating success");
-            let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
-                simulated_events,
-                current,
-                &block_span_id,
-                state,
-                true,
-            );
-            let mut exec = make_block_execution(
-                block,
-                current,
-                block_span_id,
-                workflow_span_id,
-                block_start,
-                true,
-                "dry-run (simulated)".to_string(),
-            );
-            exec.emitted_event_ids = emitted_ids;
-            exec.emitted_payloads = emitted_payloads;
-            return exec;
-        }
-
-        // Non-DryRun throttle skip — should not happen in practice, kept as a safety net.
-        if !block.should_execute(current.throttle) {
-            tracing::info!("skipped (throttle)");
-            return make_block_execution(
-                block,
-                current,
-                block_span_id,
-                workflow_span_id,
-                block_start,
-                true,
-                "skipped (throttle)".to_string(),
-            );
-        }
-
         // Scope SPAN_CONTEXT so subprocess spawners inside the block can inject TRACEPARENT.
         let exec_future = execute_with_retry(block, current, block.retry_policy());
         let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
@@ -436,6 +412,74 @@ impl Engine {
                     false,
                     format!("error: {err}"),
                 )
+            }
+        }
+    }
+
+    /// Execute one block against a triggering event, persist any emitted events,
+    /// and return the [`BlockExecution`] record.  Mutates `state` in place so
+    /// downstream events continue to be processed.
+    async fn run_block(
+        &self,
+        block: &dyn TaskBlock,
+        current: &Event,
+        state: &mut ProcessState,
+    ) -> BlockExecution {
+        let block_span_id = foundry_sdk::event::mint_span_id();
+        let workflow_span_id = current.span_id.clone();
+        let block_start = std::time::Instant::now();
+
+        match classify_dispatch(
+            block.kind(),
+            current.throttle,
+            block.should_execute(current.throttle),
+        ) {
+            Dispatch::DryRunSimulate => {
+                let simulated_events = block.dry_run_events(current);
+                tracing::info!(simulated = simulated_events.len(), "dry-run: simulating success");
+                let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                    simulated_events,
+                    current,
+                    &block_span_id,
+                    state,
+                    true,
+                );
+                let mut exec = make_block_execution(
+                    block,
+                    current,
+                    block_span_id,
+                    workflow_span_id,
+                    block_start,
+                    true,
+                    "dry-run (simulated)".to_string(),
+                );
+                exec.emitted_event_ids = emitted_ids;
+                exec.emitted_payloads = emitted_payloads;
+                exec
+            }
+            Dispatch::ThrottleSkip => {
+                // Non-DryRun throttle skip — should not happen in practice, kept as a safety net.
+                tracing::info!("skipped (throttle)");
+                make_block_execution(
+                    block,
+                    current,
+                    block_span_id,
+                    workflow_span_id,
+                    block_start,
+                    true,
+                    "skipped (throttle)".to_string(),
+                )
+            }
+            Dispatch::Execute => {
+                self.execute_block(
+                    block,
+                    current,
+                    block_span_id,
+                    workflow_span_id,
+                    block_start,
+                    state,
+                )
+                .await
             }
         }
     }
@@ -517,6 +561,42 @@ mod tests {
     use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;
+
+    // -- classify_dispatch pure function tests --
+
+    #[test]
+    fn classify_dispatch_dry_run_mutator_simulates() {
+        assert_eq!(
+            classify_dispatch(BlockKind::Mutator, Throttle::DryRun, false),
+            Dispatch::DryRunSimulate
+        );
+    }
+
+    #[test]
+    fn classify_dispatch_observer_dry_run_skips() {
+        // Observers do not simulate under DryRun — they get ThrottleSkip
+        assert_eq!(
+            classify_dispatch(BlockKind::Observer, Throttle::DryRun, false),
+            Dispatch::ThrottleSkip
+        );
+    }
+
+    #[test]
+    fn classify_dispatch_throttle_skip_when_should_not_execute() {
+        assert_eq!(
+            classify_dispatch(BlockKind::Mutator, Throttle::Full, false),
+            Dispatch::ThrottleSkip
+        );
+    }
+
+    #[test]
+    fn classify_dispatch_executes_when_should_execute() {
+        assert_eq!(classify_dispatch(BlockKind::Mutator, Throttle::Full, true), Dispatch::Execute);
+        assert_eq!(
+            classify_dispatch(BlockKind::Observer, Throttle::DryRun, true),
+            Dispatch::Execute
+        );
+    }
 
     #[test]
     fn opens_span_recognizes_builtin_and_registered_custom_openers() {

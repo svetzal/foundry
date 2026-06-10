@@ -212,6 +212,28 @@ impl TaskBlock for CommitAndPush {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum CommitOutcome {
+    Committed,
+    NothingToCommit,
+    Failed,
+}
+
+/// Classify the outcome of a `git commit` invocation from the exit status and
+/// combined stdout+stderr output.
+fn classify_commit_outcome(success: bool, stdout: &str, stderr: &str) -> CommitOutcome {
+    if success {
+        CommitOutcome::Committed
+    } else {
+        let combined = format!("{stdout} {stderr}").to_lowercase();
+        if combined.contains("nothing to commit") || combined.contains("no changes added") {
+            CommitOutcome::NothingToCommit
+        } else {
+            CommitOutcome::Failed
+        }
+    }
+}
+
 /// Stage all changes and commit; returns the commit message on success, `None` when
 /// git reports nothing to commit (a successful no-op), and `Err` on real failures.
 async fn commit_changes(
@@ -225,20 +247,22 @@ async fn commit_changes(
     let commit_msg = commit_message(event_type, project);
     let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
 
-    if !commit.success {
-        // "nothing to commit" is not an error — can happen when both iterate and maintain
-        // trigger CommitAndPush and the first one already committed everything, or when
-        // git add -A stages content identical to HEAD.
-        let combined = format!("{} {}", commit.stdout, commit.stderr).to_lowercase();
-        if combined.contains("nothing to commit") || combined.contains("no changes added") {
-            tracing::info!(%project, "git commit found nothing to commit");
-            return Ok(None);
+    match classify_commit_outcome(commit.success, &commit.stdout, &commit.stderr) {
+        CommitOutcome::Committed => {
+            tracing::info!(%project, "committed changes");
+            Ok(Some(commit_msg))
         }
-        return Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()));
+        CommitOutcome::NothingToCommit => {
+            // Can happen when both iterate and maintain trigger CommitAndPush and the
+            // first one already committed everything, or when git add -A stages content
+            // identical to HEAD.
+            tracing::info!(%project, "git commit found nothing to commit");
+            Ok(None)
+        }
+        CommitOutcome::Failed => {
+            Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()))
+        }
     }
-
-    tracing::info!(%project, "committed changes");
-    Ok(Some(commit_msg))
 }
 
 /// Push the committed changes when `push_enabled`; returns the push payload on success.
@@ -351,7 +375,7 @@ mod tests {
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
-    use super::{CommitAndPush, commit_message};
+    use super::{CommitAndPush, CommitOutcome, classify_commit_outcome, commit_message};
 
     fn empty_registry() -> Arc<RwLock<Registry>> {
         Arc::new(RwLock::new(Registry {
@@ -450,6 +474,37 @@ mod tests {
             exit_code: 0,
             success: true,
         })
+    }
+
+    // -- classify_commit_outcome pure function tests --
+
+    #[test]
+    fn classify_commit_outcome_success_is_committed() {
+        assert_eq!(classify_commit_outcome(true, "[main abc] msg\n", ""), CommitOutcome::Committed);
+    }
+
+    #[test]
+    fn classify_commit_outcome_nothing_to_commit() {
+        assert_eq!(
+            classify_commit_outcome(
+                false,
+                "On branch main\nnothing to commit, working tree clean\n",
+                ""
+            ),
+            CommitOutcome::NothingToCommit
+        );
+        assert_eq!(
+            classify_commit_outcome(false, "", "no changes added to commit"),
+            CommitOutcome::NothingToCommit
+        );
+    }
+
+    #[test]
+    fn classify_commit_outcome_failure() {
+        assert_eq!(
+            classify_commit_outcome(false, "", "error: failed to push some refs"),
+            CommitOutcome::Failed
+        );
     }
 
     // -- commit_message pure function tests --

@@ -178,9 +178,8 @@ async fn poll_pipeline(
         }
 
         match query_run_by_id(run_id, shell).await {
-            Ok(Some((status, conclusion))) => match status.as_str() {
-                "completed" => {
-                    let success = conclusion == "success";
+            Ok(Some((status, conclusion))) => match interpret_run_status(&status, &conclusion) {
+                RunOutcome::Completed { success } => {
                     tracing::info!(%repo, run_id, %conclusion, "pipeline completed");
                     return Ok(TaskBlockResult {
                         events: vec![Event::new(
@@ -197,11 +196,11 @@ async fn poll_pipeline(
                         ..Default::default()
                     });
                 }
-                s @ ("in_progress" | "queued" | "waiting") => {
-                    tracing::info!(%repo, run_id, status = s, "pipeline still running, waiting...");
+                RunOutcome::Pending => {
+                    tracing::info!(%repo, run_id, status = %status, "pipeline still running, waiting...");
                 }
-                other => {
-                    tracing::info!(%repo, run_id, status = other, "unknown pipeline status, waiting...");
+                RunOutcome::Unknown => {
+                    tracing::info!(%repo, run_id, status = %status, "unknown pipeline status, waiting...");
                 }
             },
             Ok(None) => {
@@ -214,6 +213,74 @@ async fn poll_pipeline(
 
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
+    }
+}
+
+/// Select the best matching run ID from a list of workflow runs.
+///
+/// When `new_tag` is `Some`, scores runs preferring (release event + tag branch) →
+/// (release event + release-name) → (release event) → (tag branch). Falls back to
+/// the most-recent run when `new_tag` is `None` or when no scored run is found.
+fn select_release_run(runs: &[serde_json::Value], new_tag: Option<&str>) -> Option<u64> {
+    if runs.is_empty() {
+        return None;
+    }
+
+    let Some(tag) = new_tag else {
+        return runs.first().and_then(|r| r["databaseId"].as_u64());
+    };
+
+    let mut best: Option<(u8, u64)> = None;
+
+    for run in runs {
+        let event = run["event"].as_str().unwrap_or("");
+        let head_branch = run["headBranch"].as_str().unwrap_or("");
+        let workflow_name = run["workflowName"].as_str().unwrap_or("").to_lowercase();
+        let Some(db_id) = run["databaseId"].as_u64() else {
+            continue;
+        };
+
+        let is_release_event = event == "release";
+        let is_tag_branch = head_branch == tag;
+        let has_release_name = workflow_name.contains("release")
+            || workflow_name.contains("publish")
+            || workflow_name.contains("deploy");
+
+        let score: u8 = if is_release_event && is_tag_branch {
+            4
+        } else if is_release_event && has_release_name {
+            3
+        } else if is_release_event {
+            2
+        } else if is_tag_branch {
+            1
+        } else {
+            continue;
+        };
+
+        if best.is_none_or(|(best_score, _)| score > best_score) {
+            best = Some((score, db_id));
+        }
+    }
+
+    best.map(|(_, id)| id)
+}
+
+#[derive(Debug, PartialEq)]
+enum RunOutcome {
+    Completed { success: bool },
+    Pending,
+    Unknown,
+}
+
+/// Classify a GitHub Actions run status/conclusion pair into a `RunOutcome`.
+fn interpret_run_status(status: &str, conclusion: &str) -> RunOutcome {
+    match status {
+        "completed" => RunOutcome::Completed {
+            success: conclusion == "success",
+        },
+        "in_progress" | "queued" | "waiting" => RunOutcome::Pending,
+        _ => RunOutcome::Unknown,
     }
 }
 
@@ -261,61 +328,15 @@ async fn find_release_run_id(
         return Ok(None);
     };
 
-    if runs_arr.is_empty() {
-        return Ok(None);
-    }
-
-    let Some(tag) = new_tag else {
-        // No tag available — fall back to most recent run.
-        return Ok(runs_arr.first().and_then(|r| r["databaseId"].as_u64()));
-    };
-
-    // Build a scored list: prefer (release event + matching branch) → (release
-    // event) → (matching branch) → skip.
-    let mut best: Option<(u8, u64)> = None; // (score, id)
-
-    for run in runs_arr {
-        let event = run["event"].as_str().unwrap_or("");
-        let head_branch = run["headBranch"].as_str().unwrap_or("");
-        let workflow_name = run["workflowName"].as_str().unwrap_or("").to_lowercase();
-        let Some(db_id) = run["databaseId"].as_u64() else {
-            continue;
-        };
-
-        let is_release_event = event == "release";
-        let is_tag_branch = head_branch == tag;
-        let has_release_name = workflow_name.contains("release")
-            || workflow_name.contains("publish")
-            || workflow_name.contains("deploy");
-
-        let score: u8 = if is_release_event && is_tag_branch {
-            4
-        } else if is_release_event && has_release_name {
-            3
-        } else if is_release_event {
-            2
-        } else if is_tag_branch {
-            1
-        } else {
-            continue; // skip this run
-        };
-
-        if best.is_none_or(|(best_score, _)| score > best_score) {
-            best = Some((score, db_id));
-        }
-    }
-
-    // If nothing matched the tag filters, fall back to the most recent run.
-    if best.is_none() {
+    let selected = select_release_run(runs_arr, new_tag);
+    if selected.is_none() && new_tag.is_some() && !runs_arr.is_empty() {
         tracing::info!(
             %repo,
-            tag = %tag,
+            tag = %new_tag.unwrap_or(""),
             "no release/tag-matching run found yet; will retry"
         );
-        return Ok(None);
     }
-
-    Ok(best.map(|(_, id)| id))
+    Ok(selected)
 }
 
 /// Query a specific workflow run by its database ID via the `gh` CLI.
@@ -758,6 +779,74 @@ mod tests {
         let result = find_release_run_id("owner/repo", None, shell.as_ref()).await.unwrap();
 
         assert_eq!(result, Some(99));
+    }
+
+    // -- select_release_run pure function tests --
+
+    #[test]
+    fn select_release_run_empty_returns_none() {
+        assert_eq!(select_release_run(&[], Some("v1.0.0")), None);
+        assert_eq!(select_release_run(&[], None), None);
+    }
+
+    #[test]
+    fn select_release_run_no_tag_returns_first() {
+        let runs = serde_json::json!([
+            {"databaseId": 99, "event": "push", "headBranch": "main", "workflowName": "CI"},
+            {"databaseId": 100, "event": "push", "headBranch": "main", "workflowName": "CI"},
+        ]);
+        let arr = runs.as_array().unwrap();
+        assert_eq!(select_release_run(arr, None), Some(99));
+    }
+
+    #[test]
+    fn select_release_run_prefers_release_event_and_matching_tag() {
+        let runs = serde_json::json!([
+            {"databaseId": 1, "event": "push", "headBranch": "main", "workflowName": "CI"},
+            {"databaseId": 2, "event": "release", "headBranch": "v2.0.0", "workflowName": "Release"},
+            {"databaseId": 3, "event": "release", "headBranch": "v1.9.0", "workflowName": "Release"},
+        ]);
+        let arr = runs.as_array().unwrap();
+        assert_eq!(select_release_run(arr, Some("v2.0.0")), Some(2));
+    }
+
+    #[test]
+    fn select_release_run_returns_none_when_no_tag_match() {
+        let runs = serde_json::json!([
+            {"databaseId": 1, "event": "push", "headBranch": "main", "workflowName": "CI"},
+        ]);
+        let arr = runs.as_array().unwrap();
+        assert_eq!(select_release_run(arr, Some("v9.9.9")), None);
+    }
+
+    // -- interpret_run_status pure function tests --
+
+    #[test]
+    fn interpret_run_status_completed_success() {
+        assert_eq!(
+            interpret_run_status("completed", "success"),
+            RunOutcome::Completed { success: true }
+        );
+    }
+
+    #[test]
+    fn interpret_run_status_completed_failure() {
+        assert_eq!(
+            interpret_run_status("completed", "failure"),
+            RunOutcome::Completed { success: false }
+        );
+    }
+
+    #[test]
+    fn interpret_run_status_in_progress_is_pending() {
+        assert_eq!(interpret_run_status("in_progress", ""), RunOutcome::Pending);
+        assert_eq!(interpret_run_status("queued", ""), RunOutcome::Pending);
+        assert_eq!(interpret_run_status("waiting", ""), RunOutcome::Pending);
+    }
+
+    #[test]
+    fn interpret_run_status_unknown_status() {
+        assert_eq!(interpret_run_status("weird_status", ""), RunOutcome::Unknown);
     }
 
     #[test]

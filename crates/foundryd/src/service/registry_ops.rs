@@ -157,6 +157,7 @@ pub(super) fn remove(
     Ok(Response::new(RegistryRemoveResponse {}))
 }
 
+// Sequential field mapping from protobuf request to domain struct — length reflects field count.
 #[allow(clippy::too_many_lines)]
 pub(super) fn edit(
     registry: &Arc<RwLock<Registry>>,

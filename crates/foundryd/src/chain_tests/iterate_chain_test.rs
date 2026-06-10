@@ -450,6 +450,7 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
     );
 }
 
+// End-to-end chain assertion; length is inherent.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn gate_verification_retry_loop() {
@@ -625,6 +626,7 @@ async fn gate_verification_retry_loop() {
     );
 }
 
+// End-to-end chain assertion; length is inherent.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn iterate_with_maintain_chaining() {
@@ -789,6 +791,7 @@ async fn iterate_with_maintain_chaining() {
     );
 }
 
+// End-to-end chain assertion; length is inherent.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
@@ -903,6 +906,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
     );
 }
 
+// End-to-end chain assertion; length is inherent.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn legitimate_no_op_iterate_succeeds_without_retry() {

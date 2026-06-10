@@ -236,6 +236,7 @@ struct BlockPaths {
     ops_watermark_path: std::path::PathBuf,
 }
 
+// Sequential block registration wiring — length is inherent, not a design smell.
 #[allow(clippy::too_many_lines)]
 fn register_blocks(
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
