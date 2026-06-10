@@ -101,6 +101,20 @@ const TERMINAL_EVENT_TYPES: &[EventType] = &[
 ];
 
 impl ProcessResult {
+    /// Iterate events of a given type, parsing each into payload `T`.
+    ///
+    /// Events whose payload fails to parse are silently skipped, matching
+    /// the best-effort decode used by trace consumers.
+    pub fn parsed_events_of<T: serde::de::DeserializeOwned>(
+        &self,
+        event_type: EventType,
+    ) -> impl Iterator<Item = T> + '_ {
+        self.events
+            .iter()
+            .filter(move |e| e.event_type == event_type)
+            .filter_map(|e| e.parse_payload::<T>().ok())
+    }
+
     /// Determine overall success of the processing chain.
     ///
     /// When the chain contains terminal completion events (e.g.
@@ -126,6 +140,7 @@ impl ProcessResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payload::ReleaseCompletedPayload;
     use crate::throttle::Throttle;
 
     fn block(name: &str, success: bool) -> BlockExecution {
@@ -250,6 +265,40 @@ mod tests {
         let restored: BlockExecution = serde_json::from_value(json).unwrap();
         assert_eq!(restored.span_id.as_deref(), Some("0123456789abcdef"));
         assert_eq!(restored.parent_span_id.as_deref(), Some("fedcba9876543210"));
+    }
+
+    #[test]
+    fn parsed_events_of_yields_matching_payloads_and_skips_others() {
+        let release1 = Event::new(
+            EventType::ReleaseCompleted,
+            "proj".to_string(),
+            Throttle::Full,
+            serde_json::json!({"success": true, "new_tag": "v1.0.0"}),
+        );
+        let release2 = Event::new(
+            EventType::ReleaseCompleted,
+            "proj".to_string(),
+            Throttle::Full,
+            serde_json::json!({"success": false, "new_tag": "v1.0.1"}),
+        );
+        let other = Event::new(
+            EventType::ProjectRunStarted,
+            "proj".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = ProcessResult {
+            events: vec![release1, other, release2],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+
+        let payloads: Vec<ReleaseCompletedPayload> =
+            result.parsed_events_of(EventType::ReleaseCompleted).collect();
+        assert_eq!(payloads.len(), 2);
+        assert!(payloads[0].success);
+        assert_eq!(payloads[0].new_tag, Some("v1.0.0".to_string()));
+        assert!(!payloads[1].success);
     }
 
     #[test]

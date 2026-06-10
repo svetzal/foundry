@@ -102,21 +102,17 @@ fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResul
 }
 
 /// Extract release audit entries from a trace's events.
+///
+/// Trace-event payload extraction goes through `ProcessResult::parsed_events_of`;
+/// future blocks that scan traces should reuse it rather than re-rolling the
+/// filter-parse loop.
 fn extract_release_audits(project: &str, result: &ProcessResult) -> Vec<ReleaseAuditEntry> {
     result
-        .events
-        .iter()
-        .filter(|e| e.event_type == EventType::ReleaseTagAudited)
-        .map(|e| {
-            let p = e.parse_payload::<ReleaseTagAuditedPayload>().ok();
-            let tag = p.as_ref().map(|p| p.tag.clone()).unwrap_or_default();
-            let vulnerable = p.as_ref().is_some_and(|p| p.vulnerable);
-            let status = if vulnerable { "vulnerable" } else { "clean" }.to_string();
-            ReleaseAuditEntry {
-                name: project.to_string(),
-                tag,
-                status,
-            }
+        .parsed_events_of::<ReleaseTagAuditedPayload>(EventType::ReleaseTagAudited)
+        .map(|p| ReleaseAuditEntry {
+            name: project.to_string(),
+            tag: p.tag,
+            status: if p.vulnerable { "vulnerable" } else { "clean" }.to_string(),
         })
         .collect()
 }
@@ -124,16 +120,11 @@ fn extract_release_audits(project: &str, result: &ProcessResult) -> Vec<ReleaseA
 /// Extract auto-release entries from a trace's events.
 fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoReleaseEntry> {
     result
-        .events
-        .iter()
-        .filter(|e| e.event_type == EventType::ReleaseCompleted)
-        .map(|e| {
-            let p = e.parse_payload::<ReleaseCompletedPayload>().ok();
-            AutoReleaseEntry {
-                name: project.to_string(),
-                new_tag: p.as_ref().and_then(|p| p.new_tag.clone()),
-                success: p.is_some_and(|p| p.success),
-            }
+        .parsed_events_of::<ReleaseCompletedPayload>(EventType::ReleaseCompleted)
+        .map(|p| AutoReleaseEntry {
+            name: project.to_string(),
+            new_tag: p.new_tag,
+            success: p.success,
         })
         .collect()
 }
@@ -141,19 +132,11 @@ fn extract_auto_releases(project: &str, result: &ProcessResult) -> Vec<AutoRelea
 /// Extract local install entries from a trace's events.
 fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalInstallEntry> {
     result
-        .events
-        .iter()
-        .filter(|e| e.event_type == EventType::LocalInstallCompleted)
-        .map(|e| {
-            let p = e.parse_payload::<LocalInstallCompletedPayload>().ok();
-            LocalInstallEntry {
-                name: project.to_string(),
-                method: p
-                    .as_ref()
-                    .and_then(|p| p.method.clone())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                success: p.is_some_and(|p| p.success),
-            }
+        .parsed_events_of::<LocalInstallCompletedPayload>(EventType::LocalInstallCompleted)
+        .map(|p| LocalInstallEntry {
+            name: project.to_string(),
+            method: p.method.unwrap_or_else(|| "unknown".to_string()),
+            success: p.success,
         })
         .collect()
 }
