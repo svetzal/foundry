@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Self-healing gates via optional `fix_command`.** A gate in
+  `.hone-gates.json` may now declare a `fix_command` — an in-place command that
+  mechanically repairs its failure (a formatter or lint autofixer). When the
+  gate `command` fails and a `fix_command` is present, the runner runs the fix
+  once and re-checks; a passing re-check resolves the gate and sets
+  `fix_applied` on the result, leaving the repaired tree for `CommitAndPush`
+  (`git add -A`) to commit. This is the structural fix for the preflight
+  deadlock: a required format/lint gate previously aborted the run before the
+  maintain step that would have reformatted the code, so a project with
+  formatting drift failed every night with no path to self-heal. The field
+  flows resolve → payload → preflight parse → runner, and `foundry gates`
+  derivation now emits it for safely auto-fixable gates only (never tests,
+  build, or security gates).
+
 - **Abstract model tiers and reasoning effort, configurable per provider.**
   Blocks now request work in provider-neutral terms — a `ModelTier`
   (`deep`/`balanced`/`fast`, mirroring hopper) and a `ReasoningEffort`
