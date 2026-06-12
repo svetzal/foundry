@@ -375,61 +375,34 @@ mod tests {
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
+    use super::super::test_helpers;
     use super::{CommitAndPush, CommitOutcome, classify_commit_outcome, commit_message};
 
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
-
     fn make_trigger(project: &str, cve: &str) -> Event {
-        Event::new(
+        test_helpers::make_trigger(
             EventType::RemediationCompleted,
-            project.to_string(),
-            Throttle::Full,
+            project,
             serde_json::json!({ "cve": cve }),
         )
     }
 
     fn make_trigger_for(event_type: EventType, project: &str) -> Event {
-        Event::new(event_type, project.to_string(), Throttle::Full, serde_json::json!({}))
+        test_helpers::make_trigger(event_type, project, serde_json::json!({}))
     }
 
     fn make_trigger_no_changes(event_type: EventType, project: &str) -> Event {
-        Event::new(
-            event_type,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({ "changes": false }),
-        )
+        test_helpers::make_trigger(event_type, project, serde_json::json!({ "changes": false }))
     }
 
     fn registry_for(name: &str, path: &str, push: bool) -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: foundry_sdk::registry::Stack::Rust,
-                agent: String::new(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags {
-                    push,
-                    iterate: false,
-                    maintain: false,
-                    audit: false,
-                    release: false,
-                },
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
-        }))
+        test_helpers::registry_with_entry(ProjectEntry {
+            agent: String::new(),
+            actions: ActionFlags {
+                push,
+                ..Default::default()
+            },
+            ..test_helpers::project_entry(name, path)
+        })
     }
 
     /// Fake sequence that simulates: status=dirty, add=ok, commit=ok, push=ok.
@@ -543,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_project_emits_stub_events() {
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger("no-such-project", "CVE-2026-0001");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -621,7 +594,7 @@ mod tests {
 
     #[test]
     fn sinks_on_includes_all_event_types() {
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::RemediationCompleted));
         assert!(sinks.contains(&EventType::ProjectIterationCompleted));
@@ -631,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_iteration_completion_with_loop_context() {
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::ProjectIterationCompleted,
             "my-project".to_string(),
@@ -696,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_skip_remediation_with_loop_context() {
         // RemediationCompleted is not a completion event, so loop_context should not trigger skip
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::RemediationCompleted,
             "my-project".to_string(),
@@ -716,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn payload_changes_false_self_filters_immediately() {
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -867,7 +840,7 @@ mod tests {
 
     #[test]
     fn retry_policy_allows_retries() {
-        let block = CommitAndPush::new(empty_registry());
+        let block = CommitAndPush::new(test_helpers::empty_registry());
         let policy = block.retry_policy();
         assert_eq!(policy.max_retries, 2);
         assert_eq!(policy.backoff, Duration::from_secs(5));

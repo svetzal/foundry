@@ -242,6 +242,14 @@ pub async fn assert_tolerates_git_failure(
     assert_eq!(result.events[0].payload["changes_detected"], false);
 }
 
+/// Build an empty registry with no projects.
+pub fn empty_registry() -> Arc<RwLock<Registry>> {
+    Arc::new(RwLock::new(Registry {
+        version: 2,
+        projects: vec![],
+    }))
+}
+
 /// Assert that a block returns a not-found failure when the trigger project is not in the registry.
 ///
 /// Constructs a trigger with event type `event_type` and project `"unknown-project"`,

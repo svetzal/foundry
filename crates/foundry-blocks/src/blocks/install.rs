@@ -294,23 +294,14 @@ mod tests {
     use std::time::Duration;
 
     use foundry_sdk::event::{Event, EventType};
-    use foundry_sdk::registry::{
-        ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, Registry, Stack,
-    };
+    use foundry_sdk::registry::{InstallConfig, InstallsSkill, ProjectEntry, Registry};
     use foundry_sdk::task_block::TaskBlock;
-    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
+    use super::super::test_helpers;
     use super::InstallLocally;
-
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
 
     fn registry_with_install(install: Option<InstallConfig>) -> Arc<RwLock<Registry>> {
         registry_with_install_and_skill(install, None)
@@ -320,37 +311,21 @@ mod tests {
         install: Option<InstallConfig>,
         installs_skill: Option<InstallsSkill>,
     ) -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: "my-project".to_string(),
-                path: "/tmp".to_string(),
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install,
-                installs_skill,
-                timeout_secs: None,
-            }],
-        }))
+        test_helpers::registry_with_entry(ProjectEntry {
+            agent: String::new(),
+            install,
+            installs_skill,
+            ..test_helpers::project_entry("my-project", "/tmp")
+        })
     }
 
     fn make_trigger(project: &str) -> Event {
-        Event::new(
-            EventType::ProjectChangesPushed,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({}),
-        )
+        test_helpers::make_trigger(EventType::ProjectChangesPushed, project, serde_json::json!({}))
     }
 
     #[tokio::test]
     async fn skips_when_project_not_in_registry() {
-        let block = InstallLocally::new(empty_registry());
+        let block = InstallLocally::new(test_helpers::empty_registry());
         let trigger = make_trigger("unknown-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -432,7 +407,7 @@ mod tests {
 
     #[test]
     fn retry_policy_allows_one_retry() {
-        let block = InstallLocally::new(empty_registry());
+        let block = InstallLocally::new(test_helpers::empty_registry());
         let policy = block.retry_policy();
         assert_eq!(policy.max_retries, 1);
         assert_eq!(policy.backoff, Duration::from_secs(10));

@@ -184,37 +184,22 @@ fn parse_pretty_line(line: &str) -> Option<CommitInfo> {
 mod tests {
     use std::sync::RwLock;
 
-    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_sdk::registry::{ProjectEntry, Registry};
     use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
+    use super::super::test_helpers;
     use super::*;
-
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
 
     fn registry_with(projects: Vec<(&str, &str, &str)>) -> Arc<RwLock<Registry>> {
         let projects = projects
             .into_iter()
             .map(|(name, branch, path)| ProjectEntry {
-                name: name.to_string(),
-                path: path.to_string(),
-                stack: Stack::Rust,
-                agent: "claude".to_string(),
-                repo: format!("svetzal/{name}"),
                 branch: branch.to_string(),
-                skip: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                notes: None,
-                timeout_secs: None,
+                repo: format!("svetzal/{name}"),
+                ..test_helpers::project_entry(name, path)
             })
             .collect();
         Arc::new(RwLock::new(Registry {
@@ -255,7 +240,7 @@ mod tests {
     }
 
     assert_block_meta!(
-        ObserveCommits::with_gateways(empty_registry(), FakeShellGateway::success()),
+        ObserveCommits::with_gateways(test_helpers::empty_registry(), FakeShellGateway::success()),
         kind: Observer,
         sinks_on: [CommitDigestStarted],
     );
@@ -324,7 +309,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_registry_emits_observed_with_no_projects() {
-        let block = ObserveCommits::with_gateways(empty_registry(), FakeShellGateway::success());
+        let block = ObserveCommits::with_gateways(
+            test_helpers::empty_registry(),
+            FakeShellGateway::success(),
+        );
         let result = block.execute(&trigger()).await.unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::CommitsObserved);

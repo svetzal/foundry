@@ -219,39 +219,21 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use foundry_sdk::event::{Event, EventType};
-    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+    use foundry_sdk::registry::{ProjectEntry, Registry};
     use foundry_sdk::task_block::TaskBlock;
 
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
+    use super::super::test_helpers;
     use super::CheckPipeline;
 
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
-
     fn registry_with_repo(name: &str, repo: &str) -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: name.to_string(),
-                path: String::new(),
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: repo.to_string(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
-        }))
+        test_helpers::registry_with_entry(ProjectEntry {
+            agent: String::new(),
+            repo: repo.to_string(),
+            ..test_helpers::project_entry(name, "")
+        })
     }
 
     fn trigger(project: &str) -> Event {
@@ -266,23 +248,10 @@ mod tests {
 
     #[tokio::test]
     async fn skips_when_no_repo_configured() {
-        let registry = Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![ProjectEntry {
-                name: "my-project".to_string(),
-                path: String::new(),
-                stack: Stack::Rust,
-                agent: String::new(),
-                repo: String::new(),
-                branch: "main".to_string(),
-                skip: None,
-                notes: None,
-                actions: ActionFlags::default(),
-                install: None,
-                installs_skill: None,
-                timeout_secs: None,
-            }],
-        }));
+        let registry = test_helpers::registry_with_entry(ProjectEntry {
+            agent: String::new(),
+            ..test_helpers::project_entry("my-project", "")
+        });
         let shell = FakeShellGateway::success();
         let block = CheckPipeline::with_gateways(registry, shell);
         let t = trigger("my-project");
@@ -444,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_project_emits_stub() {
-        let block = CheckPipeline::new(empty_registry());
+        let block = CheckPipeline::new(test_helpers::empty_registry());
         let t = trigger("unknown-project");
 
         let result = block.execute(&t).await.unwrap();

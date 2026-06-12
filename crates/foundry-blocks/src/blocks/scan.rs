@@ -99,13 +99,6 @@ mod tests {
     use super::super::test_helpers;
     use super::ScanDependencies;
 
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
-
     assert_block_meta!(
         ScanDependencies::new(Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Observer,
@@ -114,7 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_when_project_not_in_registry() {
-        let block = ScanDependencies::new(empty_registry());
+        let block = ScanDependencies::new(test_helpers::empty_registry());
         let trigger = test_event!(EventType::ScanRequested, "unknown-project", {});
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);

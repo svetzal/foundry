@@ -167,13 +167,6 @@ mod tests {
     use super::super::test_helpers;
     use super::RemediatePipeline;
 
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
-
     assert_block_meta!(
         RemediatePipeline::new(FakeAgentGateway::success(), Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
         kind: Mutator,
@@ -183,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn skips_when_pipeline_passing() {
         let agent = FakeAgentGateway::success();
-        let block = RemediatePipeline::new(agent, empty_registry());
+        let block = RemediatePipeline::new(agent, test_helpers::empty_registry());
         let t = test_event!(EventType::PipelineChecked, "my-project", {
             "passing": true,
             "conclusion": "success",
@@ -200,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn fails_when_project_not_in_registry() {
         let agent = FakeAgentGateway::success();
-        let block = RemediatePipeline::new(agent, empty_registry());
+        let block = RemediatePipeline::new(agent, test_helpers::empty_registry());
         let t = test_event!(EventType::PipelineChecked, "unknown-project", {
             "passing": false,
             "conclusion": "failure",

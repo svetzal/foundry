@@ -311,10 +311,7 @@ async fn assess_continue(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, RwLock};
-
     use foundry_sdk::event::{Event, EventType};
-    use foundry_sdk::registry::Registry;
     use foundry_sdk::task_block::{BlockKind, TaskBlock};
     use foundry_sdk::throttle::Throttle;
 
@@ -323,24 +320,17 @@ mod tests {
     use super::super::test_helpers;
     use super::StrategicLoopController;
 
-    fn empty_registry() -> Arc<RwLock<Registry>> {
-        Arc::new(RwLock::new(Registry {
-            version: 2,
-            projects: vec![],
-        }))
-    }
-
     #[test]
     fn kind_is() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         assert_eq!(block.kind(), BlockKind::Observer);
     }
 
     #[test]
     fn sinks_on_correct_events() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let sinks = block.sinks_on();
         assert!(sinks.contains(&EventType::StrategicAssessmentCompleted));
         assert!(sinks.contains(&EventType::InnerIterationCompleted));
@@ -349,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn assessment_completed_enters_inner_loop() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::StrategicAssessmentCompleted,
             "my-project".to_string(),
@@ -382,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn assessment_completed_with_no_areas_completes_loop() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::StrategicAssessmentCompleted,
             "my-project".to_string(),
@@ -408,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn inner_completed_max_iterations_completes_loop() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
             "my-project".to_string(),
@@ -435,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn inner_completed_failure_stops_loop() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
             "my-project".to_string(),
@@ -551,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn forwards_actions_on_complete() {
         let agent = FakeAgentGateway::success();
-        let block = StrategicLoopController::new(agent, empty_registry());
+        let block = StrategicLoopController::new(agent, test_helpers::empty_registry());
         let trigger = Event::new(
             EventType::InnerIterationCompleted,
             "my-project".to_string(),
