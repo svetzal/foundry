@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-12
+
 ### Added
 
 - **Post-maintenance failure triage formation (propose-only).** After each
