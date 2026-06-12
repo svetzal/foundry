@@ -133,6 +133,18 @@ pub fn ops_watermark_path() -> PathBuf {
     foundry_home().join("ops-digest.watermark")
 }
 
+/// Returns the maintenance-triage digest output directory.
+///
+/// Each triage digest lands at `{triage_dir}/{YYYY-MM-DD}.md`. Override with
+/// `FOUNDRY_TRIAGE_DIR`.
+pub fn triage_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_TRIAGE_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("triage")
+    }
+}
+
 /// Returns the directory holding per-session agent transcript JSONL files.
 ///
 /// Defaults to `$HOME/.foundry/agent-sessions`.
@@ -143,6 +155,16 @@ pub fn agent_sessions_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triage_dir_defaults_under_foundry_home_when_env_unset() {
+        if env::var("FOUNDRY_TRIAGE_DIR").is_ok() {
+            return;
+        }
+        let dir = triage_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with(".foundry/triage"), "got: {s}");
+    }
 
     #[test]
     fn agent_sessions_dir_is_under_foundry_home() {

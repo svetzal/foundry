@@ -82,7 +82,13 @@ fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResul
                 .map(|p| p.summary)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "terminal event reported failure".to_string());
-            ProjectStatus::Failed(summary)
+            // Check whether the agent concluded no real correction was needed.
+            // "triage rejected", "no correction warranted", etc. are benign outcomes.
+            if super::triage_core::is_benign_decline(&summary) {
+                ProjectStatus::Success
+            } else {
+                ProjectStatus::Failed(summary)
+            }
         }
     } else {
         // Fallback: no terminal event — use block executions.
@@ -657,6 +663,33 @@ mod tests {
             result.status,
             ProjectStatus::Success,
             "terminal success must win over intermediate block failures"
+        );
+    }
+
+    #[test]
+    fn extract_project_result_benign_decline_counts_as_success() {
+        // When the terminal event carries a "triage rejected" / "no correction
+        // warranted" summary, the project should be treated as a success —
+        // the agent found no real violation to fix.
+        let mut trace = failed_trace("benign-project");
+        let terminal = Event::new(
+            EventType::ProjectMaintenanceCompleted,
+            "benign-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "benign-project",
+                "success": false,
+                "summary": "triage rejected: no correction warranted at this time",
+                "workflow": "maintain",
+            }),
+        );
+        trace.events.push(terminal);
+
+        let result = extract_project_result("benign-project", &trace);
+        assert_eq!(
+            result.status,
+            ProjectStatus::Success,
+            "benign triage-rejection outcomes must count as success"
         );
     }
 

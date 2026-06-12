@@ -80,7 +80,7 @@ All event types follow a disciplined taxonomy with four suffix categories:
 |----------|--------|---------|----------|
 | Command | `*Requested` | Intent — someone or something wants action taken | `ProjectIterationRequested`, `ProjectMaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested`, `MaintenanceSummaryRequested` |
 | Lifecycle start | `*Started` | A multi-step operation began | `MaintenanceCycleStarted`, `ProjectRunStarted`, `StrategicCycleStarted`, `InnerIterationStarted`, `RemediationStarted` |
-| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `MaintenanceCycleCompleted`, `ProjectRunCompleted`, `ProjectIterationCompleted`, `PreflightCompleted`, `GateResolutionCompleted` |
+| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `MaintenanceCycleCompleted`, `ProjectRunCompleted`, `ProjectIterationCompleted`, `PreflightCompleted`, `GateResolutionCompleted`, `MaintenanceTriageCompleted` |
 | Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked` |
 
 Rules:
@@ -270,6 +270,7 @@ The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must al
 - `~/.foundry/digests/YYYY-MM-DD.md` — daily commit digest output, one file per day. Override the parent dir via `FOUNDRY_DIGESTS_DIR`; Stacey's setup points it at `~/Work/Operations/Automation/commit-digests` via the launchd plist.
 - `~/.foundry/ops-digests/YYYY-MM-DD.md` — ops digest output (periodic summary of MBOS events), one file per day. Override the parent dir via `FOUNDRY_OPS_DIGESTS_DIR`.
 - `~/.foundry/ops-digest.watermark` — ISO 8601 timestamp of the newest MBOS event included in the last successfully written ops digest. Advances atomically after each write so subsequent runs only process newer events.
+- `~/.foundry/triage/YYYY-MM-DD.md` — post-maintenance failure triage digest, one file per maintenance run. Override the parent dir via `FOUNDRY_TRIAGE_DIR`. See `book/src/guide/maintenance-triage.md`.
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
 ## Future Direction: Agent Efficacy Retrospectives
@@ -288,3 +289,4 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_DIGESTS_DIR` | `~/.foundry/digests` | Daily commit-digest output directory |
 | `FOUNDRY_OPS_DIGESTS_DIR` | `~/.foundry/ops-digests` | Ops-digest output directory |
 | `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |
+| `FOUNDRY_TRIAGE_DIR` | `~/.foundry/triage` | Post-maintenance triage digest output directory |

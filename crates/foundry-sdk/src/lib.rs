@@ -12,5 +12,6 @@ pub mod span_context;
 pub mod task_block;
 pub mod throttle;
 pub mod trace;
+pub mod triage;
 pub mod work_block;
 pub mod workflow;

@@ -1013,6 +1013,54 @@ pub struct OpsDigestCompletedPayload {
     pub event_count: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Post-maintenance failure triage formation — propose-only
+// ---------------------------------------------------------------------------
+
+/// Payload for `MaintenanceTriageCompleted` — the triage formation's terminal event.
+///
+/// Carries the classified verdicts, correlated infra incidents, and summary
+/// counts so downstream consumers (dashboards, digests) can act on the
+/// triage results without re-processing the raw failure data.
+///
+/// All fields default to zero/empty for backward compatibility with consumers
+/// that may encounter events from before this payload was defined.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaintenanceTriageCompletedPayload {
+    #[serde(default)]
+    pub success: bool,
+    /// `true` when the triage skipped writing the digest (dry-run or no failures).
+    #[serde(default)]
+    pub skipped: bool,
+    /// Path to the written triage digest file, when written successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_path: Option<String>,
+    /// Per-gate failure verdicts after classification and de-duplication.
+    #[serde(default)]
+    pub verdicts: Vec<crate::triage::FailureVerdict>,
+    /// Correlated infra incidents (N≥3 projects, same signature → one incident).
+    #[serde(default)]
+    pub infra_incidents: Vec<crate::triage::InfraIncident>,
+    /// Total gate failures before suppression.
+    #[serde(default)]
+    pub total_failures: u64,
+    /// Count of verdicts / incidents whose decision is `SuppressInfra`.
+    #[serde(default)]
+    pub suppressed_count: u64,
+    /// Count of verdicts whose decision is `AutoFixable`.
+    #[serde(default)]
+    pub auto_fixable_count: u64,
+    /// Count of verdicts whose decision is `PolicyCall`.
+    #[serde(default)]
+    pub policy_count: u64,
+    /// Count of verdicts whose decision is `NeedsInvestigation`.
+    #[serde(default)]
+    pub investigation_count: u64,
+    /// Count of verdicts whose decision is `Escalate`.
+    #[serde(default)]
+    pub escalation_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1476,5 +1524,83 @@ mod tests {
         assert_eq!(back.digest_path.as_deref(), payload.digest_path.as_deref());
         assert_eq!(back.project_count, 17);
         assert_eq!(back.total_commits, 42);
+    }
+
+    // -------------------------------------------------------------------------
+    // MaintenanceTriageCompleted payload
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn maintenance_triage_completed_payload_defaults_from_empty_json() {
+        let parsed: MaintenanceTriageCompletedPayload = serde_json::from_str("{}").unwrap();
+        assert!(!parsed.success);
+        assert!(!parsed.skipped);
+        assert!(parsed.digest_path.is_none());
+        assert!(parsed.verdicts.is_empty());
+        assert!(parsed.infra_incidents.is_empty());
+        assert_eq!(parsed.total_failures, 0);
+        assert_eq!(parsed.suppressed_count, 0);
+        assert_eq!(parsed.auto_fixable_count, 0);
+        assert_eq!(parsed.policy_count, 0);
+        assert_eq!(parsed.investigation_count, 0);
+        assert_eq!(parsed.escalation_count, 0);
+    }
+
+    #[test]
+    fn maintenance_triage_completed_payload_round_trips() {
+        use crate::triage::{Decision, FailureClass, FailureVerdict, InfraIncident};
+
+        let payload = MaintenanceTriageCompletedPayload {
+            success: true,
+            skipped: false,
+            digest_path: Some("~/.foundry/triage/2026-06-12.md".to_string()),
+            verdicts: vec![FailureVerdict {
+                project: "alpha".to_string(),
+                gate: "fmt".to_string(),
+                class: FailureClass::FormatAndLintDrift,
+                decision: Decision::AutoFixable,
+                evidence: "cargo fmt produced diffs".to_string(),
+                proposed_command: Some("cargo fmt".to_string()),
+            }],
+            infra_incidents: vec![InfraIncident {
+                signature: "os_error_2".to_string(),
+                decision: Decision::SuppressInfra,
+                projects: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                sample_evidence: "os error 2".to_string(),
+            }],
+            total_failures: 5,
+            suppressed_count: 3,
+            auto_fixable_count: 1,
+            policy_count: 0,
+            investigation_count: 1,
+            escalation_count: 0,
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["total_failures"], 5);
+        assert_eq!(json["verdicts"].as_array().unwrap().len(), 1);
+        assert_eq!(json["infra_incidents"].as_array().unwrap().len(), 1);
+        assert_eq!(json["digest_path"], "~/.foundry/triage/2026-06-12.md");
+
+        let back: MaintenanceTriageCompletedPayload = serde_json::from_value(json).unwrap();
+        assert!(back.success);
+        assert_eq!(back.total_failures, 5);
+        assert_eq!(back.verdicts.len(), 1);
+        assert_eq!(back.infra_incidents.len(), 1);
+        assert_eq!(back.digest_path.as_deref(), Some("~/.foundry/triage/2026-06-12.md"));
+    }
+
+    #[test]
+    fn maintenance_triage_completed_payload_omits_digest_path_when_none() {
+        let payload = MaintenanceTriageCompletedPayload {
+            success: true,
+            ..MaintenanceTriageCompletedPayload::default()
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.get("digest_path").is_none(),
+            "digest_path must be absent from JSON when None"
+        );
     }
 }

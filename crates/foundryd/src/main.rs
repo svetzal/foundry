@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
     let ops_digests_dir = foundry_sdk::paths::ops_digests_dir();
     let ops_events_intake_dir = foundry_sdk::paths::ops_events_intake_dir();
     let ops_watermark_path = foundry_sdk::paths::ops_watermark_path();
+    let triage_dir = foundry_sdk::paths::triage_dir();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
@@ -81,6 +82,7 @@ async fn main() -> Result<()> {
             ops_digests_dir,
             ops_events_intake_dir,
             ops_watermark_path,
+            triage_dir,
         },
     );
 
@@ -234,6 +236,7 @@ struct BlockPaths {
     ops_digests_dir: std::path::PathBuf,
     ops_events_intake_dir: std::path::PathBuf,
     ops_watermark_path: std::path::PathBuf,
+    triage_dir: std::path::PathBuf,
 }
 
 // Sequential block registration wiring — length is inherent, not a design smell.
@@ -251,6 +254,7 @@ fn register_blocks(
         ops_digests_dir,
         ops_events_intake_dir,
         ops_watermark_path,
+        triage_dir,
     } = paths;
     let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
@@ -443,5 +447,11 @@ fn register_blocks(
         ops_digests_dir,
         ops_watermark_path,
     )));
+    // Post-maintenance failure triage formation (propose-only)
+    let events_dir = foundry_sdk::paths::events_dir();
+    engine.register(Box::new(foundry_blocks::blocks::TriageMaintenance::new(
+        events_dir, 14, // 14-day streak lookback
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::WriteTriageDigest::new(triage_dir)));
     engine
 }

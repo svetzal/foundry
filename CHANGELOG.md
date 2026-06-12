@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Post-maintenance failure triage formation (propose-only).** After each
+  nightly maintenance run (`MaintenanceSummaryRequested`), two new blocks
+  classify every gate failure from that run and write a dated digest to
+  `~/.foundry/triage/YYYY-MM-DD.md`. `TriageMaintenance` reads the Foundry
+  JSONL event log, extracts `PreflightCompleted` failures from the run window,
+  classifies them into one of 12 domain classes (format drift, vuln with fix,
+  test breakage, infra flake, etc.), correlates N≥3 same-signature infra
+  failures into a single suppressed `InfraIncident`, detects N≥3 consecutive
+  failures on the same gate (escalate), and emits `MaintenanceTriageCompleted`
+  with a typed `MaintenanceTriageCompletedPayload`. `WriteTriageDigest` renders
+  a markdown triage digest (summary table, escalations, auto-fixable proposals,
+  infra-suppressed incidents, policy calls, needs-investigation, benign) and
+  writes it atomically; dry-run skips the write. The formation is strictly
+  propose-only — no changes are applied to any project. Override the output
+  directory with `FOUNDRY_TRIAGE_DIR`.
+
 ## [0.21.0] - 2026-06-12
 
 ### Added
@@ -76,6 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     carrying the old wire strings will deserialize as `Custom(...)` — this is
     acceptable for historical records and does not affect current workflow
     execution.
+
+### Fixed
+
+- **Benign triage declines no longer inflate the maintenance run status table.**
+  `GenerateSummary` now treats a terminal `success: false` whose summary is a
+  benign decline ("triage rejected", "no correction warranted", "unknown
+  violation") as a `Success` rather than a `Failed` row — these are no-ops, not
+  defects. Backed by a shared `is_benign_decline` predicate reused by the triage
+  formation. Also corrected a stale comment in `create_plan` that described the
+  rejection terminal as `success: false` (it has emitted `success: true` since
+  triage rejections became benign no-ops).
 
 ## [0.20.0] - 2026-05-29
 

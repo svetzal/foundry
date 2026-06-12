@@ -419,6 +419,11 @@ pub enum EventType {
     OpsSummaryCompleted,
     OpsDigestCompleted,
 
+    // Post-maintenance failure triage formation (propose-only)
+    /// Lifecycle end: post-maintenance failure triage completed.
+    /// Carries `MaintenanceTriageCompletedPayload` with classified verdicts and infra incidents.
+    MaintenanceTriageCompleted,
+
     // Hello-world workflow (validates engine mechanics)
     GreetingRequested,
     GreetingComposed,
@@ -778,6 +783,25 @@ mod tests {
             "span_id must be lowercase hex only: {id}"
         );
         assert_ne!(id, super::mint_span_id(), "two mints must differ");
+    }
+
+    #[test]
+    fn maintenance_triage_completed_serializes_snake_case() {
+        let value = serde_json::to_value(EventType::MaintenanceTriageCompleted).unwrap();
+        assert_eq!(value, serde_json::json!("maintenance_triage_completed"));
+    }
+
+    #[test]
+    fn maintenance_triage_completed_round_trips_via_serde() {
+        let json = serde_json::to_string(&EventType::MaintenanceTriageCompleted).unwrap();
+        assert_eq!(json, "\"maintenance_triage_completed\"");
+        let back: EventType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, EventType::MaintenanceTriageCompleted);
+    }
+
+    #[test]
+    fn maintenance_triage_completed_is_not_a_span_opener() {
+        assert!(!EventType::MaintenanceTriageCompleted.is_span_opener());
     }
 
     #[test]

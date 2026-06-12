@@ -74,9 +74,10 @@ impl TaskBlock for CreatePlan {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only create plan for accepted triages.
-        // When triage is rejected, emit ProjectIterationCompleted { success: false }
-        // so the trace has a truthful terminal event.  Without it, is_success() falls
-        // back to block-level aggregation and the watch client shows "running" forever.
+        // When triage is rejected, emit ProjectIterationCompleted { success: true }
+        // (a benign no-op) so the trace has a truthful terminal event.  Without it,
+        // is_success() falls back to block-level aggregation and the watch client
+        // shows "running" forever.
         let p = parse_payload!(trigger, TriageCompletedPayload);
 
         if !p.accepted {
