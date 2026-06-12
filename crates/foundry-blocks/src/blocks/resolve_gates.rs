@@ -127,6 +127,9 @@ impl TaskBlock for ResolveGates {
                     if let Some(timeout) = g.timeout {
                         val["timeout_secs"] = serde_json::json!(timeout.as_secs());
                     }
+                    if let Some(fix_command) = &g.fix_command {
+                        val["fix_command"] = serde_json::json!(fix_command);
+                    }
                     val
                 })
                 .collect();

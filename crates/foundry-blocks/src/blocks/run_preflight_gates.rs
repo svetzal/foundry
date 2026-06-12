@@ -197,11 +197,14 @@ fn parse_gates_from_value(gates_array: Option<&Vec<serde_json::Value>>) -> Vec<G
                 .get("timeout_secs")
                 .and_then(serde_json::Value::as_u64)
                 .map(Duration::from_secs);
+            let fix_command =
+                g.get("fix_command").and_then(serde_json::Value::as_str).map(String::from);
             Some(GateDefinition {
                 name,
                 command,
                 required,
                 timeout,
+                fix_command,
             })
         })
         .collect()

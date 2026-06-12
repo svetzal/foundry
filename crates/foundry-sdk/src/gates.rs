@@ -13,6 +13,15 @@ pub struct GateDefinition {
     /// Optional per-gate timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<Duration>,
+    /// Optional command that attempts to auto-fix this gate's failure in place.
+    ///
+    /// When present and the gate `command` fails, the runner runs `fix_command`
+    /// and then re-runs `command`; a passing re-check resolves the failure. The
+    /// in-place changes left in the working tree are picked up by the downstream
+    /// commit step. This is what lets mechanically-fixable gates (formatters,
+    /// lint autofix) self-heal instead of deadlocking the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_command: Option<String>,
 }
 
 /// On-disk representation of `.hone-gates.json`.
@@ -29,6 +38,8 @@ struct RawGate {
     required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fix_command: Option<String>,
 }
 
 /// Read gate definitions from `.hone-gates.json` in `project_dir`.
@@ -56,6 +67,7 @@ pub fn read_gates_file(project_dir: &Path) -> Result<Vec<GateDefinition>> {
             command: raw.command,
             required: raw.required,
             timeout: raw.timeout.map(Duration::from_secs),
+            fix_command: raw.fix_command,
         })
         .collect())
 }
@@ -72,6 +84,7 @@ pub fn write_gates_file(project_dir: &Path, gates: &[GateDefinition]) -> Result<
                 command: g.command.clone(),
                 required: g.required,
                 timeout: g.timeout.map(|d| d.as_secs()),
+                fix_command: g.fix_command.clone(),
             })
             .collect(),
     };
@@ -96,6 +109,18 @@ pub struct GateResult {
     /// Absent for results loaded from older persisted events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// True when this gate initially failed but its `fix_command` repaired the
+    /// working tree and the re-check then passed (a self-healed gate). Lets the
+    /// triage layer and audit trail distinguish "passed clean" from "passed
+    /// after autofix". Defaults to false for older persisted events.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fix_applied: bool,
+}
+
+/// serde `skip_serializing_if` helper — omit `fix_applied` when false so older
+/// event consumers and clean-pass results stay byte-identical to before.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Aggregated result of running all gates.
@@ -139,14 +164,18 @@ mod tests {
             output: "ok".to_string(),
             exit_code: 0,
             duration_ms: None,
+            fix_applied: false,
         };
         let json = serde_json::to_string(&result).unwrap();
         let restored: GateResult = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.name, "clippy");
         assert!(restored.passed);
         assert!(restored.duration_ms.is_none());
+        assert!(!restored.fix_applied);
         // duration_ms is omitted from JSON when None
         assert!(!json.contains("duration_ms"));
+        // fix_applied is omitted from JSON when false
+        assert!(!json.contains("fix_applied"));
     }
 
     #[test]
@@ -159,6 +188,7 @@ mod tests {
             output: String::new(),
             exit_code: 0,
             duration_ms: Some(1234),
+            fix_applied: false,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"duration_ms\":1234"), "duration_ms must appear in JSON");
@@ -182,6 +212,7 @@ mod tests {
                     output: String::new(),
                     exit_code: 0,
                     duration_ms: None,
+                    fix_applied: false,
                 },
                 GateResult {
                     name: "lint".to_string(),
@@ -191,6 +222,7 @@ mod tests {
                     output: "warnings".to_string(),
                     exit_code: 1,
                     duration_ms: None,
+                    fix_applied: false,
                 },
             ],
         };
@@ -246,12 +278,14 @@ mod tests {
                 command: "cargo fmt --check".to_string(),
                 required: true,
                 timeout: None,
+                fix_command: Some("cargo fmt".to_string()),
             },
             GateDefinition {
                 name: "test".to_string(),
                 command: "cargo test".to_string(),
                 required: false,
                 timeout: Some(Duration::from_secs(300)),
+                fix_command: None,
             },
         ];
 
@@ -263,8 +297,39 @@ mod tests {
         assert_eq!(loaded[0].command, "cargo fmt --check");
         assert!(loaded[0].required);
         assert!(loaded[0].timeout.is_none());
+        assert_eq!(loaded[0].fix_command.as_deref(), Some("cargo fmt"));
         assert_eq!(loaded[1].name, "test");
         assert_eq!(loaded[1].timeout, Some(Duration::from_secs(300)));
+        assert!(loaded[1].fix_command.is_none());
+    }
+
+    #[test]
+    fn read_gates_file_with_fix_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"format","command":"cmake --build build --target format-check","required":true,"fix_command":"cmake --build build --target format"}]}"#,
+        )
+        .unwrap();
+
+        let gates = read_gates_file(dir.path()).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].fix_command.as_deref(), Some("cmake --build build --target format"));
+    }
+
+    #[test]
+    fn fix_command_omitted_from_json_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let gates = vec![GateDefinition {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            required: true,
+            timeout: None,
+            fix_command: None,
+        }];
+        write_gates_file(dir.path(), &gates).unwrap();
+        let contents = std::fs::read_to_string(dir.path().join(".hone-gates.json")).unwrap();
+        assert!(!contents.contains("fix_command"));
     }
 
     #[test]

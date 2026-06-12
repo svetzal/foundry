@@ -303,18 +303,19 @@ Your task:
 1. Read actual project files (package.json scripts, CI configs, Makefiles, Cargo.toml, pyproject.toml, etc.) using the tools available to you.
 2. Discover what quality commands exist: test, lint, format, typecheck, build, security audit.
 3. Return ONLY a JSON array of gate objects. No other text, no markdown fences, no explanation.
-4. Each gate object must have exactly these fields:
+4. Each gate object must have these fields:
    - "name": short identifier (e.g. "test", "fmt", "lint", "typecheck", "build", "security-audit")
    - "command": the exact shell command to run
    - "required": boolean — true for most gates, false for security/audit gates
+   - "fix_command" (OPTIONAL): an in-place command that mechanically fixes this gate's failure, when one exists. Include it ONLY for gates whose failures are safely auto-fixable — formatters and lint autofixers — never for tests, typecheck, build, or security gates. The runner runs it and re-checks when the gate fails, so the project self-heals instead of deadlocking.
 5. NEVER invent commands — every gate must come from a file you actually read.
 6. Mark security/audit gates as required: false. Everything else should be required: true.
 7. Combine related commands with && where appropriate (e.g. "cargo fmt --all -- --check && cargo clippy --workspace -- -D warnings").
 8. Do NOT include commands that only work in CI environments (e.g. commands requiring CI-specific env vars).
-9. Prefer check/dry-run variants for formatting (e.g. "cargo fmt --check" not "cargo fmt").
+9. Prefer check/dry-run variants for formatting (e.g. "cargo fmt --check" not "cargo fmt"), and pair them with the in-place variant as "fix_command" (e.g. "cargo fmt"). Same for lint autofix (clippy --fix, ruff check --fix, biome check --write, clang-format target).
 
 Return ONLY the JSON array, for example:
-[{{"name": "test", "command": "cargo test", "required": true}}]"#
+[{{"name": "test", "command": "cargo test", "required": true}}, {{"name": "fmt", "command": "cargo fmt --check", "required": true, "fix_command": "cargo fmt"}}]"#
     )
 }
 
@@ -326,6 +327,8 @@ struct RawGateResponse {
     name: String,
     command: String,
     required: bool,
+    #[serde(default)]
+    fix_command: Option<String>,
 }
 
 /// Parse Claude's JSON response into `GateDefinition` values.
@@ -356,6 +359,7 @@ fn parse_gates_response(raw: &str) -> Result<Vec<GateDefinition>> {
             command: raw.command,
             required: raw.required,
             timeout: None,
+            fix_command: raw.fix_command,
         })
         .collect())
 }

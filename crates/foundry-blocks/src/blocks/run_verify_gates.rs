@@ -81,6 +81,7 @@ impl TaskBlock for RunVerifyGates {
                     output: p.summary.clone(),
                     exit_code: 1,
                     duration_ms: None,
+                    fix_applied: false,
                 };
                 let run_result = GatesRunResult {
                     all_passed: false,
