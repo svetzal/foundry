@@ -409,19 +409,19 @@ mod tests {
     #[test]
     fn extract_per_project_traces_partitions_events_by_project() {
         let sys_root = event(EventType::MaintenanceCycleStarted, "system");
-        let proj_a_root = event(EventType::ProjectRunStarted, "proj-a");
-        let proj_a_extra = event(EventType::ProjectRunCompleted, "proj-a");
-        let proj_b_root = event(EventType::ProjectRunStarted, "proj-b");
+        let alpha_start = event(EventType::ProjectRunStarted, "proj-a");
+        let alpha_end = event(EventType::ProjectRunCompleted, "proj-a");
+        let beta_start = event(EventType::ProjectRunStarted, "proj-b");
 
         let block_a = {
-            let mut b = BlockExecution::new("blk-a", &proj_a_root.id, 100, serde_json::json!({}));
+            let mut b = BlockExecution::new("blk-a", &alpha_start.id, 100, serde_json::json!({}));
             b.success = true;
             b
         };
         let block_sys = BlockExecution::new("blk-sys", &sys_root.id, 50, serde_json::json!({}));
 
         let result = ProcessResult {
-            events: vec![sys_root, proj_a_root, proj_a_extra, proj_b_root],
+            events: vec![sys_root, alpha_start, alpha_end, beta_start],
             block_executions: vec![block_a, block_sys],
             total_duration_ms: 250,
         };

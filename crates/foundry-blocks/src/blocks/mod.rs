@@ -108,10 +108,13 @@ mod summarize_commits;
 mod summarize_events;
 mod summarize_result;
 mod triage_assessment;
+pub mod triage_core;
+mod triage_maintenance;
 mod validate;
 mod watch_pipeline;
 mod write_commit_digest;
 mod write_ops_digest;
+mod write_triage_digest;
 
 pub use assess_project::AssessProject;
 pub use audit_main_branch::AuditMainBranch;
@@ -148,10 +151,12 @@ pub use summarize_commits::SummarizeCommits;
 pub use summarize_events::SummarizeEvents;
 pub use summarize_result::SummarizeResult;
 pub use triage_assessment::TriageAssessment;
+pub use triage_maintenance::TriageMaintenance;
 pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
 pub use write_commit_digest::WriteCommitDigest;
 pub use write_ops_digest::WriteOpsDigest;
+pub use write_triage_digest::WriteTriageDigest;
 
 // Per-block unit-test fixtures (Engine-free). The full-chain integration tests
 // and their Engine-based register helper live in the host crate (foundryd) to
