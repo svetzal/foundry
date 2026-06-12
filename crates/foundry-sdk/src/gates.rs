@@ -119,6 +119,8 @@ pub struct GateResult {
 
 /// serde `skip_serializing_if` helper — omit `fix_applied` when false so older
 /// event consumers and clean-pass results stay byte-identical to before.
+/// Signature must take `&bool`: serde passes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
 }

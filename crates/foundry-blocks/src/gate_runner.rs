@@ -33,31 +33,28 @@ pub async fn run_gates(
         let mut fix_applied = false;
 
         // Attempt a single self-heal when a gate fails and declares a fix command.
-        if !passed {
-            if let Some(fix) = gate.fix_command.as_deref() {
-                tracing::info!(gate = %gate.name, fix_command = %fix, "gate failed, attempting autofix");
-                let (fix_ok, fix_output, _) =
-                    run_command(working_dir, fix, gate.timeout, shell).await;
+        if !passed && let Some(fix) = gate.fix_command.as_deref() {
+            tracing::info!(gate = %gate.name, fix_command = %fix, "gate failed, attempting autofix");
+            let (fix_ok, fix_output, _) = run_command(working_dir, fix, gate.timeout, shell).await;
 
-                if fix_ok {
-                    let (recheck_passed, recheck_output, recheck_exit) =
-                        run_command(working_dir, &gate.command, gate.timeout, shell).await;
-                    if recheck_passed {
-                        tracing::info!(gate = %gate.name, "autofix resolved gate failure");
-                        passed = true;
-                        fix_applied = true;
-                        output = recheck_output;
-                        exit_code = recheck_exit;
-                    } else {
-                        tracing::info!(gate = %gate.name, "autofix ran but gate still failing");
-                        output = format!(
-                            "{output}\n--- autofix attempted, gate still failing ---\n{recheck_output}"
-                        );
-                    }
+            if fix_ok {
+                let (recheck_passed, recheck_output, recheck_exit) =
+                    run_command(working_dir, &gate.command, gate.timeout, shell).await;
+                if recheck_passed {
+                    tracing::info!(gate = %gate.name, "autofix resolved gate failure");
+                    passed = true;
+                    fix_applied = true;
+                    output = recheck_output;
+                    exit_code = recheck_exit;
                 } else {
-                    tracing::info!(gate = %gate.name, "autofix command itself failed");
-                    output = format!("{output}\n--- autofix command failed ---\n{fix_output}");
+                    tracing::info!(gate = %gate.name, "autofix ran but gate still failing");
+                    output = format!(
+                        "{output}\n--- autofix attempted, gate still failing ---\n{recheck_output}"
+                    );
                 }
+            } else {
+                tracing::info!(gate = %gate.name, "autofix command itself failed");
+                output = format!("{output}\n--- autofix command failed ---\n{fix_output}");
             }
         }
 
