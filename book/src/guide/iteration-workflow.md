@@ -42,14 +42,43 @@ emits the gate definitions with `workflow: "iterate"`. The `actions` object
 from the trigger event is forwarded through the chain so that gate routing
 can chain into the maintenance workflow afterwards.
 
+Each gate has a `name`, a `command`, a `required` flag, an optional
+`timeout` (seconds), and an optional **`fix_command`** — an in-place command
+that mechanically repairs the gate's failure. A gate looks like:
+
+```json
+{
+  "name": "format",
+  "command": "cargo fmt --check",
+  "required": true,
+  "fix_command": "cargo fmt"
+}
+```
+
+Only declare a `fix_command` for gates whose failures are *safely
+auto-fixable* — formatters and lint autofixers (`cargo fmt`, `ruff format`,
+`biome check --write`, a clang-format target). Never for tests, typecheck,
+build, or security gates, where a "fix" would mask a real problem.
+
 ### 2. Preflight Gates
 
 `Run Preflight Gates` executes every gate against the unmodified codebase.
-If any required gate fails, `all_passed` is `false` and the chain stops —
+
+When a gate fails and declares a `fix_command`, the runner runs the fix once
+and re-checks; a passing re-check **resolves** the gate (recorded with
+`fix_applied: true` on the result), and the in-place changes left in the
+working tree are committed by the downstream `Commit and Push` step. This is
+what lets formatter/lint gates *self-heal*: without it, a required formatting
+gate would abort the run before the maintain step that reformats the code —
+a deadlock where the failing gate blocks its own fix.
+
+If a required gate fails and cannot self-heal (no `fix_command`, or the fix
+didn't resolve it), `required_passed` is `false` and the chain stops —
 `Assess Project` self-filters on preflight success.
 
 This establishes a baseline: the iterate workflow only attempts improvements
-when the project is already in a passing state.
+when the project is already in a passing state (or can be brought to one
+mechanically).
 
 ### 3. Charter Validation
 

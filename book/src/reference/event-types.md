@@ -191,9 +191,11 @@ Every event carries these common fields:
 | `workflow` | string | Workflow that triggered the preflight |
 | `all_passed` | bool | Whether every gate passed |
 | `required_passed` | bool | Whether all required gates passed |
-| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?) |
+| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?) |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned integer) recording how long the gate command took in milliseconds. This field is absent when loading results from events persisted before timing instrumentation was added.
+
+A `results[]` entry also carries an optional `fix_applied` boolean: `true` when the gate initially failed but its `fix_command` repaired the working tree and the re-check then passed (a self-healed gate). The field is omitted when false, so it is absent for gates that passed clean and for events persisted before self-healing gates were added.
 
 **`gate_verification_completed` payload**
 
@@ -204,9 +206,11 @@ Each `results[]` entry includes an optional `duration_ms` field (unsigned intege
 | `all_passed` | bool | Whether every gate passed |
 | `required_passed` | bool | Whether all required gates passed |
 | `retry_count` | number | Current retry count (0 on first attempt) |
-| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?) |
+| `results` | array | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?) |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned integer) recording how long the gate command took in milliseconds. This field is absent when loading results from events persisted before timing instrumentation was added.
+
+A `results[]` entry also carries an optional `fix_applied` boolean: `true` when the gate initially failed but its `fix_command` repaired the working tree and the re-check then passed (a self-healed gate). The field is omitted when false, so it is absent for gates that passed clean and for events persisted before self-healing gates were added.
 
 **`retry_requested` payload**
 
