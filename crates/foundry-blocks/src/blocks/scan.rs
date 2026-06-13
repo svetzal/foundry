@@ -62,15 +62,18 @@ impl TaskBlock for ScanDependencies {
                 .iter()
                 .map(|vuln| {
                     let cve = vuln.cve.as_deref().unwrap_or("unknown").to_string();
-                    let payload = Event::serialize_payload(&VulnerabilityDetectedPayload {
-                        cve,
-                        vulnerable: true,
-                        dirty: true,
-                        package: vuln.package.clone(),
-                        severity: vuln.severity.clone().unwrap_or_default(),
-                    })
-                    .expect("VulnerabilityDetectedPayload is infallibly serializable");
-                    Event::new(EventType::VulnerabilityDetected, project.clone(), throttle, payload)
+                    super::event_from_infallible_payload(
+                        EventType::VulnerabilityDetected,
+                        &project,
+                        throttle,
+                        &VulnerabilityDetectedPayload {
+                            cve,
+                            vulnerable: true,
+                            dirty: true,
+                            package: vuln.package.clone(),
+                            severity: vuln.severity.clone().unwrap_or_default(),
+                        },
+                    )
                 })
                 .collect();
 

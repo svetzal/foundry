@@ -16,8 +16,8 @@ pub(super) use agent_helpers::{
 };
 pub(super) use event_builders::{
     build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
-    dry_run_remediation_event, emit_event_result, emit_result, format_gates_context,
-    stub_event_result,
+    dry_run_remediation_event, emit_event_result, emit_result, event_from_infallible_payload,
+    event_from_payload, format_gates_context, stub_event_result,
 };
 pub(super) use execution::{ExecutionContext, execute_agent_block};
 

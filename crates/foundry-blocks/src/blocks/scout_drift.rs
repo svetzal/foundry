@@ -260,17 +260,15 @@ fn build_drift_result(
         event_payload["parse_error"] = serde_json::Value::String(err.clone());
     }
 
-    TaskBlockResult::success(
+    super::stub_event_result(
         format!(
             "{project}: drift assessment — {} candidates, {} high-value",
             result.candidate_count, result.high_value_count
         ),
-        vec![Event::new(
-            EventType::DriftAssessmentCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        EventType::DriftAssessmentCompleted,
+        project.to_string(),
+        throttle,
+        event_payload,
     )
 }
 

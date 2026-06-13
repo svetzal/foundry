@@ -303,19 +303,19 @@ fn build_commit_push_events(
     commit_payload: &ProjectChangesCommittedPayload,
     push_payload: Option<&ProjectChangesPushedPayload>,
 ) -> anyhow::Result<Vec<Event>> {
-    let mut events = vec![Event::new(
+    let mut events = vec![super::event_from_payload(
         EventType::ProjectChangesCommitted,
-        project.to_string(),
+        project,
         throttle,
-        Event::serialize_payload(commit_payload)?,
-    )];
+        commit_payload,
+    )?];
     if let Some(push) = push_payload {
-        events.push(Event::new(
+        events.push(super::event_from_payload(
             EventType::ProjectChangesPushed,
-            project.to_string(),
+            project,
             throttle,
-            Event::serialize_payload(push)?,
-        ));
+            push,
+        )?);
     }
     Ok(events)
 }
@@ -367,7 +367,6 @@ mod tests {
 
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry};
-    use foundry_sdk::throttle::Throttle;
     use tempfile::TempDir;
 
     use foundry_sdk::task_block::TaskBlock;
@@ -605,16 +604,11 @@ mod tests {
     #[tokio::test]
     async fn skips_iteration_completion_with_loop_context() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
-        let trigger = Event::new(
-            EventType::ProjectIterationCompleted,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": "my-project",
-                "success": true,
-                "loop_context": { "strategic": { "iteration": 1 } }
-            }),
-        );
+        let trigger = test_event!(EventType::ProjectIterationCompleted, "my-project", {
+            "project": "my-project",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -648,16 +642,11 @@ mod tests {
             },
         ]);
         let block = CommitAndPush::with_gateways(registry, shell);
-        let trigger = Event::new(
-            EventType::InnerIterationCompleted,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": "my-project",
-                "success": true,
-                "loop_context": { "strategic": { "iteration": 1 } }
-            }),
-        );
+        let trigger = test_event!(EventType::InnerIterationCompleted, "my-project", {
+            "project": "my-project",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -670,15 +659,10 @@ mod tests {
     async fn does_not_skip_remediation_with_loop_context() {
         // RemediationCompleted is not a completion event, so loop_context should not trigger skip
         let block = CommitAndPush::new(test_helpers::empty_registry());
-        let trigger = Event::new(
-            EventType::RemediationCompleted,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "cve": "CVE-2026-0001",
-                "loop_context": { "strategic": { "iteration": 1 } }
-            }),
-        );
+        let trigger = test_event!(EventType::RemediationCompleted, "my-project", {
+            "cve": "CVE-2026-0001",
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

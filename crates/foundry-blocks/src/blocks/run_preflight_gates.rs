@@ -161,20 +161,18 @@ fn build_preflight_result(
             project = %project,
             "preflight gates failed — emitting terminal failure for iterate workflow"
         );
-        let terminal_payload = Event::serialize_payload(&ProjectCompletedPayload {
-            project: project.to_string(),
-            success: false,
-            summary: "preflight gates failed".to_string(),
-            workflow: workflow.to_string(),
-            loop_context: None,
-            changes: None,
-        })
-        .expect("ProjectCompletedPayload is infallibly serializable");
-        block_result.events.push(Event::new(
+        block_result.events.push(super::event_from_infallible_payload(
             EventType::ProjectIterationCompleted,
-            project.to_string(),
+            project,
             throttle,
-            terminal_payload,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: false,
+                summary: "preflight gates failed".to_string(),
+                workflow: workflow.to_string(),
+                loop_context: None,
+                changes: None,
+            },
         ));
     }
 

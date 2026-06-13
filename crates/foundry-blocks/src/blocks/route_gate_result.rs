@@ -108,21 +108,18 @@ fn handle_gates_passed(
 
     // Carry loop_context forward into the completion event so downstream blocks can see it
     let loop_context = context.loop_context.clone();
-    let completion_payload = Event::serialize_payload(&ProjectCompletedPayload {
-        project: project.to_string(),
-        success: true,
-        summary: "all required gates passed".to_string(),
-        workflow: workflow.to_string(),
-        loop_context,
-        changes: None,
-    })
-    .expect("ProjectCompletedPayload is infallibly serializable");
-
-    let mut events = vec![Event::new(
+    let mut events = vec![super::event_from_infallible_payload(
         completion_event_type,
-        project.to_string(),
+        project,
         throttle,
-        completion_payload,
+        &ProjectCompletedPayload {
+            project: project.to_string(),
+            success: true,
+            summary: "all required gates passed".to_string(),
+            workflow: workflow.to_string(),
+            loop_context,
+            changes: None,
+        },
     )];
 
     // Chain to maintenance if actions.maintain=true and this is an iterate workflow.
@@ -137,18 +134,15 @@ fn handle_gates_passed(
             .unwrap_or(false);
         if maintain {
             tracing::info!(project = %project, "iterate succeeded with maintain=true, chaining to maintenance");
-            let maintenance_payload =
-                Event::serialize_payload(&ProjectMaintenanceRequestedPayload {
+            events.push(super::event_from_infallible_payload(
+                EventType::ProjectMaintenanceRequested,
+                project,
+                throttle,
+                &ProjectMaintenanceRequestedPayload {
                     project: project.to_string(),
                     workflow: WorkflowType::Maintain.to_string(),
                     chain: ChainContext::default(),
-                })
-                .expect("ProjectMaintenanceRequestedPayload is infallibly serializable");
-            events.push(Event::new(
-                EventType::ProjectMaintenanceRequested,
-                project.to_string(),
-                throttle,
-                maintenance_payload,
+                },
             ));
         }
     }
@@ -256,7 +250,6 @@ fn build_failure_context(results: &[foundry_sdk::gates::GateResult]) -> String {
 mod tests {
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::task_block::TaskBlock;
-    use foundry_sdk::throttle::Throttle;
 
     use super::RouteGateResult;
 
@@ -266,28 +259,23 @@ mod tests {
         retry_count: u64,
         workflow: &str,
     ) -> Event {
-        Event::new(
-            EventType::GateVerificationCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "required_passed": required_passed,
-                "all_passed": required_passed,
-                "retry_count": retry_count,
-                "workflow": workflow,
-                "results": [
-                    {
-                        "name": "fmt",
-                        "command": "cargo fmt --check",
-                        "passed": required_passed,
-                        "required": true,
-                        "output": if required_passed { "" } else { "formatting error" },
-                        "exit_code": i32::from(!required_passed),
-                    }
-                ],
-            }),
-        )
+        test_event!(EventType::GateVerificationCompleted, project, {
+            "project": project,
+            "required_passed": required_passed,
+            "all_passed": required_passed,
+            "retry_count": retry_count,
+            "workflow": workflow,
+            "results": [
+                {
+                    "name": "fmt",
+                    "command": "cargo fmt --check",
+                    "passed": required_passed,
+                    "required": true,
+                    "output": if required_passed { "" } else { "formatting error" },
+                    "exit_code": i32::from(!required_passed),
+                }
+            ],
+        })
     }
 
     assert_block_meta!(
@@ -370,20 +358,15 @@ mod tests {
 
     #[tokio::test]
     async fn iterate_success_with_maintain_true_chains_maintenance() {
-        let trigger = Event::new(
-            EventType::GateVerificationCompleted,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": "my-project",
-                "required_passed": true,
-                "all_passed": true,
-                "retry_count": 0,
-                "workflow": "iterate",
-                "actions": {"maintain": true},
-                "results": [],
-            }),
-        );
+        let trigger = test_event!(EventType::GateVerificationCompleted, "my-project", {
+            "project": "my-project",
+            "required_passed": true,
+            "all_passed": true,
+            "retry_count": 0,
+            "workflow": "iterate",
+            "actions": {"maintain": true},
+            "results": [],
+        });
         let result = RouteGateResult.execute(&trigger).await.unwrap();
 
         assert!(result.success);
@@ -404,20 +387,15 @@ mod tests {
 
     #[tokio::test]
     async fn maintain_success_does_not_chain_maintenance() {
-        let trigger = Event::new(
-            EventType::GateVerificationCompleted,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": "my-project",
-                "required_passed": true,
-                "all_passed": true,
-                "retry_count": 0,
-                "workflow": "maintain",
-                "actions": {"maintain": true},
-                "results": [],
-            }),
-        );
+        let trigger = test_event!(EventType::GateVerificationCompleted, "my-project", {
+            "project": "my-project",
+            "required_passed": true,
+            "all_passed": true,
+            "retry_count": 0,
+            "workflow": "maintain",
+            "actions": {"maintain": true},
+            "results": [],
+        });
         let result = RouteGateResult.execute(&trigger).await.unwrap();
 
         assert!(result.success);
@@ -433,23 +411,18 @@ mod tests {
         retry_count: u64,
         workflow: &str,
     ) -> Event {
-        Event::new(
-            EventType::GateVerificationCompleted,
-            project.to_string(),
-            Throttle::Full,
-            serde_json::json!({
-                "project": project,
-                "required_passed": required_passed,
-                "all_passed": required_passed,
-                "retry_count": retry_count,
-                "workflow": workflow,
-                "results": [],
-                "loop_context": {
-                    "strategic": { "iteration": 1, "max": 5 }
-                },
-                "actions": { "maintain": true },
-            }),
-        )
+        test_event!(EventType::GateVerificationCompleted, project, {
+            "project": project,
+            "required_passed": required_passed,
+            "all_passed": required_passed,
+            "retry_count": retry_count,
+            "workflow": workflow,
+            "results": [],
+            "loop_context": {
+                "strategic": { "iteration": 1, "max": 5 }
+            },
+            "actions": { "maintain": true },
+        })
     }
 
     #[tokio::test]

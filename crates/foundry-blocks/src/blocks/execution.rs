@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::event::EventType;
 use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
 use foundry_sdk::registry::ProjectEntry;
 use foundry_sdk::task_block::TaskBlockResult;
@@ -103,26 +103,23 @@ pub(crate) fn build_agent_execution_result(
     tracing::info!(project = %project, success = success, "{success_label} completed");
 
     let context = LoopContext::extract_from(trigger_payload);
-    let event_payload = Event::serialize_payload(&ExecutionCompletedPayload {
-        project: project.to_string(),
-        workflow: workflow.to_string(),
-        success,
-        summary: summary.clone(),
-        execution_output,
-        dry_run: None,
-        retry_count,
-        changes_detected: Some(changes_detected),
-        files_changed,
-        context,
-    })
-    .expect("ExecutionCompletedPayload is infallibly serializable");
-
     TaskBlockResult {
-        events: vec![Event::new(
+        events: vec![super::event_from_infallible_payload(
             EventType::ExecutionCompleted,
-            project.to_string(),
+            project,
             throttle,
-            event_payload,
+            &ExecutionCompletedPayload {
+                project: project.to_string(),
+                workflow: workflow.to_string(),
+                success,
+                summary: summary.clone(),
+                execution_output,
+                dry_run: None,
+                retry_count,
+                changes_detected: Some(changes_detected),
+                files_changed,
+                context,
+            },
         )],
         success,
         summary: format!("{project}: {summary}"),

@@ -6,6 +6,37 @@ use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::AgentOutcome;
 
+/// Serialize `payload` and construct a single `Event`, propagating serialization errors.
+///
+/// Core primitive for callers that build multi-event results or return bare `Event` values
+/// (e.g., multi-event `Vec<Event>` builders). Use [`emit_result`] or [`emit_event_result`]
+/// when the result wraps a single event in a `TaskBlockResult`.
+pub(crate) fn event_from_payload(
+    event_type: EventType,
+    project: &str,
+    throttle: Throttle,
+    payload: &impl serde::Serialize,
+) -> anyhow::Result<Event> {
+    let event_payload = Event::serialize_payload(payload)?;
+    Ok(Event::new(event_type, project.to_string(), throttle, event_payload))
+}
+
+/// Serialize `payload` and construct a single `Event`, panicking on serialization failure.
+///
+/// Use for infallibly-serializable payload types where construction is unconditional.
+/// All standard `*Payload` SDK types qualify. See [`event_from_payload`] for the
+/// fallible variant.
+pub(crate) fn event_from_infallible_payload(
+    event_type: EventType,
+    project: &str,
+    throttle: Throttle,
+    payload: &impl serde::Serialize,
+) -> Event {
+    let event_payload =
+        Event::serialize_payload(payload).expect("payload is infallibly serializable");
+    Event::new(event_type, project.to_string(), throttle, event_payload)
+}
+
 /// Emit a single-event result with a serialized payload, controlling the success flag.
 ///
 /// Core helper for blocks whose result emits exactly one event with no `raw_output`
@@ -18,14 +49,9 @@ pub(crate) fn emit_event_result(
     throttle: Throttle,
     payload: &impl serde::Serialize,
 ) -> anyhow::Result<TaskBlockResult> {
-    let event_payload = Event::serialize_payload(payload)?;
+    let event = event_from_payload(event_type, project, throttle, payload)?;
     Ok(TaskBlockResult {
-        events: vec![Event::new(
-            event_type,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        events: vec![event],
         success,
         summary,
         ..Default::default()
@@ -81,21 +107,18 @@ pub(crate) fn build_agent_remediation_result(
         "remediation completed"
     );
 
-    let event_payload = Event::serialize_payload(&RemediationCompletedPayload {
-        cve,
-        success,
-        summary: Some(summary.clone()),
-        dry_run: None,
-        pipeline_fix,
-    })
-    .expect("RemediationCompletedPayload is infallibly serializable");
-
     TaskBlockResult {
-        events: vec![Event::new(
+        events: vec![event_from_infallible_payload(
             EventType::RemediationCompleted,
-            project.to_string(),
+            project,
             throttle,
-            event_payload,
+            &RemediationCompletedPayload {
+                cve,
+                success,
+                summary: Some(summary.clone()),
+                dry_run: None,
+                pipeline_fix,
+            },
         )],
         success,
         summary: if success {
@@ -243,8 +266,8 @@ mod tests {
 
     use super::{
         build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
-        dry_run_remediation_event, emit_event_result, emit_result, format_gates_context,
-        stub_event_result,
+        dry_run_remediation_event, emit_event_result, emit_result, event_from_infallible_payload,
+        event_from_payload, format_gates_context, stub_event_result,
     };
 
     fn full() -> Throttle {
@@ -252,12 +275,36 @@ mod tests {
     }
 
     fn trigger_event() -> Event {
-        Event::new(
-            EventType::ProjectRunStarted,
-            "test-proj".to_string(),
+        test_event!(EventType::ProjectRunStarted, "test-proj", {})
+    }
+
+    #[test]
+    fn event_from_payload_produces_event_with_correct_type_project_and_payload() {
+        let event = event_from_payload(
+            EventType::ProjectRunCompleted,
+            "my-proj",
             full(),
-            serde_json::json!({}),
+            &serde_json::json!({"success": true}),
         )
+        .unwrap();
+
+        assert_eq!(event.event_type, EventType::ProjectRunCompleted);
+        assert_eq!(event.project, "my-proj");
+        assert_eq!(event.payload["success"], true);
+    }
+
+    #[test]
+    fn event_from_infallible_payload_produces_event_with_correct_type_and_project() {
+        let event = event_from_infallible_payload(
+            EventType::ProjectRunCompleted,
+            "my-proj",
+            full(),
+            &serde_json::json!({"status": "ok"}),
+        );
+
+        assert_eq!(event.event_type, EventType::ProjectRunCompleted);
+        assert_eq!(event.project, "my-proj");
+        assert_eq!(event.payload["status"], "ok");
     }
 
     #[test]

@@ -109,19 +109,16 @@ impl TaskBlock for InstallLocally {
 
             tracing::info!(project = %project, method = method_name, success, "install completed");
 
-            let event_payload = Event::serialize_payload(&LocalInstallCompletedPayload {
-                method: Some(method_name.to_string()),
-                success,
-                details: Some(details.clone()),
-                ..Default::default()
-            })
-            .expect("LocalInstallCompletedPayload is infallibly serializable");
-
-            let mut events = vec![Event::new(
+            let mut events = vec![super::event_from_infallible_payload(
                 EventType::LocalInstallCompleted,
-                project.clone(),
+                &project,
                 throttle,
-                event_payload,
+                &LocalInstallCompletedPayload {
+                    method: Some(method_name.to_string()),
+                    success,
+                    details: Some(details.clone()),
+                    ..Default::default()
+                },
             )];
 
             // Skill install step — only run when binary install succeeded.
@@ -161,40 +158,36 @@ fn resolve_install(
 ) -> Result<(foundry_sdk::registry::ProjectEntry, InstallConfig), TaskBlockResult> {
     let Some(entry) = entry else {
         tracing::warn!(project = %project, "project not found in registry, skipping install");
-        let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
-            success: true,
-            status: Some("skipped".to_string()),
-            reason: Some("project not found in registry".to_string()),
-            ..Default::default()
-        })
-        .expect("LocalInstallCompletedPayload is infallibly serializable");
         return Err(TaskBlockResult::success(
             "Skipped: project not found in registry",
-            vec![Event::new(
+            vec![super::event_from_infallible_payload(
                 EventType::LocalInstallCompleted,
-                project.to_string(),
+                project,
                 throttle,
-                payload,
+                &LocalInstallCompletedPayload {
+                    success: true,
+                    status: Some("skipped".to_string()),
+                    reason: Some("project not found in registry".to_string()),
+                    ..Default::default()
+                },
             )],
         ));
     };
 
     let Some(install_config) = entry.install.clone() else {
         tracing::info!(project = %project, "no install config, skipping");
-        let payload = Event::serialize_payload(&LocalInstallCompletedPayload {
-            success: true,
-            status: Some("skipped".to_string()),
-            reason: Some("no install config".to_string()),
-            ..Default::default()
-        })
-        .expect("LocalInstallCompletedPayload is infallibly serializable");
         return Err(TaskBlockResult::success(
             "Skipped: no install config defined",
-            vec![Event::new(
+            vec![super::event_from_infallible_payload(
                 EventType::LocalInstallCompleted,
-                project.to_string(),
+                project,
                 throttle,
-                payload,
+                &LocalInstallCompletedPayload {
+                    success: true,
+                    status: Some("skipped".to_string()),
+                    reason: Some("no install config".to_string()),
+                    ..Default::default()
+                },
             )],
         ));
     };
@@ -233,19 +226,17 @@ async fn run_skill_install(
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(project = %project, command = %cmd, error = %err, "skill install command failed to spawn");
-            let event_payload = Event::serialize_payload(&LocalSkillInstallCompletedPayload {
-                project: project.to_string(),
-                command: cmd,
-                success: false,
-                stdout_tail: String::new(),
-                stderr_tail: err.to_string(),
-            })
-            .expect("LocalSkillInstallCompletedPayload is infallibly serializable");
-            return Some(Event::new(
+            return Some(super::event_from_infallible_payload(
                 EventType::LocalSkillInstallCompleted,
-                project.to_string(),
+                project,
                 throttle,
-                event_payload,
+                &LocalSkillInstallCompletedPayload {
+                    project: project.to_string(),
+                    command: cmd,
+                    success: false,
+                    stdout_tail: String::new(),
+                    stderr_tail: err.to_string(),
+                },
             ));
         }
     };
@@ -265,20 +256,17 @@ async fn run_skill_install(
         );
     }
 
-    let event_payload = Event::serialize_payload(&LocalSkillInstallCompletedPayload {
-        project: project.to_string(),
-        command: cmd,
-        success: skill_success,
-        stdout_tail,
-        stderr_tail,
-    })
-    .expect("LocalSkillInstallCompletedPayload is infallibly serializable");
-
-    Some(Event::new(
+    Some(super::event_from_infallible_payload(
         EventType::LocalSkillInstallCompleted,
-        project.to_string(),
+        project,
         throttle,
-        event_payload,
+        &LocalSkillInstallCompletedPayload {
+            project: project.to_string(),
+            command: cmd,
+            success: skill_success,
+            stdout_tail,
+            stderr_tail,
+        },
     ))
 }
 

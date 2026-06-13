@@ -165,14 +165,12 @@ fn build_strategic_result(
         event_payload["actions"] = actions.clone();
     }
 
-    TaskBlockResult::success(
+    super::stub_event_result(
         format!("{project}: strategic assessment identified {area_count} areas"),
-        vec![Event::new(
-            EventType::StrategicAssessmentCompleted,
-            project.to_string(),
-            throttle,
-            event_payload,
-        )],
+        EventType::StrategicAssessmentCompleted,
+        project.to_string(),
+        throttle,
+        event_payload,
     )
 }
 
@@ -196,10 +194,9 @@ fn parse_strategic_assessment(output: &str) -> Vec<serde_json::Value> {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::event::EventType;
     use foundry_sdk::registry::Registry;
     use foundry_sdk::task_block::TaskBlock;
-    use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::FakeAgentGateway;
 
@@ -220,12 +217,9 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
         let block = StrategicAssessor::new(agent.clone(), registry);
-        let trigger = Event::new(
-            EventType::ProjectIterationRequested,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({"project": "my-project", "workflow": "iterate"}),
-        );
+        let trigger = test_event!(EventType::ProjectIterationRequested, "my-project", {
+            "project": "my-project", "workflow": "iterate"
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -243,12 +237,9 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent.clone(), registry);
-        let trigger = Event::new(
-            EventType::ProjectIterationRequested,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true}),
-        );
+        let trigger = test_event!(EventType::ProjectIterationRequested, "my-project", {
+            "project": "my-project", "workflow": "iterate", "strategic": true
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 
@@ -274,12 +265,9 @@ mod tests {
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
         let block = StrategicAssessor::new(agent, registry);
-        let trigger = Event::new(
-            EventType::ProjectIterationRequested,
-            "my-project".to_string(),
-            Throttle::Full,
-            serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true, "actions": {"maintain": true}}),
-        );
+        let trigger = test_event!(EventType::ProjectIterationRequested, "my-project", {
+            "project": "my-project", "workflow": "iterate", "strategic": true, "actions": {"maintain": true}
+        });
 
         let result = block.execute(&trigger).await.unwrap();
 

@@ -42,17 +42,6 @@ impl TaskBlock for CheckPipeline {
     }
 }
 
-fn passing_payload(conclusion: &str) -> serde_json::Value {
-    Event::serialize_payload(&PipelineCheckedPayload {
-        passing: true,
-        conclusion: conclusion.into(),
-        run_id: None,
-        run_name: None,
-        failure_logs: None,
-    })
-    .expect("PipelineCheckedPayload is infallibly serializable")
-}
-
 async fn run_check(
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
@@ -61,13 +50,19 @@ async fn run_check(
 ) -> anyhow::Result<TaskBlockResult> {
     if entry.repo.is_empty() {
         tracing::info!(project = %project, "no repo configured, skipping pipeline check");
-        return Ok(super::stub_event_result(
-            "no repo configured",
+        return super::emit_result(
+            "no repo configured".to_string(),
             EventType::PipelineChecked,
-            project,
+            &project,
             throttle,
-            passing_payload("skipped"),
-        ));
+            &PipelineCheckedPayload {
+                passing: true,
+                conclusion: "skipped".to_string(),
+                run_id: None,
+                run_name: None,
+                failure_logs: None,
+            },
+        );
     }
 
     let repo = &entry.repo;
@@ -115,13 +110,19 @@ async fn run_check(
 
     let Some(run) = completed else {
         tracing::info!(project = %project, "no completed runs found");
-        return Ok(super::stub_event_result(
-            "no completed runs found",
+        return super::emit_result(
+            "no completed runs found".to_string(),
             EventType::PipelineChecked,
-            project,
+            &project,
             throttle,
-            passing_payload("no_runs"),
-        ));
+            &PipelineCheckedPayload {
+                passing: true,
+                conclusion: "no_runs".to_string(),
+                run_id: None,
+                run_name: None,
+                failure_logs: None,
+            },
+        );
     };
 
     let conclusion = run

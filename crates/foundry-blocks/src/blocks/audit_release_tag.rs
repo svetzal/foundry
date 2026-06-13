@@ -8,6 +8,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{ScannerGateway, ShellGateway};
 
+use super::stub_event_result;
+
 /// Scans a release tag for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
 ///
@@ -302,14 +304,12 @@ async fn perform_tag_checkout_and_scan(
         payload["dirty"] = serde_json::Value::Bool(dirty);
     }
 
-    Ok(TaskBlockResult::success(
+    Ok(stub_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
-        vec![Event::new(
-            EventType::ReleaseTagAudited,
-            project.to_string(),
-            throttle,
-            payload,
-        )],
+        EventType::ReleaseTagAudited,
+        project.to_string(),
+        throttle,
+        payload,
     ))
 }
 
@@ -327,14 +327,12 @@ fn emit_payload_result(
     if let Some(d) = dirty {
         payload["dirty"] = serde_json::Value::Bool(d);
     }
-    TaskBlockResult::success(
+    stub_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
-        vec![Event::new(
-            EventType::ReleaseTagAudited,
-            project,
-            throttle,
-            payload,
-        )],
+        EventType::ReleaseTagAudited,
+        project,
+        throttle,
+        payload,
     )
 }
 
