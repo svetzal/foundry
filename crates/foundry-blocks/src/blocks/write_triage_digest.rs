@@ -9,11 +9,9 @@
 //! chain.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use chrono::Local;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::MaintenanceTriageCompletedPayload;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -76,9 +74,8 @@ fn write_digest(
         ));
     }
 
-    let date = Local::now().format("%Y-%m-%d").to_string();
+    let (date, intended_path) = super::today_dated_path(triage_dir);
     let rendered = render_document(&date, payload);
-    let intended_path = triage_dir.join(format!("{date}.md"));
 
     if !throttle.permits_mutation() {
         tracing::info!(
@@ -100,7 +97,7 @@ fn write_digest(
         );
     }
 
-    match write_atomic(triage_dir, &intended_path, &rendered) {
+    match super::write_atomic(triage_dir, &intended_path, &rendered) {
         Ok(()) => {
             tracing::info!(
                 path = %intended_path.display(),
@@ -278,25 +275,6 @@ fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> S
 }
 
 // ---------------------------------------------------------------------------
-// Atomic file write
-// ---------------------------------------------------------------------------
-
-fn write_atomic(dir: &Path, target: &Path, content: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = target.to_path_buf();
-    let file_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("triage.md");
-    tmp.set_file_name(format!(".{file_name}.tmp"));
-
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, target)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -355,7 +333,7 @@ mod tests {
     }
 
     fn today_path(dir: &std::path::Path) -> PathBuf {
-        dir.join(format!("{}.md", Local::now().format("%Y-%m-%d")))
+        super::super::today_dated_path(dir).1
     }
 
     #[test]

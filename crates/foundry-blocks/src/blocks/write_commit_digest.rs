@@ -6,11 +6,9 @@
 //! the chain still terminates cleanly with `digest_path = None`.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use chrono::Local;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CommitDigestCompletedPayload, CommitSummaryCompletedPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -59,9 +57,8 @@ fn write(
     composed: &CommitSummaryCompletedPayload,
     digests_dir: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
-    let date = Local::now().format("%Y-%m-%d").to_string();
+    let (date, intended_path) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
-    let intended_path = digests_dir.join(format!("{date}.md"));
 
     if !throttle.permits_mutation() {
         tracing::info!(
@@ -84,7 +81,7 @@ fn write(
         );
     }
 
-    match write_atomic(digests_dir, &intended_path, &rendered) {
+    match super::write_atomic(digests_dir, &intended_path, &rendered) {
         Ok(()) => {
             tracing::info!(
                 path = %intended_path.display(),
@@ -150,25 +147,6 @@ fn render_full_document(date: &str, composed: &CommitSummaryCompletedPayload) ->
     out
 }
 
-/// Write `content` to `target` atomically: write to a sibling tempfile, then
-/// rename. Creates `dir` if it does not exist.
-fn write_atomic(dir: &Path, target: &Path, content: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    // `tempfile` is already a workspace dev-dep; for the production path here
-    // we hand-roll the temp+rename pattern to keep tempfile in dev-deps only.
-    let mut tmp = target.to_path_buf();
-    let file_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("digest.md");
-    tmp.set_file_name(format!(".{file_name}.tmp"));
-
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, target)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use foundry_sdk::event::EventType;
@@ -193,7 +171,7 @@ mod tests {
     }
 
     fn today_path(dir: &Path) -> PathBuf {
-        dir.join(format!("{}.md", Local::now().format("%Y-%m-%d")))
+        super::super::today_dated_path(dir).1
     }
 
     #[test]

@@ -11,7 +11,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use chrono::Local;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsSummaryCompletedPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -64,9 +63,8 @@ fn write(
     digests_dir: &Path,
     watermark_path: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
-    let date = Local::now().format("%Y-%m-%d").to_string();
+    let (date, intended_path) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
-    let intended_path = digests_dir.join(format!("{date}.md"));
 
     if !throttle.permits_mutation() {
         tracing::info!(
@@ -89,7 +87,7 @@ fn write(
         );
     }
 
-    match write_atomic(digests_dir, &intended_path, &rendered) {
+    match super::write_atomic(digests_dir, &intended_path, &rendered) {
         Ok(()) => {
             tracing::info!(
                 path = %intended_path.display(),
@@ -163,23 +161,6 @@ fn render_full_document(date: &str, composed: &OpsSummaryCompletedPayload) -> St
     out
 }
 
-/// Write `content` to `target` atomically: write to a sibling tempfile, then
-/// rename. Creates `dir` if it does not exist.
-fn write_atomic(dir: &Path, target: &Path, content: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = target.to_path_buf();
-    let file_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("ops-digest.md");
-    tmp.set_file_name(format!(".{file_name}.tmp"));
-
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, target)?;
-    Ok(())
-}
-
 /// Atomically write a new watermark value.
 fn write_watermark(path: &Path, watermark: &str) -> anyhow::Result<()> {
     // Write to a sibling temp file then rename for atomicity.
@@ -224,7 +205,7 @@ mod tests {
     }
 
     fn today_path(dir: &std::path::Path) -> PathBuf {
-        dir.join(format!("{}.md", Local::now().format("%Y-%m-%d")))
+        super::super::today_dated_path(dir).1
     }
 
     #[test]
