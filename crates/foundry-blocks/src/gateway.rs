@@ -10,9 +10,10 @@ use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload}
 use foundry_sdk::registry::Stack;
 use foundry_sdk::throttle::Throttle;
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
-use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
+use crate::agent_stream::{
+    AgentStreamOutcome, AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine,
+};
 
 // The gateway *contract* — the traits and the data types they exchange — lives
 // in the SDK (`foundry_sdk::gateway`). Re-exported here so `crate::gateway::…`
@@ -23,6 +24,12 @@ pub use foundry_sdk::gateway::{
     AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, AgentResponse,
     AuditResult, CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway,
 };
+
+// Shared generic gateway engine — the single `invoke()` lifecycle reused by all
+// CLI-backed agent provider implementations. Per-provider variation lives in
+// `CliAgentAdapter` impls in this module and the `opencode`/`codex` submodules.
+pub(crate) mod engine;
+use engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation};
 
 // In-memory fakes for testing also live in the SDK, behind its `test-support`
 // feature (enabled as a dev-dependency). Re-exported so block and daemon tests
@@ -76,21 +83,84 @@ impl ScannerGateway for ProcessScannerGateway {
     }
 }
 
+/// Adapter that captures the Claude-specific CLI invocation contract.
+pub(crate) struct ClaudeAdapter;
+
+impl CliAgentAdapter for ClaudeAdapter {
+    fn provider(&self) -> AgentProvider {
+        AgentProvider::Claude
+    }
+
+    fn agent_type(&self) -> &'static str {
+        "claude-code"
+    }
+
+    fn command(&self) -> &'static str {
+        "claude"
+    }
+
+    fn build_invocation(
+        &self,
+        request: &AgentRequest,
+        model: &str,
+        effort: &str,
+        _session_id: &str,
+        _session_log_dir: &Path,
+    ) -> Invocation {
+        let mut args: Vec<String> = vec![
+            "--print".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--model".to_string(),
+            model.to_string(),
+            "--effort".to_string(),
+            effort.to_string(),
+        ];
+        if let Some(ref agent_file) = request.agent_file {
+            args.push("--agent".to_string());
+            args.push(agent_file.display().to_string());
+        }
+        if request.access == AgentAccess::ReadOnly {
+            args.push("--allowedTools".to_string());
+            args.push("Read Glob Grep WebFetch WebSearch".to_string());
+        }
+        args.push("--dangerously-skip-permissions".to_string());
+        args.push("-p".to_string());
+        args.push(request.prompt.clone());
+        // CLAUDECODE="" prevents nested-session detection.
+        Invocation {
+            args,
+            env: vec![("CLAUDECODE".to_string(), String::new())],
+            last_message_path: None,
+        }
+    }
+
+    fn interpret<'a>(
+        &'a self,
+        outcome: &'a AgentStreamOutcome,
+        _inv: &'a Invocation,
+        _request: &'a AgentRequest,
+        _shell: &'a Arc<dyn ShellGateway>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Interpreted> + Send + 'a>> {
+        let success = outcome.success;
+        let exit_code = outcome.exit_code;
+        let stdout = extract_final_text(&outcome.lines);
+        Box::pin(async move {
+            Interpreted {
+                success,
+                exit_code,
+                stdout,
+            }
+        })
+    }
+}
+
 /// Production implementation that invokes the Claude CLI via a streaming runner,
 /// tees stdout to `~/.foundry/agent-sessions/<session_id>.jsonl`, and emits
 /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events on the supplied
 /// broadcast channel.
-pub struct ClaudeAgentGateway {
-    /// Retained for API compatibility; the streaming path no longer dispatches
-    /// through `ShellGateway` because we need line-by-line stdout capture.
-    #[allow(dead_code)]
-    shell: Arc<dyn ShellGateway>,
-    stream_runner: Arc<dyn AgentStreamRunner>,
-    session_log_dir: PathBuf,
-    event_tx: broadcast::Sender<Event>,
-    /// Resolved tier→model and effort→token maps for the claude provider.
-    models: ProviderModels,
-}
+pub struct ClaudeAgentGateway(CliAgentGateway<ClaudeAdapter>);
 
 impl ClaudeAgentGateway {
     /// Backwards-compatible constructor. Uses default session log dir and a
@@ -112,20 +182,19 @@ impl ClaudeAgentGateway {
         session_log_dir: PathBuf,
         event_tx: broadcast::Sender<Event>,
     ) -> Self {
-        Self {
+        Self(CliAgentGateway::new_with_adapter(
             shell,
             stream_runner,
             session_log_dir,
             event_tx,
-            models: ProviderModels::default_for(AgentProvider::Claude),
-        }
+            ClaudeAdapter,
+        ))
     }
 
     /// Override the resolved tier/effort maps (from the agent config).
     #[must_use]
-    pub fn with_models(mut self, models: ProviderModels) -> Self {
-        self.models = models;
-        self
+    pub fn with_models(self, models: ProviderModels) -> Self {
+        Self(self.0.with_models(models))
     }
 }
 
@@ -134,79 +203,7 @@ impl AgentGateway for ClaudeAgentGateway {
         &'a self,
         request: &'a AgentRequest,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
-        Box::pin(async move {
-            let session_id = Uuid::new_v4().to_string();
-            let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
-
-            let model = self.models.model(request.tier, AgentProvider::Claude);
-            let effort = self.models.effort_token(request.effort, AgentProvider::Claude);
-            let mut args: Vec<String> = vec![
-                "--print".to_string(),
-                "--output-format".to_string(),
-                "stream-json".to_string(),
-                "--verbose".to_string(),
-                "--model".to_string(),
-                model,
-                "--effort".to_string(),
-                effort,
-            ];
-            if let Some(ref agent_file) = request.agent_file {
-                args.push("--agent".to_string());
-                args.push(agent_file.display().to_string());
-            }
-            if request.access == AgentAccess::ReadOnly {
-                args.push("--allowedTools".to_string());
-                args.push("Read Glob Grep WebFetch WebSearch".to_string());
-            }
-            args.push("--dangerously-skip-permissions".to_string());
-            args.push("-p".to_string());
-            args.push(request.prompt.clone());
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-
-            emit_session_started(&self.event_tx, request, &session_id, "claude-code", &log_path)?;
-
-            // CLAUDECODE="" prevents nested-session detection.
-            let env = vec![("CLAUDECODE".to_string(), String::new())];
-            let outcome = self
-                .stream_runner
-                .run(
-                    &request.working_dir,
-                    "claude",
-                    &arg_refs,
-                    Some(&env),
-                    Some(request.timeout),
-                    &log_path,
-                )
-                .await;
-
-            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text) = match outcome {
-                Ok(o) => {
-                    let extracted = extract_final_text(&o.lines);
-                    let status = if o.success { "ok" } else { "agent_failed" };
-                    (status, Some(o.exit_code), o.stderr, o.bytes_written, None, extracted)
-                }
-                Err(e) => {
-                    ("unavailable", None, String::new(), 0u64, Some(e.to_string()), String::new())
-                }
-            };
-
-            emit_session_ended(
-                &self.event_tx,
-                &request.project,
-                &session_id,
-                status,
-                exit_code,
-                bytes_written,
-                error_msg,
-            )?;
-
-            Ok(AgentResponse {
-                stdout: stdout_text,
-                stderr,
-                exit_code: exit_code.unwrap_or(-1),
-                success: status == "ok",
-            })
-        })
+        self.0.invoke(request)
     }
 }
 

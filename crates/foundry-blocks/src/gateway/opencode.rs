@@ -24,7 +24,7 @@
 //!   and passed as `agent_file`); opencode's `--agent` takes a *name*, so the body
 //!   is inlined via the `OPENCODE_CONFIG_CONTENT` env var.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -32,26 +32,103 @@ use anyhow::Result;
 use foundry_sdk::event::Event;
 use serde_json::Value;
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
-use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
+use crate::agent_stream::{
+    AgentStreamOutcome, AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine,
+};
 
 use super::{
     AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
     ShellGateway,
+    engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation},
 };
+
+/// Adapter that captures the opencode-specific CLI invocation contract.
+pub(crate) struct OpencodeAdapter;
+
+impl CliAgentAdapter for OpencodeAdapter {
+    fn provider(&self) -> AgentProvider {
+        AgentProvider::Opencode
+    }
+
+    fn agent_type(&self) -> &'static str {
+        "opencode"
+    }
+
+    fn command(&self) -> &'static str {
+        "opencode"
+    }
+
+    fn build_invocation(
+        &self,
+        request: &AgentRequest,
+        model: &str,
+        effort: &str,
+        _session_id: &str,
+        _session_log_dir: &Path,
+    ) -> Invocation {
+        // ReadOnly is advisory under opencode v1.15.12: there is no CLI
+        // tool-allowlist, and the per-agent permission schema is unverified.
+        // The iterate/maintain safety net (commit only on passing gates,
+        // discard uncommitted drift) is the actual guard. See plan open items.
+        if request.access == AgentAccess::ReadOnly {
+            tracing::debug!(
+                project = %request.project,
+                "opencode: ReadOnly access is advisory (no tool allowlist); relying on workflow safety net"
+            );
+        }
+
+        // Inline the agent definition (if any) via OPENCODE_CONFIG_CONTENT and
+        // pass `--agent <key>`. opencode's `--agent` wants a name, not a path.
+        let (agent_key, env) =
+            prepare_agent_config(request.agent_file.as_deref(), &request.project);
+
+        let args = build_opencode_argv(model, effort, agent_key.as_deref(), &request.prompt);
+        Invocation {
+            args,
+            env,
+            last_message_path: None,
+        }
+    }
+
+    fn interpret<'a>(
+        &'a self,
+        outcome: &'a AgentStreamOutcome,
+        _inv: &'a Invocation,
+        request: &'a AgentRequest,
+        shell: &'a Arc<dyn ShellGateway>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Interpreted> + Send + 'a>> {
+        Box::pin(async move {
+            let error_events = count_error_events(&outcome.lines);
+            let success = outcome.success && error_events == 0;
+
+            // Authoritative result: `opencode export <sessionID>`. Fall back
+            // to concatenating streamed `text` events if export is missing or fails.
+            let stdout = match extract_session_id(&outcome.lines) {
+                Some(sid) => export_result(shell, &request.working_dir, &sid, request.timeout)
+                    .await
+                    .unwrap_or_else(|| extract_text_from_stream(&outcome.lines)),
+                None => extract_text_from_stream(&outcome.lines),
+            };
+
+            let exit_code = if outcome.success && error_events > 0 {
+                1
+            } else {
+                outcome.exit_code
+            };
+
+            Interpreted {
+                success,
+                exit_code,
+                stdout,
+            }
+        })
+    }
+}
 
 /// Production [`AgentGateway`] that invokes the `opencode` CLI and emits
 /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events.
-pub struct OpencodeAgentGateway {
-    /// Used for the post-run `opencode export <sessionID>` call.
-    shell: Arc<dyn ShellGateway>,
-    stream_runner: Arc<dyn AgentStreamRunner>,
-    session_log_dir: PathBuf,
-    event_tx: broadcast::Sender<Event>,
-    /// Resolved tier→model and effort→`--variant` maps for the opencode provider.
-    models: ProviderModels,
-}
+pub struct OpencodeAgentGateway(CliAgentGateway<OpencodeAdapter>);
 
 impl OpencodeAgentGateway {
     /// Backwards-compatible constructor: default session log dir, default stream
@@ -72,20 +149,19 @@ impl OpencodeAgentGateway {
         session_log_dir: PathBuf,
         event_tx: broadcast::Sender<Event>,
     ) -> Self {
-        Self {
+        Self(CliAgentGateway::new_with_adapter(
             shell,
             stream_runner,
             session_log_dir,
             event_tx,
-            models: ProviderModels::default_for(AgentProvider::Opencode),
-        }
+            OpencodeAdapter,
+        ))
     }
 
     /// Override the resolved tier/effort maps (from the agent config).
     #[must_use]
-    pub fn with_models(mut self, models: ProviderModels) -> Self {
-        self.models = models;
-        self
+    pub fn with_models(self, models: ProviderModels) -> Self {
+        Self(self.0.with_models(models))
     }
 }
 
@@ -94,135 +170,37 @@ impl AgentGateway for OpencodeAgentGateway {
         &'a self,
         request: &'a AgentRequest,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
-        Box::pin(async move {
-            let session_id = Uuid::new_v4().to_string();
-            let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
-
-            let model = self.models.model(request.tier, AgentProvider::Opencode);
-            let variant = self.models.effort_token(request.effort, AgentProvider::Opencode);
-
-            // Inline the agent definition (if any) via OPENCODE_CONFIG_CONTENT and
-            // pass `--agent <key>`. opencode's `--agent` wants a name, not a path.
-            let (agent_key, env) =
-                prepare_agent_config(request.agent_file.as_deref(), &request.project);
-
-            // ReadOnly is advisory under opencode v1.15.12: there is no CLI
-            // tool-allowlist, and the per-agent permission schema is unverified.
-            // The iterate/maintain safety net (commit only on passing gates,
-            // discard uncommitted drift) is the actual guard. See plan open items.
-            if request.access == AgentAccess::ReadOnly {
-                tracing::debug!(
-                    project = %request.project,
-                    "opencode: ReadOnly access is advisory (no tool allowlist); relying on workflow safety net"
-                );
-            }
-
-            let args = build_opencode_argv(&model, &variant, agent_key.as_deref(), &request.prompt);
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-
-            super::emit_session_started(
-                &self.event_tx,
-                request,
-                &session_id,
-                "opencode",
-                &log_path,
-            )?;
-
-            let env_opt = if env.is_empty() {
-                None
-            } else {
-                Some(env.as_slice())
-            };
-            let outcome = self
-                .stream_runner
-                .run(
-                    &request.working_dir,
-                    "opencode",
-                    &arg_refs,
-                    env_opt,
-                    Some(request.timeout),
-                    &log_path,
-                )
-                .await;
-
-            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text) = match outcome {
-                Ok(o) => {
-                    let error_events = count_error_events(&o.lines);
-                    let success = o.success && error_events == 0;
-
-                    // Authoritative result: `opencode export <sessionID>`. Fall back
-                    // to concatenating streamed `text` events if export is missing
-                    // or fails.
-                    let stdout_text = match extract_session_id(&o.lines) {
-                        Some(sid) => self
-                            .export_result(&request.working_dir, &sid, request.timeout)
-                            .await
-                            .unwrap_or_else(|| extract_text_from_stream(&o.lines)),
-                        None => extract_text_from_stream(&o.lines),
-                    };
-
-                    let status = if success { "ok" } else { "agent_failed" };
-                    let exit_code = if o.success && error_events > 0 {
-                        1
-                    } else {
-                        o.exit_code
-                    };
-                    (status, Some(exit_code), o.stderr, o.bytes_written, None, stdout_text)
-                }
-                Err(e) => {
-                    ("unavailable", None, String::new(), 0u64, Some(e.to_string()), String::new())
-                }
-            };
-
-            super::emit_session_ended(
-                &self.event_tx,
-                &request.project,
-                &session_id,
-                status,
-                exit_code,
-                bytes_written,
-                error_msg,
-            )?;
-
-            Ok(AgentResponse {
-                stdout: stdout_text,
-                stderr,
-                exit_code: exit_code.unwrap_or(-1),
-                success: status == "ok",
-            })
-        })
-    }
-}
-
-impl OpencodeAgentGateway {
-    /// Run `opencode export <session_id>` and extract the final assistant text.
-    /// Returns `None` if the export command fails or yields no parseable result.
-    async fn export_result(
-        &self,
-        working_dir: &std::path::Path,
-        session_id: &str,
-        timeout: std::time::Duration,
-    ) -> Option<String> {
-        let args = ["export", session_id];
-        match self.shell.run(working_dir, "opencode", &args, None, Some(timeout)).await {
-            Ok(cr) if cr.success => parse_export_result(&cr.stdout),
-            Ok(cr) => {
-                tracing::warn!(
-                    session_id = %session_id,
-                    exit_code = cr.exit_code,
-                    "opencode export failed; falling back to stream text"
-                );
-                None
-            }
-            Err(err) => {
-                tracing::warn!(session_id = %session_id, error = %err, "opencode export errored");
-                None
-            }
-        }
+        self.0.invoke(request)
     }
 }
 
 // --- Pure helpers (unit-tested without spawning) ----------------------------
+
+/// Run `opencode export <session_id>` and extract the final assistant text.
+/// Returns `None` if the export command fails or yields no parseable result.
+async fn export_result(
+    shell: &Arc<dyn ShellGateway>,
+    working_dir: &std::path::Path,
+    session_id: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let args = ["export", session_id];
+    match shell.run(working_dir, "opencode", &args, None, Some(timeout)).await {
+        Ok(cr) if cr.success => parse_export_result(&cr.stdout),
+        Ok(cr) => {
+            tracing::warn!(
+                session_id = %session_id,
+                exit_code = cr.exit_code,
+                "opencode export failed; falling back to stream text"
+            );
+            None
+        }
+        Err(err) => {
+            tracing::warn!(session_id = %session_id, error = %err, "opencode export errored");
+            None
+        }
+    }
+}
 
 /// Resolve the optional agent file into an opencode `--agent` key plus the
 /// `OPENCODE_CONFIG_CONTENT` env entry that inlines its system prompt. Returns

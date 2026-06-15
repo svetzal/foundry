@@ -34,7 +34,7 @@
 //! `{"type":"turn.failed"}` stream event also marks the run failed; these event
 //! shapes are best-effort, not part of the validated contract.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -42,29 +42,100 @@ use anyhow::Result;
 use foundry_sdk::event::Event;
 use serde_json::Value;
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
-use crate::agent_stream::{AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine};
+use crate::agent_stream::{
+    AgentStreamOutcome, AgentStreamRunner, ProcessAgentStreamRunner, StreamedLine,
+};
 
 use super::{
     AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
     ShellGateway,
+    engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation},
 };
+
+/// Adapter that captures the codex-specific CLI invocation contract.
+pub(crate) struct CodexAdapter;
+
+impl CliAgentAdapter for CodexAdapter {
+    fn provider(&self) -> AgentProvider {
+        AgentProvider::Codex
+    }
+
+    fn agent_type(&self) -> &'static str {
+        "codex"
+    }
+
+    fn command(&self) -> &'static str {
+        "codex"
+    }
+
+    fn build_invocation(
+        &self,
+        request: &AgentRequest,
+        model: &str,
+        effort: &str,
+        session_id: &str,
+        session_log_dir: &Path,
+    ) -> Invocation {
+        let last_message_path = session_log_dir.join(format!("{session_id}.last.txt"));
+
+        // Prepend the agent persona (if any) to the prompt — codex has no
+        // `--agent` flag.
+        let prompt = build_prompt(request.agent_file.as_deref(), &request.prompt, &request.project);
+
+        let args = build_codex_argv(model, effort, request.access, &last_message_path, &prompt);
+
+        Invocation {
+            args,
+            env: vec![],
+            last_message_path: Some(last_message_path),
+        }
+    }
+
+    fn interpret<'a>(
+        &'a self,
+        outcome: &'a AgentStreamOutcome,
+        inv: &'a Invocation,
+        _request: &'a AgentRequest,
+        _shell: &'a Arc<dyn ShellGateway>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Interpreted> + Send + 'a>> {
+        Box::pin(async move {
+            let failed_event = has_failure_event(&outcome.lines);
+            let success = outcome.success && !failed_event;
+
+            // Authoritative result: the `-o` last-message file. Fall back
+            // to the last `agent_message` event in the stream.
+            let stdout = if let Some(ref p) = inv.last_message_path {
+                read_last_message(p)
+                    .await
+                    .unwrap_or_else(|| extract_agent_message(&outcome.lines))
+            } else {
+                extract_agent_message(&outcome.lines)
+            };
+
+            let exit_code = if outcome.success && failed_event {
+                1
+            } else {
+                outcome.exit_code
+            };
+
+            // Best-effort cleanup of the transient last-message file.
+            if let Some(ref p) = inv.last_message_path {
+                let _ = tokio::fs::remove_file(p).await;
+            }
+
+            Interpreted {
+                success,
+                exit_code,
+                stdout,
+            }
+        })
+    }
+}
 
 /// Production [`AgentGateway`] that invokes the `codex` CLI and emits
 /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events.
-pub struct CodexAgentGateway {
-    /// Retained for constructor symmetry with the other gateways; `codex`
-    /// reads its authoritative result from the `-o` output file, so no
-    /// post-run shell call is needed.
-    #[allow(dead_code)]
-    shell: Arc<dyn ShellGateway>,
-    stream_runner: Arc<dyn AgentStreamRunner>,
-    session_log_dir: PathBuf,
-    event_tx: broadcast::Sender<Event>,
-    /// Resolved tier→model and effort→`model_reasoning_effort` maps for codex.
-    models: ProviderModels,
-}
+pub struct CodexAgentGateway(CliAgentGateway<CodexAdapter>);
 
 impl CodexAgentGateway {
     /// Backwards-compatible constructor: default session log dir, default stream
@@ -85,20 +156,19 @@ impl CodexAgentGateway {
         session_log_dir: PathBuf,
         event_tx: broadcast::Sender<Event>,
     ) -> Self {
-        Self {
+        Self(CliAgentGateway::new_with_adapter(
             shell,
             stream_runner,
             session_log_dir,
             event_tx,
-            models: ProviderModels::default_for(AgentProvider::Codex),
-        }
+            CodexAdapter,
+        ))
     }
 
     /// Override the resolved tier/effort maps (from the agent config).
     #[must_use]
-    pub fn with_models(mut self, models: ProviderModels) -> Self {
-        self.models = models;
-        self
+    pub fn with_models(self, models: ProviderModels) -> Self {
+        Self(self.0.with_models(models))
     }
 }
 
@@ -107,81 +177,7 @@ impl AgentGateway for CodexAgentGateway {
         &'a self,
         request: &'a AgentRequest,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
-        Box::pin(async move {
-            let session_id = Uuid::new_v4().to_string();
-            let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
-            let last_message_path = self.session_log_dir.join(format!("{session_id}.last.txt"));
-
-            let model = self.models.model(request.tier, AgentProvider::Codex);
-            let effort = self.models.effort_token(request.effort, AgentProvider::Codex);
-
-            // Prepend the agent persona (if any) to the prompt — codex has no
-            // `--agent` flag.
-            let prompt =
-                build_prompt(request.agent_file.as_deref(), &request.prompt, &request.project);
-
-            let args =
-                build_codex_argv(&model, &effort, request.access, &last_message_path, &prompt);
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-
-            super::emit_session_started(&self.event_tx, request, &session_id, "codex", &log_path)?;
-
-            let outcome = self
-                .stream_runner
-                .run(
-                    &request.working_dir,
-                    "codex",
-                    &arg_refs,
-                    None,
-                    Some(request.timeout),
-                    &log_path,
-                )
-                .await;
-
-            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text) = match outcome {
-                Ok(o) => {
-                    let failed_event = has_failure_event(&o.lines);
-                    let success = o.success && !failed_event;
-
-                    // Authoritative result: the `-o` last-message file. Fall back
-                    // to the last `agent_message` event in the stream.
-                    let stdout_text = read_last_message(&last_message_path)
-                        .await
-                        .unwrap_or_else(|| extract_agent_message(&o.lines));
-
-                    let status = if success { "ok" } else { "agent_failed" };
-                    let exit_code = if o.success && failed_event {
-                        1
-                    } else {
-                        o.exit_code
-                    };
-                    (status, Some(exit_code), o.stderr, o.bytes_written, None, stdout_text)
-                }
-                Err(e) => {
-                    ("unavailable", None, String::new(), 0u64, Some(e.to_string()), String::new())
-                }
-            };
-
-            // Best-effort cleanup of the transient last-message file.
-            let _ = tokio::fs::remove_file(&last_message_path).await;
-
-            super::emit_session_ended(
-                &self.event_tx,
-                &request.project,
-                &session_id,
-                status,
-                exit_code,
-                bytes_written,
-                error_msg,
-            )?;
-
-            Ok(AgentResponse {
-                stdout: stdout_text,
-                stderr,
-                exit_code: exit_code.unwrap_or(-1),
-                success: status == "ok",
-            })
-        })
+        self.0.invoke(request)
     }
 }
 
@@ -300,6 +296,7 @@ mod tests {
     use crate::gateway::{ModelTier, ReasoningEffort};
     use foundry_sdk::event::EventType;
     use std::path::Path;
+    use uuid::Uuid;
 
     fn line(s: &str) -> StreamedLine {
         StreamedLine { raw: s.to_string() }
