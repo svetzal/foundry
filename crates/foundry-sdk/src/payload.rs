@@ -1078,6 +1078,11 @@ pub struct SupplyChainFinding {
     /// Installed version of the vulnerable package, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Earliest version that resolves the advisory, when the scanner reports
+    /// one. `Some` → mechanically fixable (the remediation block can act);
+    /// `None` → no fix available, a human policy call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_version: Option<String>,
 }
 
 /// An advisory that the repo's `.supply-chain-allow.json` spoke to — either an
@@ -1132,6 +1137,40 @@ pub struct SupplyChainScannedPayload {
     /// Number of projects with at least one live finding.
     #[serde(default)]
     pub affected_project_count: u64,
+}
+
+/// Payload for `SupplyChainRemediated` — the formation's mid-chain remediation
+/// event, sitting between the scan and the digest.
+///
+/// In the current (non-mutating) increment the remediation block is a *triage
+/// classifier*: it carries every project's scan through verbatim and adds a
+/// fixable-vs-policy-call split derived from each finding's `fix_version`.
+/// `remediated_count` is the number of findings actually auto-fixed and is `0`
+/// until the mutating half lands behind its env gate.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SupplyChainRemediatedPayload {
+    /// Per-project scan outcomes, carried through from `SupplyChainScanned` so
+    /// the digest can render its findings/lapsed/accepted/not-scanned sections.
+    #[serde(default)]
+    pub projects: Vec<ProjectSupplyChainScan>,
+    /// Number of projects scanned.
+    #[serde(default)]
+    pub project_count: u64,
+    /// Total live findings across all projects.
+    #[serde(default)]
+    pub finding_count: u64,
+    /// Number of projects with at least one live finding.
+    #[serde(default)]
+    pub affected_project_count: u64,
+    /// Live findings carrying a fix version (mechanically auto-fixable).
+    #[serde(default)]
+    pub fixable_count: u64,
+    /// Live findings with no fix version (a human policy call).
+    #[serde(default)]
+    pub no_fix_count: u64,
+    /// Findings actually auto-fixed this run. `0` until the mutating half lands.
+    #[serde(default)]
+    pub remediated_count: u64,
 }
 
 /// Payload for `SupplyChainScanCompleted` — the formation's terminal event.

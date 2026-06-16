@@ -438,6 +438,10 @@ pub enum EventType {
     /// committed `.supply-chain-allow.json`. Retained as a specific past participle
     /// (like `VulnerabilityDetected`) because "Scanned" adds domain meaning.
     SupplyChainScanned,
+    /// Domain sensing fact: each live finding has been triaged against its fix
+    /// availability (fixable vs policy-call) and any mechanically-safe fixes
+    /// applied. Sits between the scan and the digest. Carries the scan through.
+    SupplyChainRemediated,
     /// Lifecycle end: the supply-chain advisory digest has been written (or skipped).
     SupplyChainScanCompleted,
 
@@ -615,6 +619,7 @@ mod tests {
             (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
+            (EventType::SupplyChainRemediated, "supply_chain_remediated"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
@@ -691,6 +696,7 @@ mod tests {
             (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
+            (EventType::SupplyChainRemediated, "supply_chain_remediated"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),

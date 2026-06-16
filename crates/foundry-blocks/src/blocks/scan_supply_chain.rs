@@ -90,6 +90,7 @@ async fn scan_all(
                     package: vuln.package,
                     severity: vuln.severity,
                     version: vuln.version,
+                    fix_version: vuln.fix_version,
                 }),
                 AllowDecision::Active { reason } => suppressed.push(SuppressedFinding {
                     cve,
@@ -105,6 +106,7 @@ async fn scan_all(
                         package: vuln.package,
                         severity: vuln.severity,
                         version: vuln.version,
+                        fix_version: vuln.fix_version,
                     });
                     suppressed.push(SuppressedFinding {
                         cve,
@@ -179,6 +181,7 @@ mod tests {
             severity: Some("high".to_string()),
             package: "vulnerable-pkg".to_string(),
             version: Some("0.1.0".to_string()),
+            fix_version: None,
         }
     }
 
@@ -325,6 +328,7 @@ mod tests {
             severity: Some("high".to_string()),
             package: "mystery".to_string(),
             version: None,
+            fix_version: None,
         }]);
         let block = ScanSupplyChain::with_gateways(registry, scanner);
 

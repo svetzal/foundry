@@ -148,6 +148,7 @@ mod tests {
             severity: Some("high".to_string()),
             package: "some-crate".to_string(),
             version: Some("0.1.0".to_string()),
+            fix_version: None,
         }];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
         let block = ScanDependencies::with_gateways(registry, scanner);
@@ -177,12 +178,14 @@ mod tests {
                 severity: Some("high".to_string()),
                 package: "crate-a".to_string(),
                 version: None,
+                fix_version: None,
             },
             Vulnerability {
                 cve: Some("CVE-2026-0002".to_string()),
                 severity: Some("medium".to_string()),
                 package: "crate-b".to_string(),
                 version: None,
+                fix_version: None,
             },
         ];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);

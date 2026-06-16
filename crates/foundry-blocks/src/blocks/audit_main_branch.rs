@@ -176,6 +176,7 @@ mod tests {
             severity: Some("high".to_string()),
             package: "vulnerable-crate".to_string(),
             version: None,
+            fix_version: None,
         }]);
         let block = AuditMainBranch::with_gateways(registry, scanner);
 

@@ -1,6 +1,6 @@
 //! `WriteSupplyChainDigest` — terminal block of the supply-chain formation.
 //!
-//! Sinks on `SupplyChainScanned`. Renders a *deterministic* advisory digest
+//! Sinks on `SupplyChainRemediated`. Renders a *deterministic* advisory digest
 //! (no agent — CVE identifiers must never be paraphrased or hallucinated) and
 //! atomically writes it to `{supply_chain_dir}/{YYYY-MM-DD}.md`. On a dry-run
 //! firing neither the file is written nor a path returned; the chain still
@@ -12,7 +12,7 @@ use std::pin::Pin;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    ProjectSupplyChainScan, SupplyChainScanCompletedPayload, SupplyChainScannedPayload,
+    ProjectSupplyChainScan, SupplyChainRemediatedPayload, SupplyChainScanCompletedPayload,
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
@@ -36,7 +36,7 @@ impl TaskBlock for WriteSupplyChainDigest {
     task_block_meta! {
         name: "Write Supply Chain Digest",
         kind: Observer,
-        sinks_on: [SupplyChainScanned],
+        sinks_on: [SupplyChainRemediated],
     }
 
     fn execute(
@@ -44,7 +44,7 @@ impl TaskBlock for WriteSupplyChainDigest {
         trigger: &Event,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
     {
-        let p = parse_payload!(trigger, SupplyChainScannedPayload);
+        let p = parse_payload!(trigger, SupplyChainRemediatedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let dir = self.supply_chain_dir.clone();
@@ -56,7 +56,7 @@ impl TaskBlock for WriteSupplyChainDigest {
 fn write(
     project: &str,
     throttle: Throttle,
-    scan: &SupplyChainScannedPayload,
+    scan: &SupplyChainRemediatedPayload,
     dir: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
     let (date, intended_path) = super::today_dated_path(dir);
@@ -128,7 +128,7 @@ fn write(
 }
 
 /// Render the deterministic advisory digest markdown.
-fn render_document(date: &str, scan: &SupplyChainScannedPayload) -> String {
+fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
     let mut out = String::with_capacity(512);
     writeln!(out, "# Supply-Chain Advisory Scan — {date}\n").expect("write to String never fails");
     writeln!(
@@ -144,6 +144,21 @@ fn render_document(date: &str, scan: &SupplyChainScannedPayload) -> String {
 
     if scan.finding_count == 0 {
         writeln!(out, "No live supply-chain advisories. ✅\n").expect("write never fails");
+    } else {
+        // Triage split: which findings carry a fix (mechanically auto-fixable)
+        // vs need a human exploitability judgement (no fix available).
+        writeln!(
+            out,
+            "_Triage: **{fixable} auto-fixable** · **{nofix} policy-call**{remediated}._\n",
+            fixable = scan.fixable_count,
+            nofix = scan.no_fix_count,
+            remediated = if scan.remediated_count > 0 {
+                format!(" · {} auto-fixed this run", scan.remediated_count)
+            } else {
+                String::new()
+            },
+        )
+        .expect("write never fails");
     }
 
     // Live findings — one section per affected project.
@@ -229,16 +244,17 @@ fn render_document(date: &str, scan: &SupplyChainScannedPayload) -> String {
 /// Render one project's live-findings table.
 fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
     writeln!(out, "### {} ({})\n", proj.project, proj.stack).expect("write never fails");
-    writeln!(out, "| Advisory | Package | Severity | Version |").expect("write never fails");
-    writeln!(out, "|----------|---------|----------|---------|").expect("write never fails");
+    writeln!(out, "| Advisory | Package | Severity | Version | Fix |").expect("write never fails");
+    writeln!(out, "|----------|---------|----------|---------|-----|").expect("write never fails");
     for f in &proj.findings {
         writeln!(
             out,
-            "| `{cve}` | {package} | {severity} | {version} |",
+            "| `{cve}` | {package} | {severity} | {version} | {fix} |",
             cve = f.cve,
             package = f.package,
             severity = f.severity.as_deref().unwrap_or("—"),
             version = f.version.as_deref().unwrap_or("—"),
+            fix = f.fix_version.as_deref().unwrap_or("policy call"),
         )
         .expect("write never fails");
     }
@@ -261,6 +277,14 @@ mod tests {
             package: "vulnerable-pkg".to_string(),
             severity: Some("high".to_string()),
             version: Some("0.1.0".to_string()),
+            fix_version: Some("0.2.0".to_string()),
+        }
+    }
+
+    fn policy_call_finding(cve: &str) -> SupplyChainFinding {
+        SupplyChainFinding {
+            fix_version: None,
+            ..finding(cve)
         }
     }
 
@@ -277,20 +301,28 @@ mod tests {
         }
     }
 
-    fn payload(projects: Vec<ProjectSupplyChainScan>) -> SupplyChainScannedPayload {
+    fn payload(projects: Vec<ProjectSupplyChainScan>) -> SupplyChainRemediatedPayload {
         let finding_count: u64 = projects.iter().map(|p| p.findings.len() as u64).sum();
         let affected = projects.iter().filter(|p| !p.findings.is_empty()).count() as u64;
-        SupplyChainScannedPayload {
+        let fixable_count: u64 = projects
+            .iter()
+            .flat_map(|p| &p.findings)
+            .filter(|f| f.fix_version.is_some())
+            .count() as u64;
+        SupplyChainRemediatedPayload {
             project_count: projects.len() as u64,
             finding_count,
             affected_project_count: affected,
+            fixable_count,
+            no_fix_count: finding_count - fixable_count,
+            remediated_count: 0,
             projects,
         }
     }
 
-    fn trigger(p: &SupplyChainScannedPayload, throttle: Throttle) -> Event {
+    fn trigger(p: &SupplyChainRemediatedPayload, throttle: Throttle) -> Event {
         Event::new(
-            EventType::SupplyChainScanned,
+            EventType::SupplyChainRemediated,
             "system".to_string(),
             throttle,
             serde_json::to_value(p).unwrap(),
@@ -322,6 +354,26 @@ mod tests {
         assert!(doc.contains("`CVE-2026-1234`"));
         assert!(doc.contains("vulnerable-pkg"));
         assert!(doc.contains("1 live finding "), "singular noun for one finding");
+        assert!(
+            doc.contains("| Advisory | Package | Severity | Version | Fix |"),
+            "fix column header"
+        );
+        assert!(doc.contains("| 0.2.0 |"), "fixable finding shows its fix version");
+    }
+
+    #[test]
+    fn render_triage_split_and_policy_call_marker() {
+        let p = payload(vec![project_with_findings(
+            "alpha",
+            vec![finding("CVE-1"), policy_call_finding("CVE-2")],
+        )]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(
+            doc.contains("**1 auto-fixable** · **1 policy-call**"),
+            "triage line splits fixable from policy-call"
+        );
+        assert!(doc.contains("| policy call |"), "no-fix finding marked as a policy call");
+        assert!(!doc.contains("auto-fixed this run"), "nothing applied by the classifier");
     }
 
     #[test]

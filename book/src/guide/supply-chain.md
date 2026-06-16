@@ -30,14 +30,23 @@ changed.
 
 ```
 nightly-supply-chain sentinel  →  SupplyChainScanStarted
-        →  ScanSupplyChain      →  SupplyChainScanned
-        →  WriteSupplyChainDigest →  SupplyChainScanCompleted
+        →  ScanSupplyChain        →  SupplyChainScanned
+        →  RemediateSupplyChain    →  SupplyChainRemediated
+        →  WriteSupplyChainDigest  →  SupplyChainScanCompleted
 ```
 
 - **`ScanSupplyChain`** iterates every active registry project, runs the
   stack's audit tool (`cargo audit`, `npm audit`, `pip-audit`, `mix
   deps.audit`) against the working-tree lockfile, classifies each advisory
   against that repo's committed allowlist, and emits `SupplyChainScanned`.
+  Each finding carries a **fix version** when the audit tool reports one.
+- **`RemediateSupplyChain`** triages every live finding by fix availability and
+  emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
+  version means the advisory is mechanically **auto-fixable**; an *empty* one
+  means a **policy call** — an exploitability judgement about our usage that
+  stays human. (The actual auto-fix engine — in-range bump and override-pin
+  manifest rewrite with gate-verify-and-rollback — ships dark behind an env gate
+  in a later increment; today this block only classifies and never mutates.)
 - **`WriteSupplyChainDigest`** renders a *deterministic* markdown digest (no
   agent — CVE identifiers must never be paraphrased or hallucinated) and writes
   it atomically to `{FOUNDRY_SUPPLY_CHAIN_DIR}/{YYYY-MM-DD}.md`. Dry-run skips
@@ -82,11 +91,14 @@ resurfaces rather than hiding.
 
 ## The digest
 
-The digest groups findings into sections: **Live findings** (a per-project CVE /
-package / severity / version table), **Lapsed acceptances** (now live, need a
-fresh decision), **Accepted** (active allowlist entries, for transparency), and
-**Not scanned** (projects whose audit tool was unavailable or had no lockfile —
-reported, never failed). A clean scan reads "No live supply-chain advisories."
+The digest opens with a **triage line** — `N auto-fixable · M policy-call` —
+splitting the live findings by fix availability. It then groups findings into
+sections: **Live findings** (a per-project CVE / package / severity / version /
+**fix** table, where the fix column shows the resolving version or `policy
+call`), **Lapsed acceptances** (now live, need a fresh decision), **Accepted**
+(active allowlist entries, for transparency), and **Not scanned** (projects
+whose audit tool was unavailable or had no lockfile — reported, never failed). A
+clean scan reads "No live supply-chain advisories."
 
 ## Environment variables
 

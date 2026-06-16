@@ -138,11 +138,20 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
                 .map(cvss_to_severity)
                 .map(str::to_owned);
 
+            // `versions.patched` is a list of version requirements that resolve
+            // the advisory (e.g. `[">= 0.2.5"]`). The first, reduced to a bare
+            // version, is the fix target.
+            let fix_version = item["versions"]["patched"]
+                .as_array()
+                .and_then(|reqs| reqs.iter().find_map(|r| r.as_str()))
+                .and_then(bare_version);
+
             Vulnerability {
                 cve,
                 severity,
                 package,
                 version,
+                fix_version,
             }
         })
         .collect();
@@ -151,6 +160,18 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
     }
+}
+
+/// Reduce a version requirement (`">= 0.2.5"`, `"^1.2.3"`, `"0.2.5, < 0.3"`) to
+/// a bare `major.minor.patch` token (`"0.2.5"`, `"1.2.3"`). Returns `None` when
+/// the string carries no version-like token. Prerelease/build metadata is
+/// dropped — adequate for the fixable-vs-no-fix triage anchor; precise pinning
+/// is the remediation block's concern.
+fn bare_version(req: &str) -> Option<String> {
+    let start = req.find(|c: char| c.is_ascii_digit())?;
+    let rest = &req[start..];
+    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 /// Map a CVSS v3 numeric score to a named severity tier.
@@ -211,11 +232,17 @@ fn parse_npm_audit(output: &str) -> AuditResult {
                 .and_then(|arr| arr.iter().find_map(|v| v.as_str()))
                 .map(str::to_owned);
 
+            // `fixAvailable` is `false` (no fix), `true` (a fix exists but npm
+            // gives no version at this node), or an object `{name, version, …}`.
+            // Only the object form yields a precise fix version.
+            let fix_version = entry["fixAvailable"]["version"].as_str().and_then(bare_version);
+
             Vulnerability {
                 cve,
                 severity,
                 package,
                 version: None,
+                fix_version,
             }
         })
         .collect();
@@ -256,22 +283,33 @@ fn parse_generic_audit(output: &str) -> AuditResult {
             for vuln in vulns {
                 let cve = vuln["id"].as_str().map(str::to_owned);
                 let severity = vuln["severity"].as_str().map(str::to_owned);
+                // pip-audit lists resolving versions under "fix_versions".
+                let fix_version = vuln["fix_versions"]
+                    .as_array()
+                    .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
+                    .and_then(bare_version);
                 vulnerabilities.push(Vulnerability {
                     cve,
                     severity,
                     package: package.clone(),
                     version: version.clone(),
+                    fix_version,
                 });
             }
         } else {
             // Flat object — treat the whole item as one vulnerability.
             let cve = item["id"].as_str().or_else(|| item["cve"].as_str()).map(str::to_owned);
             let severity = item["severity"].as_str().map(str::to_owned);
+            let fix_version = item["fix_versions"]
+                .as_array()
+                .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
+                .and_then(bare_version);
             vulnerabilities.push(Vulnerability {
                 cve,
                 severity,
                 package,
                 version,
+                fix_version,
             });
         }
     }
@@ -348,6 +386,10 @@ mod tests {
                 "package": "some-crate",
                 "cvss": "7.5"
               },
+              "versions": {
+                "patched": [">= 0.2.5"],
+                "unaffected": []
+              },
               "package": {
                 "name": "some-crate",
                 "version": "0.1.0"
@@ -365,6 +407,11 @@ mod tests {
         assert_eq!(vuln.package, "some-crate");
         assert_eq!(vuln.version.as_deref(), Some("0.1.0"));
         assert_eq!(vuln.severity.as_deref(), Some("high")); // 7.5 → high
+        assert_eq!(
+            vuln.fix_version.as_deref(),
+            Some("0.2.5"),
+            "patched req reduced to bare version"
+        );
     }
 
     #[test]
@@ -414,7 +461,8 @@ mod tests {
               "severity": "high",
               "via": ["CVE-2021-23337"],
               "range": ">=0.0.1",
-              "nodes": ["node_modules/lodash"]
+              "nodes": ["node_modules/lodash"],
+              "fixAvailable": {"name": "lodash", "version": "4.17.21", "isSemVerMajor": false}
             }
           }
         }"#;
@@ -427,6 +475,31 @@ mod tests {
         assert_eq!(vuln.package, "lodash");
         assert_eq!(vuln.severity.as_deref(), Some("high"));
         assert_eq!(vuln.cve.as_deref(), Some("CVE-2021-23337"));
+        assert_eq!(
+            vuln.fix_version.as_deref(),
+            Some("4.17.21"),
+            "fixAvailable.version → fix_version"
+        );
+    }
+
+    #[test]
+    fn parse_npm_audit_bare_fix_available_has_no_version() {
+        // `fixAvailable: true` means a fix exists but npm gives no version at
+        // this node — conservatively classified as no-precise-fix.
+        let json = r#"
+        {
+          "vulnerabilities": {
+            "transitive": {
+              "name": "transitive",
+              "severity": "moderate",
+              "via": ["CVE-2024-0001"],
+              "fixAvailable": true
+            }
+          }
+        }"#;
+        let result = parse_npm_audit(json);
+        assert_eq!(result.vulnerabilities.len(), 1);
+        assert!(result.vulnerabilities[0].fix_version.is_none());
     }
 
     #[test]
@@ -488,6 +561,20 @@ mod tests {
         assert_eq!(vuln.package, "requests");
         assert_eq!(vuln.version.as_deref(), Some("2.25.1"));
         assert_eq!(vuln.cve.as_deref(), Some("CVE-2023-32681"));
+        assert_eq!(vuln.fix_version.as_deref(), Some("2.31.0"), "first fix_versions entry");
+    }
+
+    // --- bare_version reduction ---
+
+    #[test]
+    fn bare_version_strips_comparators_and_ranges() {
+        assert_eq!(bare_version(">= 0.2.5").as_deref(), Some("0.2.5"));
+        assert_eq!(bare_version("^0.28.1").as_deref(), Some("0.28.1"));
+        assert_eq!(bare_version("0.2.5, < 0.3").as_deref(), Some("0.2.5"));
+        assert_eq!(bare_version("4.17.21").as_deref(), Some("4.17.21"));
+        assert_eq!(bare_version("1.2.3-rc1").as_deref(), Some("1.2.3"), "prerelease dropped");
+        assert_eq!(bare_version("not a version"), None);
+        assert_eq!(bare_version(""), None);
     }
 
     #[test]

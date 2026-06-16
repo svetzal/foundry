@@ -492,6 +492,7 @@ mod tests {
             severity: Some("high".to_string()),
             package: "bad-crate".to_string(),
             version: None,
+            fix_version: None,
         }]);
         let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
 

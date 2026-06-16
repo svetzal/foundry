@@ -62,6 +62,12 @@ pub struct Vulnerability {
     pub package: String,
     /// The installed version of the affected package (when available).
     pub version: Option<String>,
+    /// The earliest version that resolves the advisory, when the audit tool
+    /// reports one. `Some` means a fix exists (mechanically auto-fixable);
+    /// `None` means no fix is available yet (a human policy call). This is the
+    /// triage anchor the remediation block branches on.
+    #[serde(default)]
+    pub fix_version: Option<String>,
 }
 
 /// The aggregated result of running an audit scan.

@@ -462,6 +462,10 @@ fn register_blocks(
     // findings against each repo's committed `.supply-chain-allow.json`, and writes a
     // deterministic digest. Never mutates a working tree or fails a project run.
     engine.register(Box::new(foundry_blocks::blocks::ScanSupplyChain::new(registry.clone())));
+    // Remediation triage sits between the scan and the digest: it classifies each
+    // live finding as auto-fixable (a populated fix version) vs a policy call.
+    // Non-mutating today; the auto-fix engine ships dark in a later increment.
+    engine.register(Box::new(foundry_blocks::blocks::RemediateSupplyChain));
     engine
         .register(Box::new(foundry_blocks::blocks::WriteSupplyChainDigest::new(supply_chain_dir)));
     engine

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-06-16
+
+### Added
+
+- **Supply-chain remediation triage (EXP-003 Phase 2, Slice 2 — non-mutating
+  first increment).** A new `RemediateSupplyChain` block is inserted into the
+  supply-chain formation between the scan and the digest, with a new mid-chain
+  event `SupplyChainRemediated`. It triages every live finding by *fix
+  availability*: a populated fix version → mechanically **auto-fixable**; an
+  empty one → a **policy call** (an exploitability judgement about our usage that
+  stays human). The chain is now `SupplyChainScanStarted → ScanSupplyChain →
+  SupplyChainScanned → RemediateSupplyChain → SupplyChainRemediated →
+  WriteSupplyChainDigest → SupplyChainScanCompleted`.
+- **Scanner fix-version enrichment.** `Vulnerability` and `SupplyChainFinding`
+  now carry an optional `fix_version`, populated from each tool's output
+  (`cargo audit` `versions.patched`, `npm audit` `fixAvailable.version`,
+  `pip-audit` `fix_versions`). A `bare_version` helper reduces version
+  requirements (`">= 0.2.5"`, `"^0.28.1"`) to bare versions. Unknown fix
+  versions fail safe to `None` (classified as a policy call, surfaced — never
+  silently auto-fixed).
+- **Digest triage surface.** The digest now opens with a `N auto-fixable · M
+  policy-call` triage line and the per-project findings table gains a **Fix**
+  column (resolving version, or `policy call`).
+
+### Notes
+
+- This increment is **advisory and non-mutating** — `RemediateSupplyChain`
+  classifies only. The auto-fix engine (in-range bump; override-pin manifest
+  rewrite with gate-verify-and-rollback; no-fix policy surface) lands in a later
+  increment behind an explicit env gate, inert until enabled even under `Full`
+  throttle. `remediated_count` is always `0` today.
+
 ## [0.24.0] - 2026-06-16
 
 ### Fixed
