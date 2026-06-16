@@ -424,6 +424,17 @@ pub enum EventType {
     /// Carries `MaintenanceTriageCompletedPayload` with classified verdicts and infra incidents.
     MaintenanceTriageCompleted,
 
+    // Supply-chain scan formation (nightly working-tree dependency advisory scan)
+    /// Cycle-root emitted by the `nightly-supply-chain` sentinel.
+    SupplyChainScanStarted,
+    /// Domain sensing fact: every managed project's working tree has been scanned
+    /// for dependency advisories and each finding classified against that repo's
+    /// committed `.supply-chain-allow.json`. Retained as a specific past participle
+    /// (like `VulnerabilityDetected`) because "Scanned" adds domain meaning.
+    SupplyChainScanned,
+    /// Lifecycle end: the supply-chain advisory digest has been written (or skipped).
+    SupplyChainScanCompleted,
+
     // Hello-world workflow (validates engine mechanics)
     GreetingRequested,
     GreetingComposed,
@@ -477,6 +488,7 @@ impl EventType {
                 | EventType::MaintenanceSummaryRequested
                 | EventType::CommitDigestStarted
                 | EventType::OpsDigestStarted
+                | EventType::SupplyChainScanStarted
         )
     }
 }
@@ -593,6 +605,10 @@ mod tests {
             (EventType::OpsObserved, "ops_observed"),
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
+            (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
+            (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
+            (EventType::SupplyChainScanned, "supply_chain_scanned"),
+            (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -664,6 +680,10 @@ mod tests {
             (EventType::OpsObserved, "ops_observed"),
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
+            (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
+            (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
+            (EventType::SupplyChainScanned, "supply_chain_scanned"),
+            (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),

@@ -9,6 +9,7 @@ pub mod registry;
 pub mod scatter;
 pub mod sentinel;
 pub mod span_context;
+pub mod supply_chain;
 pub mod task_block;
 pub mod throttle;
 pub mod trace;

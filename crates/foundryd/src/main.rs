@@ -68,6 +68,7 @@ async fn main() -> Result<()> {
     let ops_events_intake_dir = foundry_sdk::paths::ops_events_intake_dir();
     let ops_watermark_path = foundry_sdk::paths::ops_watermark_path();
     let triage_dir = foundry_sdk::paths::triage_dir();
+    let supply_chain_dir = foundry_sdk::paths::supply_chain_dir();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
 
@@ -83,6 +84,7 @@ async fn main() -> Result<()> {
             ops_events_intake_dir,
             ops_watermark_path,
             triage_dir,
+            supply_chain_dir,
         },
     );
 
@@ -237,6 +239,7 @@ struct BlockPaths {
     ops_events_intake_dir: std::path::PathBuf,
     ops_watermark_path: std::path::PathBuf,
     triage_dir: std::path::PathBuf,
+    supply_chain_dir: std::path::PathBuf,
 }
 
 // Sequential block registration wiring — length is inherent, not a design smell.
@@ -255,6 +258,7 @@ fn register_blocks(
         ops_events_intake_dir,
         ops_watermark_path,
         triage_dir,
+        supply_chain_dir,
     } = paths;
     let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
@@ -453,5 +457,12 @@ fn register_blocks(
         events_dir, 14, // 14-day streak lookback
     )));
     engine.register(Box::new(foundry_blocks::blocks::WriteTriageDigest::new(triage_dir)));
+    // Supply-chain scan formation (nightly working-tree dependency advisory scan).
+    // Detection-only and advisory: scans every active project's lockfile, classifies
+    // findings against each repo's committed `.supply-chain-allow.json`, and writes a
+    // deterministic digest. Never mutates a working tree or fails a project run.
+    engine.register(Box::new(foundry_blocks::blocks::ScanSupplyChain::new(registry.clone())));
+    engine
+        .register(Box::new(foundry_blocks::blocks::WriteSupplyChainDigest::new(supply_chain_dir)));
     engine
 }

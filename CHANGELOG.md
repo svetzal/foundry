@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Supply-chain scan formation (nightly, working-tree, advisory).** A new
+  `nightly-supply-chain` canonical sentinel (06:00 local, enabled by default)
+  emits `SupplyChainScanStarted`, driving a two-block formation that scans every
+  active project's working-tree lockfile for dependency advisories. This is the
+  *detection* lane the release-tag `ReleaseTagAudited` audit does not cover —
+  it scans what is checked out now, on a schedule, independent of whether code
+  changed. `ScanSupplyChain` runs each stack's audit tool (`cargo audit`,
+  `npm audit`, `pip-audit`, `mix deps.audit`), classifies each advisory against
+  that repo's committed `.supply-chain-allow.json`, and emits `SupplyChainScanned`.
+  `WriteSupplyChainDigest` renders a *deterministic* (no-agent) markdown digest
+  to `{FOUNDRY_SUPPLY_CHAIN_DIR}/{YYYY-MM-DD}.md` and emits
+  `SupplyChainScanCompleted`. The formation is advisory and read-only: it never
+  mutates a working tree and never fails a project run — a supply-chain advisory
+  is an external, time-triggered fact, not a regression in the project's code.
+- **Committed per-repo supply-chain allowlist (`.supply-chain-allow.json`).** A
+  neutral artifact Foundry reads (never writes) giving the supply-chain function
+  the memory a stateless gate lacks: an accepted-advisory record with an
+  `expires` date. An active acceptance suppresses the advisory; a lapsed one
+  resurfaces it as a live finding for re-decision. Acceptances are authored by a
+  human and land through the repo's normal commit flow, so each decision lives
+  in git history. Read via `foundry_sdk::supply_chain`.
+- New event types `SupplyChainScanStarted`, `SupplyChainScanned`,
+  `SupplyChainScanCompleted`; path helper `supply_chain_dir()` with
+  `FOUNDRY_SUPPLY_CHAIN_DIR` override.
+
 ## [0.22.0] - 2026-06-12
 
 ### Added

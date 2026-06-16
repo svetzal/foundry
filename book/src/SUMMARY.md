@@ -25,6 +25,7 @@
 - [Commit Digest](guide/commit-digest.md)
 - [Ops Digest](guide/ops-digest.md)
 - [Maintenance Triage](guide/maintenance-triage.md)
+- [Supply-Chain Scan](guide/supply-chain.md)
 - [Throttle Control](guide/throttle.md)
 - [Writing Task Blocks](guide/writing-task-blocks.md)
 

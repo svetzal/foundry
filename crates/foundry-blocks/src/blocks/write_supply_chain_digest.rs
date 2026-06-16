@@ -1,0 +1,419 @@
+//! `WriteSupplyChainDigest` — terminal block of the supply-chain formation.
+//!
+//! Sinks on `SupplyChainScanned`. Renders a *deterministic* advisory digest
+//! (no agent — CVE identifiers must never be paraphrased or hallucinated) and
+//! atomically writes it to `{supply_chain_dir}/{YYYY-MM-DD}.md`. On a dry-run
+//! firing neither the file is written nor a path returned; the chain still
+//! terminates cleanly.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{
+    ProjectSupplyChainScan, SupplyChainScanCompletedPayload, SupplyChainScannedPayload,
+};
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
+
+use super::emit_result;
+
+/// Writes the rendered supply-chain advisory digest and emits the terminal event.
+pub struct WriteSupplyChainDigest {
+    supply_chain_dir: PathBuf,
+}
+
+impl WriteSupplyChainDigest {
+    pub fn new<P: Into<PathBuf>>(supply_chain_dir: P) -> Self {
+        Self {
+            supply_chain_dir: supply_chain_dir.into(),
+        }
+    }
+}
+
+impl TaskBlock for WriteSupplyChainDigest {
+    task_block_meta! {
+        name: "Write Supply Chain Digest",
+        kind: Observer,
+        sinks_on: [SupplyChainScanned],
+    }
+
+    fn execute(
+        &self,
+        trigger: &Event,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+    {
+        let p = parse_payload!(trigger, SupplyChainScannedPayload);
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let dir = self.supply_chain_dir.clone();
+
+        Box::pin(async move { write(&project, throttle, &p, &dir) })
+    }
+}
+
+fn write(
+    project: &str,
+    throttle: Throttle,
+    scan: &SupplyChainScannedPayload,
+    dir: &Path,
+) -> anyhow::Result<TaskBlockResult> {
+    let (date, intended_path) = super::today_dated_path(dir);
+    let rendered = render_document(&date, scan);
+
+    if !throttle.permits_mutation() {
+        tracing::info!(
+            path = %intended_path.display(),
+            bytes = rendered.len(),
+            "dry-run: skipping supply-chain digest write",
+        );
+        return emit_result(
+            format!("dry-run: supply-chain digest not written to {}", intended_path.display()),
+            EventType::SupplyChainScanCompleted,
+            project,
+            throttle,
+            &SupplyChainScanCompletedPayload {
+                success: true,
+                skipped: false,
+                digest_path: None,
+                project_count: scan.project_count,
+                finding_count: scan.finding_count,
+            },
+        );
+    }
+
+    match super::write_atomic(dir, &intended_path, &rendered) {
+        Ok(()) => {
+            tracing::info!(
+                path = %intended_path.display(),
+                bytes = rendered.len(),
+                "supply-chain digest written",
+            );
+            emit_result(
+                format!("Supply-chain digest written to {}", intended_path.display()),
+                EventType::SupplyChainScanCompleted,
+                project,
+                throttle,
+                &SupplyChainScanCompletedPayload {
+                    success: true,
+                    skipped: false,
+                    digest_path: Some(intended_path.to_string_lossy().to_string()),
+                    project_count: scan.project_count,
+                    finding_count: scan.finding_count,
+                },
+            )
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %intended_path.display(),
+                error = %e,
+                "supply-chain digest write failed",
+            );
+            emit_result(
+                format!("failed to write supply-chain digest: {e}"),
+                EventType::SupplyChainScanCompleted,
+                project,
+                throttle,
+                &SupplyChainScanCompletedPayload {
+                    success: false,
+                    skipped: false,
+                    digest_path: None,
+                    project_count: scan.project_count,
+                    finding_count: scan.finding_count,
+                },
+            )
+        }
+    }
+}
+
+/// Render the deterministic advisory digest markdown.
+fn render_document(date: &str, scan: &SupplyChainScannedPayload) -> String {
+    let mut out = String::with_capacity(512);
+    writeln!(out, "# Supply-Chain Advisory Scan — {date}\n").expect("write to String never fails");
+    writeln!(
+        out,
+        "_{findings} live finding{fp} across {affected} of {total} project{tp}._\n",
+        findings = scan.finding_count,
+        fp = plural(scan.finding_count),
+        affected = scan.affected_project_count,
+        total = scan.project_count,
+        tp = plural(scan.project_count),
+    )
+    .expect("write to String never fails");
+
+    if scan.finding_count == 0 {
+        writeln!(out, "No live supply-chain advisories. ✅\n").expect("write never fails");
+    }
+
+    // Live findings — one section per affected project.
+    let affected: Vec<&ProjectSupplyChainScan> =
+        scan.projects.iter().filter(|p| !p.findings.is_empty()).collect();
+    if !affected.is_empty() {
+        writeln!(out, "## Live findings\n").expect("write never fails");
+        for proj in affected {
+            render_project_findings(&mut out, proj);
+        }
+    }
+
+    // Lapsed acceptances — allowlist entries whose expiry has passed.
+    let lapsed: Vec<(&str, &foundry_sdk::payload::SuppressedFinding)> = scan
+        .projects
+        .iter()
+        .flat_map(|p| {
+            p.suppressed
+                .iter()
+                .filter(|s| s.status == "expired")
+                .map(move |s| (p.project.as_str(), s))
+        })
+        .collect();
+    if !lapsed.is_empty() {
+        writeln!(out, "## Lapsed acceptances (now live — re-decide)\n").expect("write never fails");
+        for (project, s) in lapsed {
+            writeln!(
+                out,
+                "- **{project}** · `{cve}` — acceptance expired {expired}: {reason}",
+                cve = s.cve,
+                expired = s.expired_on.as_deref().unwrap_or("?"),
+                reason = s.reason,
+            )
+            .expect("write never fails");
+        }
+        out.push('\n');
+    }
+
+    // Active acceptances — recorded for transparency, collapsed to a count + list.
+    let active: Vec<(&str, &foundry_sdk::payload::SuppressedFinding)> = scan
+        .projects
+        .iter()
+        .flat_map(|p| {
+            p.suppressed
+                .iter()
+                .filter(|s| s.status == "allowlisted")
+                .map(move |s| (p.project.as_str(), s))
+        })
+        .collect();
+    if !active.is_empty() {
+        writeln!(out, "## Accepted (allowlisted)\n").expect("write never fails");
+        for (project, s) in active {
+            writeln!(out, "- **{project}** · `{cve}`: {reason}", cve = s.cve, reason = s.reason)
+                .expect("write never fails");
+        }
+        out.push('\n');
+    }
+
+    // Scan errors — tools unavailable / no lockfile. Reported, never failed.
+    let errored: Vec<&ProjectSupplyChainScan> =
+        scan.projects.iter().filter(|p| p.scan_error.is_some()).collect();
+    if !errored.is_empty() {
+        writeln!(out, "## Not scanned\n").expect("write never fails");
+        for proj in errored {
+            writeln!(
+                out,
+                "- **{project}** ({stack}) — {err}",
+                project = proj.project,
+                stack = proj.stack,
+                err = proj.scan_error.as_deref().unwrap_or("unknown error"),
+            )
+            .expect("write never fails");
+        }
+        out.push('\n');
+    }
+
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Render one project's live-findings table.
+fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
+    writeln!(out, "### {} ({})\n", proj.project, proj.stack).expect("write never fails");
+    writeln!(out, "| Advisory | Package | Severity | Version |").expect("write never fails");
+    writeln!(out, "|----------|---------|----------|---------|").expect("write never fails");
+    for f in &proj.findings {
+        writeln!(
+            out,
+            "| `{cve}` | {package} | {severity} | {version} |",
+            cve = f.cve,
+            package = f.package,
+            severity = f.severity.as_deref().unwrap_or("—"),
+            version = f.version.as_deref().unwrap_or("—"),
+        )
+        .expect("write never fails");
+    }
+    out.push('\n');
+}
+
+const fn plural(n: u64) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use foundry_sdk::payload::{ProjectSupplyChainScan, SupplyChainFinding, SuppressedFinding};
+
+    use super::*;
+
+    fn finding(cve: &str) -> SupplyChainFinding {
+        SupplyChainFinding {
+            cve: cve.to_string(),
+            package: "vulnerable-pkg".to_string(),
+            severity: Some("high".to_string()),
+            version: Some("0.1.0".to_string()),
+        }
+    }
+
+    fn project_with_findings(
+        name: &str,
+        findings: Vec<SupplyChainFinding>,
+    ) -> ProjectSupplyChainScan {
+        ProjectSupplyChainScan {
+            project: name.to_string(),
+            stack: "typescript".to_string(),
+            findings,
+            suppressed: vec![],
+            scan_error: None,
+        }
+    }
+
+    fn payload(projects: Vec<ProjectSupplyChainScan>) -> SupplyChainScannedPayload {
+        let finding_count: u64 = projects.iter().map(|p| p.findings.len() as u64).sum();
+        let affected = projects.iter().filter(|p| !p.findings.is_empty()).count() as u64;
+        SupplyChainScannedPayload {
+            project_count: projects.len() as u64,
+            finding_count,
+            affected_project_count: affected,
+            projects,
+        }
+    }
+
+    fn trigger(p: &SupplyChainScannedPayload, throttle: Throttle) -> Event {
+        Event::new(
+            EventType::SupplyChainScanned,
+            "system".to_string(),
+            throttle,
+            serde_json::to_value(p).unwrap(),
+        )
+    }
+
+    fn today_path(dir: &std::path::Path) -> PathBuf {
+        super::super::today_dated_path(dir).1
+    }
+
+    #[test]
+    fn render_clean_scan_says_no_advisories() {
+        let p = payload(vec![project_with_findings("alpha", vec![])]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(doc.starts_with("# Supply-Chain Advisory Scan — 2026-06-15\n"));
+        assert!(doc.contains("No live supply-chain advisories"));
+        assert!(doc.ends_with('\n'));
+    }
+
+    #[test]
+    fn render_includes_findings_table_with_cve() {
+        let p = payload(vec![project_with_findings(
+            "alpha",
+            vec![finding("CVE-2026-1234")],
+        )]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(doc.contains("## Live findings"));
+        assert!(doc.contains("### alpha (typescript)"));
+        assert!(doc.contains("`CVE-2026-1234`"));
+        assert!(doc.contains("vulnerable-pkg"));
+        assert!(doc.contains("1 live finding "), "singular noun for one finding");
+    }
+
+    #[test]
+    fn render_lapsed_acceptance_section() {
+        let mut proj = project_with_findings("alpha", vec![finding("CVE-2026-1234")]);
+        proj.suppressed = vec![SuppressedFinding {
+            cve: "CVE-2026-1234".to_string(),
+            reason: "was dev only".to_string(),
+            status: "expired".to_string(),
+            expired_on: Some("2020-01-01".to_string()),
+        }];
+        let p = payload(vec![proj]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(doc.contains("## Lapsed acceptances"));
+        assert!(doc.contains("acceptance expired 2020-01-01"));
+    }
+
+    #[test]
+    fn render_accepted_and_not_scanned_sections() {
+        let accepted = ProjectSupplyChainScan {
+            project: "beta".to_string(),
+            stack: "python".to_string(),
+            findings: vec![],
+            suppressed: vec![SuppressedFinding {
+                cve: "CVE-1".to_string(),
+                reason: "not exploitable".to_string(),
+                status: "allowlisted".to_string(),
+                expired_on: None,
+            }],
+            scan_error: None,
+        };
+        let errored = ProjectSupplyChainScan {
+            project: "gamma".to_string(),
+            stack: "rust".to_string(),
+            findings: vec![],
+            suppressed: vec![],
+            scan_error: Some("cargo audit not installed".to_string()),
+        };
+        let p = payload(vec![accepted, errored]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(doc.contains("## Accepted (allowlisted)"));
+        assert!(doc.contains("**beta** · `CVE-1`: not exploitable"));
+        assert!(doc.contains("## Not scanned"));
+        assert!(doc.contains("**gamma** (rust) — cargo audit not installed"));
+    }
+
+    #[tokio::test]
+    async fn dry_run_skips_file_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = WriteSupplyChainDigest::new(dir.path());
+        let p = payload(vec![project_with_findings(
+            "alpha",
+            vec![finding("CVE-2026-1234")],
+        )]);
+        let result = block.execute(&trigger(&p, Throttle::DryRun)).await.unwrap();
+        let out: SupplyChainScanCompletedPayload = result.events[0].parse_payload().unwrap();
+        assert!(out.success);
+        assert!(out.digest_path.is_none());
+        assert!(!today_path(dir.path()).exists(), "dry-run must not write the file");
+    }
+
+    #[tokio::test]
+    async fn full_throttle_writes_dated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = WriteSupplyChainDigest::new(dir.path());
+        let p = payload(vec![project_with_findings(
+            "alpha",
+            vec![finding("CVE-2026-1234")],
+        )]);
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+        let out: SupplyChainScanCompletedPayload = result.events[0].parse_payload().unwrap();
+        assert!(out.success);
+        assert_eq!(out.finding_count, 1);
+        let expected = today_path(dir.path());
+        assert_eq!(out.digest_path.as_deref(), Some(expected.to_string_lossy().as_ref()));
+        let contents = std::fs::read_to_string(&expected).unwrap();
+        assert!(contents.contains("# Supply-Chain Advisory Scan — "));
+        assert!(contents.contains("`CVE-2026-1234`"));
+    }
+
+    #[tokio::test]
+    async fn unwritable_dir_emits_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"i am a file").unwrap();
+        let unwritable = blocker.join("nested");
+        let block = WriteSupplyChainDigest::new(&unwritable);
+        let p = payload(vec![project_with_findings("alpha", vec![finding("CVE-1")])]);
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+        let out: SupplyChainScanCompletedPayload = result.events[0].parse_payload().unwrap();
+        assert!(!out.success);
+        assert!(out.digest_path.is_none());
+        assert!(result.summary.contains("failed to write"));
+    }
+}

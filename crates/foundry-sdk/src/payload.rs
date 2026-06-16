@@ -1061,6 +1061,96 @@ pub struct MaintenanceTriageCompletedPayload {
     pub escalation_count: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Supply-chain scan formation — nightly working-tree dependency advisory scan
+// ---------------------------------------------------------------------------
+
+/// One live advisory finding for a single project's dependency tree.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SupplyChainFinding {
+    /// Advisory identifier (CVE / GHSA / RUSTSEC).
+    pub cve: String,
+    /// The vulnerable package name as reported by the scanner.
+    pub package: String,
+    /// Severity label (`"critical"`, `"high"`, `"medium"`, `"low"`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// Installed version of the vulnerable package, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// An advisory that the repo's `.supply-chain-allow.json` spoke to — either an
+/// active acceptance (suppressed) or a lapsed one (resurfaced, needs a fresh
+/// decision; the advisory also appears in `findings`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SuppressedFinding {
+    /// Advisory identifier the allowlist entry addresses.
+    pub cve: String,
+    /// The acceptance rationale recorded in the allowlist.
+    pub reason: String,
+    /// `"allowlisted"` (active acceptance) or `"expired"` (acceptance lapsed).
+    pub status: String,
+    /// The expiry date that has passed — present only when `status == "expired"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_on: Option<String>,
+}
+
+/// Per-project supply-chain scan outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectSupplyChainScan {
+    /// Registry project name.
+    pub project: String,
+    /// Technology stack (drives which audit tool ran).
+    pub stack: String,
+    /// Live advisories (not actively allowlisted). Includes resurfaced ones
+    /// whose acceptance lapsed.
+    #[serde(default)]
+    pub findings: Vec<SupplyChainFinding>,
+    /// Advisories the allowlist spoke to (active acceptances and lapses).
+    #[serde(default)]
+    pub suppressed: Vec<SuppressedFinding>,
+    /// Tool-level error (scanner not installed, no lockfile, parse failure).
+    /// A scan error is reported, not failed — the project run stays green.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_error: Option<String>,
+}
+
+/// Payload for `SupplyChainScanned` — the formation's mid-chain evidence event,
+/// carrying every project's classified findings for the digest writer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SupplyChainScannedPayload {
+    /// Per-project scan outcomes.
+    #[serde(default)]
+    pub projects: Vec<ProjectSupplyChainScan>,
+    /// Number of projects scanned.
+    #[serde(default)]
+    pub project_count: u64,
+    /// Total live findings across all projects (excludes active allowlisted).
+    #[serde(default)]
+    pub finding_count: u64,
+    /// Number of projects with at least one live finding.
+    #[serde(default)]
+    pub affected_project_count: u64,
+}
+
+/// Payload for `SupplyChainScanCompleted` — the formation's terminal event.
+///
+/// `digest_path` is `None` on a dry-run firing (chain ran, file not written)
+/// and on any persistence failure (`success: false`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SupplyChainScanCompletedPayload {
+    pub success: bool,
+    #[serde(default)]
+    pub skipped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_path: Option<String>,
+    #[serde(default)]
+    pub project_count: u64,
+    #[serde(default)]
+    pub finding_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

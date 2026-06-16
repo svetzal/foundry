@@ -152,6 +152,19 @@ pub fn agent_sessions_dir() -> PathBuf {
     foundry_home().join("agent-sessions")
 }
 
+/// Returns the supply-chain advisory digest output directory.
+///
+/// Each nightly supply-chain scan lands at `{supply_chain_dir}/{YYYY-MM-DD}.md`.
+/// Override with `FOUNDRY_SUPPLY_CHAIN_DIR`; the typical Operations-side override
+/// points this at `~/Work/Operations/Automation/supply-chain-audits`.
+pub fn supply_chain_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_SUPPLY_CHAIN_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("supply-chain")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +204,16 @@ mod tests {
         let dir = ops_events_intake_dir();
         let s = dir.to_string_lossy();
         assert!(s.ends_with("Work/Operations/Events/intake"), "got: {s}");
+    }
+
+    #[test]
+    fn supply_chain_dir_defaults_under_foundry_home_when_env_unset() {
+        if env::var("FOUNDRY_SUPPLY_CHAIN_DIR").is_ok() {
+            return;
+        }
+        let dir = supply_chain_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.ends_with(".foundry/supply-chain"), "got: {s}");
     }
 
     #[test]

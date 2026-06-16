@@ -103,6 +103,7 @@ mod route_validation_result;
 mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;
+mod scan_supply_chain;
 mod scout_drift;
 mod strategic_assess;
 mod strategic_loop;
@@ -116,6 +117,7 @@ mod validate;
 mod watch_pipeline;
 mod write_commit_digest;
 mod write_ops_digest;
+mod write_supply_chain_digest;
 mod write_triage_digest;
 
 pub use assess_project::AssessProject;
@@ -146,6 +148,7 @@ pub use route_validation_result::RouteValidationResult;
 pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
+pub use scan_supply_chain::ScanSupplyChain;
 pub use scout_drift::ScoutDrift;
 pub use strategic_assess::StrategicAssessor;
 pub use strategic_loop::StrategicLoopController;
@@ -158,6 +161,7 @@ pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
 pub use write_commit_digest::WriteCommitDigest;
 pub use write_ops_digest::WriteOpsDigest;
+pub use write_supply_chain_digest::WriteSupplyChainDigest;
 pub use write_triage_digest::WriteTriageDigest;
 
 // Per-block unit-test fixtures (Engine-free). The full-chain integration tests
