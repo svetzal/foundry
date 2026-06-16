@@ -12,7 +12,8 @@ use std::pin::Pin;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    ProjectSupplyChainScan, SupplyChainRemediatedPayload, SupplyChainScanCompletedPayload,
+    ProjectSupplyChainScan, RemediationOutcome, SupplyChainRemediatedPayload,
+    SupplyChainScanCompletedPayload,
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
@@ -161,6 +162,9 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         .expect("write never fails");
     }
 
+    // Remediation — only when the auto-fix engine actually ran (gated on).
+    render_remediation(&mut out, &scan.outcomes);
+
     // Live findings — one section per affected project.
     let affected: Vec<&ProjectSupplyChainScan> =
         scan.projects.iter().filter(|p| !p.findings.is_empty()).collect();
@@ -241,6 +245,75 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
     out
 }
 
+/// Render the remediation section — what the auto-fix engine did this run.
+/// Nothing is written when remediation is gated off (no outcomes), so the
+/// digest is unchanged on the default, classifier-only path.
+fn render_remediation(out: &mut String, outcomes: &[RemediationOutcome]) {
+    if outcomes.is_empty() {
+        return;
+    }
+
+    let applied: Vec<&RemediationOutcome> =
+        outcomes.iter().filter(|o| o.status == "applied").collect();
+    let reverted: Vec<&RemediationOutcome> =
+        outcomes.iter().filter(|o| o.status == "rolled_back").collect();
+    let unapplied: Vec<&RemediationOutcome> = outcomes
+        .iter()
+        .filter(|o| matches!(o.status.as_str(), "apply_failed" | "no_fixer" | "skipped"))
+        .collect();
+
+    writeln!(out, "## Remediation\n").expect("write never fails");
+
+    if !applied.is_empty() {
+        writeln!(out, "**Auto-fixed (verified by gates, committed):**\n")
+            .expect("write never fails");
+        for o in &applied {
+            writeln!(
+                out,
+                "- **{project}** · `{cve}` — `{package}` → {fix}",
+                project = o.project,
+                cve = o.cve,
+                package = o.package,
+                fix = o.fix_version.as_deref().unwrap_or("?"),
+            )
+            .expect("write never fails");
+        }
+        out.push('\n');
+    }
+
+    if !reverted.is_empty() {
+        writeln!(out, "**Reverted (fix broke the gates):**\n").expect("write never fails");
+        for o in &reverted {
+            writeln!(
+                out,
+                "- **{project}** · `{cve}` — `{package}`: {detail}",
+                project = o.project,
+                cve = o.cve,
+                package = o.package,
+                detail = o.detail.as_deref().unwrap_or("reverted"),
+            )
+            .expect("write never fails");
+        }
+        out.push('\n');
+    }
+
+    if !unapplied.is_empty() {
+        writeln!(out, "**Not auto-fixed (needs attention):**\n").expect("write never fails");
+        for o in &unapplied {
+            writeln!(
+                out,
+                "- **{project}** · `{cve}` — `{package}`: {detail}",
+                project = o.project,
+                cve = o.cve,
+                package = o.package,
+                detail = o.detail.as_deref().unwrap_or(o.status.as_str()),
+            )
+            .expect("write never fails");
+        }
+        out.push('\n');
+    }
+}
+
 /// Render one project's live-findings table.
 fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
     writeln!(out, "### {} ({})\n", proj.project, proj.stack).expect("write never fails");
@@ -316,6 +389,7 @@ mod tests {
             fixable_count,
             no_fix_count: finding_count - fixable_count,
             remediated_count: 0,
+            outcomes: vec![],
             projects,
         }
     }
@@ -374,6 +448,38 @@ mod tests {
         );
         assert!(doc.contains("| policy call |"), "no-fix finding marked as a policy call");
         assert!(!doc.contains("auto-fixed this run"), "nothing applied by the classifier");
+        assert!(!doc.contains("## Remediation"), "no remediation section without outcomes");
+    }
+
+    #[test]
+    fn render_remediation_section_when_outcomes_present() {
+        let mut p = payload(vec![project_with_findings("alpha", vec![finding("CVE-1")])]);
+        p.remediated_count = 1;
+        p.outcomes = vec![
+            RemediationOutcome {
+                project: "alpha".to_string(),
+                cve: "CVE-1".to_string(),
+                package: "vulnerable-pkg".to_string(),
+                fix_version: Some("0.2.0".to_string()),
+                status: "applied".to_string(),
+                detail: Some("verified by gates, committed 0.2.0".to_string()),
+            },
+            RemediationOutcome {
+                project: "beta".to_string(),
+                cve: "CVE-2".to_string(),
+                package: "pinned-pkg".to_string(),
+                fix_version: Some("3.0.0".to_string()),
+                status: "apply_failed".to_string(),
+                detail: Some("version out of range — override-pin rewrite case".to_string()),
+            },
+        ];
+        let doc = render_document("2026-06-16", &p);
+        assert!(doc.contains("## Remediation"));
+        assert!(doc.contains("Auto-fixed (verified by gates, committed)"));
+        assert!(doc.contains("**alpha** · `CVE-1` — `vulnerable-pkg` → 0.2.0"));
+        assert!(doc.contains("Not auto-fixed (needs attention)"));
+        assert!(doc.contains("override-pin rewrite case"));
+        assert!(doc.contains("1 auto-fixed this run"), "triage line reflects applied count");
     }
 
     #[test]

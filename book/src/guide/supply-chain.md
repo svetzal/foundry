@@ -47,9 +47,9 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
   emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
   version means the advisory is mechanically **auto-fixable**; an *empty* one
   means a **policy call** — an exploitability judgement about our usage that
-  stays human. (The actual auto-fix engine — in-range bump and override-pin
-  manifest rewrite with gate-verify-and-rollback — ships dark behind an env gate
-  in a later increment; today this block only classifies and never mutates.)
+  stays human. When the auto-fix engine is enabled (see below) it also *applies*
+  the fixable ones, behind a verify-and-rollback rail; otherwise it only
+  classifies.
 - **`WriteSupplyChainDigest`** renders a *deterministic* markdown digest (no
   agent — CVE identifiers must never be paraphrased or hallucinated) and writes
   it atomically to `{FOUNDRY_SUPPLY_CHAIN_DIR}/{YYYY-MM-DD}.md`. Dry-run skips
@@ -103,8 +103,37 @@ call`), **Lapsed acceptances** (now live, need a fresh decision), **Accepted**
 whose audit tool was unavailable or had no lockfile — reported, never failed). A
 clean scan reads "No live supply-chain advisories."
 
+## The auto-fix engine (gated dark)
+
+`RemediateSupplyChain` can do more than classify: it can *apply* a fixable
+advisory's fix. This is **off by default** and stays inert on every install
+until two conditions both hold — the env var `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` is
+truthy *and* the run is at `Full` throttle (never under `dry_run`). With the gate
+off, the block is byte-for-byte the classifier.
+
+When enabled, each fixable finding goes through a mandatory verify-and-rollback
+rail, and every change is **reversible — committed locally, never pushed**:
+
+1. **Refuse a dirty tree.** A project whose working tree carries uncommitted
+   changes is skipped, so a rollback can always return to a known-clean `HEAD`.
+2. **Apply.** This increment ships one fixer — the in-range Rust bump
+   (`cargo update -p <pkg> --precise <fix>`). A version the manifest's range
+   forbids fails to apply and is reported `apply_failed` (the override-pin
+   rewrite case, a later increment). Non-Rust stacks report `no_fixer`.
+3. **Verify.** The repo's own `.hone-gates.json` gates are re-run. A repo with no
+   gates is skipped — an unverifiable fix is never applied.
+4. **Commit or revert.** If the required gates pass, just the lockfile is
+   committed (`chore(deps): bump … (supply-chain auto-fix)`); otherwise the
+   lockfile is `git checkout`-reverted. Each applied fix commits immediately, so
+   a later finding's rollback can never clobber an earlier success.
+
+The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, and *Not
+auto-fixed (needs attention)* — only when the engine actually ran. Enable it by
+adding the env var to the daemon's launch environment; disable by removing it.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Digest output directory |
+| `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | _(unset → off)_ | Set truthy (`1`/`true`/`yes`/`on`) to enable the auto-fix engine. Off by default. |

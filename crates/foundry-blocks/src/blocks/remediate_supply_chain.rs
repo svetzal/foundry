@@ -6,33 +6,95 @@
 //! `SupplyChainRemediated`, carrying the scan through verbatim so the digest
 //! still renders its findings/lapsed/accepted/not-scanned sections.
 //!
-//! ## Current increment — triage classifier (non-mutating)
+//! ## Triage classifier (always)
 //!
-//! This block does **not** mutate any working tree yet. It only classifies each
-//! live finding against the bright line the Maintenance triage framework already
-//! uses: a *populated* `fix_version` → mechanically **fixable** (a future
-//! mutating pass can auto-bump); an *empty* `fix_version` → a **policy call**
-//! (an exploitability judgement about our usage that must stay human). The split
-//! is surfaced in the digest so a project's advisories read as "auto-fixable" vs
-//! "needs your decision" rather than one undifferentiated list.
+//! Every live finding is classified against the bright line the Maintenance
+//! triage framework uses: a *populated* `fix_version` → mechanically
+//! **fixable**; an *empty* one → a **policy call** (an exploitability judgement
+//! about our usage that stays human). This is read-only and always runs.
 //!
-//! ## Next increment — the mutating half (shipped dark/gated)
+//! ## Auto-fix engine (gated dark)
 //!
-//! The actual fixes — in-range auto-bump, override-pin manifest rewrite with
-//! gate-verify-and-rollback, and the no-fix policy surface — land here behind an
-//! explicit env gate so they stay inert until enabled, even under `Full`
-//! throttle. `remediated_count` will then report what was applied; today it is
-//! always `0`.
+//! When — and only when — remediation is explicitly enabled
+//! (`FOUNDRY_SUPPLY_CHAIN_REMEDIATE` truthy) *and* the throttle permits mutation
+//! (`Full`), the block attempts to fix each fixable finding. The engine is
+//! inert by default: with the gate off, or under `dry_run`, it is byte-for-byte
+//! the classifier above (`remediated_count = 0`, no `outcomes`).
+//!
+//! Every fix runs the verify-and-rollback rail, all reversible (commit-only,
+//! never pushed):
+//! 1. refuse to touch a project whose working tree is not clean;
+//! 2. apply the fix (this increment: an in-range Rust bump,
+//!    `cargo update -p <pkg> --precise <fix>`);
+//! 3. re-run the repo's own gates;
+//! 4. on a passing required-gate set → commit just the lockfile; otherwise
+//!    `git checkout` the lockfile, reverting the edit.
+//!
+//! Committing each applied fix immediately means a later finding's rollback
+//! cannot clobber an earlier success. A fix whose version is out of the
+//! manifest's range fails to apply (`apply_failed`) — that is the override-pin
+//! rewrite case, handled in a later increment. Non-Rust stacks report
+//! `no_fixer` until their fixer lands.
 
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{SupplyChainRemediatedPayload, SupplyChainScannedPayload};
+use foundry_sdk::payload::{
+    RemediationOutcome, SupplyChainFinding, SupplyChainRemediatedPayload, SupplyChainScannedPayload,
+};
+use foundry_sdk::registry::{ProjectEntry, Registry, Stack};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
 
-/// Triages each live supply-chain finding by fix availability. Observer — it
-/// only reads the scan payload and reclassifies; it never touches a repo.
-pub struct RemediateSupplyChain;
+use crate::gateway::ShellGateway;
+
+/// The committed lockfile a Rust in-range bump touches.
+const RUST_LOCKFILE: &str = "Cargo.lock";
+
+/// Triages each live supply-chain finding and, when explicitly enabled, applies
+/// verified, reversible auto-fixes. Observer — it self-gates mutation on the
+/// throttle (like the digest writers) rather than relying on the dry-run hook,
+/// so the classifier event is always emitted and the chain always reaches the
+/// digest.
+pub struct RemediateSupplyChain {
+    registry: Arc<RwLock<Registry>>,
+    shell: Arc<dyn ShellGateway>,
+    enabled: bool,
+}
+
+impl RemediateSupplyChain {
+    pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
+        Self {
+            registry,
+            shell,
+            enabled: remediation_enabled_from_env(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_enabled(
+        shell: Arc<dyn ShellGateway>,
+        registry: Arc<RwLock<Registry>>,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            registry,
+            shell,
+            enabled,
+        }
+    }
+}
+
+/// The auto-fix engine ships dark: it acts only when this env var is truthy,
+/// so it stays inert on every install until deliberately switched on — even
+/// under `Full` throttle.
+fn remediation_enabled_from_env() -> bool {
+    std::env::var("FOUNDRY_SUPPLY_CHAIN_REMEDIATE").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    })
+}
 
 impl TaskBlock for RemediateSupplyChain {
     task_block_meta! {
@@ -49,73 +111,300 @@ impl TaskBlock for RemediateSupplyChain {
         let scan = parse_payload!(trigger, SupplyChainScannedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+        let (fixable_count, no_fix_count) = classify(&scan);
+        let mutate = self.enabled && throttle.permits_mutation();
 
-        Box::pin(async move {
-            // Count the fixable / policy-call split across every live finding.
-            let mut fixable_count: u64 = 0;
-            let mut no_fix_count: u64 = 0;
-            for proj in &scan.projects {
-                for finding in &proj.findings {
-                    if finding.fix_version.is_some() {
-                        fixable_count += 1;
-                    } else {
-                        no_fix_count += 1;
-                    }
-                }
-            }
-
+        if !mutate {
+            // Classifier-only path: identical whether the gate is off or the
+            // throttle is dry-run. No mutation, no outcomes.
             tracing::info!(
                 finding_count = scan.finding_count,
                 fixable_count,
                 no_fix_count,
-                "supply-chain remediation triage complete (classifier only — no mutation)"
+                enabled = self.enabled,
+                "supply-chain remediation triage (classifier only — mutation gated off)"
             );
+            return Box::pin(async move {
+                emit_remediated(&project, throttle, &scan, fixable_count, no_fix_count, vec![])
+            });
+        }
 
-            super::emit_result(
-                format!(
-                    "Supply-chain triage: {fixable_count} auto-fixable, {no_fix_count} policy-call of {total} finding(s)",
-                    total = scan.finding_count
-                ),
-                EventType::SupplyChainRemediated,
-                &project,
-                throttle,
-                &SupplyChainRemediatedPayload {
-                    projects: scan.projects,
-                    project_count: scan.project_count,
-                    finding_count: scan.finding_count,
-                    affected_project_count: scan.affected_project_count,
-                    fixable_count,
-                    no_fix_count,
-                    // No mutation yet — the auto-fix engine ships dark in the
-                    // next increment.
-                    remediated_count: 0,
-                },
-            )
+        // Snapshot the active project list under a short-lived read guard so the
+        // lock is never held across an `.await`.
+        let entries: Vec<ProjectEntry> = match super::read_registry(&self.registry) {
+            Ok(guard) => guard.active_projects().into_iter().cloned().collect(),
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let shell = Arc::clone(&self.shell);
+
+        Box::pin(async move {
+            let mut outcomes = Vec::new();
+            for proj in &scan.projects {
+                remediate_project(proj, &entries, shell.as_ref(), &mut outcomes).await;
+            }
+            let applied = outcomes.iter().filter(|o| o.status == "applied").count();
+            tracing::info!(
+                applied,
+                attempted = outcomes.len(),
+                "supply-chain remediation complete"
+            );
+            emit_remediated(&project, throttle, &scan, fixable_count, no_fix_count, outcomes)
         })
     }
 }
 
+/// Count live findings split into fixable (a populated fix version) vs
+/// policy-call (none).
+fn classify(scan: &SupplyChainScannedPayload) -> (u64, u64) {
+    let mut fixable = 0u64;
+    let mut no_fix = 0u64;
+    for proj in &scan.projects {
+        for finding in &proj.findings {
+            if finding.fix_version.is_some() {
+                fixable += 1;
+            } else {
+                no_fix += 1;
+            }
+        }
+    }
+    (fixable, no_fix)
+}
+
+/// Attempt to remediate one project's fixable findings, appending an outcome
+/// for each. Never panics; every failure mode becomes a recorded outcome.
+async fn remediate_project(
+    proj: &foundry_sdk::payload::ProjectSupplyChainScan,
+    entries: &[ProjectEntry],
+    shell: &dyn ShellGateway,
+    outcomes: &mut Vec<RemediationOutcome>,
+) {
+    let fixable: Vec<&SupplyChainFinding> =
+        proj.findings.iter().filter(|f| f.fix_version.is_some()).collect();
+    if fixable.is_empty() {
+        return;
+    }
+
+    let Some(entry) = entries.iter().find(|e| e.name == proj.project) else {
+        push_each(outcomes, proj, &fixable, "skipped", Some("project not in registry"));
+        return;
+    };
+
+    // This increment ships a single fixer — the in-range Rust bump.
+    if entry.stack != Stack::Rust {
+        let detail = format!("no auto-fix mechanism for {} yet", entry.stack);
+        push_each(outcomes, proj, &fixable, "no_fixer", Some(&detail));
+        return;
+    }
+
+    let path = Path::new(&entry.path);
+
+    // Verify-and-rollback is mandatory; a repo with no gates cannot be verified,
+    // so it is never mutated.
+    let gates = match crate::gate_file::read_gates(path) {
+        Ok(g) => g,
+        Err(e) => {
+            let detail = format!("could not read gates: {e}");
+            push_each(outcomes, proj, &fixable, "skipped", Some(&detail));
+            return;
+        }
+    };
+    if gates.is_empty() {
+        push_each(outcomes, proj, &fixable, "skipped", Some("no gates to verify the fix against"));
+        return;
+    }
+
+    // Never mutate a tree that already carries changes — rollback must be able
+    // to revert to a known-clean HEAD without clobbering someone else's work.
+    if !git_tree_clean(shell, path).await {
+        push_each(outcomes, proj, &fixable, "skipped", Some("working tree not clean"));
+        return;
+    }
+
+    for f in fixable {
+        let fix_version = f.fix_version.as_deref().unwrap_or_default();
+
+        if !cargo_precise_update(shell, path, &f.package, fix_version).await {
+            let detail = format!(
+                "cargo update -p {} --precise {fix_version} failed (version likely out of the manifest's range — override-pin rewrite case)",
+                f.package
+            );
+            outcomes.push(outcome(proj, f, "apply_failed", Some(&detail)));
+            continue;
+        }
+
+        match crate::gate_runner::run_gates(&gates, path, shell).await {
+            Ok(r) if r.required_passed => {
+                let msg = format!(
+                    "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
+                    f.package, f.cve
+                );
+                if git_commit_file(shell, path, RUST_LOCKFILE, &msg).await {
+                    let detail = format!("verified by gates, committed {fix_version}");
+                    outcomes.push(outcome(proj, f, "applied", Some(&detail)));
+                } else {
+                    git_restore(shell, path, RUST_LOCKFILE).await;
+                    outcomes.push(outcome(
+                        proj,
+                        f,
+                        "rolled_back",
+                        Some("fix verified but commit failed; reverted"),
+                    ));
+                }
+            }
+            Ok(_) => {
+                git_restore(shell, path, RUST_LOCKFILE).await;
+                outcomes.push(outcome(
+                    proj,
+                    f,
+                    "rolled_back",
+                    Some("gate verification failed after the bump; reverted"),
+                ));
+            }
+            Err(e) => {
+                git_restore(shell, path, RUST_LOCKFILE).await;
+                let detail = format!("gate run errored: {e}; reverted");
+                outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
+            }
+        }
+    }
+}
+
+async fn git_tree_clean(shell: &dyn ShellGateway, path: &Path) -> bool {
+    match shell.run(path, "git", &["status", "--porcelain"], None, None).await {
+        Ok(r) => r.success && r.stdout.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
+async fn cargo_precise_update(
+    shell: &dyn ShellGateway,
+    path: &Path,
+    package: &str,
+    version: &str,
+) -> bool {
+    shell
+        .run(path, "cargo", &["update", "-p", package, "--precise", version], None, None)
+        .await
+        .is_ok_and(|r| r.success)
+}
+
+async fn git_restore(shell: &dyn ShellGateway, path: &Path, file: &str) {
+    // Best-effort revert; an error here only leaves the tree as the failed fix
+    // left it, which the next clean-tree guard will catch.
+    let _ = shell.run(path, "git", &["checkout", "--", file], None, None).await;
+}
+
+async fn git_commit_file(shell: &dyn ShellGateway, path: &Path, file: &str, msg: &str) -> bool {
+    let added = shell
+        .run(path, "git", &["add", file], None, None)
+        .await
+        .is_ok_and(|r| r.success);
+    if !added {
+        return false;
+    }
+    shell
+        .run(path, "git", &["commit", "-m", msg], None, None)
+        .await
+        .is_ok_and(|r| r.success)
+}
+
+fn outcome(
+    proj: &foundry_sdk::payload::ProjectSupplyChainScan,
+    f: &SupplyChainFinding,
+    status: &str,
+    detail: Option<&str>,
+) -> RemediationOutcome {
+    RemediationOutcome {
+        project: proj.project.clone(),
+        cve: f.cve.clone(),
+        package: f.package.clone(),
+        fix_version: f.fix_version.clone(),
+        status: status.to_string(),
+        detail: detail.map(str::to_string),
+    }
+}
+
+fn push_each(
+    outcomes: &mut Vec<RemediationOutcome>,
+    proj: &foundry_sdk::payload::ProjectSupplyChainScan,
+    findings: &[&SupplyChainFinding],
+    status: &str,
+    detail: Option<&str>,
+) {
+    for f in findings {
+        outcomes.push(outcome(proj, f, status, detail));
+    }
+}
+
+fn emit_remediated(
+    project: &str,
+    throttle: Throttle,
+    scan: &SupplyChainScannedPayload,
+    fixable_count: u64,
+    no_fix_count: u64,
+    outcomes: Vec<RemediationOutcome>,
+) -> anyhow::Result<TaskBlockResult> {
+    let remediated_count = outcomes.iter().filter(|o| o.status == "applied").count() as u64;
+    let summary = if outcomes.is_empty() {
+        format!(
+            "Supply-chain triage: {fixable_count} auto-fixable, {no_fix_count} policy-call of {} finding(s)",
+            scan.finding_count
+        )
+    } else {
+        format!(
+            "Supply-chain remediation: {remediated_count} auto-fixed, {fixable_count} fixable, {no_fix_count} policy-call of {} finding(s)",
+            scan.finding_count
+        )
+    };
+    super::emit_result(
+        summary,
+        EventType::SupplyChainRemediated,
+        project,
+        throttle,
+        &SupplyChainRemediatedPayload {
+            projects: scan.projects.clone(),
+            project_count: scan.project_count,
+            finding_count: scan.finding_count,
+            affected_project_count: scan.affected_project_count,
+            fixable_count,
+            no_fix_count,
+            remediated_count,
+            outcomes,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use foundry_sdk::payload::{ProjectSupplyChainScan, SupplyChainFinding};
-    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::payload::ProjectSupplyChainScan;
+    use foundry_sdk::registry::{ProjectEntry, Stack};
 
+    use crate::gateway::fakes::FakeShellGateway;
+    use crate::shell::CommandResult;
+
+    use super::super::test_helpers;
     use super::*;
+
+    // --- fixtures ---------------------------------------------------------
 
     fn finding(cve: &str, fix: Option<&str>) -> SupplyChainFinding {
         SupplyChainFinding {
             cve: cve.to_string(),
-            package: "pkg".to_string(),
+            package: "vulnerable-crate".to_string(),
             severity: Some("high".to_string()),
             version: Some("0.1.0".to_string()),
             fix_version: fix.map(str::to_string),
         }
     }
 
-    fn project(name: &str, findings: Vec<SupplyChainFinding>) -> ProjectSupplyChainScan {
+    fn project(
+        name: &str,
+        stack: &str,
+        findings: Vec<SupplyChainFinding>,
+    ) -> ProjectSupplyChainScan {
         ProjectSupplyChainScan {
             project: name.to_string(),
-            stack: "rust".to_string(),
+            stack: stack.to_string(),
             findings,
             suppressed: vec![],
             scan_error: None,
@@ -133,13 +422,54 @@ mod tests {
         }
     }
 
-    fn trigger(p: &SupplyChainScannedPayload) -> Event {
+    fn trigger(p: &SupplyChainScannedPayload, throttle: Throttle) -> Event {
         Event::new(
             EventType::SupplyChainScanned,
             "system".to_string(),
-            Throttle::Full,
+            throttle,
             serde_json::to_value(p).unwrap(),
         )
+    }
+
+    fn registry_with(entries: Vec<ProjectEntry>) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: entries,
+        }))
+    }
+
+    fn rust_entry(name: &str, path: &str) -> ProjectEntry {
+        test_helpers::project_entry(name, path) // stack defaults to Rust
+    }
+
+    /// A project dir with a single required gate so verification has something
+    /// to run.
+    fn project_dir_with_gate() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"test","command":"cargo test","required":true}]}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    fn ok() -> CommandResult {
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
+
+    fn fail() -> CommandResult {
+        CommandResult {
+            stdout: String::new(),
+            stderr: "boom".to_string(),
+            exit_code: 1,
+            success: false,
+        }
     }
 
     fn remediated(result: &TaskBlockResult) -> SupplyChainRemediatedPayload {
@@ -147,59 +477,249 @@ mod tests {
     }
 
     assert_block_meta!(
-        RemediateSupplyChain,
+        RemediateSupplyChain::with_enabled(FakeShellGateway::success(), registry_with(vec![]), false),
         kind: Observer,
         sinks_on: [SupplyChainScanned],
     );
 
+    // --- classifier (gated off) ------------------------------------------
+
     #[tokio::test]
-    async fn classifies_fixable_and_policy_call_findings() {
+    async fn disabled_classifies_without_mutating() {
         let p = scanned(vec![project(
             "alpha",
-            vec![
-                finding("CVE-1", Some("1.2.3")),  // fixable
-                finding("CVE-2", None),           // policy call
-                finding("CVE-3", Some("0.28.1")), // fixable
-            ],
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3")), finding("CVE-2", None)],
         )]);
-        let result = RemediateSupplyChain.execute(&trigger(&p)).await.unwrap();
-        assert!(result.success);
+        let block = RemediateSupplyChain::with_enabled(
+            FakeShellGateway::success(),
+            registry_with(vec![]),
+            false,
+        );
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
 
         let out = remediated(&result);
-        assert_eq!(out.fixable_count, 2);
+        assert_eq!(out.fixable_count, 1);
         assert_eq!(out.no_fix_count, 1);
-        assert_eq!(out.remediated_count, 0, "classifier applies no fixes");
-        assert_eq!(out.finding_count, 3);
+        assert_eq!(out.remediated_count, 0);
+        assert!(out.outcomes.is_empty(), "gated-off path attempts nothing");
     }
 
     #[tokio::test]
-    async fn carries_scan_projects_through_for_the_digest() {
-        let p = scanned(vec![project("alpha", vec![finding("CVE-1", Some("1.0.0"))])]);
-        let result = RemediateSupplyChain.execute(&trigger(&p)).await.unwrap();
+    async fn enabled_but_dry_run_does_not_mutate() {
+        let dir = project_dir_with_gate();
+        let shell = FakeShellGateway::success();
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::DryRun)).await.unwrap();
 
         let out = remediated(&result);
-        assert_eq!(out.projects.len(), 1);
-        assert_eq!(out.projects[0].project, "alpha");
-        assert_eq!(out.projects[0].findings[0].cve, "CVE-1");
-        assert_eq!(out.projects[0].findings[0].fix_version.as_deref(), Some("1.0.0"));
+        assert!(out.outcomes.is_empty(), "dry-run must not attempt a fix");
+        assert_eq!(out.remediated_count, 0);
+        assert!(shell.invocations().is_empty(), "no shell commands under dry-run");
     }
 
+    // --- engine (enabled + Full) -----------------------------------------
+
     #[tokio::test]
-    async fn clean_scan_emits_zero_counts() {
-        let p = scanned(vec![project("alpha", vec![])]);
-        let result = RemediateSupplyChain.execute(&trigger(&p)).await.unwrap();
+    async fn applies_and_commits_when_gates_pass() {
+        let dir = project_dir_with_gate();
+        // git status (clean) → cargo update (ok) → gate (pass) → git add → git commit
+        let shell = FakeShellGateway::success();
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
 
         let out = remediated(&result);
-        assert_eq!(out.fixable_count, 0);
-        assert_eq!(out.no_fix_count, 0);
-        assert_eq!(out.finding_count, 0);
+        assert_eq!(out.remediated_count, 1);
+        assert_eq!(out.outcomes.len(), 1);
+        assert_eq!(out.outcomes[0].status, "applied");
+        assert_eq!(out.outcomes[0].cve, "CVE-1");
+
+        // A commit happened; no rollback.
+        let cmds: Vec<String> = shell.invocations().iter().map(|i| i.args.join(" ")).collect();
+        assert!(cmds.iter().any(|c| c.contains("commit -m")), "applied fix is committed");
+        assert!(!cmds.iter().any(|c| c.contains("checkout")), "no rollback on success");
     }
 
     #[tokio::test]
-    async fn emits_supply_chain_remediated_event() {
-        let p = scanned(vec![project("alpha", vec![finding("CVE-1", None)])]);
-        let result = RemediateSupplyChain.execute(&trigger(&p)).await.unwrap();
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::SupplyChainRemediated);
+    async fn rolls_back_when_gates_fail() {
+        let dir = project_dir_with_gate();
+        // git status (clean) → cargo update (ok) → gate (FAIL) → git checkout
+        let shell = FakeShellGateway::sequence(vec![ok(), ok(), fail(), ok()]);
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 0);
+        assert_eq!(out.outcomes[0].status, "rolled_back");
+
+        let cmds: Vec<String> = shell.invocations().iter().map(|i| i.args.join(" ")).collect();
+        assert!(
+            cmds.iter().any(|c| c.contains("checkout")),
+            "failed verify reverts the lockfile"
+        );
+        assert!(!cmds.iter().any(|c| c.contains("commit -m")), "nothing committed on failure");
+    }
+
+    #[tokio::test]
+    async fn apply_failure_is_recorded_not_committed() {
+        let dir = project_dir_with_gate();
+        // git status (clean) → cargo update (FAIL, out of range)
+        let shell = FakeShellGateway::sequence(vec![ok(), fail()]);
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("9.9.9"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "apply_failed");
+        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("override-pin"));
+    }
+
+    #[tokio::test]
+    async fn dirty_tree_is_skipped() {
+        let dir = project_dir_with_gate();
+        // git status returns dirty output
+        let dirty = CommandResult {
+            stdout: " M Cargo.lock".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        };
+        let shell = FakeShellGateway::sequence(vec![dirty]);
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "skipped");
+        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("not clean"));
+    }
+
+    #[tokio::test]
+    async fn no_gates_means_no_unverified_mutation() {
+        // Project dir with no .hone-gates.json → cannot verify → skip.
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "skipped");
+        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("no gates"));
+        assert!(shell.invocations().is_empty(), "never even checks the tree without gates");
+    }
+
+    #[tokio::test]
+    async fn non_rust_stack_reports_no_fixer() {
+        let dir = project_dir_with_gate();
+        let mut entry = rust_entry("alpha", dir.path().to_str().unwrap());
+        entry.stack = Stack::TypeScript;
+        let shell = FakeShellGateway::success();
+        let block =
+            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
+        let p = scanned(vec![project(
+            "alpha",
+            "typescript",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "no_fixer");
+        assert!(shell.invocations().is_empty(), "no shell work for an unsupported stack");
+    }
+
+    #[tokio::test]
+    async fn policy_call_findings_are_not_touched() {
+        let dir = project_dir_with_gate();
+        let shell = FakeShellGateway::success();
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        // Only a no-fix finding → nothing fixable → no outcomes.
+        let p = scanned(vec![project("alpha", "rust", vec![finding("CVE-1", None)])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert!(out.outcomes.is_empty());
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn project_not_in_registry_is_skipped() {
+        let shell = FakeShellGateway::success();
+        let block = RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![]), true);
+        let p = scanned(vec![project(
+            "ghost",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "skipped");
+        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("not in registry"));
     }
 }

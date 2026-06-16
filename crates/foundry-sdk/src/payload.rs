@@ -1139,6 +1139,33 @@ pub struct SupplyChainScannedPayload {
     pub affected_project_count: u64,
 }
 
+/// The outcome of attempting to remediate one live finding.
+///
+/// `status` is an open string so new mechanisms can extend it without a wire
+/// break: `"applied"` (fix verified by gates and committed), `"rolled_back"`
+/// (applied but gates failed, reverted), `"apply_failed"` (the fix command
+/// itself failed — e.g. the fixed version is out of the manifest's range, the
+/// override-rewrite case), `"no_fixer"` (fixable but no mechanism for this stack
+/// yet), or `"skipped"` (project-level: not in registry, dirty tree, no gates to
+/// verify against — see `detail`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RemediationOutcome {
+    /// Registry project the finding belongs to.
+    pub project: String,
+    /// Advisory identifier.
+    pub cve: String,
+    /// Affected package.
+    pub package: String,
+    /// The version the fix targeted, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_version: Option<String>,
+    /// Outcome status (see type docs).
+    pub status: String,
+    /// Human-readable detail (failure reason, skip reason).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// Payload for `SupplyChainRemediated` — the formation's mid-chain remediation
 /// event, sitting between the scan and the digest.
 ///
@@ -1168,9 +1195,15 @@ pub struct SupplyChainRemediatedPayload {
     /// Live findings with no fix version (a human policy call).
     #[serde(default)]
     pub no_fix_count: u64,
-    /// Findings actually auto-fixed this run. `0` until the mutating half lands.
+    /// Findings actually auto-fixed (verified + committed) this run. `0` when
+    /// remediation is gated off (the default) or nothing was fixable.
     #[serde(default)]
     pub remediated_count: u64,
+    /// Per-finding remediation outcomes. Empty when remediation is gated off
+    /// (the classifier-only path) — the digest then renders no remediation
+    /// section, matching the pre-remediation behaviour.
+    #[serde(default)]
+    pub outcomes: Vec<RemediationOutcome>,
 }
 
 /// Payload for `SupplyChainScanCompleted` — the formation's terminal event.

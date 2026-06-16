@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-16
+
+### Added
+
+- **Supply-chain auto-fix engine (EXP-003 Phase 2, Slice 2b — first increment,
+  shipped dark).** `RemediateSupplyChain` can now *apply* a fixable advisory's
+  fix, not just classify it. It is **off by default** and acts only when
+  `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` is truthy *and* the throttle is `Full` (never
+  `dry_run`); otherwise it is byte-for-byte the classifier. Every fix runs a
+  mandatory verify-and-rollback rail and is reversible — **committed locally,
+  never pushed**: (1) skip any project whose working tree is dirty; (2) apply the
+  fix — this increment ships the in-range Rust bump,
+  `cargo update -p <pkg> --precise <fix>`; (3) re-run the repo's own gates; (4)
+  on passing required gates, commit just the lockfile, else `git checkout`-revert
+  it. Each applied fix commits immediately so a later finding's rollback cannot
+  clobber an earlier success. A version the manifest forbids → `apply_failed`
+  (the override-pin rewrite case, a later increment); non-Rust stacks →
+  `no_fixer`; a repo with no gates is skipped (an unverifiable fix is never
+  applied).
+- `SupplyChainRemediatedPayload` carries per-finding `outcomes`
+  (`RemediationOutcome`); the digest gains a **Remediation** section
+  (*Auto-fixed* / *Reverted* / *Not auto-fixed*) shown only when the engine ran.
+- New env var `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` (default off).
+
 ## [0.25.2] - 2026-06-16
 
 ### Fixed
