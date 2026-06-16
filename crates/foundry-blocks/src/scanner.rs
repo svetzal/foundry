@@ -90,8 +90,9 @@ fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
 /// Return true when the given non-zero exit code is the tool's conventional way
 /// of signalling "vulnerabilities found" rather than "tool failed".
 fn is_audit_vuln_exit_code(stack: &Stack, exit_code: i32) -> bool {
-    // `npm audit` exits with 1 when vulnerabilities are present.
-    matches!(stack, Stack::TypeScript) && exit_code == 1
+    // `npm audit` and `pip-audit` both exit 1 when vulnerabilities are present
+    // (the report still goes to stdout; stderr may carry unrelated warnings).
+    matches!(stack, Stack::TypeScript | Stack::Python) && exit_code == 1
 }
 
 /// Dispatch JSON parsing to the stack-specific parser.
@@ -451,7 +452,7 @@ mod tests {
         assert_eq!(args, ["deps.audit", "--format=json"]);
     }
 
-    // --- npm exit-code convention ---
+    // --- exit-code convention ---
 
     #[test]
     fn npm_exit_code_1_is_not_failure() {
@@ -459,8 +460,20 @@ mod tests {
     }
 
     #[test]
+    fn pip_audit_exit_code_1_is_not_failure() {
+        // pip-audit exits 1 when vulnerabilities are found; the JSON is still
+        // on stdout, so this must be parsed, not discarded as a tool failure.
+        assert!(is_audit_vuln_exit_code(&Stack::Python, 1));
+    }
+
+    #[test]
     fn npm_exit_code_2_is_failure() {
         assert!(!is_audit_vuln_exit_code(&Stack::TypeScript, 2));
+    }
+
+    #[test]
+    fn python_exit_code_2_is_failure() {
+        assert!(!is_audit_vuln_exit_code(&Stack::Python, 2));
     }
 
     #[test]

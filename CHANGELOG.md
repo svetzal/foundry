@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-06-16
+
+### Fixed
+
+- **pip-audit exit code 1 (vulnerabilities found) misread as a tool failure.**
+  Like `npm audit`, `pip-audit` exits non-zero when it finds advisories — the
+  JSON report still goes to stdout. The scanner treated that as "audit tool
+  failed" and discarded the findings, so a Python project *with* a real
+  advisory landed under "Not scanned". `is_audit_vuln_exit_code` now recognises
+  Python exit 1 as "vulnerabilities found" (stderr warnings are ignored; the
+  stdout JSON is parsed). Completes the Python supply-chain scanning fix begun
+  in 0.25.1 — real advisories (e.g. `chromadb` `CVE-2026-45829`) now surface as
+  live findings rather than scan errors.
+
 ## [0.25.1] - 2026-06-16
 
 ### Fixed
