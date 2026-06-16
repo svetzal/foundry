@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-06-16
+
 ### Added
 
 - **Supply-chain scan formation (nightly, working-tree, advisory).** A new
