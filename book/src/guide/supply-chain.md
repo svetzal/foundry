@@ -36,10 +36,13 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
 ```
 
 - **`ScanSupplyChain`** iterates every active registry project, runs the
-  stack's audit tool (`cargo audit`, `npm audit`, `pip-audit`, `mix
-  deps.audit`) against the working-tree lockfile, classifies each advisory
-  against that repo's committed allowlist, and emits `SupplyChainScanned`.
-  Each finding carries a **fix version** when the audit tool reports one.
+  stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`) against the
+  working-tree lockfile, classifies each advisory against that repo's committed
+  allowlist, and emits `SupplyChainScanned`. Each finding carries a **fix
+  version** when the audit tool reports one. Python is the exception to "global
+  tool": `pip-audit` is a project dependency, so it is run from the project's
+  own `.venv/bin/pip-audit` — a repo that hasn't installed it reports cleanly
+  under "Not scanned" rather than relying on a global PATH.
 - **`RemediateSupplyChain`** triages every live finding by fix availability and
   emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
   version means the advisory is mechanically **auto-fixable**; an *empty* one

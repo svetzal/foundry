@@ -22,7 +22,29 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
         });
     }
 
-    let (command, args) = audit_command(stack);
+    // Resolve the audit tool. Most stacks audit through their global package
+    // manager (`cargo`, `npm`, `mix`), which reads the project's local lockfile
+    // and resolves any project-declared audit dependency itself. Python is the
+    // exception: `pip-audit` is an ordinary project dependency that lives in the
+    // project's own virtualenv, so we run it from `.venv/bin/` rather than any
+    // global PATH — language/project tooling never belongs on a global path.
+    let venv_pip_audit;
+    let (command, args): (&str, Vec<&str>) = if *stack == Stack::Python {
+        let tool = path.join(".venv/bin/pip-audit");
+        if !tool.exists() {
+            tracing::info!(path = %path.display(), "pip-audit not present in project .venv");
+            return Ok(AuditResult {
+                vulnerabilities: vec![],
+                error: Some(
+                    "pip-audit not found in .venv (add it as a dev dependency)".to_string(),
+                ),
+            });
+        }
+        venv_pip_audit = tool.to_string_lossy().into_owned();
+        (venv_pip_audit.as_str(), vec!["--format=json"])
+    } else {
+        audit_command(stack)
+    };
 
     let result = match crate::shell::run(path, command, &args, None, None).await {
         Err(e) => {
@@ -50,13 +72,17 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
     Ok(parse_audit_output(stack, &result.stdout))
 }
 
-/// Map each stack to its canonical audit command and arguments.
+/// Map each global-package-manager stack to its audit command and arguments.
+///
+/// Python is *not* handled here — `pip-audit` is resolved from the project's
+/// `.venv` in [`run_audit`], because it is a project dependency rather than a
+/// global tool. C++ early-returns before this is reached.
 fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
     match stack {
         Stack::Rust => ("cargo", vec!["audit", "--json"]),
         Stack::TypeScript => ("npm", vec!["audit", "--json"]),
-        Stack::Python => ("pip-audit", vec!["--format=json"]),
         Stack::Elixir => ("mix", vec!["deps.audit", "--format=json"]),
+        Stack::Python => unreachable!("Python resolves pip-audit from .venv in run_audit"),
         Stack::Cpp => unreachable!("C++ early-returns before audit_command"),
     }
 }
@@ -73,7 +99,8 @@ fn parse_audit_output(stack: &Stack, output: &str) -> AuditResult {
     match stack {
         Stack::Rust => parse_cargo_audit(output),
         Stack::TypeScript => parse_npm_audit(output),
-        Stack::Python | Stack::Elixir => parse_generic_audit(output),
+        Stack::Python => parse_pip_audit(output),
+        Stack::Elixir => parse_generic_audit(output),
         Stack::Cpp => unreachable!("C++ early-returns before parse_audit_output"),
     }
 }
@@ -253,7 +280,70 @@ fn parse_npm_audit(output: &str) -> AuditResult {
     }
 }
 
-/// Parse generic JSON audit output (pip-audit, mix deps.audit).
+/// Parse `pip-audit --format=json` output.
+///
+/// The real shape is an object, not a bare array:
+/// ```json
+/// {
+///   "dependencies": [
+///     {"name": "chromadb", "version": "1.5.9", "vulns": [
+///       {"id": "CVE-2026-45829", "fix_versions": [], "aliases": ["GHSA-…"]}
+///     ]}
+///   ],
+///   "fixes": []
+/// }
+/// ```
+/// `id` is the advisory identifier; `fix_versions` is empty when no fix exists
+/// (a policy call). pip-audit does not report a severity tier in this form.
+fn parse_pip_audit(output: &str) -> AuditResult {
+    if output.trim().is_empty() {
+        return AuditResult::default();
+    }
+
+    let root: Value = match serde_json::from_str(output) {
+        Ok(v) => v,
+        Err(e) => {
+            return AuditResult {
+                vulnerabilities: vec![],
+                error: Some(format!("pip-audit JSON parse error: {e}")),
+            };
+        }
+    };
+
+    let Some(deps) = root["dependencies"].as_array() else {
+        return AuditResult::default();
+    };
+
+    let mut vulnerabilities = Vec::new();
+    for dep in deps {
+        let package = dep["name"].as_str().unwrap_or("unknown").to_owned();
+        let version = dep["version"].as_str().map(str::to_owned);
+        let Some(vulns) = dep["vulns"].as_array() else {
+            continue;
+        };
+        for vuln in vulns {
+            let cve = vuln["id"].as_str().map(str::to_owned);
+            let fix_version = vuln["fix_versions"]
+                .as_array()
+                .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
+                .and_then(bare_version);
+            vulnerabilities.push(Vulnerability {
+                cve,
+                severity: None,
+                package: package.clone(),
+                version: version.clone(),
+                fix_version,
+            });
+        }
+    }
+
+    AuditResult {
+        vulnerabilities,
+        error: None,
+    }
+}
+
+/// Parse generic JSON audit output (`mix deps.audit`).
 ///
 /// Tries to interpret the output as a JSON array of objects with fields
 /// that map loosely to [`Vulnerability`]. Falls back to an empty clean
@@ -340,11 +430,18 @@ mod tests {
         assert_eq!(args, ["audit", "--json"]);
     }
 
-    #[test]
-    fn python_uses_pip_audit() {
-        let (cmd, args) = audit_command(&Stack::Python);
-        assert_eq!(cmd, "pip-audit");
-        assert_eq!(args, ["--format=json"]);
+    #[tokio::test]
+    async fn python_missing_venv_reports_cleanly() {
+        // No `.venv/bin/pip-audit` under the path → a clean, informative error
+        // (not a spawn failure, and never an `Err`). Project tooling lives in
+        // the project's own environment.
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_audit(dir.path(), &Stack::Python).await.unwrap();
+        assert!(result.vulnerabilities.is_empty());
+        assert_eq!(
+            result.error.as_deref(),
+            Some("pip-audit not found in .venv (add it as a dev dependency)")
+        );
     }
 
     #[test]
@@ -538,24 +635,30 @@ mod tests {
         assert!(result.error.is_some());
     }
 
-    // --- Generic (pip-audit / mix) JSON parsing ---
+    // --- pip-audit JSON parsing ---
 
     #[test]
-    fn parse_pip_audit_nested_vulns() {
+    fn parse_pip_audit_dependencies_wrapper_with_fix() {
+        // Real pip-audit shape: a `{"dependencies": [...]}` object, each dep
+        // carrying its own `vulns` list — not a bare array.
         let json = r#"
-        [
-          {
-            "name": "requests",
-            "version": "2.25.1",
-            "vulns": [
-              {"id": "CVE-2023-32681", "fix_versions": ["2.31.0"]}
-            ]
-          }
-        ]"#;
+        {
+          "dependencies": [
+            {"name": "clean-pkg", "version": "1.0.0", "vulns": []},
+            {
+              "name": "requests",
+              "version": "2.25.1",
+              "vulns": [
+                {"id": "CVE-2023-32681", "fix_versions": ["2.31.0"], "aliases": ["GHSA-x"]}
+              ]
+            }
+          ],
+          "fixes": []
+        }"#;
 
-        let result = parse_generic_audit(json);
+        let result = parse_pip_audit(json);
         assert!(result.error.is_none());
-        assert_eq!(result.vulnerabilities.len(), 1);
+        assert_eq!(result.vulnerabilities.len(), 1, "clean deps contribute no findings");
 
         let vuln = &result.vulnerabilities[0];
         assert_eq!(vuln.package, "requests");
@@ -563,6 +666,44 @@ mod tests {
         assert_eq!(vuln.cve.as_deref(), Some("CVE-2023-32681"));
         assert_eq!(vuln.fix_version.as_deref(), Some("2.31.0"), "first fix_versions entry");
     }
+
+    #[test]
+    fn parse_pip_audit_empty_fix_versions_is_policy_call() {
+        // The chromadb case observed in production: a real advisory with no fix.
+        let json = r#"
+        {
+          "dependencies": [
+            {"name": "chromadb", "version": "1.5.9", "vulns": [
+              {"id": "CVE-2026-45829", "fix_versions": [], "aliases": ["GHSA-f4j7-r4q5-qw2c"]}
+            ]}
+          ],
+          "fixes": []
+        }"#;
+
+        let result = parse_pip_audit(json);
+        assert_eq!(result.vulnerabilities.len(), 1);
+        let vuln = &result.vulnerabilities[0];
+        assert_eq!(vuln.cve.as_deref(), Some("CVE-2026-45829"));
+        assert!(vuln.fix_version.is_none(), "no fix → policy call");
+    }
+
+    #[test]
+    fn parse_pip_audit_clean_environment() {
+        let json =
+            r#"{"dependencies": [{"name": "safe", "version": "1.0", "vulns": []}], "fixes": []}"#;
+        let result = parse_pip_audit(json);
+        assert!(result.error.is_none());
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn parse_pip_audit_malformed_json_reports_error() {
+        let result = parse_pip_audit("{not json");
+        assert!(result.error.is_some());
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    // --- Generic (mix deps.audit) JSON parsing ---
 
     // --- bare_version reduction ---
 

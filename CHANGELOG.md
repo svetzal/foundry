@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-06-16
+
+### Fixed
+
+- **Python supply-chain scanning now works (venv-local tool + correct parser).**
+  Two bugs kept every Python project reading as "not scanned". (1) `pip-audit`
+  was invoked as a bare command expecting a global PATH; it is a *project*
+  dependency that lives in the project's virtualenv, so it is now resolved from
+  `{project}/.venv/bin/pip-audit`. A project without it reports a clean,
+  informative "pip-audit not found in .venv" rather than a spawn error. Global
+  PATH is never consulted for language/project tooling. (2) Even when it ran,
+  the parser expected a top-level JSON array; real `pip-audit --format=json`
+  emits `{"dependencies": [...], "fixes": [...]}` with each dependency carrying
+  its own `vulns` list. A dedicated `parse_pip_audit` handles the real shape
+  (advisory `id`, `fix_versions`); `mix deps.audit` keeps the generic parser.
+  Validated live: 4 Python projects now scan, surfacing real advisories (e.g.
+  `chromadb` `CVE-2026-45829`, no fix → policy call).
+
 ## [0.25.0] - 2026-06-16
 
 ### Added
