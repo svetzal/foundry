@@ -6,8 +6,21 @@
 //! migration, downstream consumers will silently miss these events. We fail
 //! fast with a clear remediation message instead.
 
+use std::io::{BufRead, BufReader};
+
+/// Maximum bytes scanned per event file. The 0.17.0 legacy names predate any
+/// large modern event file by years, so any occurrence sits near the start of
+/// an old, small file. Capping the scan means an oversized event file — a
+/// runaway has reached tens of GB in practice — can never hang or OOM startup
+/// by being read in full (the original `read_to_string` wedged the daemon on a
+/// 56 GB file).
+const MAX_SCAN_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
+
 /// Scan `~/.foundry/events/*.jsonl` for legacy event-type names that the
 /// 0.17.0 cutover renames. Returns the first legacy name found, if any.
+///
+/// Reads each file line-by-line through a `BufReader` and stops after
+/// [`MAX_SCAN_BYTES_PER_FILE`], so memory stays bounded regardless of file size.
 pub fn detect_legacy_event_names(events_dir: &std::path::Path) -> Option<String> {
     const LEGACY: &[&str] = &[
         "maintenance_run_started",
@@ -27,15 +40,34 @@ pub fn detect_legacy_event_names(events_dir: &std::path::Path) -> Option<String>
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        for line in content.lines() {
+        let mut reader = BufReader::new(file);
+        let mut scanned: u64 = 0;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_line(&mut line) else {
+                break;
+            };
+            if read == 0 {
+                break; // EOF
+            }
+            scanned += read as u64;
             for name in LEGACY {
                 // Cheap pre-filter then exact JSON match.
                 if line.contains(name) && line.contains(&format!(r#""event_type":"{name}""#)) {
                     return Some((*name).to_string());
                 }
+            }
+            if scanned >= MAX_SCAN_BYTES_PER_FILE {
+                tracing::warn!(
+                    path = %path.display(),
+                    scanned_bytes = scanned,
+                    "legacy-event scan capped; event file is unusually large",
+                );
+                break;
             }
         }
     }

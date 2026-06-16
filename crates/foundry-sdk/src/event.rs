@@ -422,7 +422,13 @@ pub enum EventType {
     // Post-maintenance failure triage formation (propose-only)
     /// Lifecycle end: post-maintenance failure triage completed.
     /// Carries `MaintenanceTriageCompletedPayload` with classified verdicts and infra incidents.
+    /// Emitted once by `TriageMaintenance`; the digest writer consumes it.
     MaintenanceTriageCompleted,
+    /// Terminal fact: the triage digest has been written to disk. Emitted by
+    /// `WriteTriageDigest` and consumed by nothing — a distinct type from
+    /// `MaintenanceTriageCompleted` so the writer does not re-trigger itself
+    /// (the self-emit loop that previously ran the event log away).
+    MaintenanceTriageDigestWritten,
 
     // Supply-chain scan formation (nightly working-tree dependency advisory scan)
     /// Cycle-root emitted by the `nightly-supply-chain` sentinel.
@@ -606,6 +612,7 @@ mod tests {
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
+            (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
@@ -681,6 +688,7 @@ mod tests {
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
             (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
+            (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),

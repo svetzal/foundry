@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-06-16
+
+### Fixed
+
+- **Triage formation self-emit loop (event-log runaway).** `WriteTriageDigest`
+  sank on `MaintenanceTriageCompleted` *and* re-emitted that same event type,
+  re-triggering itself in an unbounded loop. Each iteration appended a large
+  verdicts-bearing event, ballooning `~/.foundry/events/2026-06.jsonl` to ~56 GB
+  (≈1000× a normal month) and eventually filling the disk. The block now emits a
+  distinct terminal event, `MaintenanceTriageDigestWritten` (consumed by
+  nothing), matching the terminal-event pattern of the ops/commit/supply-chain
+  digest writers. A regression test asserts the terminal type differs from the
+  sink type.
+- **Startup hang on an oversized event file.** `detect_legacy_event_names` (the
+  0.17.0 migration guard) read every `.jsonl` fully into memory via
+  `read_to_string`, wedging daemon boot on the 56 GB file — any restart hung. It
+  now streams line-by-line through a `BufReader`, capped at 64 MB per file, so
+  memory stays bounded and an oversized file can never block startup again.
+
+### Added
+
+- New terminal event type `MaintenanceTriageDigestWritten`.
+
 ## [0.23.0] - 2026-06-16
 
 ### Added

@@ -21,8 +21,11 @@ use foundry_sdk::triage::{Decision, FailureVerdict};
 use super::emit_result;
 
 /// Writes the classified triage digest to disk and emits the formation's
-/// terminal event (a re-emit of `MaintenanceTriageCompleted` with `digest_path`
-/// populated).
+/// terminal event, `MaintenanceTriageDigestWritten`, carrying `digest_path`.
+///
+/// The terminal event is a *distinct* type from the `MaintenanceTriageCompleted`
+/// this block sinks on — emitting the same type it consumes would re-trigger the
+/// block in an unbounded loop (the defect that ran the event log to ~56 GB).
 ///
 /// The block is a no-op (returns success) when `skipped` is true in the
 /// incoming payload.
@@ -90,7 +93,7 @@ fn write_digest(
         };
         return emit_result(
             format!("dry-run: triage digest not written to {}", intended_path.display()),
-            EventType::MaintenanceTriageCompleted,
+            EventType::MaintenanceTriageDigestWritten,
             project,
             throttle,
             &out,
@@ -110,7 +113,7 @@ fn write_digest(
             };
             emit_result(
                 format!("triage digest written to {}", intended_path.display()),
-                EventType::MaintenanceTriageCompleted,
+                EventType::MaintenanceTriageDigestWritten,
                 project,
                 throttle,
                 &out,
@@ -129,7 +132,7 @@ fn write_digest(
             };
             emit_result(
                 format!("failed to write triage digest: {e}"),
-                EventType::MaintenanceTriageCompleted,
+                EventType::MaintenanceTriageDigestWritten,
                 project,
                 throttle,
                 &out,
@@ -392,6 +395,10 @@ mod tests {
 
         // Check the emitted event carries the digest_path.
         assert_eq!(result.events.len(), 1);
+        // Loop-prevention: the terminal event MUST be a distinct type from the
+        // one this block sinks on, or it would re-trigger itself unbounded.
+        assert_eq!(result.events[0].event_type, EventType::MaintenanceTriageDigestWritten);
+        assert_ne!(result.events[0].event_type, EventType::MaintenanceTriageCompleted);
         let out: MaintenanceTriageCompletedPayload = result.events[0].parse_payload().unwrap();
         assert!(out.digest_path.is_some());
         assert!(
