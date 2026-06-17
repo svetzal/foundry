@@ -14,8 +14,6 @@ use foundry_sdk::payload::{CommitDigestCompletedPayload, CommitSummaryCompletedP
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use super::emit_result;
-
 /// Writes the agent-composed digest to disk and emits the formation's
 /// terminal event.
 pub struct WriteCommitDigest {
@@ -57,72 +55,23 @@ fn write(
     composed: &CommitSummaryCompletedPayload,
     digests_dir: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
-    let (date, intended_path) = super::today_dated_path(digests_dir);
+    let (date, _) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
-
-    if !throttle.permits_mutation() {
-        tracing::info!(
-            path = %intended_path.display(),
-            bytes = rendered.len(),
-            "dry-run: skipping commit-digest file write",
-        );
-        let payload = CommitDigestCompletedPayload {
-            success: true,
-            digest_path: None,
+    super::write_digest_and_emit(
+        "commit",
+        EventType::CommitDigestCompleted,
+        project,
+        throttle,
+        digests_dir,
+        &rendered,
+        |success, digest_path| CommitDigestCompletedPayload {
+            success,
+            digest_path,
             project_count: composed.project_count,
             total_commits: composed.total_commits,
-        };
-        return emit_result(
-            format!("dry-run: digest not written to {}", intended_path.display()),
-            EventType::CommitDigestCompleted,
-            project,
-            throttle,
-            &payload,
-        );
-    }
-
-    match super::write_atomic(digests_dir, &intended_path, &rendered) {
-        Ok(()) => {
-            tracing::info!(
-                path = %intended_path.display(),
-                bytes = rendered.len(),
-                "commit digest written",
-            );
-            let payload = CommitDigestCompletedPayload {
-                success: true,
-                digest_path: Some(intended_path.to_string_lossy().to_string()),
-                project_count: composed.project_count,
-                total_commits: composed.total_commits,
-            };
-            emit_result(
-                format!("Digest written to {}", intended_path.display()),
-                EventType::CommitDigestCompleted,
-                project,
-                throttle,
-                &payload,
-            )
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %intended_path.display(),
-                error = %e,
-                "commit digest write failed",
-            );
-            let payload = CommitDigestCompletedPayload {
-                success: false,
-                digest_path: None,
-                project_count: composed.project_count,
-                total_commits: composed.total_commits,
-            };
-            emit_result(
-                format!("failed to write digest: {e}"),
-                EventType::CommitDigestCompleted,
-                project,
-                throttle,
-                &payload,
-            )
-        }
-    }
+        },
+        || {},
+    )
 }
 
 /// Compose the on-disk markdown: a `# Commit Digest — {date}` header, a

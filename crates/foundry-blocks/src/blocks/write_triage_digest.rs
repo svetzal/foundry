@@ -18,8 +18,6 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::triage::{Decision, FailureVerdict};
 
-use super::emit_result;
-
 /// Writes the classified triage digest to disk and emits the formation's
 /// terminal event, `MaintenanceTriageDigestWritten`, carrying `digest_path`.
 ///
@@ -77,68 +75,22 @@ fn write_digest(
         ));
     }
 
-    let (date, intended_path) = super::today_dated_path(triage_dir);
+    let (date, _) = super::today_dated_path(triage_dir);
     let rendered = render_document(&date, payload);
-
-    if !throttle.permits_mutation() {
-        tracing::info!(
-            path = %intended_path.display(),
-            bytes = rendered.len(),
-            "dry-run: skipping triage digest write",
-        );
-        // Re-emit without a digest_path.
-        let out = MaintenanceTriageCompletedPayload {
-            digest_path: None,
+    super::write_digest_and_emit(
+        "triage",
+        EventType::MaintenanceTriageDigestWritten,
+        project,
+        throttle,
+        triage_dir,
+        &rendered,
+        |success, digest_path| MaintenanceTriageCompletedPayload {
+            success,
+            digest_path,
             ..payload.clone()
-        };
-        return emit_result(
-            format!("dry-run: triage digest not written to {}", intended_path.display()),
-            EventType::MaintenanceTriageDigestWritten,
-            project,
-            throttle,
-            &out,
-        );
-    }
-
-    match super::write_atomic(triage_dir, &intended_path, &rendered) {
-        Ok(()) => {
-            tracing::info!(
-                path = %intended_path.display(),
-                bytes = rendered.len(),
-                "triage digest written",
-            );
-            let out = MaintenanceTriageCompletedPayload {
-                digest_path: Some(intended_path.to_string_lossy().to_string()),
-                ..payload.clone()
-            };
-            emit_result(
-                format!("triage digest written to {}", intended_path.display()),
-                EventType::MaintenanceTriageDigestWritten,
-                project,
-                throttle,
-                &out,
-            )
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %intended_path.display(),
-                error = %e,
-                "triage digest write failed",
-            );
-            let out = MaintenanceTriageCompletedPayload {
-                success: false,
-                digest_path: None,
-                ..payload.clone()
-            };
-            emit_result(
-                format!("failed to write triage digest: {e}"),
-                EventType::MaintenanceTriageDigestWritten,
-                project,
-                throttle,
-                &out,
-            )
-        }
-    }
+        },
+        || {},
+    )
 }
 
 // ---------------------------------------------------------------------------

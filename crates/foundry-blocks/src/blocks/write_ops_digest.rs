@@ -16,8 +16,6 @@ use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsSummaryCompletedPayload
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use super::emit_result;
-
 /// Writes the agent-composed ops digest to disk, advances the watermark, and
 /// emits the formation's terminal event.
 pub struct WriteOpsDigest {
@@ -63,37 +61,22 @@ fn write(
     digests_dir: &Path,
     watermark_path: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
-    let (date, intended_path) = super::today_dated_path(digests_dir);
+    let (date, _) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
-
-    if !throttle.permits_mutation() {
-        tracing::info!(
-            path = %intended_path.display(),
-            bytes = rendered.len(),
-            "dry-run: skipping ops-digest file write",
-        );
-        let payload = OpsDigestCompletedPayload {
-            success: true,
+    super::write_digest_and_emit(
+        "ops",
+        EventType::OpsDigestCompleted,
+        project,
+        throttle,
+        digests_dir,
+        &rendered,
+        |success, digest_path| OpsDigestCompletedPayload {
+            success,
             skipped: false,
-            digest_path: None,
+            digest_path,
             event_count: composed.event_count,
-        };
-        return emit_result(
-            format!("dry-run: ops digest not written to {}", intended_path.display()),
-            EventType::OpsDigestCompleted,
-            project,
-            throttle,
-            &payload,
-        );
-    }
-
-    match super::write_atomic(digests_dir, &intended_path, &rendered) {
-        Ok(()) => {
-            tracing::info!(
-                path = %intended_path.display(),
-                bytes = rendered.len(),
-                "ops digest written",
-            );
+        },
+        || {
             // Advance the watermark so the next run doesn't re-process events.
             if let Some(wm) = &composed.new_watermark
                 && let Err(e) = write_watermark(watermark_path, wm)
@@ -104,41 +87,8 @@ fn write(
                     "ops digest written but watermark advance failed",
                 );
             }
-            let payload = OpsDigestCompletedPayload {
-                success: true,
-                skipped: false,
-                digest_path: Some(intended_path.to_string_lossy().to_string()),
-                event_count: composed.event_count,
-            };
-            emit_result(
-                format!("Ops digest written to {}", intended_path.display()),
-                EventType::OpsDigestCompleted,
-                project,
-                throttle,
-                &payload,
-            )
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %intended_path.display(),
-                error = %e,
-                "ops digest write failed",
-            );
-            let payload = OpsDigestCompletedPayload {
-                success: false,
-                skipped: false,
-                digest_path: None,
-                event_count: composed.event_count,
-            };
-            emit_result(
-                format!("failed to write ops digest: {e}"),
-                EventType::OpsDigestCompleted,
-                project,
-                throttle,
-                &payload,
-            )
-        }
-    }
+        },
+    )
 }
 
 /// Compose the on-disk markdown: a `# Ops Digest — {date}` header, a

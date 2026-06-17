@@ -18,8 +18,6 @@ use foundry_sdk::payload::{
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use super::emit_result;
-
 /// Writes the rendered supply-chain advisory digest and emits the terminal event.
 pub struct WriteSupplyChainDigest {
     supply_chain_dir: PathBuf,
@@ -60,72 +58,24 @@ fn write(
     scan: &SupplyChainRemediatedPayload,
     dir: &Path,
 ) -> anyhow::Result<TaskBlockResult> {
-    let (date, intended_path) = super::today_dated_path(dir);
+    let (date, _) = super::today_dated_path(dir);
     let rendered = render_document(&date, scan);
-
-    if !throttle.permits_mutation() {
-        tracing::info!(
-            path = %intended_path.display(),
-            bytes = rendered.len(),
-            "dry-run: skipping supply-chain digest write",
-        );
-        return emit_result(
-            format!("dry-run: supply-chain digest not written to {}", intended_path.display()),
-            EventType::SupplyChainScanCompleted,
-            project,
-            throttle,
-            &SupplyChainScanCompletedPayload {
-                success: true,
-                skipped: false,
-                digest_path: None,
-                project_count: scan.project_count,
-                finding_count: scan.finding_count,
-            },
-        );
-    }
-
-    match super::write_atomic(dir, &intended_path, &rendered) {
-        Ok(()) => {
-            tracing::info!(
-                path = %intended_path.display(),
-                bytes = rendered.len(),
-                "supply-chain digest written",
-            );
-            emit_result(
-                format!("Supply-chain digest written to {}", intended_path.display()),
-                EventType::SupplyChainScanCompleted,
-                project,
-                throttle,
-                &SupplyChainScanCompletedPayload {
-                    success: true,
-                    skipped: false,
-                    digest_path: Some(intended_path.to_string_lossy().to_string()),
-                    project_count: scan.project_count,
-                    finding_count: scan.finding_count,
-                },
-            )
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %intended_path.display(),
-                error = %e,
-                "supply-chain digest write failed",
-            );
-            emit_result(
-                format!("failed to write supply-chain digest: {e}"),
-                EventType::SupplyChainScanCompleted,
-                project,
-                throttle,
-                &SupplyChainScanCompletedPayload {
-                    success: false,
-                    skipped: false,
-                    digest_path: None,
-                    project_count: scan.project_count,
-                    finding_count: scan.finding_count,
-                },
-            )
-        }
-    }
+    super::write_digest_and_emit(
+        "supply-chain",
+        EventType::SupplyChainScanCompleted,
+        project,
+        throttle,
+        dir,
+        &rendered,
+        |success, digest_path| SupplyChainScanCompletedPayload {
+            success,
+            skipped: false,
+            digest_path,
+            project_count: scan.project_count,
+            finding_count: scan.finding_count,
+        },
+        || {},
+    )
 }
 
 /// Render the deterministic advisory digest markdown.
