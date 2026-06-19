@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
@@ -39,11 +38,7 @@ impl TaskBlock for StrategicLoopController {
         sinks_on: [StrategicAssessmentCompleted, InnerIterationCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

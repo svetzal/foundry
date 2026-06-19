@@ -1,4 +1,3 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
@@ -31,11 +30,7 @@ impl TaskBlock for ExecutePlan {
         super::dry_run_execution_event(trigger, WorkflowType::Iterate, None)
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

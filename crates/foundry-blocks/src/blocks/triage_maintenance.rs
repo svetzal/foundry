@@ -9,7 +9,6 @@
 //! other projects.
 
 use std::path::PathBuf;
-use std::pin::Pin;
 
 use chrono::Duration;
 use foundry_sdk::event::{Event, EventType};
@@ -43,11 +42,7 @@ impl TaskBlock for TriageMaintenance {
         sinks_on: [MaintenanceSummaryRequested],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;

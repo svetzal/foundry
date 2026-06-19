@@ -131,6 +131,22 @@ pub(crate) fn build_agent_remediation_result(
     }
 }
 
+/// Build a single-element `Vec<Event>` for use in `dry_run_events()` implementations.
+///
+/// Encapsulates the `trigger.with_payload(event_type, payload).expect("…")` pattern
+/// that would otherwise be duplicated in every Mutator block's `dry_run_events`.
+pub(crate) fn dry_run_single_event(
+    trigger: &Event,
+    event_type: EventType,
+    payload: &impl serde::Serialize,
+) -> Vec<Event> {
+    vec![
+        trigger
+            .with_payload(event_type, payload)
+            .expect("dry-run payload is infallibly serializable"),
+    ]
+}
+
 /// Produce the single simulated-success `ExecutionCompleted` event used by
 /// `dry_run_events()` across all three execution blocks.
 ///
@@ -142,25 +158,22 @@ pub(crate) fn dry_run_execution_event(
     retry_count: Option<u64>,
 ) -> Vec<Event> {
     let context = LoopContext::extract_from(&trigger.payload);
-    vec![
-        trigger
-            .with_payload(
-                EventType::ExecutionCompleted,
-                &ExecutionCompletedPayload {
-                    project: trigger.project.clone(),
-                    workflow: workflow.to_string(),
-                    success: true,
-                    summary: String::new(),
-                    execution_output: None,
-                    dry_run: Some(true),
-                    retry_count,
-                    changes_detected: None,
-                    files_changed: vec![],
-                    context,
-                },
-            )
-            .expect("ExecutionCompletedPayload is infallibly serializable"),
-    ]
+    dry_run_single_event(
+        trigger,
+        EventType::ExecutionCompleted,
+        &ExecutionCompletedPayload {
+            project: trigger.project.clone(),
+            workflow: workflow.to_string(),
+            success: true,
+            summary: String::new(),
+            execution_output: None,
+            dry_run: Some(true),
+            retry_count,
+            changes_detected: None,
+            files_changed: vec![],
+            context,
+        },
+    )
 }
 
 /// Build the quality-gates context paragraph included in agent prompts.
@@ -185,20 +198,17 @@ pub(crate) fn dry_run_remediation_event(
     pipeline_fix: Option<bool>,
 ) -> Vec<Event> {
     let summary = cve.as_ref().map(|_| String::new());
-    vec![
-        trigger
-            .with_payload(
-                EventType::RemediationCompleted,
-                &RemediationCompletedPayload {
-                    cve,
-                    success: true,
-                    summary,
-                    dry_run: Some(true),
-                    pipeline_fix,
-                },
-            )
-            .expect("RemediationCompletedPayload is infallibly serializable"),
-    ]
+    dry_run_single_event(
+        trigger,
+        EventType::RemediationCompleted,
+        &RemediationCompletedPayload {
+            cve,
+            success: true,
+            summary,
+            dry_run: Some(true),
+            pipeline_fix,
+        },
+    )
 }
 
 /// Emit a single-event success result with a raw JSON payload, without serialization.
@@ -266,8 +276,8 @@ mod tests {
 
     use super::{
         build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
-        dry_run_remediation_event, emit_event_result, emit_result, event_from_infallible_payload,
-        event_from_payload, format_gates_context, stub_event_result,
+        dry_run_remediation_event, dry_run_single_event, emit_event_result, emit_result,
+        event_from_infallible_payload, event_from_payload, format_gates_context, stub_event_result,
     };
 
     fn full() -> Throttle {
@@ -498,5 +508,19 @@ mod tests {
         );
         assert!(!fail_result.success);
         assert_eq!(fail_result.summary, "my-proj: fmt failed");
+    }
+
+    #[test]
+    fn dry_run_single_event_returns_exactly_one_event_of_the_given_type() {
+        let trigger = trigger_event();
+        let events = dry_run_single_event(
+            &trigger,
+            EventType::ProjectRunCompleted,
+            &serde_json::json!({"success": true, "dry_run": true}),
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ProjectRunCompleted);
+        assert_eq!(events[0].payload["dry_run"], true);
     }
 }

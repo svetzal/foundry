@@ -105,6 +105,13 @@ impl TaskBlockResult {
     }
 }
 
+/// Convenience alias for the pinned, boxed future returned by [`TaskBlock::execute`].
+///
+/// Using this alias in `impl TaskBlock` reduces noise and centralises the spelling
+/// so a future change (e.g. adding a new bound) only requires editing one place.
+pub type BlockFuture<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + 'a>>;
+
 /// Whether a task block performs mutations or only observes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
@@ -135,10 +142,7 @@ pub trait TaskBlock: Send + Sync {
     fn sinks_on(&self) -> &[EventType];
 
     /// Execute the block's work in response to a triggering event.
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>;
+    fn execute(&self, trigger: &Event) -> BlockFuture<'_>;
 
     /// The retry policy for this block.
     ///
@@ -202,10 +206,7 @@ mod tests {
         fn sinks_on(&self) -> &[EventType] {
             &[]
         }
-        fn execute(
-            &self,
-            _trigger: &Event,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>> {
+        fn execute(&self, _trigger: &Event) -> BlockFuture<'_> {
             Box::pin(async { Ok(TaskBlockResult::success("ok", vec![])) })
         }
     }
@@ -221,10 +222,7 @@ mod tests {
         fn sinks_on(&self) -> &[EventType] {
             &[]
         }
-        fn execute(
-            &self,
-            _trigger: &Event,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>> {
+        fn execute(&self, _trigger: &Event) -> BlockFuture<'_> {
             Box::pin(async { Ok(TaskBlockResult::success("ok", vec![])) })
         }
     }

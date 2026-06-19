@@ -1,5 +1,3 @@
-use std::pin::Pin;
-
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateResult;
 use foundry_sdk::loop_context::has_loop_context;
@@ -37,11 +35,7 @@ impl TaskBlock for RouteGateResult {
         sinks_on: [GateVerificationCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

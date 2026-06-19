@@ -1,4 +1,3 @@
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -44,11 +43,7 @@ impl TaskBlock for RunPreflightGates {
         sinks_on: [GateResolutionCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

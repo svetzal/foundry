@@ -1,12 +1,11 @@
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::loop_context::has_loop_context;
 use foundry_sdk::payload::{ProjectCompletedPayload, SummarizeCompletedPayload};
 use foundry_sdk::registry::Registry;
-use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
@@ -29,11 +28,7 @@ impl TaskBlock for SummarizeResult {
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

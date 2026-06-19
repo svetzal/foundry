@@ -6,7 +6,6 @@
 //! agent for a markdown digest. Emits `CommitSummaryCompleted`.
 
 use std::fmt::Write as _;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,11 +65,7 @@ impl TaskBlock for SummarizeCommits {
         sinks_on: [CommitsObserved],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, CommitsObservedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;

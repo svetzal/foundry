@@ -37,7 +37,6 @@
 //! `no_fixer` until their fixer lands.
 
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
@@ -103,11 +102,7 @@ impl TaskBlock for RemediateSupplyChain {
         sinks_on: [SupplyChainScanned],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let scan = parse_payload!(trigger, SupplyChainScannedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;

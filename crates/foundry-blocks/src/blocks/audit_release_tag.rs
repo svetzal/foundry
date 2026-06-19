@@ -214,11 +214,7 @@ impl TaskBlock for AuditReleaseTag {
         sinks_on: [VulnerabilityDetected, ProjectChangesPushed],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         if trigger.event_type == EventType::ProjectChangesPushed {
             self.audit_after_push(trigger)
         } else {

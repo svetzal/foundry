@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,25 +42,18 @@ impl TaskBlock for InstallLocally {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        vec![
-            trigger
-                .with_payload(
-                    EventType::LocalInstallCompleted,
-                    &LocalInstallCompletedPayload {
-                        success: true,
-                        dry_run: Some(true),
-                        ..Default::default()
-                    },
-                )
-                .expect("LocalInstallCompletedPayload is infallibly serializable"),
-        ]
+        super::dry_run_single_event(
+            trigger,
+            EventType::LocalInstallCompleted,
+            &LocalInstallCompletedPayload {
+                success: true,
+                dry_run: Some(true),
+                ..Default::default()
+            },
+        )
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 

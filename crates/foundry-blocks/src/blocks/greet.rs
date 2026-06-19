@@ -1,10 +1,8 @@
-use std::pin::Pin;
-
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
     GreetingComposedPayload, GreetingDeliveredPayload, GreetingRequestedPayload,
 };
-use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 /// Composes a greeting message from a greet request.
 /// Observer — always runs regardless of throttle.
@@ -17,11 +15,7 @@ impl TaskBlock for ComposeGreeting {
         sinks_on: [GreetingRequested],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let name_owned =
@@ -54,11 +48,7 @@ impl TaskBlock for DeliverGreeting {
         sinks_on: [GreetingComposed],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let greeting = parse_payload!(trigger, GreetingComposedPayload).greeting;
@@ -84,18 +74,15 @@ impl TaskBlock for DeliverGreeting {
         let greeting = trigger
             .parse_payload::<GreetingComposedPayload>()
             .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
-        vec![
-            trigger
-                .with_payload(
-                    EventType::GreetingDelivered,
-                    &GreetingDeliveredPayload {
-                        delivered: true,
-                        greeting,
-                        dry_run: Some(true),
-                    },
-                )
-                .expect("GreetingDeliveredPayload is infallibly serializable"),
-        ]
+        super::dry_run_single_event(
+            trigger,
+            EventType::GreetingDelivered,
+            &GreetingDeliveredPayload {
+                delivered: true,
+                greeting,
+                dry_run: Some(true),
+            },
+        )
     }
 }
 

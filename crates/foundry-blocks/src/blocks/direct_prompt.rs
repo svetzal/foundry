@@ -1,5 +1,3 @@
-use std::pin::Pin;
-
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{ChainContext, PlanCompletedPayload, PreflightCompletedPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -26,11 +24,7 @@ impl TaskBlock for DirectPrompt {
         sinks_on: [PreflightCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,
             throttle,

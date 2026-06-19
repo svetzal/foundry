@@ -1,5 +1,3 @@
-use std::pin::Pin;
-
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
     ChainContext, ProjectIterationRequestedPayload, ProjectMaintenanceRequestedPayload,
@@ -29,11 +27,7 @@ impl TaskBlock for RouteProjectWorkflow {
         sinks_on: [ProjectValidationCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let in_cycle = trigger.gather_id.is_some();

@@ -7,7 +7,6 @@
 //! continues — the digest is best-effort.
 
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,11 +49,7 @@ impl TaskBlock for ObserveCommits {
         sinks_on: [CommitDigestStarted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 

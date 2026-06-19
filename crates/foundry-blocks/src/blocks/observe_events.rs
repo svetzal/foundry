@@ -8,7 +8,6 @@
 //! `OpsObserved` with lean per-event summaries for the downstream summariser.
 
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
 use chrono::{DateTime, FixedOffset};
 use foundry_sdk::event::{Event, EventType};
@@ -50,11 +49,7 @@ impl TaskBlock for ObserveEvents {
         sinks_on: [OpsDigestStarted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let intake_dir = self.intake_dir.clone();

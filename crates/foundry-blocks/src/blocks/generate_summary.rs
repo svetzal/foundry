@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -218,11 +217,7 @@ impl TaskBlock for GenerateSummary {
         sinks_on: [MaintenanceSummaryRequested],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();

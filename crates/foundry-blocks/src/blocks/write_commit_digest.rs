@@ -7,7 +7,6 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CommitDigestCompletedPayload, CommitSummaryCompletedPayload};
@@ -35,11 +34,7 @@ impl TaskBlock for WriteCommitDigest {
         sinks_on: [CommitSummaryCompleted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, CommitSummaryCompletedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;

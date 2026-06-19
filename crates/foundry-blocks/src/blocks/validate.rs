@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
@@ -106,11 +105,7 @@ impl TaskBlock for ValidateProject {
         sinks_on: [ProjectRunStarted],
     }
 
-    fn execute(
-        &self,
-        trigger: &Event,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
-    {
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         // Extract the entry before the async boundary — the RwLock guard must not cross await.
