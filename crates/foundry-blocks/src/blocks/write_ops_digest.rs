@@ -39,13 +39,12 @@ impl TaskBlock for WriteOpsDigest {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let p = parse_payload!(trigger, OpsSummaryCompletedPayload);
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let digests_dir = self.digests_dir.clone();
-        let watermark_path = self.watermark_path.clone();
-
-        Box::pin(async move { write(&project, throttle, &p, &digests_dir, &watermark_path) })
+        digest_block_execute!(
+            self,
+            trigger,
+            OpsSummaryCompletedPayload,
+            [digests_dir, watermark_path]
+        )
     }
 }
 

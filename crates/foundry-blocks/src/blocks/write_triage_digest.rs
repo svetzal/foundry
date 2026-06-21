@@ -46,16 +46,11 @@ impl TaskBlock for WriteTriageDigest {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let p = parse_payload!(trigger, MaintenanceTriageCompletedPayload);
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let triage_dir = self.triage_dir.clone();
-
-        Box::pin(async move { write_digest(&project, throttle, &p, &triage_dir) })
+        digest_block_execute!(self, trigger, MaintenanceTriageCompletedPayload, [triage_dir])
     }
 }
 
-fn write_digest(
+fn write(
     project: &str,
     throttle: Throttle,
     payload: &MaintenanceTriageCompletedPayload,

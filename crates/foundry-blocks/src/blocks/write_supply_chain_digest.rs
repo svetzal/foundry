@@ -38,12 +38,7 @@ impl TaskBlock for WriteSupplyChainDigest {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let p = parse_payload!(trigger, SupplyChainRemediatedPayload);
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let dir = self.supply_chain_dir.clone();
-
-        Box::pin(async move { write(&project, throttle, &p, &dir) })
+        digest_block_execute!(self, trigger, SupplyChainRemediatedPayload, [supply_chain_dir])
     }
 }
 

@@ -241,6 +241,36 @@ macro_rules! agent_execution_block {
     };
 }
 
+/// Generates the complete `execute()` body for a digest-writer block.
+///
+/// All four digest-writing blocks share the same `execute()` skeleton: parse the
+/// trigger payload, clone `project` and `throttle` from the trigger, clone the
+/// listed `self` fields, then `Box::pin` an async block that calls the
+/// module-local `write()` function. The only variation is the payload type and
+/// which `self` fields to clone.
+///
+/// # Usage
+///
+/// ```ignore
+/// fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+///     digest_block_execute!(self, trigger, MyPayload, [field1, field2])
+/// }
+/// ```
+///
+/// `self` must be passed explicitly because `macro_rules!` macros cannot
+/// capture the `self` keyword implicitly. The module-local free function
+/// must be named `write` and must accept
+/// `(project: &str, throttle: Throttle, payload: &MyPayload, &field1, &field2, ...)`.
+macro_rules! digest_block_execute {
+    ($self:ident, $trigger:expr, $Payload:ty, [$($field:ident),+ $(,)?]) => {{
+        let p = parse_payload!($trigger, $Payload);
+        let project = $trigger.project.clone();
+        let throttle = $trigger.throttle;
+        $(let $field = $self.$field.clone();)+
+        Box::pin(async move { write(&project, throttle, &p, $(&$field),+) })
+    }};
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

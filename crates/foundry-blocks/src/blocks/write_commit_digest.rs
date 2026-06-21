@@ -35,12 +35,7 @@ impl TaskBlock for WriteCommitDigest {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let p = parse_payload!(trigger, CommitSummaryCompletedPayload);
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let digests_dir = self.digests_dir.clone();
-
-        Box::pin(async move { write(&project, throttle, &p, &digests_dir) })
+        digest_block_execute!(self, trigger, CommitSummaryCompletedPayload, [digests_dir])
     }
 }
 
