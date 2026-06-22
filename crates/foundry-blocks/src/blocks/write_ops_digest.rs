@@ -89,14 +89,13 @@ fn write(
 /// one-line totals summary, and the agent's body.
 fn render_full_document(date: &str, composed: &OpsSummaryCompletedPayload) -> String {
     let mut out = String::with_capacity(composed.markdown.len() + 128);
-    writeln!(out, "# Ops Digest — {date}\n").expect("write to String never fails");
-    writeln!(
+    wln!(out, "# Ops Digest — {date}\n");
+    wln!(
         out,
         "_{count} operational event{plural}._\n",
         count = composed.event_count,
         plural = if composed.event_count == 1 { "" } else { "s" },
-    )
-    .expect("write to String never fails");
+    );
     let body = composed.markdown.trim_end();
     out.push_str(body);
     if !body.ends_with('\n') {

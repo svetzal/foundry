@@ -71,8 +71,8 @@ fn write(
 /// Render the deterministic advisory digest markdown.
 fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
     let mut out = String::with_capacity(512);
-    writeln!(out, "# Supply-Chain Advisory Scan — {date}\n").expect("write to String never fails");
-    writeln!(
+    wln!(out, "# Supply-Chain Advisory Scan — {date}\n");
+    wln!(
         out,
         "_{findings} live finding{fp} across {affected} of {total} project{tp}._\n",
         findings = scan.finding_count,
@@ -80,15 +80,14 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         affected = scan.affected_project_count,
         total = scan.project_count,
         tp = plural(scan.project_count),
-    )
-    .expect("write to String never fails");
+    );
 
     if scan.finding_count == 0 {
-        writeln!(out, "No live supply-chain advisories. ✅\n").expect("write never fails");
+        wln!(out, "No live supply-chain advisories. ✅\n");
     } else {
         // Triage split: which findings carry a fix (mechanically auto-fixable)
         // vs need a human exploitability judgement (no fix available).
-        writeln!(
+        wln!(
             out,
             "_Triage: **{fixable} auto-fixable** · **{nofix} policy-call**{remediated}._\n",
             fixable = scan.fixable_count,
@@ -98,8 +97,7 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
             } else {
                 String::new()
             },
-        )
-        .expect("write never fails");
+        );
     }
 
     // Remediation — only when the auto-fix engine actually ran (gated on).
@@ -109,7 +107,7 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
     let affected: Vec<&ProjectSupplyChainScan> =
         scan.projects.iter().filter(|p| !p.findings.is_empty()).collect();
     if !affected.is_empty() {
-        writeln!(out, "## Live findings\n").expect("write never fails");
+        wln!(out, "## Live findings\n");
         for proj in affected {
             render_project_findings(&mut out, proj);
         }
@@ -127,16 +125,15 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         })
         .collect();
     if !lapsed.is_empty() {
-        writeln!(out, "## Lapsed acceptances (now live — re-decide)\n").expect("write never fails");
+        wln!(out, "## Lapsed acceptances (now live — re-decide)\n");
         for (project, s) in lapsed {
-            writeln!(
+            wln!(
                 out,
                 "- **{project}** · `{cve}` — acceptance expired {expired}: {reason}",
                 cve = s.cve,
                 expired = s.expired_on.as_deref().unwrap_or("?"),
                 reason = s.reason,
-            )
-            .expect("write never fails");
+            );
         }
         out.push('\n');
     }
@@ -153,10 +150,9 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         })
         .collect();
     if !active.is_empty() {
-        writeln!(out, "## Accepted (allowlisted)\n").expect("write never fails");
+        wln!(out, "## Accepted (allowlisted)\n");
         for (project, s) in active {
-            writeln!(out, "- **{project}** · `{cve}`: {reason}", cve = s.cve, reason = s.reason)
-                .expect("write never fails");
+            wln!(out, "- **{project}** · `{cve}`: {reason}", cve = s.cve, reason = s.reason);
         }
         out.push('\n');
     }
@@ -165,16 +161,15 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
     let errored: Vec<&ProjectSupplyChainScan> =
         scan.projects.iter().filter(|p| p.scan_error.is_some()).collect();
     if !errored.is_empty() {
-        writeln!(out, "## Not scanned\n").expect("write never fails");
+        wln!(out, "## Not scanned\n");
         for proj in errored {
-            writeln!(
+            wln!(
                 out,
                 "- **{project}** ({stack}) — {err}",
                 project = proj.project,
                 stack = proj.stack,
                 err = proj.scan_error.as_deref().unwrap_or("unknown error"),
-            )
-            .expect("write never fails");
+            );
         }
         out.push('\n');
     }
@@ -202,53 +197,49 @@ fn render_remediation(out: &mut String, outcomes: &[RemediationOutcome]) {
         .filter(|o| matches!(o.status.as_str(), "apply_failed" | "no_fixer" | "skipped"))
         .collect();
 
-    writeln!(out, "## Remediation\n").expect("write never fails");
+    wln!(out, "## Remediation\n");
 
     if !applied.is_empty() {
-        writeln!(out, "**Auto-fixed (verified by gates, committed):**\n")
-            .expect("write never fails");
+        wln!(out, "**Auto-fixed (verified by gates, committed):**\n");
         for o in &applied {
-            writeln!(
+            wln!(
                 out,
                 "- **{project}** · `{cve}` — `{package}` → {fix}",
                 project = o.project,
                 cve = o.cve,
                 package = o.package,
                 fix = o.fix_version.as_deref().unwrap_or("?"),
-            )
-            .expect("write never fails");
+            );
         }
         out.push('\n');
     }
 
     if !reverted.is_empty() {
-        writeln!(out, "**Reverted (fix broke the gates):**\n").expect("write never fails");
+        wln!(out, "**Reverted (fix broke the gates):**\n");
         for o in &reverted {
-            writeln!(
+            wln!(
                 out,
                 "- **{project}** · `{cve}` — `{package}`: {detail}",
                 project = o.project,
                 cve = o.cve,
                 package = o.package,
                 detail = o.detail.as_deref().unwrap_or("reverted"),
-            )
-            .expect("write never fails");
+            );
         }
         out.push('\n');
     }
 
     if !unapplied.is_empty() {
-        writeln!(out, "**Not auto-fixed (needs attention):**\n").expect("write never fails");
+        wln!(out, "**Not auto-fixed (needs attention):**\n");
         for o in &unapplied {
-            writeln!(
+            wln!(
                 out,
                 "- **{project}** · `{cve}` — `{package}`: {detail}",
                 project = o.project,
                 cve = o.cve,
                 package = o.package,
                 detail = o.detail.as_deref().unwrap_or(o.status.as_str()),
-            )
-            .expect("write never fails");
+            );
         }
         out.push('\n');
     }
@@ -256,11 +247,11 @@ fn render_remediation(out: &mut String, outcomes: &[RemediationOutcome]) {
 
 /// Render one project's live-findings table.
 fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
-    writeln!(out, "### {} ({})\n", proj.project, proj.stack).expect("write never fails");
-    writeln!(out, "| Advisory | Package | Severity | Version | Fix |").expect("write never fails");
-    writeln!(out, "|----------|---------|----------|---------|-----|").expect("write never fails");
+    wln!(out, "### {} ({})\n", proj.project, proj.stack);
+    wln!(out, "| Advisory | Package | Severity | Version | Fix |");
+    wln!(out, "|----------|---------|----------|---------|-----|");
     for f in &proj.findings {
-        writeln!(
+        wln!(
             out,
             "| `{cve}` | {package} | {severity} | {version} | {fix} |",
             cve = f.cve,
@@ -268,8 +259,7 @@ fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
             severity = f.severity.as_deref().unwrap_or("—"),
             version = f.version.as_deref().unwrap_or("—"),
             fix = f.fix_version.as_deref().unwrap_or("policy call"),
-        )
-        .expect("write never fails");
+        );
     }
     out.push('\n');
 }

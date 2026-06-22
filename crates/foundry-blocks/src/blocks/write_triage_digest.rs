@@ -91,40 +91,33 @@ fn write(
 fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> String {
     let mut out = String::with_capacity(2048);
 
-    writeln!(out, "# Maintenance Triage — {date}\n").expect("write to String never fails");
+    wln!(out, "# Maintenance Triage — {date}\n");
 
     // Summary table
-    writeln!(out, "| Category | Count |").expect("write to String never fails");
-    writeln!(out, "|----------|-------|").expect("write to String never fails");
-    writeln!(out, "| Total failures | {} |", payload.total_failures)
-        .expect("write to String never fails");
-    writeln!(out, "| Infra-suppressed | {} |", payload.suppressed_count)
-        .expect("write to String never fails");
-    writeln!(out, "| Auto-fixable | {} |", payload.auto_fixable_count)
-        .expect("write to String never fails");
-    writeln!(out, "| Policy calls | {} |", payload.policy_count)
-        .expect("write to String never fails");
-    writeln!(out, "| Needs investigation | {} |", payload.investigation_count)
-        .expect("write to String never fails");
-    writeln!(out, "| Escalations | {} |\n", payload.escalation_count)
-        .expect("write to String never fails");
+    wln!(out, "| Category | Count |");
+    wln!(out, "|----------|-------|");
+    wln!(out, "| Total failures | {} |", payload.total_failures);
+    wln!(out, "| Infra-suppressed | {} |", payload.suppressed_count);
+    wln!(out, "| Auto-fixable | {} |", payload.auto_fixable_count);
+    wln!(out, "| Policy calls | {} |", payload.policy_count);
+    wln!(out, "| Needs investigation | {} |", payload.investigation_count);
+    wln!(out, "| Escalations | {} |\n", payload.escalation_count);
 
     // Escalations first — highest priority
     let escalations: Vec<&FailureVerdict> =
         payload.verdicts.iter().filter(|v| v.decision == Decision::Escalate).collect();
     if !escalations.is_empty() {
-        writeln!(out, "## Deadlock Escalations\n").expect("write to String never fails");
+        wln!(out, "## Deadlock Escalations\n");
         for v in &escalations {
-            writeln!(
+            wln!(
                 out,
                 "- **{}** / `{}` — {}",
                 v.project,
                 v.gate,
                 v.evidence.lines().next().unwrap_or("")
-            )
-            .expect("write to String never fails");
+            );
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     // Auto-fixable proposals
@@ -134,49 +127,46 @@ fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> S
         .filter(|v| v.decision == Decision::AutoFixable)
         .collect();
     if !auto_fixable.is_empty() {
-        writeln!(out, "## Auto-fixable Proposals\n").expect("write to String never fails");
+        wln!(out, "## Auto-fixable Proposals\n");
         for v in &auto_fixable {
             let cmd = v.proposed_command.as_deref().unwrap_or("(no fix command available)");
-            writeln!(out, "- **{}** / `{}` — run `{cmd}`", v.project, v.gate)
-                .expect("write to String never fails");
+            wln!(out, "- **{}** / `{}` — run `{cmd}`", v.project, v.gate);
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     // Infra-suppressed incidents
     if !payload.infra_incidents.is_empty() {
-        writeln!(out, "## Infra-suppressed (Correlated)\n").expect("write to String never fails");
+        wln!(out, "## Infra-suppressed (Correlated)\n");
         for incident in &payload.infra_incidents {
             let projects = incident.projects.join(", ");
-            writeln!(
+            wln!(
                 out,
                 "- **{}** — projects: {} — sample: `{}`",
                 incident.signature,
                 projects,
                 incident.sample_evidence.lines().next().unwrap_or("")
-            )
-            .expect("write to String never fails");
+            );
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     // Policy calls
     let policy: Vec<&FailureVerdict> =
         payload.verdicts.iter().filter(|v| v.decision == Decision::PolicyCall).collect();
     if !policy.is_empty() {
-        writeln!(out, "## Policy Calls\n").expect("write to String never fails");
+        wln!(out, "## Policy Calls\n");
         for v in &policy {
-            writeln!(
+            wln!(
                 out,
                 "- **{}** / `{}` ({}) — {}",
                 v.project,
                 v.gate,
                 v.class,
                 v.evidence.lines().next().unwrap_or("")
-            )
-            .expect("write to String never fails");
+            );
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     // Needs investigation
@@ -186,19 +176,18 @@ fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> S
         .filter(|v| v.decision == Decision::NeedsInvestigation)
         .collect();
     if !investigation.is_empty() {
-        writeln!(out, "## Needs Investigation\n").expect("write to String never fails");
+        wln!(out, "## Needs Investigation\n");
         for v in &investigation {
-            writeln!(
+            wln!(
                 out,
                 "- **{}** / `{}` ({}) — {}",
                 v.project,
                 v.gate,
                 v.class,
                 v.evidence.lines().next().unwrap_or("")
-            )
-            .expect("write to String never fails");
+            );
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     // Benign / reclassified (informational)
@@ -208,12 +197,11 @@ fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> S
         .filter(|v| v.decision == Decision::ReclassifyBenign)
         .collect();
     if !benign.is_empty() {
-        writeln!(out, "## Reclassified as Benign\n").expect("write to String never fails");
+        wln!(out, "## Reclassified as Benign\n");
         for v in &benign {
-            writeln!(out, "- **{}** / `{}`", v.project, v.gate)
-                .expect("write to String never fails");
+            wln!(out, "- **{}** / `{}`", v.project, v.gate);
         }
-        writeln!(out).expect("write to String never fails");
+        wln!(out);
     }
 
     out

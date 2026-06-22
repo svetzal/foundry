@@ -195,10 +195,10 @@ fn build_prompt(observed: &CommitsObservedPayload) -> String {
 }
 
 fn push_project_block(out: &mut String, project: &ProjectCommits) {
-    writeln!(out, "### {}", project.name).expect("write to String never fails");
-    writeln!(out, "- branch: `{}`", project.branch).expect("write to String never fails");
+    wln!(out, "### {}", project.name);
+    wln!(out, "- branch: `{}`", project.branch);
     if let Some(err) = &project.error {
-        writeln!(out, "- error: {err}\n").expect("write to String never fails");
+        wln!(out, "- error: {err}\n");
         return;
     }
     if project.commits.is_empty() {
@@ -215,15 +215,14 @@ fn push_commit_line(out: &mut String, commit: &CommitInfo) {
     // Carry the full SHA in source data so the agent can render the 7-char
     // prefix in its output without truncation ambiguity. `SHA_PREFIX_LEN`
     // remains the documented prefix length used in the fallback path.
-    writeln!(
+    wln!(
         out,
         "- `{sha}` — {subject} ({author}, {ts})",
         sha = commit.sha,
         subject = commit.subject,
         author = commit.author,
         ts = commit.timestamp,
-    )
-    .expect("write to String never fails");
+    );
 }
 
 /// Fallback digest used when the agent cannot be invoked or fails. Returns a
@@ -232,21 +231,19 @@ fn push_commit_line(out: &mut String, commit: &CommitInfo) {
 fn fallback_digest(observed: &CommitsObservedPayload, agent_error: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(err) = agent_error {
-        writeln!(out, "> ⚠ Agent unavailable; this digest is a raw fallback. ({err})\n")
-            .expect("write to String never fails");
+        wln!(out, "> ⚠ Agent unavailable; this digest is a raw fallback. ({err})\n");
     }
-    writeln!(
+    wln!(
         out,
         "{} commits across {} projects in the last {} hours.\n",
         observed.total_commits(),
         observed.project_count(),
         observed.window_hours,
-    )
-    .expect("write to String never fails");
+    );
     for project in &observed.projects {
-        writeln!(out, "## {}", project.name).expect("write to String never fails");
+        wln!(out, "## {}", project.name);
         if let Some(err) = &project.error {
-            writeln!(out, "- error: {err}\n").expect("write to String never fails");
+            wln!(out, "- error: {err}\n");
             continue;
         }
         if project.commits.is_empty() {
@@ -255,8 +252,7 @@ fn fallback_digest(observed: &CommitsObservedPayload, agent_error: Option<&str>)
         }
         for commit in &project.commits {
             let sha = commit.sha.chars().take(SHA_PREFIX_LEN).collect::<String>();
-            writeln!(out, "- `{sha}` {} — {}", commit.subject, commit.author)
-                .expect("write to String never fails");
+            wln!(out, "- `{sha}` {} — {}", commit.subject, commit.author);
         }
         out.push('\n');
     }

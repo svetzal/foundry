@@ -68,16 +68,15 @@ fn write(
 /// one-line totals summary, and the agent's body.
 fn render_full_document(date: &str, composed: &CommitSummaryCompletedPayload) -> String {
     let mut out = String::with_capacity(composed.markdown.len() + 128);
-    writeln!(out, "# Commit Digest — {date}\n").expect("write to String never fails");
-    writeln!(
+    wln!(out, "# Commit Digest — {date}\n");
+    wln!(
         out,
         "_{commits} commit{commits_plural} across {projects} project{projects_plural}._\n",
         commits = composed.total_commits,
         commits_plural = if composed.total_commits == 1 { "" } else { "s" },
         projects = composed.project_count,
         projects_plural = if composed.project_count == 1 { "" } else { "s" },
-    )
-    .expect("write to String never fails");
+    );
     let body = composed.markdown.trim_end();
     out.push_str(body);
     if !body.ends_with('\n') {

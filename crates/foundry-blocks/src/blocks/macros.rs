@@ -241,6 +241,29 @@ macro_rules! agent_execution_block {
     };
 }
 
+/// Infallible `writeln!` into a `String`.
+///
+/// Wraps `std::writeln!` for the common pattern of writing to a `String`
+/// (which implements `std::fmt::Write` and never returns `Err`). Requires
+/// `std::fmt::Write` to be in scope at the call site.
+///
+/// # Usage
+///
+/// ```ignore
+/// use std::fmt::Write as _;
+/// let mut out = String::new();
+/// wln!(out);                       // blank line
+/// wln!(out, "# {}", heading);      // formatted line
+/// ```
+macro_rules! wln {
+    ($dst:expr) => {
+        ::std::writeln!($dst).expect("write to String never fails")
+    };
+    ($dst:expr, $($arg:tt)*) => {
+        ::std::writeln!($dst, $($arg)*).expect("write to String never fails")
+    };
+}
+
 /// Generates the complete `execute()` body for a digest-writer block.
 ///
 /// All four digest-writing blocks share the same `execute()` skeleton: parse the
