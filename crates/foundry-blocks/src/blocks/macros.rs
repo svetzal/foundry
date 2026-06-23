@@ -255,6 +255,7 @@ macro_rules! agent_execution_block {
 /// wln!(out);                       // blank line
 /// wln!(out, "# {}", heading);      // formatted line
 /// ```
+#[macro_export]
 macro_rules! wln {
     ($dst:expr) => {
         ::std::writeln!($dst).expect("write to String never fails")
