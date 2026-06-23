@@ -7,6 +7,7 @@
 //! which clones the trigger fields and `self` path fields, then dispatches
 //! to the module-local `write()` function.
 
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,27 @@ pub(crate) fn write_atomic(dir: &Path, target: &Path, content: &str) -> anyhow::
     }
     std::fs::rename(&tmp, target)?;
     Ok(())
+}
+
+/// Return `""` for singular (n == 1) and `"s"` for plural — used in summary lines.
+pub(crate) const fn plural(n: u64) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Render the standard agent-body digest markdown: header, italic summary line, body.
+///
+/// Used by the ops and commit digest writers whose structure is identical — they
+/// differ only in the title and summary-line text, both supplied by the caller.
+pub(crate) fn render_agent_body_digest(title: &str, summary_line: &str, body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + 128);
+    wln!(out, "# {title}\n");
+    wln!(out, "{summary_line}\n");
+    let trimmed = body.trim_end();
+    out.push_str(trimmed);
+    if !trimmed.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Return the today-date string and the corresponding `{dir}/{YYYY-MM-DD}.md` path.
@@ -120,6 +142,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plural_returns_empty_for_singular_and_s_for_plural() {
+        assert_eq!(plural(1), "");
+        assert_eq!(plural(0), "s");
+        assert_eq!(plural(2), "s");
+    }
+
+    #[test]
+    fn render_agent_body_digest_includes_header_summary_and_body() {
+        let result = render_agent_body_digest(
+            "Ops Digest — 2026-06-23",
+            "_7 operational events._",
+            "## Section\n- item\n",
+        );
+        assert!(result.starts_with("# Ops Digest — 2026-06-23\n"));
+        assert!(result.contains("_7 operational events._"));
+        assert!(result.contains("## Section"));
+        assert!(result.ends_with('\n'), "must end with a single newline");
+        assert!(!result.ends_with("\n\n"), "must not end with two newlines");
+    }
+
+    #[test]
+    fn render_agent_body_digest_adds_trailing_newline_when_body_lacks_one() {
+        let result = render_agent_body_digest(
+            "Test Digest — 2026-06-23",
+            "_1 event._",
+            "body without newline",
+        );
+        assert!(result.ends_with('\n'));
+    }
 
     #[test]
     fn write_atomic_creates_dir_writes_content_and_leaves_no_tmp() {

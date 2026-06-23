@@ -5,7 +5,6 @@
 //! `CommitDigestCompleted`. On a dry-run firing the file is not written —
 //! the chain still terminates cleanly with `digest_path = None`.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use foundry_sdk::event::{Event, EventType};
@@ -67,22 +66,18 @@ fn write(
 /// Compose the on-disk markdown: a `# Commit Digest — {date}` header, a
 /// one-line totals summary, and the agent's body.
 fn render_full_document(date: &str, composed: &CommitSummaryCompletedPayload) -> String {
-    let mut out = String::with_capacity(composed.markdown.len() + 128);
-    wln!(out, "# Commit Digest — {date}\n");
-    wln!(
-        out,
-        "_{commits} commit{commits_plural} across {projects} project{projects_plural}._\n",
-        commits = composed.total_commits,
-        commits_plural = if composed.total_commits == 1 { "" } else { "s" },
-        projects = composed.project_count,
-        projects_plural = if composed.project_count == 1 { "" } else { "s" },
+    let commits = composed.total_commits;
+    let projects = composed.project_count;
+    let summary = format!(
+        "_{commits} commit{} across {projects} project{}._",
+        super::plural(commits),
+        super::plural(projects),
     );
-    let body = composed.markdown.trim_end();
-    out.push_str(body);
-    if !body.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+    super::render_agent_body_digest(
+        &format!("Commit Digest — {date}"),
+        &summary,
+        &composed.markdown,
+    )
 }
 
 #[cfg(test)]

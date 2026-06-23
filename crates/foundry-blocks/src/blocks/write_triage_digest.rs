@@ -87,13 +87,20 @@ fn write(
 // Rendering
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_lines)]
 fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> String {
     let mut out = String::with_capacity(2048);
-
     wln!(out, "# Maintenance Triage — {date}\n");
+    render_summary_table(&mut out, payload);
+    render_escalations(&mut out, payload);
+    render_auto_fixable(&mut out, payload);
+    render_infra_suppressed(&mut out, payload);
+    render_policy_calls(&mut out, payload);
+    render_investigation(&mut out, payload);
+    render_benign(&mut out, payload);
+    out
+}
 
-    // Summary table
+fn render_summary_table(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     wln!(out, "| Category | Count |");
     wln!(out, "|----------|-------|");
     wln!(out, "| Total failures | {} |", payload.total_failures);
@@ -102,109 +109,119 @@ fn render_document(date: &str, payload: &MaintenanceTriageCompletedPayload) -> S
     wln!(out, "| Policy calls | {} |", payload.policy_count);
     wln!(out, "| Needs investigation | {} |", payload.investigation_count);
     wln!(out, "| Escalations | {} |\n", payload.escalation_count);
+}
 
-    // Escalations first — highest priority
+fn render_escalations(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     let escalations: Vec<&FailureVerdict> =
         payload.verdicts.iter().filter(|v| v.decision == Decision::Escalate).collect();
-    if !escalations.is_empty() {
-        wln!(out, "## Deadlock Escalations\n");
-        for v in &escalations {
-            wln!(
-                out,
-                "- **{}** / `{}` — {}",
-                v.project,
-                v.gate,
-                v.evidence.lines().next().unwrap_or("")
-            );
-        }
-        wln!(out);
+    if escalations.is_empty() {
+        return;
     }
+    wln!(out, "## Deadlock Escalations\n");
+    for v in &escalations {
+        wln!(
+            out,
+            "- **{}** / `{}` — {}",
+            v.project,
+            v.gate,
+            v.evidence.lines().next().unwrap_or("")
+        );
+    }
+    wln!(out);
+}
 
-    // Auto-fixable proposals
+fn render_auto_fixable(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     let auto_fixable: Vec<&FailureVerdict> = payload
         .verdicts
         .iter()
         .filter(|v| v.decision == Decision::AutoFixable)
         .collect();
-    if !auto_fixable.is_empty() {
-        wln!(out, "## Auto-fixable Proposals\n");
-        for v in &auto_fixable {
-            let cmd = v.proposed_command.as_deref().unwrap_or("(no fix command available)");
-            wln!(out, "- **{}** / `{}` — run `{cmd}`", v.project, v.gate);
-        }
-        wln!(out);
+    if auto_fixable.is_empty() {
+        return;
     }
-
-    // Infra-suppressed incidents
-    if !payload.infra_incidents.is_empty() {
-        wln!(out, "## Infra-suppressed (Correlated)\n");
-        for incident in &payload.infra_incidents {
-            let projects = incident.projects.join(", ");
-            wln!(
-                out,
-                "- **{}** — projects: {} — sample: `{}`",
-                incident.signature,
-                projects,
-                incident.sample_evidence.lines().next().unwrap_or("")
-            );
-        }
-        wln!(out);
+    wln!(out, "## Auto-fixable Proposals\n");
+    for v in &auto_fixable {
+        let cmd = v.proposed_command.as_deref().unwrap_or("(no fix command available)");
+        wln!(out, "- **{}** / `{}` — run `{cmd}`", v.project, v.gate);
     }
+    wln!(out);
+}
 
-    // Policy calls
+fn render_infra_suppressed(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
+    if payload.infra_incidents.is_empty() {
+        return;
+    }
+    wln!(out, "## Infra-suppressed (Correlated)\n");
+    for incident in &payload.infra_incidents {
+        let projects = incident.projects.join(", ");
+        wln!(
+            out,
+            "- **{}** — projects: {} — sample: `{}`",
+            incident.signature,
+            projects,
+            incident.sample_evidence.lines().next().unwrap_or("")
+        );
+    }
+    wln!(out);
+}
+
+fn render_policy_calls(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     let policy: Vec<&FailureVerdict> =
         payload.verdicts.iter().filter(|v| v.decision == Decision::PolicyCall).collect();
-    if !policy.is_empty() {
-        wln!(out, "## Policy Calls\n");
-        for v in &policy {
-            wln!(
-                out,
-                "- **{}** / `{}` ({}) — {}",
-                v.project,
-                v.gate,
-                v.class,
-                v.evidence.lines().next().unwrap_or("")
-            );
-        }
-        wln!(out);
+    if policy.is_empty() {
+        return;
     }
+    wln!(out, "## Policy Calls\n");
+    for v in &policy {
+        wln!(
+            out,
+            "- **{}** / `{}` ({}) — {}",
+            v.project,
+            v.gate,
+            v.class,
+            v.evidence.lines().next().unwrap_or("")
+        );
+    }
+    wln!(out);
+}
 
-    // Needs investigation
+fn render_investigation(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     let investigation: Vec<&FailureVerdict> = payload
         .verdicts
         .iter()
         .filter(|v| v.decision == Decision::NeedsInvestigation)
         .collect();
-    if !investigation.is_empty() {
-        wln!(out, "## Needs Investigation\n");
-        for v in &investigation {
-            wln!(
-                out,
-                "- **{}** / `{}` ({}) — {}",
-                v.project,
-                v.gate,
-                v.class,
-                v.evidence.lines().next().unwrap_or("")
-            );
-        }
-        wln!(out);
+    if investigation.is_empty() {
+        return;
     }
+    wln!(out, "## Needs Investigation\n");
+    for v in &investigation {
+        wln!(
+            out,
+            "- **{}** / `{}` ({}) — {}",
+            v.project,
+            v.gate,
+            v.class,
+            v.evidence.lines().next().unwrap_or("")
+        );
+    }
+    wln!(out);
+}
 
-    // Benign / reclassified (informational)
+fn render_benign(out: &mut String, payload: &MaintenanceTriageCompletedPayload) {
     let benign: Vec<&FailureVerdict> = payload
         .verdicts
         .iter()
         .filter(|v| v.decision == Decision::ReclassifyBenign)
         .collect();
-    if !benign.is_empty() {
-        wln!(out, "## Reclassified as Benign\n");
-        for v in &benign {
-            wln!(out, "- **{}** / `{}`", v.project, v.gate);
-        }
-        wln!(out);
+    if benign.is_empty() {
+        return;
     }
-
-    out
+    wln!(out, "## Reclassified as Benign\n");
+    for v in &benign {
+        wln!(out, "- **{}** / `{}`", v.project, v.gate);
+    }
+    wln!(out);
 }
 
 // ---------------------------------------------------------------------------

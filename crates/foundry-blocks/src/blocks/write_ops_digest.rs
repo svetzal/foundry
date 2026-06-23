@@ -6,7 +6,6 @@
 //! On a dry-run firing neither the file nor the watermark is written — the
 //! chain still terminates cleanly with `digest_path = None`.
 
-use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -88,20 +87,9 @@ fn write(
 /// Compose the on-disk markdown: a `# Ops Digest — {date}` header, a
 /// one-line totals summary, and the agent's body.
 fn render_full_document(date: &str, composed: &OpsSummaryCompletedPayload) -> String {
-    let mut out = String::with_capacity(composed.markdown.len() + 128);
-    wln!(out, "# Ops Digest — {date}\n");
-    wln!(
-        out,
-        "_{count} operational event{plural}._\n",
-        count = composed.event_count,
-        plural = if composed.event_count == 1 { "" } else { "s" },
-    );
-    let body = composed.markdown.trim_end();
-    out.push_str(body);
-    if !body.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+    let count = composed.event_count;
+    let summary = format!("_{count} operational event{}._", super::plural(count));
+    super::render_agent_body_digest(&format!("Ops Digest — {date}"), &summary, &composed.markdown)
 }
 
 /// Atomically write a new watermark value.

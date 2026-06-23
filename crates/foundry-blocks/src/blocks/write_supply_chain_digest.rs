@@ -76,10 +76,10 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         out,
         "_{findings} live finding{fp} across {affected} of {total} project{tp}._\n",
         findings = scan.finding_count,
-        fp = plural(scan.finding_count),
+        fp = super::plural(scan.finding_count),
         affected = scan.affected_project_count,
         total = scan.project_count,
-        tp = plural(scan.project_count),
+        tp = super::plural(scan.project_count),
     );
 
     if scan.finding_count == 0 {
@@ -262,10 +262,6 @@ fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
         );
     }
     out.push('\n');
-}
-
-const fn plural(n: u64) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]
