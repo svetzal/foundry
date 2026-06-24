@@ -7,7 +7,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, invoke_agent};
+use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
 const DRIFT_SCOUT_PROMPT: &str = r#"You are a BUG SCOUT agent.
 
@@ -172,9 +172,12 @@ impl TaskBlock for ScoutDrift {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let provider = super::chain_agent_provider(&trigger.payload);
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
+        let provider = super::chain_agent_provider(&payload);
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);

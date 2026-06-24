@@ -17,7 +17,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
-use super::emit_result;
+use super::{TriggerContext, emit_result};
 
 /// Width of the wall-clock window passed to `git log --since`. Constant so the
 /// emitted payload's `window_hours` field always matches the actual query.
@@ -50,8 +50,9 @@ impl TaskBlock for ObserveCommits {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         // Snapshot the active registry under a short read lock; drop before await.
         let snapshot: Vec<(String, String, PathBuf)> = {

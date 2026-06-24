@@ -9,6 +9,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentGateway, AgentProvider};
 
+use super::TriggerContext;
+
 agent_block_new!(
     /// Attempts to fix a failing GitHub Actions pipeline.
     /// Mutator -- simulated success at `dry_run`.
@@ -49,8 +51,11 @@ impl TaskBlock for RemediatePipeline {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only remediate when pipeline is failing.
         let p = parse_payload!(trigger, PipelineCheckedPayload);
@@ -62,7 +67,7 @@ impl TaskBlock for RemediatePipeline {
 
         let failure_logs = p.failure_logs.unwrap_or_default();
         let run_name = p.run_name.clone().unwrap_or_default();
-        let provider = super::chain_agent_provider(&trigger.payload);
+        let provider = super::chain_agent_provider(&payload);
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);

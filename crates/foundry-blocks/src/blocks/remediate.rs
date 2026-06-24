@@ -8,6 +8,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::AgentGateway;
 
+use super::TriggerContext;
+
 agent_block_new!(
     /// Attempts to fix a vulnerability on the main branch.
     /// Mutator — simulated success at `dry_run`.
@@ -39,8 +41,11 @@ impl TaskBlock for RemediateVulnerability {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project,
+            throttle,
+            payload,
+        } = TriggerContext::from_trigger(trigger);
 
         let audit_payload = parse_payload!(trigger, MainBranchAuditedPayload);
 
@@ -55,7 +60,7 @@ impl TaskBlock for RemediateVulnerability {
         // Resolve project agent and path from registry.
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
-        let provider = super::chain_agent_provider(&trigger.payload);
+        let provider = super::chain_agent_provider(&payload);
 
         tracing::info!(%cve, "remediating vulnerability");
 

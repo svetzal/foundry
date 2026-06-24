@@ -7,6 +7,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::ScannerGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Checks whether the main branch still contains a detected vulnerability.
     /// Observer — always runs regardless of throttle.
@@ -26,8 +28,9 @@ impl TaskBlock for AuditMainBranch {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, ReleaseTagAuditedPayload);
 

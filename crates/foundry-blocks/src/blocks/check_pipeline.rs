@@ -8,6 +8,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Checks whether a project's GitHub Actions pipeline is passing.
     /// Observer -- always runs regardless of throttle.
@@ -27,8 +29,9 @@ impl TaskBlock for CheckPipeline {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         let entry = require_project!(self, project);
         let shell = Arc::clone(&self.shell);

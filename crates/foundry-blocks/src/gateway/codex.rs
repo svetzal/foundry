@@ -133,52 +133,10 @@ impl CliAgentAdapter for CodexAdapter {
     }
 }
 
-/// Production [`AgentGateway`] that invokes the `codex` CLI and emits
-/// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events.
-pub struct CodexAgentGateway(CliAgentGateway<CodexAdapter>);
-
-impl CodexAgentGateway {
-    /// Backwards-compatible constructor: default session log dir, default stream
-    /// runner, and a broadcast channel with no external receivers.
-    pub fn new(shell: Arc<dyn ShellGateway>) -> Self {
-        let (event_tx, _) = broadcast::channel(16);
-        Self::new_with_streaming(
-            shell,
-            Arc::new(ProcessAgentStreamRunner),
-            foundry_sdk::paths::agent_sessions_dir(),
-            event_tx,
-        )
-    }
-
-    pub fn new_with_streaming(
-        shell: Arc<dyn ShellGateway>,
-        stream_runner: Arc<dyn AgentStreamRunner>,
-        session_log_dir: PathBuf,
-        event_tx: broadcast::Sender<Event>,
-    ) -> Self {
-        Self(CliAgentGateway::new_with_adapter(
-            shell,
-            stream_runner,
-            session_log_dir,
-            event_tx,
-            CodexAdapter,
-        ))
-    }
-
-    /// Override the resolved tier/effort maps (from the agent config).
-    #[must_use]
-    pub fn with_models(self, models: ProviderModels) -> Self {
-        Self(self.0.with_models(models))
-    }
-}
-
-impl AgentGateway for CodexAgentGateway {
-    fn invoke<'a>(
-        &'a self,
-        request: &'a AgentRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
-        self.0.invoke(request)
-    }
+cli_agent_gateway! {
+    /// Production [`AgentGateway`] that invokes the `codex` CLI and emits
+    /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events.
+    CodexAgentGateway, CodexAdapter
 }
 
 // --- Pure helpers (unit-tested without spawning) ----------------------------

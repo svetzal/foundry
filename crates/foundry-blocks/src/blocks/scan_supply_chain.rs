@@ -24,6 +24,8 @@ use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::ScannerGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Scans every active project's working tree for dependency advisories and
     /// classifies findings against each repo's allowlist. Observer — runs
@@ -41,8 +43,9 @@ impl TaskBlock for ScanSupplyChain {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         // Snapshot the active project list under a short-lived read guard so the
         // lock is never held across an `.await`.

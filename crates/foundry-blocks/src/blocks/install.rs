@@ -11,6 +11,8 @@ use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult
 
 use crate::gateway::ShellGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
     /// Mutator — simulated success at `dry_run`.
@@ -54,8 +56,9 @@ impl TaskBlock for InstallLocally {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         // Resolve install config and project path from registry.
         let entry = match super::read_registry(&self.registry) {

@@ -295,6 +295,39 @@ macro_rules! digest_block_execute {
     }};
 }
 
+/// Generates the `Box::pin(async move { super::emit_result(...) })` tail for
+/// simple Observer `execute()` bodies.
+///
+/// Use when the `execute` body is: extract project/throttle, derive a value,
+/// optionally log, then emit exactly one event via `super::emit_result`. The
+/// macro replaces the five-line `Box::pin(async move { super::emit_result(...) })`
+/// with a single call, keeping the per-block logic visible above it.
+///
+/// # Usage
+///
+/// ```ignore
+/// fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+///     let project = trigger.project.clone();
+///     let throttle = trigger.throttle;
+///     let value = /* ... derived expression ... */;
+///     emit_observer!(project, throttle, format!("msg: {value}"), SomeEventType,
+///         SomePayload { field: value })
+/// }
+/// ```
+macro_rules! emit_observer {
+    ($project:ident, $throttle:ident, $msg:expr, $event_type:ident, $payload:expr $(,)?) => {
+        Box::pin(async move {
+            super::emit_result(
+                $msg,
+                foundry_sdk::event::EventType::$event_type,
+                &$project,
+                $throttle,
+                &$payload,
+            )
+        })
+    };
+}
+
 /// Generates a struct definition with `registry` and one or more gateway fields,
 /// a `pub fn new(registry)` constructor that wires the production gateway
 /// defaults, and a `#[cfg(test)]` test constructor.

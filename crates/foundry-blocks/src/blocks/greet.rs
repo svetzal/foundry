@@ -4,6 +4,8 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
+use super::TriggerContext;
+
 /// Composes a greeting message from a greet request.
 /// Observer — always runs regardless of throttle.
 pub struct ComposeGreeting;
@@ -16,8 +18,9 @@ impl TaskBlock for ComposeGreeting {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
         let name_owned =
             trigger.parse_payload::<GreetingRequestedPayload>().ok().and_then(|p| p.name);
         let name = name_owned.as_deref().unwrap_or("world");
@@ -25,15 +28,13 @@ impl TaskBlock for ComposeGreeting {
 
         tracing::info!(%greeting, "composed greeting");
 
-        Box::pin(async move {
-            super::emit_result(
-                format!("Composed: {greeting}"),
-                EventType::GreetingComposed,
-                &project,
-                throttle,
-                &GreetingComposedPayload { greeting },
-            )
-        })
+        emit_observer!(
+            project,
+            throttle,
+            format!("Composed: {greeting}"),
+            GreetingComposed,
+            GreetingComposedPayload { greeting }
+        )
     }
 }
 
@@ -49,25 +50,24 @@ impl TaskBlock for DeliverGreeting {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
         let greeting = parse_payload!(trigger, GreetingComposedPayload).greeting;
 
         tracing::info!(%greeting, "delivering greeting");
 
-        Box::pin(async move {
-            super::emit_result(
-                format!("Delivered: {greeting}"),
-                EventType::GreetingDelivered,
-                &project,
-                throttle,
-                &GreetingDeliveredPayload {
-                    delivered: true,
-                    greeting,
-                    dry_run: None,
-                },
-            )
-        })
+        emit_observer!(
+            project,
+            throttle,
+            format!("Delivered: {greeting}"),
+            GreetingDelivered,
+            GreetingDeliveredPayload {
+                delivered: true,
+                greeting,
+                dry_run: None
+            }
+        )
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {

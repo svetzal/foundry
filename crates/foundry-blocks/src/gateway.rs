@@ -37,6 +37,11 @@ use engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation};
 #[cfg(test)]
 pub use foundry_sdk::gateway::fakes;
 
+// Shared macro for the CLI-backed gateway newtype wrapper. `#[macro_use]` exports
+// the macro up to this module and down into all submodules (opencode, codex).
+#[macro_use]
+mod macros;
+
 // The opencode-backed agent gateway (OpenAI via the `opencode` CLI). Lives in its
 // own module — a natural seam: a self-contained agent provider that could one day
 // move to an optional provider crate. `ClaudeAgentGateway` stays here unchanged.
@@ -156,55 +161,12 @@ impl CliAgentAdapter for ClaudeAdapter {
     }
 }
 
-/// Production implementation that invokes the Claude CLI via a streaming runner,
-/// tees stdout to `~/.foundry/agent-sessions/<session_id>.jsonl`, and emits
-/// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events on the supplied
-/// broadcast channel.
-pub struct ClaudeAgentGateway(CliAgentGateway<ClaudeAdapter>);
-
-impl ClaudeAgentGateway {
-    /// Backwards-compatible constructor. Uses default session log dir and a
-    /// broadcast channel with no external receivers (events are emitted into
-    /// the void). Production code paths should call `new_with_streaming`.
-    pub fn new(shell: Arc<dyn ShellGateway>) -> Self {
-        let (event_tx, _) = broadcast::channel(16);
-        Self::new_with_streaming(
-            shell,
-            Arc::new(ProcessAgentStreamRunner),
-            foundry_sdk::paths::agent_sessions_dir(),
-            event_tx,
-        )
-    }
-
-    pub fn new_with_streaming(
-        shell: Arc<dyn ShellGateway>,
-        stream_runner: Arc<dyn AgentStreamRunner>,
-        session_log_dir: PathBuf,
-        event_tx: broadcast::Sender<Event>,
-    ) -> Self {
-        Self(CliAgentGateway::new_with_adapter(
-            shell,
-            stream_runner,
-            session_log_dir,
-            event_tx,
-            ClaudeAdapter,
-        ))
-    }
-
-    /// Override the resolved tier/effort maps (from the agent config).
-    #[must_use]
-    pub fn with_models(self, models: ProviderModels) -> Self {
-        Self(self.0.with_models(models))
-    }
-}
-
-impl AgentGateway for ClaudeAgentGateway {
-    fn invoke<'a>(
-        &'a self,
-        request: &'a AgentRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
-        self.0.invoke(request)
-    }
+cli_agent_gateway! {
+    /// Production implementation that invokes the Claude CLI via a streaming runner,
+    /// tees stdout to `~/.foundry/agent-sessions/<session_id>.jsonl`, and emits
+    /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events on the supplied
+    /// broadcast channel.
+    ClaudeAgentGateway, ClaudeAdapter
 }
 
 /// Extract the final assistant text from a stream-json transcript.

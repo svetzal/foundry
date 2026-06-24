@@ -15,7 +15,7 @@ use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsEventDigest, OpsObserve
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use serde::Deserialize;
 
-use super::emit_result;
+use super::{TriggerContext, emit_result};
 
 /// Minimum new-event count required to proceed to summarisation. Below this
 /// threshold, only an anomaly can force the chain to run.
@@ -50,8 +50,9 @@ impl TaskBlock for ObserveEvents {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
         let intake_dir = self.intake_dir.clone();
         let watermark_path = self.watermark_path.clone();
 

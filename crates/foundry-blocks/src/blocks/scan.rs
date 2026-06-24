@@ -7,6 +7,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ScannerGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Scans project dependencies for known vulnerabilities.
     /// Observer — always runs regardless of throttle.
@@ -27,8 +29,9 @@ impl TaskBlock for ScanDependencies {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         let entry = require_project!(self, project);
         let scanner = Arc::clone(&self.scanner);

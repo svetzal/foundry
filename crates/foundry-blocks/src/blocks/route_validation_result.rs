@@ -3,6 +3,8 @@ use foundry_sdk::payload::{PreflightCompletedPayload, ValidationCompletedPayload
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::workflow::WorkflowType;
 
+use super::TriggerContext;
+
 /// Routes preflight results for the validation workflow to `ValidationCompleted`.
 ///
 /// Observer — sinks on `PreflightCompleted`.
@@ -22,8 +24,9 @@ impl TaskBlock for RouteValidationResult {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, PreflightCompletedPayload);
         let workflow = p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown);

@@ -8,6 +8,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
 
+use super::TriggerContext;
+
 task_block_new! {
     /// Validates a project before the maintenance run proceeds.
     ///
@@ -106,8 +108,9 @@ impl TaskBlock for ValidateProject {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
+        let TriggerContext {
+            project, throttle, ..
+        } = TriggerContext::from_trigger(trigger);
         // Extract the entry before the async boundary — the RwLock guard must not cross await.
         let entry = match super::read_registry(&self.registry) {
             Ok(guard) => guard.active_projects().into_iter().find(|p| p.name == project).cloned(),
