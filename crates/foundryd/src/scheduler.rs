@@ -98,10 +98,24 @@ impl Scheduler {
                         sentinel = %entry.name,
                         fire_at = %fire_at,
                         wait_secs = wait.as_secs(),
+                        wait_ms = %wait.as_millis(),
                         "scheduler armed",
                     );
                     tokio::select! {
                         () = tokio::time::sleep(wait) => {
+                            let woke_at = (self.clock)();
+                            if !sleep_reached_deadline(woke_at, fire_at) {
+                                // TODO: Replace this defensive guard with a scheduler design that
+                                // tracks claimed scheduled instants explicitly instead of relying on
+                                // recomputing cron after a timer wake.
+                                warn!(
+                                    sentinel = %entry.name,
+                                    fire_at = %fire_at,
+                                    woke_at = %woke_at,
+                                    "scheduler woke before scheduled boundary; rearming"
+                                );
+                                continue;
+                            }
                             let event = build_event(&entry);
                             info!(
                                 sentinel = %entry.name,
@@ -163,6 +177,10 @@ fn next_firing_among(entries: &[SentinelEntry], now: DateTime<Local>) -> Option<
         }
     }
     best
+}
+
+fn sleep_reached_deadline(woke_at: DateTime<Local>, fire_at: DateTime<Local>) -> bool {
+    woke_at >= fire_at
 }
 
 /// Pure helper: compute the next firing for a given schedule after `now`.
@@ -394,6 +412,29 @@ mod tests {
         Arc::new(move || t)
     }
 
+    fn mutable_clock(t: DateTime<Local>) -> (ClockFn, Arc<Mutex<DateTime<Local>>>) {
+        let current = Arc::new(Mutex::new(t));
+        let clock_current = Arc::clone(&current);
+        let clock: ClockFn = Arc::new(move || *clock_current.lock().expect("clock lock poisoned"));
+        (clock, current)
+    }
+
+    fn set_clock(clock: &Arc<Mutex<DateTime<Local>>>, t: DateTime<Local>) {
+        *clock.lock().expect("clock lock poisoned") = t;
+    }
+
+    #[test]
+    fn sleep_reached_deadline_rejects_early_wake() {
+        assert!(!sleep_reached_deadline(at(2026, 5, 27, 1, 59), at(2026, 5, 27, 2, 0)));
+    }
+
+    #[test]
+    fn sleep_reached_deadline_accepts_boundary_or_later_wake() {
+        let fire_at = at(2026, 5, 27, 2, 0);
+        assert!(sleep_reached_deadline(fire_at, fire_at));
+        assert!(sleep_reached_deadline(at(2026, 5, 27, 2, 1), fire_at));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn run_emits_when_scheduled_time_arrives() {
         let now = at(2026, 5, 27, 1, 59);
@@ -403,9 +444,9 @@ mod tests {
         }));
         let reload = Arc::new(Notify::new());
         let (sink, captured) = recording_sink();
+        let (clock, clock_state) = mutable_clock(now);
 
-        let scheduler =
-            Scheduler::new(store, Arc::clone(&reload), sink).with_clock(fixed_clock(now));
+        let scheduler = Scheduler::new(store, Arc::clone(&reload), sink).with_clock(clock);
 
         tokio::spawn(scheduler.run());
 
@@ -413,12 +454,44 @@ mod tests {
         // advance virtual time past the deadline.
         tokio::task::yield_now().await;
         tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        set_clock(&clock_state, at(2026, 5, 27, 2, 0));
         tokio::task::yield_now().await;
 
         let events = captured.lock().unwrap();
         assert_eq!(events.len(), 1, "exactly one sentinel firing expected");
         assert_eq!(events[0].event_type, EventType::MaintenanceCycleStarted);
         assert_eq!(events[0].project, "system");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_rearms_instead_of_emitting_on_early_wake() {
+        let now = at(2026, 5, 27, 1, 59);
+        let store = Arc::new(RwLock::new(SentinelStore {
+            version: 1,
+            sentinels: vec![entry("nightly", "0 2 * * *", true)],
+        }));
+        let reload = Arc::new(Notify::new());
+        let (sink, captured) = recording_sink();
+        let (clock, clock_state) = mutable_clock(now);
+
+        let scheduler = Scheduler::new(store, Arc::clone(&reload), sink).with_clock(clock);
+
+        tokio::spawn(scheduler.run());
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        set_clock(&clock_state, at(2026, 5, 27, 1, 59));
+        tokio::task::yield_now().await;
+
+        assert!(captured.lock().unwrap().is_empty());
+
+        set_clock(&clock_state, at(2026, 5, 27, 2, 0));
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1, "event should fire after the boundary");
+        assert_eq!(events[0].event_type, EventType::MaintenanceCycleStarted);
     }
 
     #[tokio::test(start_paused = true)]
@@ -453,9 +526,9 @@ mod tests {
         let (sink, captured) = recording_sink();
         let now = at(2026, 5, 27, 1, 59);
         let store_for_mutation = Arc::clone(&store);
+        let (clock, clock_state) = mutable_clock(now);
 
-        let scheduler =
-            Scheduler::new(store, Arc::clone(&reload), sink).with_clock(fixed_clock(now));
+        let scheduler = Scheduler::new(store, Arc::clone(&reload), sink).with_clock(clock);
 
         tokio::spawn(scheduler.run());
 
@@ -472,6 +545,7 @@ mod tests {
 
         // Now the loop is armed for 02:00 (60s from frozen now). Advance past it.
         tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        set_clock(&clock_state, at(2026, 5, 27, 2, 0));
         tokio::task::yield_now().await;
 
         assert_eq!(captured.lock().unwrap().len(), 1);
