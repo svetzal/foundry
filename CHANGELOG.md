@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-06-26
+
+### Fixed
+
+- **Terminal provider/account failures now stop agent workflows immediately.**
+  Claude account exhaustion, including monthly spend-limit failures surfaced in
+  session JSONL records with `api_error_status=429`, is now classified as a
+  terminal provider/account condition. Foundry propagates structured failure
+  metadata through agent session, execution, gate verification, and project
+  completion events; bypasses retry routing for those failures; and opens an
+  in-memory provider circuit breaker so foundryd stops launching additional
+  doomed agent sessions during the same daemon lifetime.
+- **Nightly maintenance sentinel duplicate emissions are guarded.** The
+  scheduler now rechecks wall-clock time after waking and re-arms if it woke
+  before the cron boundary, preventing the maintenance sentinel from emitting
+  two runs for the same scheduled instant.
+
 ## [0.26.0] - 2026-06-16
 
 ### Added

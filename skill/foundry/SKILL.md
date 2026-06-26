@@ -15,7 +15,7 @@ description: >
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.26.0"
+  version: "0.26.1"
   author: Stacey Vetzal
 ---
 
@@ -50,6 +50,7 @@ foundry iterate <project-name>
 ```
 
 What happens:
+
 - Validates the project has intent documentation (CHARTER.md or equivalent)
 - Resolves quality gates from `.hone-gates.json`
 - Runs preflight gates to establish baseline
@@ -155,6 +156,7 @@ foundry pipeline <project-name>
 ```
 
 What happens:
+
 - Looks up the project's repo and branch from the registry
 - Runs `gh run list` to check GitHub Actions pipeline status
 - If pipeline is passing, reports success and stops
@@ -177,6 +179,7 @@ foundry release <project-name> --bump major
 ```
 
 What happens:
+
 - Requires `release` action enabled in the project's registry entry
 - Invokes Claude agent to follow the release process in the project's AGENTS.md
 - If no `--bump` is specified, the agent determines the appropriate bump from changelog and unreleased changes
@@ -239,6 +242,7 @@ foundry registry remove my-project
 ```
 
 **Key flags on each project:**
+
 - `--iterate` / `--maintain` — enable iterate and/or maintain workflows
 - `--push` — allow git push after changes
 - `--audit` — enable vulnerability auditing
@@ -254,6 +258,7 @@ Use CLI commands first — they format output and render traces as trees. Fall b
 - `foundry watch --project <name>` — live stream for runs in progress
 
 Raw files on disk (when CLI isn't enough):
+
 - `~/.foundry/audits/runs/YYYY-MM-DD/summary.md` — markdown summary after `foundry run`
 - `~/.foundry/events/YYYY-MM.jsonl` — raw JSONL event log
 - `~/.foundry/traces/YYYY-MM-DD/{event_id}.json` — full ProcessResult JSON
