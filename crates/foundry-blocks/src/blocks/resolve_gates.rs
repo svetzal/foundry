@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{
     CharterCheckCompletedPayload, GateResolutionCompletedPayload, ProjectCompletedPayload,
 };
@@ -50,6 +51,7 @@ fn charter_failure_result(
                 workflow: workflow.to_string(),
                 loop_context: None,
                 changes: None,
+                failure: AgentFailureMetadata::default(),
             },
         )
         .expect("ProjectCompletedPayload is infallibly serializable");

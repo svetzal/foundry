@@ -211,7 +211,7 @@ impl TaskBlock for ScoutDrift {
 
             let result = match outcome {
                 AgentOutcome::Success { stdout } => parse_drift_assessment(&stdout),
-                AgentOutcome::AgentFailed { stderr } => {
+                AgentOutcome::AgentFailed { stderr, .. } => {
                     tracing::warn!(project = %project, stderr = %stderr, "drift scout agent failed");
                     DriftAssessmentResult {
                         candidate_count: 0,
@@ -379,6 +379,7 @@ mod tests {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+            failure: None,
         };
         let agent = FakeAgentGateway::sequence(vec![agent_response]);
         let registry =
@@ -416,6 +417,7 @@ mod tests {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+            failure: None,
         }]);
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
@@ -440,6 +442,7 @@ mod tests {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+            failure: None,
         }]);
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());

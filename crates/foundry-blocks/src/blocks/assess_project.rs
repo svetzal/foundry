@@ -157,7 +157,7 @@ async fn run_assessment_agent(
 
     match outcome {
         AgentOutcome::Success { stdout } => Ok(parse_assessment(&stdout)),
-        AgentOutcome::AgentFailed { stderr } => {
+        AgentOutcome::AgentFailed { stderr, .. } => {
             tracing::warn!(project = %project, stderr = %stderr, "assessment agent failed");
             Ok((5, "unknown".to_string(), "conventions".to_string(), stderr))
         }
@@ -331,6 +331,7 @@ mod tests {
                 stderr: String::new(),
                 exit_code: 0,
                 success: true,
+                failure: None,
             },
             // Name generation response
             crate::gateway::AgentResponse {
@@ -338,6 +339,7 @@ mod tests {
                 stderr: String::new(),
                 exit_code: 0,
                 success: true,
+                failure: None,
             },
         ]);
         let registry =

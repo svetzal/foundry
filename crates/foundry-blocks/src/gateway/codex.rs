@@ -50,7 +50,7 @@ use crate::agent_stream::{
 use super::{
     AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
     ShellGateway,
-    engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation},
+    engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation, SessionContext},
 };
 
 /// Adapter that captures the codex-specific CLI invocation contract.
@@ -95,6 +95,7 @@ impl CliAgentAdapter for CodexAdapter {
     fn interpret<'a>(
         &'a self,
         outcome: &'a AgentStreamOutcome,
+        _session: SessionContext<'a>,
         inv: &'a Invocation,
         _request: &'a AgentRequest,
         _shell: &'a Arc<dyn ShellGateway>,
@@ -128,6 +129,7 @@ impl CliAgentAdapter for CodexAdapter {
                 success,
                 exit_code,
                 stdout,
+                failure: None,
             }
         })
     }

@@ -21,15 +21,16 @@ use crate::agent_stream::{
 // the production *implementations* of those traits.
 pub use foundry_sdk::agent_config::ProviderModels;
 pub use foundry_sdk::gateway::{
-    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, AgentRequest, AgentResponse,
-    AuditResult, CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway,
+    AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
+    AgentRequest, AgentResponse, AuditResult, CommandResult, ModelTier, ReasoningEffort,
+    ScannerGateway, ShellGateway, classify_claude_result_record,
 };
 
 // Shared generic gateway engine — the single `invoke()` lifecycle reused by all
 // CLI-backed agent provider implementations. Per-provider variation lives in
 // `CliAgentAdapter` impls in this module and the `opencode`/`codex` submodules.
 pub(crate) mod engine;
-use engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation};
+use engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation, SessionContext};
 
 // In-memory fakes for testing also live in the SDK, behind its `test-support`
 // feature (enabled as a dev-dependency). Re-exported so block and daemon tests
@@ -144,18 +145,44 @@ impl CliAgentAdapter for ClaudeAdapter {
     fn interpret<'a>(
         &'a self,
         outcome: &'a AgentStreamOutcome,
+        session: SessionContext<'a>,
         _inv: &'a Invocation,
         _request: &'a AgentRequest,
         _shell: &'a Arc<dyn ShellGateway>,
     ) -> Pin<Box<dyn std::future::Future<Output = Interpreted> + Send + 'a>> {
-        let success = outcome.success;
-        let exit_code = outcome.exit_code;
-        let stdout = extract_final_text(&outcome.lines);
         Box::pin(async move {
+            debug_assert_eq!(session.provider, AgentProvider::Claude);
+            let failure =
+                match read_claude_terminal_failure(session.log_path, session.session_id).await {
+                    Ok(failure) => failure,
+                    Err(_) => outcome.lines.iter().rev().find_map(|line| {
+                        classify_claude_result_record(
+                            &line.raw,
+                            Some(session.session_id),
+                            Some(session.log_path),
+                        )
+                    }),
+                };
+            let stdout = if failure.is_some() {
+                extract_result_text_from_log(session.log_path)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| extract_final_text(&outcome.lines))
+            } else {
+                extract_final_text(&outcome.lines)
+            };
+            let success = outcome.success && failure.is_none();
+            let exit_code = if outcome.success && failure.is_some() {
+                1
+            } else {
+                outcome.exit_code
+            };
             Interpreted {
                 success,
                 exit_code,
                 stdout,
+                failure,
             }
         })
     }
@@ -258,28 +285,40 @@ pub(crate) fn emit_session_started(
 pub(crate) fn emit_session_ended(
     event_tx: &broadcast::Sender<Event>,
     project: &str,
-    session_id: &str,
-    status: &str,
-    exit_code: Option<i32>,
-    bytes_written: u64,
-    error: Option<String>,
+    payload: &AgentSessionEndedPayload,
 ) -> Result<()> {
-    let ended_payload = AgentSessionEndedPayload {
-        session_id: session_id.to_string(),
-        status: status.to_string(),
-        exit_code,
-        ended_at: Utc::now().to_rfc3339(),
-        bytes_written,
-        error,
-    };
     let ended_event = Event::new(
         EventType::AgentSessionEnded,
         project.to_string(),
         Throttle::Full,
-        serde_json::to_value(&ended_payload)?,
+        serde_json::to_value(payload)?,
     );
     let _ = event_tx.send(ended_event);
     Ok(())
+}
+
+async fn extract_result_text_from_log(log_path: &Path) -> std::io::Result<Option<String>> {
+    let log = tokio::fs::read_to_string(log_path).await?;
+    for line in log.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && v.get("type").and_then(serde_json::Value::as_str) == Some("result")
+            && let Some(s) = v.get("result").and_then(serde_json::Value::as_str)
+        {
+            return Ok(Some(s.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+async fn read_claude_terminal_failure(
+    log_path: &Path,
+    session_id: &str,
+) -> std::io::Result<Option<AgentFailureMetadata>> {
+    let log = tokio::fs::read_to_string(log_path).await?;
+    Ok(log
+        .lines()
+        .rev()
+        .find_map(|line| classify_claude_result_record(line, Some(session_id), Some(log_path))))
 }
 
 #[cfg(test)]
@@ -454,6 +493,66 @@ mod claude_agent_gateway_streaming_tests {
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
         assert_eq!(ended.payload["status"], "agent_failed");
         assert_eq!(ended.payload["exit_code"], 2);
+    }
+
+    #[tokio::test]
+    async fn invoke_classifies_terminal_provider_failure_from_session_log() {
+        let session_log_dir = super::test_support::tmp_dir("foundry-terminal-failure");
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let runner = Arc::new(FakeAgentStreamRunner {
+            transcript: vec![r#"{"type":"result","is_error":true,"api_error_status":429,"result":"You've hit your monthly spend limit - raise it at claude.ai/settings/usage"}"#.to_string()],
+            outcome_template: AgentStreamOutcome {
+                exit_code: 0,
+                success: true,
+                stderr: String::new(),
+                bytes_written: 0,
+                lines: vec![],
+            },
+        });
+
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            FakeShellGateway::success(),
+            runner,
+            session_log_dir,
+            tx,
+        );
+
+        let request = AgentRequest {
+            prompt: "fail please".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            timeout: Duration::from_secs(5),
+        };
+
+        let response = gateway.invoke(&request).await.expect("invoke ok");
+        assert!(!response.success);
+        assert_eq!(response.exit_code, 1);
+        let failure = response.failure.expect("terminal failure metadata");
+        assert_eq!(failure.api_error_status, Some(429));
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::AccountLimit));
+        assert!(failure.terminal);
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("You've hit your monthly spend limit - raise it at claude.ai/settings/usage")
+        );
+
+        let _started = rx.recv().await.unwrap();
+        let ended = rx.recv().await.unwrap();
+        assert_eq!(ended.event_type, EventType::AgentSessionEnded);
+        assert_eq!(ended.payload["status"], "agent_failed");
+        assert_eq!(ended.payload["api_error_status"], 429);
+        assert_eq!(ended.payload["failure_kind"], "account_limit");
+        assert_eq!(ended.payload["terminal"], true);
+        assert_eq!(
+            ended.payload["message"],
+            "You've hit your monthly spend limit - raise it at claude.ai/settings/usage"
+        );
     }
 
     #[tokio::test]

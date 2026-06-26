@@ -148,9 +148,16 @@ pub(crate) fn match_agent_text_outcome(
 ) -> Result<(String, bool), TaskBlockResult> {
     match outcome {
         AgentOutcome::Success { stdout } => Ok((stdout.trim().to_string(), true)),
-        AgentOutcome::AgentFailed { stderr } => {
+        AgentOutcome::AgentFailed { stderr, failure } => {
             tracing::warn!(project = %project, stderr = %stderr, "{trace_label} failed");
-            Ok((format!("{trace_label} failed: {stderr}"), false))
+            let message = failure
+                .as_ref()
+                .filter(|failure| failure.is_terminal_provider_failure())
+                .map_or_else(
+                    || format!("{trace_label} failed: {stderr}"),
+                    foundry_sdk::gateway::AgentFailureMetadata::execution_summary,
+                );
+            Ok((message, false))
         }
         AgentOutcome::Unavailable { error } => {
             Err(TaskBlockResult::failure(format!("agent unavailable: {error}")))

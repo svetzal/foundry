@@ -155,7 +155,7 @@ async fn run_triage_agent(
 
     match outcome {
         AgentOutcome::Success { stdout } => parse_triage(&stdout),
-        AgentOutcome::AgentFailed { stderr } => {
+        AgentOutcome::AgentFailed { stderr, .. } => {
             tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
             // Default to accepting on agent failure — better to attempt the fix
             (true, "triage agent failed, defaulting to accept".to_string())

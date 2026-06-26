@@ -18,7 +18,10 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
 
 use super::test_helpers;
-use foundry_blocks::gateway::{AgentGateway, AgentResponse, ShellGateway};
+use foundry_blocks::gateway::{
+    AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentProvider, AgentResponse,
+    RoutingAgentGateway, ShellGateway,
+};
 use foundry_blocks::shell::CommandResult;
 use foundry_engine::engine::Engine;
 use foundry_sdk::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
@@ -96,6 +99,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name generation
         AgentResponse {
@@ -103,6 +107,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment
         AgentResponse {
@@ -110,6 +115,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // CreatePlan
         AgentResponse {
@@ -117,6 +123,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecutePlan
         AgentResponse {
@@ -124,6 +131,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // SummarizeResult
         AgentResponse {
@@ -131,6 +139,7 @@ async fn happy_path_iterate_chain() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -321,6 +330,7 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -328,6 +338,7 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — rejected as busy-work despite severity 6
         AgentResponse {
@@ -335,6 +346,7 @@ async fn triage_busywork_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -390,6 +402,7 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -397,6 +410,7 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — rejected because severity 2 < threshold
         AgentResponse {
@@ -404,6 +418,7 @@ async fn triage_below_threshold_rejection_stops_chain_as_success() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -533,6 +548,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -540,6 +556,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — accepted
         AgentResponse {
@@ -547,6 +564,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // CreatePlan
         AgentResponse {
@@ -554,6 +572,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecutePlan
         AgentResponse {
@@ -561,6 +580,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // RetryExecution (after first gate failure)
         AgentResponse {
@@ -568,6 +588,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // SummarizeResult
         AgentResponse {
@@ -575,6 +596,7 @@ async fn gate_verification_retry_loop() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -701,6 +723,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -708,6 +731,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — accepted
         AgentResponse {
@@ -715,6 +739,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // CreatePlan
         AgentResponse {
@@ -722,6 +747,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecutePlan
         AgentResponse {
@@ -729,6 +755,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // SummarizeResult (iterate)
         AgentResponse {
@@ -736,6 +763,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecuteMaintain (from chained ProjectMaintenanceRequested -> GateResolutionCompleted -> ExecuteMaintain)
         AgentResponse {
@@ -743,6 +771,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // SummarizeResult (maintain)
         AgentResponse {
@@ -750,6 +779,7 @@ async fn iterate_with_maintain_chaining() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -816,6 +846,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -823,6 +854,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — accepted
         AgentResponse {
@@ -830,6 +862,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // CreatePlan — includes correctionNeeded: true so clean tree triggers retry
         AgentResponse {
@@ -838,6 +871,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecutePlan — exits 0 but makes no file changes
         AgentResponse {
@@ -845,6 +879,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // RetryExecution attempt 1 — also no changes
         AgentResponse {
@@ -852,6 +887,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // RetryExecution attempt 2 — also no changes
         AgentResponse {
@@ -859,6 +895,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // RetryExecution attempt 3 — also no changes
         AgentResponse {
@@ -866,6 +903,7 @@ async fn silent_no_op_iterate_triggers_retry_and_eventually_fails() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -962,6 +1000,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // AssessProject — name
         AgentResponse {
@@ -969,6 +1008,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // TriageAssessment — accepted
         AgentResponse {
@@ -976,6 +1016,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // CreatePlan — correctionNeeded: false (agent examined codebase and found no real violation)
         AgentResponse {
@@ -985,6 +1026,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // ExecutePlan — exits 0 with empty output (makes no file changes, which is expected)
         AgentResponse {
@@ -992,6 +1034,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
         // SummarizeResult — emitted because the run succeeded
         AgentResponse {
@@ -999,6 +1042,7 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
             stderr: String::new(),
             exit_code: 0,
             success: true,
+        failure: None,
         },
     ]);
 
@@ -1056,6 +1100,71 @@ async fn legitimate_no_op_iterate_succeeds_without_retry() {
         event_types.iter().any(|t| t == "summarize_completed"),
         "should emit summarize_completed for legitimate no-op success"
     );
+}
+
+#[tokio::test]
+async fn terminal_provider_failure_chain_stops_without_retry() {
+    let dir = test_helpers::test_project_dir();
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+
+    let shell = FakeShellGateway::sequence(vec![
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: "abc123\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+        CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        },
+    ]);
+
+    let terminal_failure = AgentFailureMetadata::new(AgentProvider::Claude)
+        .terminal(AgentFailureKind::AccountLimit)
+        .with_api_error_status(429)
+        .with_message("You've hit your monthly spend limit - raise it at claude.ai/settings/usage");
+    let backend = FakeAgentGateway::sequence(vec![
+        AgentResponse::success(
+            r#"{"severity": 7, "principle": "DRY", "category": "duplication", "assessment": "Duplicate validation logic."}"#,
+        ),
+        AgentResponse::success("fix-duplicate-validation"),
+        AgentResponse::success(r#"{"accepted": true, "reason": "severity warrants fix"}"#),
+        AgentResponse::success("1. Extract shared validation\n2. Update callers\n3. Add tests"),
+        AgentResponse::failure_with_metadata("monthly spend limit", 1, terminal_failure),
+    ]);
+    let mut gateways: std::collections::HashMap<AgentProvider, Arc<dyn AgentGateway>> =
+        std::collections::HashMap::new();
+    gateways.insert(AgentProvider::Claude, backend.clone());
+    let agent: Arc<dyn AgentGateway> =
+        Arc::new(RoutingAgentGateway::new(gateways, AgentProvider::Claude));
+
+    let engine = iterate_engine(shell, agent, registry);
+    let result = engine.process(iteration_requested_event(false)).await;
+
+    assert!(
+        result.events.iter().all(|event| event.event_type != EventType::RetryRequested),
+        "terminal provider failures must not request retries"
+    );
+
+    let completion = result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::ProjectIterationCompleted)
+        .expect("completion event");
+    assert_eq!(completion.payload["success"], false);
+    assert_eq!(completion.payload["failure_kind"], "account_limit");
+    assert_eq!(completion.payload["terminal"], true);
+    assert_eq!(completion.payload["summary"], "agent account limit reached; workflow stopped");
 }
 
 /// Count terminal `ProjectIterationCompleted` events in a result.

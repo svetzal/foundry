@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use foundry_sdk::event::EventType;
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
 use foundry_sdk::registry::ProjectEntry;
 use foundry_sdk::task_block::TaskBlockResult;
@@ -53,7 +54,7 @@ pub(crate) fn build_agent_execution_result(
     let success_label = ctx.label;
     let retry_count = ctx.retry_count;
     let correction_needed = ctx.correction_needed;
-    let (raw_output, mut success, mut summary, execution_output) = match outcome {
+    let (raw_output, mut success, mut summary, execution_output, failure) = match outcome {
         AgentOutcome::Success { stdout } => {
             let out = stdout.trim().to_string();
             let lines: Vec<&str> = out.lines().collect();
@@ -64,14 +65,24 @@ pub(crate) fn build_agent_execution_result(
             } else {
                 Some(trimmed_output)
             };
-            (Some(out), true, format!("{success_label} completed"), exec_out)
+            (Some(out), true, format!("{success_label} completed"), exec_out, None)
         }
-        AgentOutcome::AgentFailed { stderr } => {
-            let first_line = stderr.lines().next().unwrap_or("agent failed").to_string();
-            (Some(stderr), false, format!("{success_label} failed: {first_line}"), None)
+        AgentOutcome::AgentFailed { stderr, failure } => {
+            let summary = failure
+                .as_ref()
+                .filter(|failure| failure.is_terminal_provider_failure())
+                .map_or_else(
+                    || {
+                        let first_line =
+                            stderr.lines().next().unwrap_or("agent failed").to_string();
+                        format!("{success_label} failed: {first_line}")
+                    },
+                    AgentFailureMetadata::execution_summary,
+                );
+            (Some(stderr), false, summary, None, failure)
         }
         AgentOutcome::Unavailable { error } => {
-            (None, false, format!("agent unavailable: {error}"), None)
+            (None, false, format!("agent unavailable: {error}"), None, None)
         }
     };
 
@@ -118,6 +129,7 @@ pub(crate) fn build_agent_execution_result(
                 retry_count,
                 changes_detected: Some(changes_detected),
                 files_changed,
+                failure: failure.unwrap_or_default(),
                 context,
             },
         )],
@@ -186,8 +198,8 @@ mod tests {
     use foundry_sdk::throttle::Throttle;
     use foundry_sdk::workflow::WorkflowType;
 
-    use crate::gateway::AgentOutcome;
     use crate::gateway::fakes::FakeShellGateway;
+    use crate::gateway::{AgentFailureKind, AgentFailureMetadata, AgentOutcome, AgentProvider};
     use crate::shell::CommandResult;
 
     use super::{ExecutionContext, build_agent_execution_result, build_execution_outcome};
@@ -292,6 +304,45 @@ mod tests {
 
         assert!(result.success, "expected success but got failure");
         assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    #[test]
+    fn terminal_provider_failure_uses_account_limit_summary_and_payload() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            project: "proj",
+            workflow: WorkflowType::Iterate,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        let failure = AgentFailureMetadata::new(AgentProvider::Claude)
+            .terminal(AgentFailureKind::AccountLimit)
+            .with_api_error_status(429)
+            .with_message(
+                "You've hit your monthly spend limit - raise it at claude.ai/settings/usage",
+            );
+
+        let result = build_agent_execution_result(
+            &ctx,
+            AgentOutcome::AgentFailed {
+                stderr: String::new(),
+                failure: Some(failure),
+            },
+            false,
+            vec![],
+        );
+
+        assert!(!result.success);
+        assert_eq!(
+            result.events[0].payload["summary"],
+            "agent account limit reached: You've hit your monthly spend limit - raise it at claude.ai/settings/usage"
+        );
+        assert_eq!(result.events[0].payload["failure_kind"], "account_limit");
+        assert_eq!(result.events[0].payload["terminal"], true);
+        assert_eq!(result.events[0].payload["api_error_status"], 429);
     }
 
     // --- maintain: clean tree → NOT overridden ---

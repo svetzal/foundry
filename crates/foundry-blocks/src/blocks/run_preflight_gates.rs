@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{
     ChainContext, GateResolutionCompletedPayload, PreflightCompletedPayload,
     ProjectCompletedPayload,
@@ -167,6 +168,7 @@ fn build_preflight_result(
                 workflow: workflow.to_string(),
                 loop_context: None,
                 changes: None,
+                failure: AgentFailureMetadata::default(),
             },
         ));
     }

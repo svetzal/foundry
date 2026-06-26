@@ -14,16 +14,17 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Result, anyhow};
 
-use super::{AgentGateway, AgentProvider, AgentRequest, AgentResponse};
+use super::{AgentFailureMetadata, AgentGateway, AgentProvider, AgentRequest, AgentResponse};
 
 /// An [`AgentGateway`] that routes to one of several registered backends.
 pub struct RoutingAgentGateway {
     gateways: HashMap<AgentProvider, Arc<dyn AgentGateway>>,
     default: AgentProvider,
+    breakers: Arc<RwLock<HashMap<AgentProvider, AgentFailureMetadata>>>,
 }
 
 impl RoutingAgentGateway {
@@ -37,13 +38,30 @@ impl RoutingAgentGateway {
         gateways: HashMap<AgentProvider, Arc<dyn AgentGateway>>,
         default: AgentProvider,
     ) -> Self {
-        Self { gateways, default }
+        Self {
+            gateways,
+            default,
+            breakers: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     /// Resolve which provider a request should run on: its override if present,
     /// otherwise the router default.
     fn resolve(&self, request: &AgentRequest) -> AgentProvider {
         request.provider.unwrap_or(self.default)
+    }
+
+    fn breaker_for(&self, provider: AgentProvider) -> Option<AgentFailureMetadata> {
+        self.breakers.read().ok()?.get(&provider).cloned()
+    }
+
+    fn open_breaker(&self, provider: AgentProvider, failure: &AgentFailureMetadata) {
+        if !failure.is_terminal_provider_failure() {
+            return;
+        }
+        if let Ok(mut breakers) = self.breakers.write() {
+            breakers.insert(provider, failure.clone());
+        }
     }
 }
 
@@ -67,8 +85,35 @@ impl AgentGateway for RoutingAgentGateway {
         Box::pin(async move {
             match gateway {
                 Some(gateway) => {
+                    if let Some(open_failure) = self.breaker_for(provider) {
+                        tracing::warn!(
+                            provider = %provider,
+                            project = %request.project,
+                            summary = %open_failure.stop_summary(),
+                            "agent provider circuit breaker is open; skipping invocation"
+                        );
+                        let message = match open_failure.message.as_deref() {
+                            Some(message) if !message.trim().is_empty() => {
+                                format!("{message} (circuit breaker open for provider {provider})")
+                            }
+                            _ => format!(
+                                "{} for provider {provider}; circuit breaker is open",
+                                open_failure.summary_label()
+                            ),
+                        };
+                        let failure = AgentFailureMetadata {
+                            message: Some(message.clone()),
+                            ..open_failure
+                        };
+                        return Ok(AgentResponse::failure_with_metadata(message, 1, failure));
+                    }
+
                     tracing::debug!(provider = %provider, project = %request.project, "routing agent invocation");
-                    gateway.invoke(request).await
+                    let response = gateway.invoke(request).await?;
+                    if let Some(ref failure) = response.failure {
+                        self.open_breaker(provider, failure);
+                    }
+                    Ok(response)
                 }
                 None => Err(anyhow!(
                     "no agent gateway registered for provider '{provider}' (and no default available)"
@@ -82,7 +127,9 @@ impl AgentGateway for RoutingAgentGateway {
 mod tests {
     use super::*;
     use crate::gateway::fakes::FakeAgentGateway;
-    use foundry_sdk::gateway::{AgentAccess, ModelTier, ReasoningEffort};
+    use foundry_sdk::gateway::{
+        AgentAccess, AgentFailureKind, AgentFailureMetadata, ModelTier, ReasoningEffort,
+    };
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -161,5 +208,46 @@ mod tests {
         let router = RoutingAgentGateway::new(map, AgentProvider::Claude);
         let result = router.invoke(&request_with(None)).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn routing_circuit_breaker_skips_subsequent_calls_after_terminal_failure() {
+        let terminal_failure = AgentFailureMetadata::new(AgentProvider::Claude)
+            .terminal(AgentFailureKind::AccountLimit)
+            .with_api_error_status(429)
+            .with_message(
+                "You've hit your monthly spend limit - raise it at claude.ai/settings/usage",
+            );
+        let claude = FakeAgentGateway::sequence(vec![AgentResponse::failure_with_metadata(
+            "monthly spend limit",
+            1,
+            terminal_failure,
+        )]);
+        let mut map: HashMap<AgentProvider, Arc<dyn AgentGateway>> = HashMap::new();
+        map.insert(AgentProvider::Claude, claude.clone());
+        let router = RoutingAgentGateway::new(map, AgentProvider::Claude);
+
+        let first = router.invoke(&request_with(None)).await.unwrap();
+        assert!(!first.success);
+        assert_eq!(
+            first.failure.as_ref().and_then(|failure| failure.failure_kind),
+            Some(AgentFailureKind::AccountLimit)
+        );
+
+        let second = router.invoke(&request_with(None)).await.unwrap();
+        assert!(!second.success);
+        assert_eq!(claude.invocations().len(), 1, "second call should be skipped");
+        assert_eq!(
+            second.failure.as_ref().and_then(|failure| failure.failure_kind),
+            Some(AgentFailureKind::AccountLimit)
+        );
+        assert!(
+            second
+                .failure
+                .as_ref()
+                .and_then(|failure| failure.message.as_deref())
+                .is_some_and(|message| message.contains("circuit breaker open")),
+            "breaker-open message should be explicit"
+        );
     }
 }

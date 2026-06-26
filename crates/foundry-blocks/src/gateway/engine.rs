@@ -21,14 +21,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use foundry_sdk::event::Event;
+use foundry_sdk::payload::AgentSessionEndedPayload;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner};
 
 use super::{
-    AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels, ShellGateway,
-    emit_session_ended, emit_session_started,
+    AgentFailureMetadata, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
+    ShellGateway, emit_session_ended, emit_session_started,
 };
 
 /// Per-provider strategy: exactly the three steps that differ between gateways.
@@ -56,6 +57,7 @@ pub(crate) trait CliAgentAdapter: Send + Sync {
     fn interpret<'a>(
         &'a self,
         outcome: &'a AgentStreamOutcome,
+        session: SessionContext<'a>,
         inv: &'a Invocation,
         request: &'a AgentRequest,
         shell: &'a Arc<dyn ShellGateway>,
@@ -77,6 +79,14 @@ pub(crate) struct Interpreted {
     pub(crate) success: bool,
     pub(crate) exit_code: i32,
     pub(crate) stdout: String,
+    pub(crate) failure: Option<AgentFailureMetadata>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SessionContext<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) provider: AgentProvider,
+    pub(crate) log_path: &'a Path,
 }
 
 /// Generic gateway that runs the shared CLI agent lifecycle, delegating the
@@ -163,36 +173,61 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                 )
                 .await;
 
-            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text) = match outcome {
-                Ok(o) => {
-                    let interpreted = self.adapter.interpret(&o, &inv, request, &self.shell).await;
-                    let status = if interpreted.success {
-                        "ok"
-                    } else {
-                        "agent_failed"
-                    };
-                    (
-                        status,
-                        Some(interpreted.exit_code),
-                        o.stderr,
-                        o.bytes_written,
+            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text, failure) =
+                match outcome {
+                    Ok(o) => {
+                        let interpreted = self
+                            .adapter
+                            .interpret(
+                                &o,
+                                SessionContext {
+                                    session_id: &session_id,
+                                    provider,
+                                    log_path: &log_path,
+                                },
+                                &inv,
+                                request,
+                                &self.shell,
+                            )
+                            .await;
+                        let status = if interpreted.success {
+                            "ok"
+                        } else {
+                            "agent_failed"
+                        };
+                        (
+                            status,
+                            Some(interpreted.exit_code),
+                            o.stderr,
+                            o.bytes_written,
+                            None,
+                            interpreted.stdout,
+                            interpreted.failure,
+                        )
+                    }
+                    Err(e) => (
+                        "unavailable",
                         None,
-                        interpreted.stdout,
-                    )
-                }
-                Err(e) => {
-                    ("unavailable", None, String::new(), 0u64, Some(e.to_string()), String::new())
-                }
-            };
+                        String::new(),
+                        0u64,
+                        Some(e.to_string()),
+                        String::new(),
+                        None,
+                    ),
+                };
 
             emit_session_ended(
                 &self.event_tx,
                 &request.project,
-                &session_id,
-                status,
-                exit_code,
-                bytes_written,
-                error_msg,
+                &AgentSessionEndedPayload {
+                    session_id: session_id.clone(),
+                    status: status.to_string(),
+                    exit_code,
+                    ended_at: chrono::Utc::now().to_rfc3339(),
+                    bytes_written,
+                    error: error_msg,
+                    failure: failure.clone().unwrap_or_default(),
+                },
             )?;
 
             Ok(AgentResponse {
@@ -200,6 +235,7 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                 stderr,
                 exit_code: exit_code.unwrap_or(-1),
                 success: status == "ok",
+                failure,
             })
         })
     }
@@ -250,6 +286,7 @@ mod tests {
         fn interpret<'a>(
             &'a self,
             outcome: &'a AgentStreamOutcome,
+            _session: SessionContext<'a>,
             _inv: &'a Invocation,
             _request: &'a AgentRequest,
             _shell: &'a Arc<dyn ShellGateway>,
@@ -262,6 +299,7 @@ mod tests {
                     success,
                     exit_code,
                     stdout,
+                    failure: None,
                 }
             })
         }

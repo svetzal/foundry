@@ -47,15 +47,8 @@ pub fn passing_shell() -> Arc<dyn ShellGateway> {
 /// Build an agent gateway that returns each string in `responses` as a
 /// successful agent response, in sequence.
 pub fn sequenced_agent(responses: Vec<&str>) -> Arc<dyn AgentGateway> {
-    let agent_responses: Vec<AgentResponse> = responses
-        .into_iter()
-        .map(|s| AgentResponse {
-            stdout: s.to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-        .collect();
+    let agent_responses: Vec<AgentResponse> =
+        responses.into_iter().map(AgentResponse::success).collect();
     FakeAgentGateway::sequence(agent_responses)
 }
 

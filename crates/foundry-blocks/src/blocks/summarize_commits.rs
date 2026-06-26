@@ -132,7 +132,7 @@ async fn summarize(
 
     let markdown = match outcome {
         AgentOutcome::Success { stdout } => stdout.trim().to_string(),
-        AgentOutcome::AgentFailed { stderr } => fallback_digest(&observed, Some(&stderr)),
+        AgentOutcome::AgentFailed { stderr, .. } => fallback_digest(&observed, Some(&stderr)),
         AgentOutcome::Unavailable { error } => fallback_digest(&observed, Some(&error)),
     };
 

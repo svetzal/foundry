@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::context::{ChainContext, LoopContext};
+use crate::gateway::AgentFailureMetadata;
 
 // ---------------------------------------------------------------------------
 // Gate orchestration workflow
@@ -51,6 +52,8 @@ pub struct ExecutionCompletedPayload {
     pub changes_detected: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files_changed: Vec<String>,
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
     #[serde(flatten)]
     pub context: LoopContext,
 }
@@ -66,6 +69,8 @@ pub struct GateVerificationCompletedPayload {
     pub retry_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_output: Option<String>,
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
     #[serde(flatten)]
     pub context: LoopContext,
 }

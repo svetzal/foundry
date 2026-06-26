@@ -1,5 +1,6 @@
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateResult;
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::loop_context::has_loop_context;
 use foundry_sdk::payload::{
     ChainContext, GateVerificationCompletedPayload, LoopContext, ProjectCompletedPayload,
@@ -47,6 +48,7 @@ impl TaskBlock for RouteGateResult {
         let retry_count = p.retry_count;
         let results = p.results;
         let execution_output = p.execution_output;
+        let failure = p.failure;
         let context = p.context;
 
         Box::pin(async move {
@@ -80,6 +82,7 @@ impl TaskBlock for RouteGateResult {
                     retry_count,
                     results: &results,
                     execution_output,
+                    failure,
                     context,
                     throttle,
                 })
@@ -113,6 +116,7 @@ fn handle_gates_passed(
             workflow: workflow.to_string(),
             loop_context,
             changes: None,
+            failure: AgentFailureMetadata::default(),
         },
     )];
 
@@ -151,6 +155,7 @@ struct RetryDecision<'a> {
     retry_count: u64,
     results: &'a [GateResult],
     execution_output: Option<String>,
+    failure: foundry_sdk::gateway::AgentFailureMetadata,
     context: LoopContext,
     throttle: Throttle,
 }
@@ -163,10 +168,39 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
         retry_count,
         results,
         execution_output,
+        failure,
         context,
         throttle,
     } = decision;
     let max_retries: u64 = 3;
+    if failure.is_terminal_provider_failure() {
+        tracing::warn!(
+            project = %project,
+            retry_count = retry_count,
+            summary = %failure.stop_summary(),
+            "terminal agent/provider failure detected; skipping retries"
+        );
+
+        let loop_context = context.loop_context;
+        return super::emit_event_result(
+            format!("{project}: {}", failure.stop_summary()),
+            false,
+            completion_event_type,
+            project,
+            throttle,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: false,
+                summary: failure.stop_summary(),
+                workflow: workflow.to_string(),
+                loop_context,
+                changes: None,
+                failure,
+            },
+        )
+        .expect("ProjectCompletedPayload is infallibly serializable");
+    }
+
     if retry_count < max_retries {
         let failure_context = build_failure_context(results);
         tracing::info!(
@@ -214,6 +248,7 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
             workflow: workflow.to_string(),
             loop_context,
             changes: None,
+            failure,
         },
     )
     .expect("ProjectCompletedPayload is infallibly serializable")
@@ -272,6 +307,30 @@ mod tests {
         })
     }
 
+    fn terminal_failure_event(project: &str, workflow: &str) -> Event {
+        test_event!(EventType::GateVerificationCompleted, project, {
+            "project": project,
+            "required_passed": false,
+            "all_passed": false,
+            "retry_count": 0,
+            "workflow": workflow,
+            "results": [
+                {
+                    "name": "agent_execution",
+                    "command": "",
+                    "passed": false,
+                    "required": true,
+                    "output": "agent account limit reached",
+                    "exit_code": 1,
+                }
+            ],
+            "api_error_status": 429,
+            "failure_kind": "account_limit",
+            "terminal": true,
+            "message": "You've hit your monthly spend limit - raise it at claude.ai/settings/usage",
+        })
+    }
+
     assert_block_meta!(
         RouteGateResult,
         kind: Observer,
@@ -312,6 +371,23 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn terminal_provider_failure_emits_completion_without_retry() {
+        let trigger = terminal_failure_event("my-project", "iterate");
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        assert_eq!(result.events[0].payload["failure_kind"], "account_limit");
+        assert_eq!(result.events[0].payload["terminal"], true);
+        assert_eq!(
+            result.events[0].payload["summary"],
+            "agent account limit reached; workflow stopped"
+        );
     }
 
     // --- maintain workflow ---

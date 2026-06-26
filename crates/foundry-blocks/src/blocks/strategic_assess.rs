@@ -87,7 +87,7 @@ impl TaskBlock for StrategicAssessor {
 
             let areas = match outcome {
                 AgentOutcome::Success { stdout } => parse_strategic_assessment(&stdout),
-                AgentOutcome::AgentFailed { stderr } => {
+                AgentOutcome::AgentFailed { stderr, .. } => {
                     tracing::warn!(project = %project, stderr = %stderr, "strategic assessment agent failed");
                     vec![serde_json::json!({
                         "area": "general quality improvement",

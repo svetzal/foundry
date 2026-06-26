@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{
     ChainContext, PlanCompletedPayload, ProjectCompletedPayload, TriageCompletedPayload,
 };
@@ -50,6 +51,7 @@ fn triage_rejection_result(
             workflow: WorkflowType::Iterate.to_string(),
             loop_context: None,
             changes: None,
+            failure: AgentFailureMetadata::default(),
         },
     )
 }

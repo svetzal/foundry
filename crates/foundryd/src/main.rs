@@ -279,6 +279,13 @@ fn register_blocks(
     // --agent codex`), which propagates through the chain; absent an override,
     // the router uses FOUNDRY_AGENT_PROVIDER (defaulting to "claude").
     //
+    // The router also owns an in-memory provider circuit breaker: once a
+    // backend reports a terminal provider/account failure (for example a hard
+    // spend-limit or revoked-auth condition), later requests for that provider
+    // are rejected for the lifetime of the daemon process instead of spawning
+    // more doomed sessions. This slice intentionally keeps breaker state
+    // process-local; restarting foundryd clears it.
+    //
     // The Anthropic subscription stops covering hands-free agent work on
     // 2026-06-15 — set FOUNDRY_AGENT_PROVIDER=opencode (or codex) to default
     // unattended runs to an OpenAI backend. All backends implement the same

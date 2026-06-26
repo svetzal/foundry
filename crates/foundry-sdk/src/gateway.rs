@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::registry::Stack;
 
@@ -146,6 +147,234 @@ impl std::str::FromStr for AgentProvider {
             other => Err(format!("unknown agent provider: {other}")),
         }
     }
+}
+
+/// Classified kind for a terminal provider/account failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentFailureKind {
+    /// Provider account quota, spend, or similar hard usage ceiling was reached.
+    AccountLimit,
+    /// Provider account is disabled for billing or policy reasons.
+    AccountDisabled,
+    /// Provider authentication was revoked or expired.
+    Authentication,
+}
+
+impl AgentFailureKind {
+    /// Human summary prefix used in workflow result messages.
+    pub fn summary_label(self) -> &'static str {
+        match self {
+            AgentFailureKind::AccountLimit => "agent account limit reached",
+            AgentFailureKind::AccountDisabled => "agent account disabled",
+            AgentFailureKind::Authentication => "agent authentication revoked",
+        }
+    }
+}
+
+/// Structured failure metadata captured from an agent provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentFailureMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AgentProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_log_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_error_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<AgentFailureKind>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl AgentFailureMetadata {
+    #[must_use]
+    pub fn new(provider: AgentProvider) -> Self {
+        Self {
+            provider: Some(provider),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_session(mut self, session_id: impl Into<String>, source_log_path: PathBuf) -> Self {
+        self.session_id = Some(session_id.into());
+        self.source_log_path = Some(source_log_path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_api_error_status(mut self, status: u16) -> Self {
+        self.api_error_status = Some(status);
+        self
+    }
+
+    #[must_use]
+    pub fn terminal(mut self, kind: AgentFailureKind) -> Self {
+        self.failure_kind = Some(kind);
+        self.terminal = true;
+        self
+    }
+
+    #[must_use]
+    pub fn is_terminal_provider_failure(&self) -> bool {
+        self.terminal && self.failure_kind.is_some()
+    }
+
+    #[must_use]
+    pub fn summary_label(&self) -> &'static str {
+        self.failure_kind.map_or("agent failed", AgentFailureKind::summary_label)
+    }
+
+    #[must_use]
+    pub fn execution_summary(&self) -> String {
+        match self.message.as_deref() {
+            Some(message) if !message.trim().is_empty() => {
+                format!("{}: {}", self.summary_label(), message.trim())
+            }
+            _ => self.summary_label().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn stop_summary(&self) -> String {
+        format!("{}; workflow stopped", self.summary_label())
+    }
+}
+
+/// Classify a provider error message into terminal failure metadata when the
+/// wording indicates a non-retryable provider/account state.
+#[must_use]
+pub fn classify_terminal_provider_failure(
+    provider: AgentProvider,
+    api_error_status: Option<u16>,
+    message: &str,
+    session_id: Option<&str>,
+    source_log_path: Option<&Path>,
+) -> Option<AgentFailureMetadata> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+
+    let failure_kind = if contains_any(
+        &normalized,
+        &[
+            "authentication revoked",
+            "authentication expired",
+            "auth revoked",
+            "auth expired",
+            "access token expired",
+            "access token revoked",
+            "credentials revoked",
+            "credentials expired",
+        ],
+    ) {
+        Some(AgentFailureKind::Authentication)
+    } else if contains_any(
+        &normalized,
+        &[
+            "billing disabled",
+            "account disabled",
+            "billing account disabled",
+            "account has been disabled",
+            "subscription disabled",
+        ],
+    ) {
+        Some(AgentFailureKind::AccountDisabled)
+    } else if contains_any(
+        &normalized,
+        &[
+            "monthly spend limit",
+            "spend limit",
+            "quota exhausted",
+            "account limit",
+            "usage limit reached",
+            "credit balance is too low",
+            "credits exhausted",
+            "no credits remaining",
+        ],
+    ) {
+        Some(AgentFailureKind::AccountLimit)
+    } else {
+        None
+    }?;
+
+    // A bare 429 / rate-limit wording is not terminal. Require explicit
+    // account/quota/auth/billing phrasing.
+    if failure_kind == AgentFailureKind::AccountLimit
+        && api_error_status == Some(429)
+        && contains_any(&normalized, &["rate limit exceeded", "retry later", "too many requests"])
+        && !contains_any(
+            &normalized,
+            &[
+                "monthly spend limit",
+                "spend limit",
+                "quota exhausted",
+                "account limit",
+                "credits exhausted",
+                "no credits remaining",
+            ],
+        )
+    {
+        return None;
+    }
+
+    let mut failure = AgentFailureMetadata::new(provider)
+        .terminal(failure_kind)
+        .with_message(trimmed.to_string());
+    if let Some(status) = api_error_status {
+        failure = failure.with_api_error_status(status);
+    }
+    if let (Some(session_id), Some(source_log_path)) = (session_id, source_log_path) {
+        failure = failure.with_session(session_id.to_string(), source_log_path.to_path_buf());
+    }
+    Some(failure)
+}
+
+/// Parse a Claude JSON result record and classify terminal provider failures.
+#[must_use]
+pub fn classify_claude_result_record(
+    raw_record: &str,
+    session_id: Option<&str>,
+    source_log_path: Option<&Path>,
+) -> Option<AgentFailureMetadata> {
+    let value = serde_json::from_str::<Value>(raw_record).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("result")
+        || !value.get("is_error").and_then(Value::as_bool).unwrap_or(false)
+    {
+        return None;
+    }
+
+    let message = value.get("result").and_then(Value::as_str)?;
+    let api_error_status = value
+        .get("api_error_status")
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
+
+    classify_terminal_provider_failure(
+        AgentProvider::Claude,
+        api_error_status,
+        message,
+        session_id,
+        source_log_path,
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 /// Access level for an agent invocation.
@@ -291,6 +520,61 @@ pub struct AgentResponse {
     pub exit_code: i32,
     /// Whether the invocation succeeded (`exit_code` == 0).
     pub success: bool,
+    /// Structured provider/account failure metadata when available.
+    pub failure: Option<AgentFailureMetadata>,
+}
+
+impl AgentResponse {
+    #[must_use]
+    pub fn success(stdout: impl Into<String>) -> Self {
+        Self {
+            stdout: stdout.into(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+            failure: None,
+        }
+    }
+
+    #[must_use]
+    pub fn failure(stderr: impl Into<String>) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: stderr.into(),
+            exit_code: 1,
+            success: false,
+            failure: None,
+        }
+    }
+
+    #[must_use]
+    pub fn failure_with_metadata(
+        stderr: impl Into<String>,
+        exit_code: i32,
+        failure: AgentFailureMetadata,
+    ) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: stderr.into(),
+            exit_code,
+            success: false,
+            failure: Some(failure),
+        }
+    }
+
+    #[must_use]
+    pub fn terminal_failure(
+        provider: AgentProvider,
+        kind: AgentFailureKind,
+        message: impl Into<String>,
+    ) -> Self {
+        let message = message.into();
+        Self::failure_with_metadata(
+            message.clone(),
+            1,
+            AgentFailureMetadata::new(provider).terminal(kind).with_message(message),
+        )
+    }
 }
 
 /// The outcome of an agent invocation, abstracting over `Result<AgentResponse>`.
@@ -300,7 +584,10 @@ pub enum AgentOutcome {
     /// Agent ran and succeeded (`success=true`).
     Success { stdout: String },
     /// Agent ran but exited with failure (`success=false`).
-    AgentFailed { stderr: String },
+    AgentFailed {
+        stderr: String,
+        failure: Option<AgentFailureMetadata>,
+    },
     /// Agent could not be invoked (spawn failure, timeout, etc.).
     Unavailable { error: String },
 }
@@ -309,7 +596,10 @@ impl AgentOutcome {
     pub fn from_response(response: anyhow::Result<AgentResponse>) -> Self {
         match response {
             Ok(r) if r.success => AgentOutcome::Success { stdout: r.stdout },
-            Ok(r) => AgentOutcome::AgentFailed { stderr: r.stderr },
+            Ok(r) => AgentOutcome::AgentFailed {
+                stderr: r.stderr,
+                failure: r.failure,
+            },
             Err(err) => AgentOutcome::Unavailable {
                 error: err.to_string(),
             },
@@ -553,32 +843,17 @@ pub mod fakes {
 
         /// Always return a successful, empty result.
         pub fn success() -> Arc<Self> {
-            Self::always(AgentResponse {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
-            })
+            Self::always(AgentResponse::success(String::new()))
         }
 
         /// Always return a successful result with the given stdout.
         pub fn success_with(stdout: impl Into<String>) -> Arc<Self> {
-            Self::always(AgentResponse {
-                stdout: stdout.into(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
-            })
+            Self::always(AgentResponse::success(stdout))
         }
 
         /// Always return a failure result with the given stderr.
         pub fn failure(stderr: impl Into<String>) -> Arc<Self> {
-            Self::always(AgentResponse {
-                stdout: String::new(),
-                stderr: stderr.into(),
-                exit_code: 1,
-                success: false,
-            })
+            Self::always(AgentResponse::failure(stderr))
         }
 
         /// Return a snapshot of all recorded invocations.
@@ -668,5 +943,47 @@ mod provider_tests {
         assert_eq!(json, "\"codex\"");
         let back: AgentProvider = serde_json::from_str("\"opencode\"").unwrap();
         assert_eq!(back, AgentProvider::Opencode);
+    }
+}
+
+#[cfg(test)]
+mod agent_failure_classifier_tests {
+    use super::{
+        AgentFailureKind, AgentProvider, classify_claude_result_record,
+        classify_terminal_provider_failure,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn agent_failure_classifier_detects_claude_monthly_spend_limit() {
+        let fixture = r#"{"type":"result","is_error":true,"api_error_status":429,"result":"You've hit your monthly spend limit - raise it at claude.ai/settings/usage"}"#;
+        let failure = classify_claude_result_record(
+            fixture,
+            Some("session-123"),
+            Some(Path::new("/tmp/session.jsonl")),
+        )
+        .expect("fixture should classify");
+
+        assert_eq!(failure.provider, Some(AgentProvider::Claude));
+        assert_eq!(failure.api_error_status, Some(429));
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::AccountLimit));
+        assert!(failure.terminal);
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("You've hit your monthly spend limit - raise it at claude.ai/settings/usage")
+        );
+    }
+
+    #[test]
+    fn agent_failure_classifier_does_not_mark_generic_rate_limit_terminal() {
+        let failure = classify_terminal_provider_failure(
+            AgentProvider::Claude,
+            Some(429),
+            "Rate limit exceeded; retry later",
+            Some("session-123"),
+            Some(Path::new("/tmp/session.jsonl")),
+        );
+
+        assert!(failure.is_none());
     }
 }

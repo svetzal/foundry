@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::{GateResult, GatesRunResult};
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{
     ExecutionCompletedPayload, GateVerificationCompletedPayload, LoopContext,
 };
@@ -50,6 +51,7 @@ impl TaskBlock for RunVerifyGates {
 
         let p = parse_payload!(trigger, ExecutionCompletedPayload);
         let retry_count = p.retry_count.unwrap_or(0);
+        let failure = p.failure.clone();
 
         let workflow = WorkflowType::from_payload(&payload);
 
@@ -90,6 +92,7 @@ impl TaskBlock for RunVerifyGates {
                     &run_result,
                     &payload,
                     throttle,
+                    &failure,
                 ));
             }
 
@@ -113,6 +116,7 @@ impl TaskBlock for RunVerifyGates {
                         retry_count,
                         results: vec![],
                         execution_output: None,
+                        failure: AgentFailureMetadata::default(),
                         context,
                     },
                 );
@@ -128,6 +132,7 @@ impl TaskBlock for RunVerifyGates {
                 &run_result,
                 &payload,
                 throttle,
+                &AgentFailureMetadata::default(),
             ))
         })
     }
@@ -140,6 +145,7 @@ fn build_verification_result(
     run_result: &foundry_sdk::gates::GatesRunResult,
     payload: &serde_json::Value,
     throttle: foundry_sdk::throttle::Throttle,
+    failure: &foundry_sdk::gateway::AgentFailureMetadata,
 ) -> TaskBlockResult {
     let success = run_result.all_passed;
 
@@ -171,6 +177,7 @@ fn build_verification_result(
             retry_count,
             results,
             execution_output,
+            failure: failure.clone(),
             context,
         },
     )
@@ -216,6 +223,25 @@ mod tests {
                 "workflow": "iterate",
                 "success": false,
                 "summary": summary,
+            }),
+        )
+    }
+
+    fn terminal_failed_execution_completed_event(project: &str) -> Event {
+        Event::new(
+            EventType::ExecutionCompleted,
+            project.to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": project,
+                "retry_count": 0,
+                "workflow": "iterate",
+                "success": false,
+                "summary": "agent account limit reached: You've hit your monthly spend limit - raise it at claude.ai/settings/usage",
+                "api_error_status": 429,
+                "failure_kind": "account_limit",
+                "terminal": true,
+                "message": "You've hit your monthly spend limit - raise it at claude.ai/settings/usage",
             }),
         )
     }
@@ -345,6 +371,29 @@ mod tests {
         assert_eq!(results[0]["name"], "agent_execution");
         assert_eq!(results[0]["passed"], false);
         assert_eq!(results[0]["required"], true);
+    }
+
+    #[tokio::test]
+    async fn terminal_upstream_failure_propagates_failure_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let shell = FakeShellGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunVerifyGates::with_shell(shell, registry);
+        let trigger = terminal_failed_execution_completed_event("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["failure_kind"], "account_limit");
+        assert_eq!(result.events[0].payload["terminal"], true);
+        assert_eq!(result.events[0].payload["api_error_status"], 429);
     }
 
     #[tokio::test]

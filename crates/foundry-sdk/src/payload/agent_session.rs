@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::gateway::AgentFailureMetadata;
+
 // ---------------------------------------------------------------------------
 // Agent session lifecycle payloads
 // ---------------------------------------------------------------------------
@@ -30,4 +32,6 @@ pub struct AgentSessionEndedPayload {
     pub bytes_written: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
 }

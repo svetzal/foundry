@@ -112,7 +112,7 @@ impl TaskBlock for SummarizeResult {
 fn extract_headline_summary(outcome: AgentOutcome, project: &str) -> (String, String) {
     match outcome {
         AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
-        AgentOutcome::AgentFailed { stderr } => {
+        AgentOutcome::AgentFailed { stderr, .. } => {
             tracing::warn!(project = %project, stderr = %stderr, "summary agent failed");
             (format!("Update {project}"), "Automated maintenance completed.".to_string())
         }

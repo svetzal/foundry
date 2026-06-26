@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, PlanCompletedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -101,6 +102,7 @@ fn build_no_correction_result(
         retry_count: None,
         changes_detected: Some(false),
         files_changed: vec![],
+        failure: AgentFailureMetadata::default(),
         context,
     };
     tracing::info!(

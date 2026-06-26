@@ -1,4 +1,5 @@
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, RemediationCompletedPayload};
 use foundry_sdk::task_block::TaskBlockResult;
 use foundry_sdk::throttle::Throttle;
@@ -92,9 +93,17 @@ pub(crate) fn build_agent_remediation_result(
             let out = stdout.trim().to_string();
             (Some(out), true, "remediation completed".to_string())
         }
-        AgentOutcome::AgentFailed { stderr } => {
-            let first_line = stderr.lines().next().unwrap_or("agent failed");
-            let summary = format!("remediation failed: {first_line}");
+        AgentOutcome::AgentFailed { stderr, failure } => {
+            let summary = failure
+                .as_ref()
+                .filter(|failure| failure.is_terminal_provider_failure())
+                .map_or_else(
+                    || {
+                        let first_line = stderr.lines().next().unwrap_or("agent failed");
+                        format!("remediation failed: {first_line}")
+                    },
+                    AgentFailureMetadata::execution_summary,
+                );
             (Some(stderr), false, summary)
         }
         AgentOutcome::Unavailable { error } => (None, false, format!("agent unavailable: {error}")),
@@ -171,6 +180,7 @@ pub(crate) fn dry_run_execution_event(
             retry_count,
             changes_detected: None,
             files_changed: vec![],
+            failure: AgentFailureMetadata::default(),
             context,
         },
     )
@@ -393,6 +403,7 @@ mod tests {
             full(),
             AgentOutcome::AgentFailed {
                 stderr: "error line\nmore".to_string(),
+                failure: None,
             },
             None,
             None,

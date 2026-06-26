@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::gateway::AgentFailureMetadata;
+
 // ---------------------------------------------------------------------------
 // Project lifecycle
 // ---------------------------------------------------------------------------
@@ -21,6 +23,8 @@ pub struct ProjectCompletedPayload {
     /// Absent (None) is interpreted as "changes may exist".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<bool>,
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
 }
 
 /// Payload for `ProjectChangesCommitted`.
