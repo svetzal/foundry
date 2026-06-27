@@ -188,7 +188,7 @@ mod tests {
             retry_count: None,
             changes_detected: None,
             files_changed: vec![],
-            failure: Default::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
             context,
         };
         let json = serde_json::to_value(&p).unwrap();
@@ -355,7 +355,7 @@ mod tests {
             ended_at: "2026-05-09T12:01:00Z".to_string(),
             bytes_written: 1234,
             error: None,
-            failure: Default::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         };
 
         let json = serde_json::to_value(&payload).unwrap();
@@ -376,7 +376,7 @@ mod tests {
             ended_at: "2026-05-09T12:01:00Z".to_string(),
             bytes_written: 0,
             error: Some("spawn failed: claude not on PATH".to_string()),
-            failure: Default::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         };
 
         let json = serde_json::to_value(&payload).unwrap();
