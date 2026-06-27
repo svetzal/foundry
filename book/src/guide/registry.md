@@ -80,6 +80,21 @@ foundry registry add --name my-tool … --offline   # write directly to registry
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
 | `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
+| `audit_exceptions` | No | string[] (default `[]`) | Array of CVE/advisory IDs the project has formally accepted as not-applicable. Matching vulnerabilities are suppressed from the post-push auditor. This is Foundry's own copy — independent of hone's gate config and the supply-chain `.supply-chain-allow.json`. Record rationale in `notes`; remove entries once upstream patches. |
+
+#### Accepted-risk CVEs (`audit_exceptions`)
+
+When a project's supply-chain scan surfaces a CVE that your team has formally reviewed and accepted — for example, because the vulnerable code path is unreachable in your deployment — you can suppress it from Foundry's post-push auditor by listing it in `audit_exceptions`:
+
+```json
+{
+  "name": "my-service",
+  "audit_exceptions": ["CVE-2026-45829"],
+  "notes": "CVE-2026-45829: chromadb vector store path is not exposed; accepted risk 2026-06-27."
+}
+```
+
+Matching is case-insensitive. Each suppressed CVE is logged at `info` level so suppression is never silent. The field is Foundry's own policy record — independent of hone's gate configuration and the supply-chain `.supply-chain-allow.json` allowlist. Remove an entry once the upstream advisory is patched.
 
 ### Stack values
 

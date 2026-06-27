@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Post-push auditor honours per-project accepted CVEs.** New optional `audit_exceptions` field on registry `ProjectEntry` lets a project declare formally-accepted CVE/advisory IDs (case-insensitive). Matching vulnerabilities are filtered from the post-push auditor's output and logged as suppressed. Absent/empty preserves prior behaviour. Set by editing `~/.foundry/registry.json` (CLI wiring deferred).
+
 ## [0.26.1] - 2026-06-26
 
 ### Fixed

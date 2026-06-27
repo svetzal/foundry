@@ -94,6 +94,13 @@ pub struct ProjectEntry {
     /// Per-project timeout in seconds for long-running commands.
     /// Defaults to 3600 (60 minutes) when absent.
     pub timeout_secs: Option<u64>,
+    /// CVE/advisory IDs this project has formally accepted as not-applicable
+    /// (e.g. an unreachable attack path). Matching vulnerabilities are suppressed
+    /// from the post-push auditor's output. Record the rationale in `notes`, and
+    /// remove the entry once the upstream advisory is patched. Absent/empty = no
+    /// suppression (default, fully backwards compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audit_exceptions: Vec<String>,
 }
 
 /// Default timeout for long-running commands: 60 minutes.
@@ -351,6 +358,7 @@ impl Registry {
             install,
             installs_skill: None,
             timeout_secs: spec.timeout_secs,
+            audit_exceptions: Vec::new(),
         });
         Ok(self.projects.last().expect("just pushed"))
     }

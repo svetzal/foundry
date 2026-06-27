@@ -411,6 +411,28 @@ fn parse_generic_audit(output: &str) -> AuditResult {
     }
 }
 
+/// Return the vulnerabilities in `result` that are NOT covered by a
+/// project-declared audit exception. Match is case-insensitive against
+/// `Vulnerability.cve`; vulnerabilities with no CVE are always retained.
+/// Each suppressed CVE is logged at info level so suppression is never silent.
+#[must_use]
+pub fn filter_audit_exceptions<'a>(
+    result: &'a AuditResult,
+    exceptions: &[String],
+) -> Vec<&'a Vulnerability> {
+    result
+        .vulnerabilities
+        .iter()
+        .filter(|v| match v.cve.as_deref() {
+            Some(cve) if exceptions.iter().any(|e| e.eq_ignore_ascii_case(cve)) => {
+                tracing::info!(cve = %cve, "suppressing audit-excepted vulnerability");
+                false
+            }
+            _ => true,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,5 +773,66 @@ mod tests {
         let result = parse_generic_audit(r#"{"status": "ok"}"#);
         assert!(result.error.is_none());
         assert!(result.vulnerabilities.is_empty());
+    }
+
+    // --- filter_audit_exceptions ---
+
+    fn vuln(cve: Option<&str>) -> Vulnerability {
+        Vulnerability {
+            cve: cve.map(str::to_owned),
+            severity: None,
+            package: "test-pkg".to_string(),
+            version: None,
+            fix_version: None,
+        }
+    }
+
+    fn result_with(vulns: Vec<Vulnerability>) -> AuditResult {
+        AuditResult {
+            vulnerabilities: vulns,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn filter_audit_exceptions_suppresses_matching_cve() {
+        let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
+        let exceptions = vec!["CVE-2026-45829".to_string()];
+        let reported = super::filter_audit_exceptions(&result, &exceptions);
+        assert!(reported.is_empty(), "matching CVE should be suppressed");
+    }
+
+    #[test]
+    fn filter_audit_exceptions_retains_non_matching_cve() {
+        let result = result_with(vec![vuln(Some("CVE-2026-99999"))]);
+        let exceptions = vec!["CVE-2026-45829".to_string()];
+        let reported = super::filter_audit_exceptions(&result, &exceptions);
+        assert_eq!(reported.len(), 1, "non-matching CVE should be retained");
+    }
+
+    #[test]
+    fn filter_audit_exceptions_empty_exceptions_retains_all() {
+        let result = result_with(vec![vuln(Some("CVE-2026-12345")), vuln(Some("CVE-2026-67890"))]);
+        let reported = super::filter_audit_exceptions(&result, &[]);
+        assert_eq!(reported.len(), 2, "empty exceptions should retain all findings");
+    }
+
+    #[test]
+    fn filter_audit_exceptions_is_case_insensitive() {
+        let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
+        let exceptions = vec!["cve-2026-45829".to_string()];
+        let reported = super::filter_audit_exceptions(&result, &exceptions);
+        assert!(
+            reported.is_empty(),
+            "case-insensitive match: lowercase exception should suppress uppercase CVE"
+        );
+    }
+
+    #[test]
+    fn filter_audit_exceptions_retains_vulns_without_cve() {
+        let result = result_with(vec![vuln(None)]);
+        let exceptions = vec!["CVE-2026-45829".to_string()];
+        let reported = super::filter_audit_exceptions(&result, &exceptions);
+        assert_eq!(reported.len(), 1, "vuln with no CVE should always be retained");
     }
 }

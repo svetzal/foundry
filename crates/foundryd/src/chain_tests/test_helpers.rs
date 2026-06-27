@@ -30,6 +30,7 @@ pub fn registry_with_project(name: &str, path: &str) -> Arc<RwLock<Registry>> {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }],
     }))
 }

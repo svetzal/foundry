@@ -221,6 +221,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }
     }
 
@@ -238,6 +239,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }
     }
 
@@ -349,6 +351,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
 
         let shell = FakeShellGateway::always(ok_result("main"));
@@ -383,6 +386,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
 
         // Fake reports we're on "feature-branch" but registry expects "main".
@@ -414,6 +418,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
 
         // First call: rev-parse returns "HEAD" (detached).
@@ -452,6 +457,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
 
         // First: rev-parse returns "HEAD"; second: checkout fails.
@@ -491,6 +497,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
 
         let shell = FakeShellGateway::always(CommandResult {
@@ -530,6 +537,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");
@@ -566,6 +574,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }]);
         let block = ValidateProject::new(registry);
         let trigger = make_trigger("test-project");

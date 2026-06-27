@@ -151,6 +151,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }
     }
 
@@ -168,6 +169,7 @@ mod tests {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }
     }
 

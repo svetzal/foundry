@@ -374,6 +374,7 @@ mod tests {
             installs_skill: None,
             notes: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "");
@@ -398,6 +399,7 @@ mod tests {
             installs_skill: None,
             notes: Some("a note".to_string()),
             timeout_secs: Some(120),
+            audit_exceptions: Vec::new(),
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "./install.sh");
@@ -421,6 +423,7 @@ mod tests {
             installs_skill: None,
             notes: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "");

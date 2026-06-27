@@ -41,6 +41,7 @@ fn test_registry(project_path: &str) -> Arc<RwLock<Registry>> {
             install: None, // no install config — InstallLocally skips gracefully
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }],
     }))
 }
@@ -146,6 +147,7 @@ async fn action_flag_guard_stops_chain() {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }],
     }));
 
@@ -192,6 +194,7 @@ async fn missing_agents_md_fails_gracefully() {
             install: None,
             installs_skill: None,
             timeout_secs: None,
+            audit_exceptions: Vec::new(),
         }],
     }));
 

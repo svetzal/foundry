@@ -95,10 +95,10 @@ impl AuditReleaseTag {
         Box::pin(async move {
             let path = std::path::Path::new(&entry.path);
             let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
-
-            let vulnerable = !audit_result.vulnerabilities.is_empty();
-            let cve = audit_result
-                .vulnerabilities
+            let reported =
+                crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
+            let vulnerable = !reported.is_empty();
+            let cve = reported
                 .first()
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());

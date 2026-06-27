@@ -57,9 +57,12 @@ impl TaskBlock for AuditMainBranch {
 
                 // Scan the current branch — no checkout needed, we are already on main.
                 let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
+                let reported =
+                    crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
 
-                if audit_result.error.is_some() || audit_result.vulnerabilities.is_empty() {
-                    // Scanner unavailable or project has no lockfile / is genuinely clean.
+                if audit_result.error.is_some() || reported.is_empty() {
+                    // Scanner unavailable or project has no lockfile / is genuinely clean
+                    // (or all findings suppressed by audit_exceptions).
                     // Fall back to payload to preserve integration-test behavior.
                     tracing::info!(
                         project = %project,
@@ -68,12 +71,10 @@ impl TaskBlock for AuditMainBranch {
                     (cve_from_payload, dirty_from_payload)
                 } else {
                     // Dirty when the CVE from the release-tag audit is still present on main.
-                    let dirty = audit_result
-                        .vulnerabilities
+                    let dirty = reported
                         .iter()
                         .any(|v| v.cve.as_deref() == Some(cve_from_payload.as_str()));
-                    let cve = audit_result
-                        .vulnerabilities
+                    let cve = reported
                         .first()
                         .and_then(|v| v.cve.clone())
                         .unwrap_or_else(|| cve_from_payload.clone());
