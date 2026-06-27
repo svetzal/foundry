@@ -10,6 +10,28 @@ use crate::gateway::AgentGateway;
 
 use super::TriggerContext;
 
+/// Decision outcome for a remediate-vulnerability trigger.
+///
+/// Centralises the `dirty` guard shared between `dry_run_events` and `execute`.
+#[derive(Debug, PartialEq)]
+enum RemediateDecision {
+    /// Main branch is clean — nothing to remediate.
+    SkipClean,
+    /// Main branch is dirty; CVE identifier extracted from payload (or "unknown").
+    Proceed { cve: String },
+}
+
+/// Evaluate the trigger and decide what `RemediateVulnerability` should do.
+fn decide_remediate(trigger: &Event) -> RemediateDecision {
+    let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok();
+    let dirty = p.as_ref().is_none_or(|p| p.dirty);
+    if !dirty {
+        return RemediateDecision::SkipClean;
+    }
+    let cve = p.as_ref().map_or("unknown", |p| p.cve.as_str()).to_string();
+    RemediateDecision::Proceed { cve }
+}
+
 agent_block_new!(
     /// Attempts to fix a vulnerability on the main branch.
     /// Mutator — simulated success at `dry_run`.
@@ -29,15 +51,12 @@ impl TaskBlock for RemediateVulnerability {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        // Respect the self-filter: only remediate when dirty.
-        let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok();
-        let dirty = p.as_ref().is_none_or(|p| p.dirty);
-        if !dirty {
-            return vec![];
+        match decide_remediate(trigger) {
+            RemediateDecision::SkipClean => vec![],
+            RemediateDecision::Proceed { cve } => {
+                super::dry_run_remediation_event(trigger, Some(cve), None)
+            }
         }
-
-        let cve = p.as_ref().map_or("unknown", |p| p.cve.as_str()).to_string();
-        super::dry_run_remediation_event(trigger, Some(cve), None)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -47,15 +66,12 @@ impl TaskBlock for RemediateVulnerability {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let audit_payload = parse_payload!(trigger, MainBranchAuditedPayload);
-
         // Self-filter: only remediate when main branch is dirty.
-        if !audit_payload.dirty {
+        // CVE is also extracted here so both dry_run_events and execute share the same logic.
+        let RemediateDecision::Proceed { cve } = decide_remediate(trigger) else {
             tracing::info!("main branch is clean, skipping remediation");
             return skip!("Skipped: main branch is clean");
-        }
-
-        let cve = audit_payload.cve.clone();
+        };
 
         // Resolve project agent and path from registry.
         let entry = require_project!(self, project);
@@ -117,7 +133,7 @@ mod tests {
     use crate::gateway::{ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
-    use super::RemediateVulnerability;
+    use super::{RemediateDecision, RemediateVulnerability, decide_remediate};
 
     fn dirty_trigger(project: &str, cve: &str) -> Event {
         test_event!(EventType::MainBranchAudited, project, { "dirty": true, "cve": cve })
@@ -225,5 +241,61 @@ mod tests {
         assert!(invocations[0].prompt.contains("CVE-2026-0001"));
         assert_eq!(invocations[0].tier, ModelTier::Balanced);
         assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
+    }
+
+    // --- decide_remediate pure function tests ---
+
+    #[test]
+    fn decide_remediate_skips_when_clean() {
+        let trigger = clean_trigger("proj");
+        assert_eq!(decide_remediate(&trigger), RemediateDecision::SkipClean);
+    }
+
+    #[test]
+    fn decide_remediate_proceeds_when_dirty() {
+        let trigger = dirty_trigger("proj", "CVE-2026-1111");
+        assert!(
+            matches!(decide_remediate(&trigger), RemediateDecision::Proceed { cve } if cve == "CVE-2026-1111")
+        );
+    }
+
+    #[test]
+    fn decide_remediate_uses_empty_string_cve_when_field_absent() {
+        // MainBranchAuditedPayload has `#[serde(default)] pub cve: String`, so when absent
+        // the field defaults to an empty string rather than "unknown".
+        let trigger = test_event!(EventType::MainBranchAudited, "proj", { "dirty": true });
+        assert!(
+            matches!(decide_remediate(&trigger), RemediateDecision::Proceed { cve } if cve.is_empty())
+        );
+    }
+
+    #[test]
+    fn dry_run_returns_empty_when_clean() {
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(
+            agent,
+            Arc::new(RwLock::new(Registry {
+                version: 2,
+                projects: vec![],
+            })),
+        );
+        let trigger = clean_trigger("proj");
+        assert!(block.dry_run_events(&trigger).is_empty());
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_skip_for_clean() {
+        // dry_run_events and execute must both skip when branch is clean.
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(
+            agent,
+            Arc::new(RwLock::new(Registry {
+                version: 2,
+                projects: vec![],
+            })),
+        );
+        let trigger = clean_trigger("proj");
+        assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when clean");
+        // execute path is tested in skips_when_main_branch_is_clean
     }
 }

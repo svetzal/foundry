@@ -96,6 +96,52 @@ impl CommitAndPush {
     }
 }
 
+/// Decision outcome for a commit-and-push trigger.
+///
+/// Centralises the three-way guard logic shared between `dry_run_events` and
+/// `execute`, eliminating drift risk between the two paths.
+#[derive(Debug, PartialEq)]
+enum CommitDecision {
+    /// Intermediate completion inside a nested loop — skip.
+    SkipNestedLoop,
+    /// Payload explicitly signals no changes were made — skip.
+    SkipNoChanges,
+    /// Proceed with the commit; CVE identifier extracted from payload (or "unknown").
+    Proceed { cve: String },
+}
+
+/// Evaluate the trigger and decide what `CommitAndPush` should do.
+///
+/// Both `dry_run_events` and `execute` delegate to this function so the
+/// loop-context guard, the no-changes self-filter, and CVE extraction are
+/// always derived from a single source of truth.
+fn decide_commit(trigger: &Event) -> CommitDecision {
+    // 1. loop_context guard: completion events inside a nested loop are skipped.
+    let is_completion_event = matches!(
+        trigger.event_type,
+        EventType::ProjectIterationCompleted | EventType::ProjectMaintenanceCompleted
+    );
+    if is_completion_event && has_loop_context(&trigger.payload) {
+        return CommitDecision::SkipNestedLoop;
+    }
+
+    // 2. self-filter: payload explicitly says no changes.
+    let changes_flag =
+        trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
+    if changes_flag == Some(false) {
+        return CommitDecision::SkipNoChanges;
+    }
+
+    // 3. extract CVE (defaults to "unknown" when absent).
+    let cve = trigger
+        .parse_payload::<RemediationCompletedPayload>()
+        .ok()
+        .and_then(|p| p.cve)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    CommitDecision::Proceed { cve }
+}
+
 impl TaskBlock for CommitAndPush {
     task_block_meta! {
         name: "Commit and Push",
@@ -111,29 +157,12 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        // Respect the loop_context guard: no events for intermediate completions.
-        let is_completion_event = matches!(
-            trigger.event_type,
-            EventType::ProjectIterationCompleted | EventType::ProjectMaintenanceCompleted
-        );
-        if is_completion_event && has_loop_context(&trigger.payload) {
+        let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
             return vec![];
-        }
-
-        // Respect the self-filter: no events when payload says no changes.
-        let changes_flag =
-            trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
-        if changes_flag == Some(false) {
-            return vec![];
-        }
+        };
 
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let cve = trigger
-            .parse_payload::<RemediationCompletedPayload>()
-            .ok()
-            .and_then(|p| p.cve)
-            .unwrap_or_else(|| "unknown".to_string());
 
         // Simulate push if the project has push enabled, or if unknown (stub path).
         let push_enabled = match super::read_registry(&self.registry) {
@@ -168,42 +197,26 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-        let event_type = trigger.event_type.clone();
-
-        // Self-filter: skip intermediate completions inside a nested loop.
-        // The outermost loop controller emits the terminal completion without
-        // loop_context. Per-iteration commits are handled by sinking on
-        // InnerIterationCompleted (which carries loop_context but is explicitly
-        // handled).
-        let is_completion_event = matches!(
-            event_type,
-            EventType::ProjectIterationCompleted | EventType::ProjectMaintenanceCompleted
-        );
-        if is_completion_event && has_loop_context(&trigger.payload) {
-            tracing::info!(%project, "inside nested loop, skipping commit on intermediate completion");
-            return skip!("Skipped: inside nested loop (intermediate completion)");
+        match decide_commit(trigger) {
+            CommitDecision::SkipNestedLoop => {
+                let project = trigger.project.clone();
+                tracing::info!(%project, "inside nested loop, skipping commit on intermediate completion");
+                skip!("Skipped: inside nested loop (intermediate completion)")
+            }
+            CommitDecision::SkipNoChanges => {
+                let project = trigger.project.clone();
+                tracing::info!(%project, "payload indicates no changes, skipping commit");
+                skip!("No changes to commit")
+            }
+            CommitDecision::Proceed { cve } => {
+                let project = trigger.project.clone();
+                let throttle = trigger.throttle;
+                let event_type = trigger.event_type.clone();
+                let registry = Arc::clone(&self.registry);
+                let shell = Arc::clone(&self.shell);
+                Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
+            }
         }
-
-        // Self-filter: when the payload explicitly signals no changes were made, skip early.
-        let changes_flag =
-            trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
-        if changes_flag == Some(false) {
-            tracing::info!(%project, "payload indicates no changes, skipping commit");
-            return skip!("No changes to commit");
-        }
-
-        let cve = trigger
-            .parse_payload::<RemediationCompletedPayload>()
-            .ok()
-            .and_then(|p| p.cve)
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let registry = Arc::clone(&self.registry);
-        let shell = Arc::clone(&self.shell);
-
-        Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
     }
 }
 
@@ -370,7 +383,10 @@ mod tests {
     use crate::shell::CommandResult;
 
     use super::super::test_helpers;
-    use super::{CommitAndPush, CommitOutcome, classify_commit_outcome, commit_message};
+    use super::{
+        CommitAndPush, CommitDecision, CommitOutcome, classify_commit_outcome, commit_message,
+        decide_commit,
+    };
 
     fn make_trigger(project: &str, cve: &str) -> Event {
         test_helpers::make_trigger(
@@ -858,5 +874,94 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("remediation"), "expected 'remediation' in '{msg}'");
+    }
+
+    // --- decide_commit pure function tests ---
+
+    #[test]
+    fn decide_commit_skips_nested_loop() {
+        let trigger = test_event!(EventType::ProjectIterationCompleted, "proj", {
+            "project": "proj",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
+        assert_eq!(decide_commit(&trigger), CommitDecision::SkipNestedLoop);
+    }
+
+    #[test]
+    fn decide_commit_skips_nested_loop_for_maintenance_completion() {
+        let trigger = test_event!(EventType::ProjectMaintenanceCompleted, "proj", {
+            "project": "proj",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 2 } }
+        });
+        assert_eq!(decide_commit(&trigger), CommitDecision::SkipNestedLoop);
+    }
+
+    #[test]
+    fn decide_commit_skips_no_changes() {
+        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
+        assert_eq!(decide_commit(&trigger), CommitDecision::SkipNoChanges);
+    }
+
+    #[test]
+    fn decide_commit_proceeds_with_cve() {
+        // make_trigger uses EventType::RemediationCompleted with a full payload including cve.
+        // The RemediationCompletedPayload requires `success: bool` — use a complete payload.
+        let trigger = test_helpers::make_trigger(
+            EventType::RemediationCompleted,
+            "proj",
+            serde_json::json!({ "cve": "CVE-2026-5555", "success": true }),
+        );
+        assert!(
+            matches!(decide_commit(&trigger), CommitDecision::Proceed { cve } if cve == "CVE-2026-5555")
+        );
+    }
+
+    #[test]
+    fn decide_commit_defaults_cve_to_unknown_when_payload_missing_required_fields() {
+        // When the payload cannot be parsed as RemediationCompletedPayload (e.g. missing
+        // required `success` field), CVE defaults to "unknown".
+        let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "proj");
+        assert!(
+            matches!(decide_commit(&trigger), CommitDecision::Proceed { cve } if cve == "unknown")
+        );
+    }
+
+    #[test]
+    fn dry_run_returns_empty_for_loop_context_trigger() {
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = test_event!(EventType::ProjectIterationCompleted, "proj", {
+            "project": "proj",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
+        assert!(block.dry_run_events(&trigger).is_empty());
+    }
+
+    #[test]
+    fn dry_run_returns_empty_for_no_changes_trigger() {
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
+        assert!(block.dry_run_events(&trigger).is_empty());
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_skip_for_nested_loop() {
+        // Both dry_run_events and execute must produce no output for a nested loop trigger.
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = test_event!(EventType::ProjectIterationCompleted, "proj", {
+            "project": "proj",
+            "success": true,
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
+        assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip nested loop");
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_skip_for_no_changes() {
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
+        assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when no changes");
     }
 }

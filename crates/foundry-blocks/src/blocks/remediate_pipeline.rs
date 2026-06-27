@@ -11,6 +11,28 @@ use crate::gateway::{AgentGateway, AgentProvider};
 
 use super::TriggerContext;
 
+/// Decision outcome for a remediate-pipeline trigger.
+///
+/// Centralises the `passing` guard shared between `dry_run_events` and `execute`.
+#[derive(Debug, PartialEq)]
+enum PipelineRemediateDecision {
+    /// Pipeline is passing — nothing to remediate.
+    SkipPassing,
+    /// Pipeline is failing — proceed with remediation.
+    Proceed,
+    /// Trigger payload could not be parsed.
+    InvalidPayload,
+}
+
+/// Evaluate the trigger and decide what `RemediatePipeline` should do.
+fn decide_pipeline_remediate(trigger: &Event) -> PipelineRemediateDecision {
+    match trigger.parse_payload::<PipelineCheckedPayload>() {
+        Ok(p) if p.passing => PipelineRemediateDecision::SkipPassing,
+        Ok(_) => PipelineRemediateDecision::Proceed,
+        Err(_) => PipelineRemediateDecision::InvalidPayload,
+    }
+}
+
 agent_block_new!(
     /// Attempts to fix a failing GitHub Actions pipeline.
     /// Mutator -- simulated success at `dry_run`.
@@ -35,19 +57,18 @@ impl TaskBlock for RemediatePipeline {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        // Respect the self-filter: only remediate when failing.
-        let p = match trigger.parse_payload::<PipelineCheckedPayload>() {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(error = %e, "dry_run_events: invalid PipelineChecked payload; emitting no events");
-                return vec![];
+        match decide_pipeline_remediate(trigger) {
+            PipelineRemediateDecision::InvalidPayload => {
+                tracing::warn!(
+                    "dry_run_events: invalid PipelineChecked payload; emitting no events"
+                );
+                vec![]
             }
-        };
-        if p.passing {
-            return vec![];
+            PipelineRemediateDecision::SkipPassing => vec![],
+            PipelineRemediateDecision::Proceed => {
+                super::dry_run_remediation_event(trigger, None, Some(true))
+            }
         }
-
-        super::dry_run_remediation_event(trigger, None, Some(true))
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -58,13 +79,20 @@ impl TaskBlock for RemediatePipeline {
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only remediate when pipeline is failing.
-        let p = parse_payload!(trigger, PipelineCheckedPayload);
-
-        if p.passing {
-            tracing::info!("pipeline is passing, no remediation needed");
-            return skip!("Pipeline is passing, no remediation needed");
+        match decide_pipeline_remediate(trigger) {
+            PipelineRemediateDecision::SkipPassing => {
+                tracing::info!("pipeline is passing, no remediation needed");
+                return skip!("Pipeline is passing, no remediation needed");
+            }
+            PipelineRemediateDecision::InvalidPayload => {
+                let err = anyhow::anyhow!("invalid PipelineChecked payload");
+                return Box::pin(async move { Err(err) });
+            }
+            PipelineRemediateDecision::Proceed => {}
         }
 
+        // Now we know the pipeline is failing; get typed fields.
+        let p = parse_payload!(trigger, PipelineCheckedPayload);
         let failure_logs = p.failure_logs.unwrap_or_default();
         let run_name = p.run_name.clone().unwrap_or_default();
         let provider = super::chain_agent_provider(&payload);
@@ -165,7 +193,7 @@ mod tests {
     use crate::gateway::fakes::FakeAgentGateway;
 
     use super::super::test_helpers;
-    use super::RemediatePipeline;
+    use super::{PipelineRemediateDecision, RemediatePipeline, decide_pipeline_remediate};
 
     assert_block_meta!(
         RemediatePipeline::new(FakeAgentGateway::success(), Arc::new(RwLock::new(Registry { version: 2, projects: vec![] }))),
@@ -254,5 +282,68 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
         assert_eq!(result.events[0].payload["success"], false);
         assert!(result.summary.contains("failed"));
+    }
+
+    // --- decide_pipeline_remediate pure function tests ---
+
+    #[test]
+    fn decide_pipeline_remediate_skips_when_passing() {
+        let t = test_event!(EventType::PipelineChecked, "proj", {
+            "passing": true,
+            "conclusion": "success",
+            "run_id": 1,
+            "run_name": "CI",
+        });
+        assert_eq!(decide_pipeline_remediate(&t), PipelineRemediateDecision::SkipPassing);
+    }
+
+    #[test]
+    fn decide_pipeline_remediate_proceeds_when_failing() {
+        let t = test_event!(EventType::PipelineChecked, "proj", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 2,
+            "run_name": "CI",
+        });
+        assert_eq!(decide_pipeline_remediate(&t), PipelineRemediateDecision::Proceed);
+    }
+
+    #[test]
+    fn decide_pipeline_remediate_invalid_for_non_object_payload() {
+        let t = foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::PipelineChecked,
+            "proj".to_string(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!("not an object"),
+        );
+        assert_eq!(decide_pipeline_remediate(&t), PipelineRemediateDecision::InvalidPayload);
+    }
+
+    #[test]
+    fn dry_run_returns_empty_when_passing() {
+        let block =
+            RemediatePipeline::new(FakeAgentGateway::success(), test_helpers::empty_registry());
+        let t = test_event!(EventType::PipelineChecked, "proj", {
+            "passing": true,
+            "conclusion": "success",
+            "run_id": 1,
+            "run_name": "CI",
+        });
+        assert!(block.dry_run_events(&t).is_empty());
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_skip_for_passing() {
+        // Both dry_run_events and execute must skip when pipeline is passing.
+        let block =
+            RemediatePipeline::new(FakeAgentGateway::success(), test_helpers::empty_registry());
+        let t = test_event!(EventType::PipelineChecked, "proj", {
+            "passing": true,
+            "conclusion": "success",
+            "run_id": 1,
+            "run_name": "CI",
+        });
+        assert!(block.dry_run_events(&t).is_empty(), "dry_run must skip passing pipeline");
+        // execute path is tested in skips_when_pipeline_passing
     }
 }

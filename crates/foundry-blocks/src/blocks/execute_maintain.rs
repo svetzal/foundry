@@ -35,6 +35,26 @@ pub(super) fn resolve_agent_file(agent_name: &str) -> Option<PathBuf> {
     if path.exists() { Some(path) } else { None }
 }
 
+/// Decision outcome for an execute-maintain trigger.
+///
+/// Centralises the workflow-type guard shared between `dry_run_events` and `execute`.
+#[derive(Debug, PartialEq)]
+enum MaintainDecision {
+    /// Trigger is not a maintain workflow — skip.
+    SkipNonMaintain,
+    /// Trigger is a maintain workflow — proceed.
+    Proceed,
+}
+
+/// Evaluate the trigger and decide what `ExecuteMaintain` should do.
+fn decide_maintain(trigger: &Event) -> MaintainDecision {
+    if WorkflowType::from_payload(&trigger.payload) == WorkflowType::Maintain {
+        MaintainDecision::Proceed
+    } else {
+        MaintainDecision::SkipNonMaintain
+    }
+}
+
 impl TaskBlock for ExecuteMaintain {
     task_block_meta! {
         name: "Execute Maintain",
@@ -43,11 +63,12 @@ impl TaskBlock for ExecuteMaintain {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let workflow = WorkflowType::from_payload(&trigger.payload);
-        if workflow != WorkflowType::Maintain {
-            return vec![];
+        match decide_maintain(trigger) {
+            MaintainDecision::SkipNonMaintain => vec![],
+            MaintainDecision::Proceed => {
+                super::dry_run_execution_event(trigger, WorkflowType::Maintain, None)
+            }
         }
-        super::dry_run_execution_event(trigger, WorkflowType::Maintain, None)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -57,10 +78,8 @@ impl TaskBlock for ExecuteMaintain {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: only handle maintain workflow
-        let workflow = WorkflowType::from_payload(&payload);
-
-        if workflow != WorkflowType::Maintain {
+        // Self-filter: only handle maintain workflow.
+        if decide_maintain(trigger) == MaintainDecision::SkipNonMaintain {
             return skip!("Skipped: not a maintain workflow");
         }
 
@@ -114,7 +133,7 @@ mod tests {
     use crate::gateway::{AgentAccess, ModelTier, ReasoningEffort};
 
     use super::super::test_helpers;
-    use super::ExecuteMaintain;
+    use super::{ExecuteMaintain, MaintainDecision, decide_maintain};
 
     assert_block_meta!(
         ExecuteMaintain::new(
@@ -460,5 +479,55 @@ mod tests {
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
         test_helpers::assert_tolerates_git_failure(&block, &trigger, true).await;
+    }
+
+    // --- decide_maintain pure function tests ---
+
+    #[test]
+    fn decide_maintain_skips_iterate_workflow() {
+        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
+            "workflow": "iterate",
+            "gates": [],
+        });
+        assert_eq!(decide_maintain(&trigger), MaintainDecision::SkipNonMaintain);
+    }
+
+    #[test]
+    fn decide_maintain_proceeds_for_maintain_workflow() {
+        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
+            "workflow": "maintain",
+            "gates": [],
+        });
+        assert_eq!(decide_maintain(&trigger), MaintainDecision::Proceed);
+    }
+
+    #[test]
+    fn decide_maintain_skips_unknown_workflow() {
+        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
+            "workflow": "unknown",
+            "gates": [],
+        });
+        assert_eq!(decide_maintain(&trigger), MaintainDecision::SkipNonMaintain);
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_skip_for_non_maintain() {
+        // Both dry_run_events and execute must skip when workflow is not maintain.
+        let block = ExecuteMaintain::new(
+            FakeAgentGateway::success(),
+            Arc::new(RwLock::new(Registry {
+                version: 2,
+                projects: vec![],
+            })),
+        );
+        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
+            "workflow": "iterate",
+            "gates": [],
+        });
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "dry_run must skip non-maintain workflows"
+        );
+        // execute path is tested in skips_iterate_workflow
     }
 }
