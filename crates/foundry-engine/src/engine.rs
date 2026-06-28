@@ -4,10 +4,10 @@ use tokio::sync::broadcast;
 
 use foundry_sdk::event::{Event, EventType, mint_gather_id};
 use foundry_sdk::scatter::Scatter;
-use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
-use foundry_sdk::throttle::Throttle;
+use foundry_sdk::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
 pub use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
+use crate::dispatch::{Dispatch, classify_dispatch, make_block_execution};
 use crate::event_writer::EventWriter;
 use crate::gather_store::{GatherGroup, GatherStore};
 
@@ -77,44 +77,6 @@ async fn execute_with_retry(
     }
 
     last_result.expect("loop always sets last_result")
-}
-
-#[derive(Debug, PartialEq)]
-enum Dispatch {
-    DryRunSimulate,
-    ThrottleSkip,
-    Execute,
-}
-
-/// Classify how the engine should handle a block invocation based on its kind,
-/// the event throttle, and whether the block says it should execute.
-fn classify_dispatch(kind: BlockKind, throttle: Throttle, should_execute: bool) -> Dispatch {
-    if !should_execute && throttle == Throttle::DryRun && kind == BlockKind::Mutator {
-        Dispatch::DryRunSimulate
-    } else if !should_execute {
-        Dispatch::ThrottleSkip
-    } else {
-        Dispatch::Execute
-    }
-}
-
-fn make_block_execution(
-    block: &dyn TaskBlock,
-    current: &Event,
-    block_span_id: String,
-    workflow_span_id: Option<String>,
-    block_start: std::time::Instant,
-    success: bool,
-    summary: String,
-) -> BlockExecution {
-    let duration_ms = u64::try_from(block_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    BlockExecution {
-        success,
-        summary,
-        span_id: Some(block_span_id),
-        parent_span_id: workflow_span_id,
-        ..BlockExecution::new(block.name(), &current.id, duration_ms, current.payload.clone())
-    }
 }
 
 impl Default for Engine {
@@ -561,42 +523,6 @@ mod tests {
     use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;
-
-    // -- classify_dispatch pure function tests --
-
-    #[test]
-    fn classify_dispatch_dry_run_mutator_simulates() {
-        assert_eq!(
-            classify_dispatch(BlockKind::Mutator, Throttle::DryRun, false),
-            Dispatch::DryRunSimulate
-        );
-    }
-
-    #[test]
-    fn classify_dispatch_observer_dry_run_skips() {
-        // Observers do not simulate under DryRun — they get ThrottleSkip
-        assert_eq!(
-            classify_dispatch(BlockKind::Observer, Throttle::DryRun, false),
-            Dispatch::ThrottleSkip
-        );
-    }
-
-    #[test]
-    fn classify_dispatch_throttle_skip_when_should_not_execute() {
-        assert_eq!(
-            classify_dispatch(BlockKind::Mutator, Throttle::Full, false),
-            Dispatch::ThrottleSkip
-        );
-    }
-
-    #[test]
-    fn classify_dispatch_executes_when_should_execute() {
-        assert_eq!(classify_dispatch(BlockKind::Mutator, Throttle::Full, true), Dispatch::Execute);
-        assert_eq!(
-            classify_dispatch(BlockKind::Observer, Throttle::DryRun, true),
-            Dispatch::Execute
-        );
-    }
 
     #[test]
     fn opens_span_recognizes_builtin_and_registered_custom_openers() {
