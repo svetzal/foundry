@@ -7,11 +7,9 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::workflow::WorkflowType;
 
-use crate::gateway::{
-    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
-};
+use crate::gateway::{AgentAccess, AgentGateway, AgentProvider, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, TriggerContext};
+use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome};
 
 agent_block_new!(
     /// Identifies the most-violated engineering principle in the project.
@@ -155,14 +153,19 @@ async fn run_assessment_agent(
     )
     .await;
 
-    match outcome {
-        AgentOutcome::Success { stdout } => Ok(parse_assessment(&stdout)),
-        AgentOutcome::AgentFailed { stderr, .. } => {
-            tracing::warn!(project = %project, stderr = %stderr, "assessment agent failed");
-            Ok((5, "unknown".to_string(), "conventions".to_string(), stderr))
-        }
-        AgentOutcome::Unavailable { error } => Err(anyhow::anyhow!(error)),
-    }
+    fold_agent_outcome(
+        outcome,
+        project,
+        "assess project",
+        |stdout| Ok(parse_assessment(&stdout)),
+        |ns| {
+            if ns.unavailable {
+                Err(anyhow::anyhow!(ns.error))
+            } else {
+                Ok((5, "unknown".to_string(), "conventions".to_string(), ns.error))
+            }
+        },
+    )
 }
 
 struct NamingAgentArgs {
@@ -208,17 +211,20 @@ async fn run_naming_agent(
     )
     .await;
 
-    if let AgentOutcome::Success { stdout } = outcome {
-        let name = stdout.trim().to_string();
-        if name.is_empty() {
-            format!("assess-{category}")
-        } else {
-            name
-        }
-    } else {
-        tracing::warn!(project = %project, "naming agent failed, using fallback");
-        format!("assess-{category}")
-    }
+    fold_agent_outcome(
+        outcome,
+        project,
+        "name assessment",
+        |stdout| {
+            let name = stdout.trim().to_string();
+            if name.is_empty() {
+                format!("assess-{category}")
+            } else {
+                name
+            }
+        },
+        |_ns| format!("assess-{category}"),
+    )
 }
 
 /// Parse the JSON assessment output from the agent.

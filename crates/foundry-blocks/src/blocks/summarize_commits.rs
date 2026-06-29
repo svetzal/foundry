@@ -16,9 +16,9 @@ use foundry_sdk::payload::{
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, emit_result, invoke_agent};
+use super::{AgentBlockSpec, emit_result, fold_agent_outcome, invoke_agent};
 
 /// Per-call timeout for the digest agent invocation. The prompt is large
 /// but cheap — five minutes is generous and bounds a hung agent.
@@ -130,11 +130,13 @@ async fn summarize(
     )
     .await;
 
-    let markdown = match outcome {
-        AgentOutcome::Success { stdout } => stdout.trim().to_string(),
-        AgentOutcome::AgentFailed { stderr, .. } => fallback_digest(&observed, Some(&stderr)),
-        AgentOutcome::Unavailable { error } => fallback_digest(&observed, Some(&error)),
-    };
+    let markdown = fold_agent_outcome(
+        outcome,
+        &project,
+        TRACE_LABEL,
+        |stdout| stdout.trim().to_string(),
+        |ns| fallback_digest(&observed, Some(&ns.error)),
+    );
 
     let payload = CommitSummaryCompletedPayload {
         markdown,

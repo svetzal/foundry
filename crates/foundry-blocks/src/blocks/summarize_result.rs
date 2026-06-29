@@ -7,9 +7,9 @@ use foundry_sdk::payload::{ProjectCompletedPayload, SummarizeCompletedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
 
 agent_block_new!(
     /// Generates a commit headline and summary after a successful workflow.
@@ -109,18 +109,17 @@ impl TaskBlock for SummarizeResult {
     }
 }
 
-fn extract_headline_summary(outcome: AgentOutcome, project: &str) -> (String, String) {
-    match outcome {
-        AgentOutcome::Success { stdout } => parse_summary_output(&stdout),
-        AgentOutcome::AgentFailed { stderr, .. } => {
-            tracing::warn!(project = %project, stderr = %stderr, "summary agent failed");
-            (format!("Update {project}"), "Automated maintenance completed.".to_string())
-        }
-        AgentOutcome::Unavailable { error } => {
-            tracing::warn!(error = %error, "agent invocation failed for summary");
-            (format!("Update {project}"), "Automated maintenance completed.".to_string())
-        }
-    }
+fn extract_headline_summary(
+    outcome: crate::gateway::AgentOutcome,
+    project: &str,
+) -> (String, String) {
+    fold_agent_outcome(
+        outcome,
+        project,
+        "summary",
+        |stdout| parse_summary_output(&stdout),
+        |_ns| (format!("Update {project}"), "Automated maintenance completed.".to_string()),
+    )
 }
 
 /// Parse the agent output for HEADLINE: and SUMMARY: lines.

@@ -7,11 +7,9 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 use foundry_sdk::workflow::WorkflowType;
 
-use crate::gateway::{
-    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
-};
+use crate::gateway::{AgentAccess, AgentGateway, AgentProvider, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
 
 /// Severity threshold below which triage rejects assessments as not worth correcting.
 /// Below-threshold rejections are a *successful* no-op outcome of triage filtering,
@@ -153,17 +151,20 @@ async fn run_triage_agent(
     )
     .await;
 
-    match outcome {
-        AgentOutcome::Success { stdout } => parse_triage(&stdout),
-        AgentOutcome::AgentFailed { stderr, .. } => {
-            tracing::warn!(project = %project, stderr = %stderr, "triage agent failed");
-            // Default to accepting on agent failure — better to attempt the fix
-            (true, "triage agent failed, defaulting to accept".to_string())
-        }
-        AgentOutcome::Unavailable { error } => {
-            (true, format!("agent unavailable: {error}, defaulting to accept"))
-        }
-    }
+    fold_agent_outcome(
+        outcome,
+        project,
+        "triage assessment",
+        |stdout| parse_triage(&stdout),
+        |ns| {
+            if ns.unavailable {
+                (true, format!("agent unavailable: {}, defaulting to accept", ns.error))
+            } else {
+                // Default to accepting on agent failure — better to attempt the fix
+                (true, "triage agent failed, defaulting to accept".to_string())
+            }
+        },
+    )
 }
 
 /// Parse the JSON triage output from the agent.

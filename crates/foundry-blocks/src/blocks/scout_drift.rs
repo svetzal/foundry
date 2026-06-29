@@ -5,9 +5,9 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
 
 const DRIFT_SCOUT_PROMPT: &str = r#"You are a BUG SCOUT agent.
 
@@ -209,26 +209,32 @@ impl TaskBlock for ScoutDrift {
             )
             .await;
 
-            let result = match outcome {
-                AgentOutcome::Success { stdout } => parse_drift_assessment(&stdout),
-                AgentOutcome::AgentFailed { stderr, .. } => {
-                    tracing::warn!(project = %project, stderr = %stderr, "drift scout agent failed");
-                    DriftAssessmentResult {
-                        candidate_count: 0,
-                        high_value_count: 0,
-                        candidates: serde_json::Value::Array(vec![]),
-                        parse_error: Some(
-                            stderr
-                                .lines()
-                                .next()
-                                .unwrap_or("agent returned non-success")
-                                .to_string(),
-                        ),
+            let result = match fold_agent_outcome(
+                outcome,
+                &project,
+                "drift scout agent",
+                |stdout| Ok(parse_drift_assessment(&stdout)),
+                |ns| {
+                    if ns.unavailable {
+                        Err(TaskBlockResult::failure(format!("agent unavailable: {}", ns.error)))
+                    } else {
+                        Ok(DriftAssessmentResult {
+                            candidate_count: 0,
+                            high_value_count: 0,
+                            candidates: serde_json::Value::Array(vec![]),
+                            parse_error: Some(
+                                ns.error
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("agent returned non-success")
+                                    .to_string(),
+                            ),
+                        })
                     }
-                }
-                AgentOutcome::Unavailable { error } => {
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
-                }
+                },
+            ) {
+                Ok(r) => r,
+                Err(f) => return Ok(f),
             };
 
             Ok(build_drift_result(&project, throttle, &result))

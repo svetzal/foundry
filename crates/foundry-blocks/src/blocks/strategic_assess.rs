@@ -6,9 +6,9 @@ use foundry_sdk::payload::ProjectIterationRequestedPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentOutcome, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
 
-use super::{AgentBlockSpec, TriggerContext, invoke_agent};
+use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
 
 agent_block_new!(
     /// Performs a strategic assessment of the project to identify multiple areas
@@ -85,19 +85,25 @@ impl TaskBlock for StrategicAssessor {
             )
             .await;
 
-            let areas = match outcome {
-                AgentOutcome::Success { stdout } => parse_strategic_assessment(&stdout),
-                AgentOutcome::AgentFailed { stderr, .. } => {
-                    tracing::warn!(project = %project, stderr = %stderr, "strategic assessment agent failed");
-                    vec![serde_json::json!({
-                        "area": "general quality improvement",
-                        "severity": 5,
-                        "category": "conventions",
-                    })]
-                }
-                AgentOutcome::Unavailable { error } => {
-                    return Ok(TaskBlockResult::failure(format!("agent unavailable: {error}")));
-                }
+            let areas = match fold_agent_outcome(
+                outcome,
+                &project,
+                "strategic assessment",
+                |stdout| Ok(parse_strategic_assessment(&stdout)),
+                |ns| {
+                    if ns.unavailable {
+                        Err(TaskBlockResult::failure(format!("agent unavailable: {}", ns.error)))
+                    } else {
+                        Ok(vec![serde_json::json!({
+                            "area": "general quality improvement",
+                            "severity": 5,
+                            "category": "conventions",
+                        })])
+                    }
+                },
+            ) {
+                Ok(a) => a,
+                Err(f) => return Ok(f),
             };
 
             tracing::info!(

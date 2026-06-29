@@ -7,9 +7,7 @@ use foundry_sdk::payload::{InnerIterationCompletedPayload, StrategicAssessmentCo
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{
-    AgentAccess, AgentGateway, AgentOutcome, AgentProvider, ModelTier, ReasoningEffort,
-};
+use crate::gateway::{AgentAccess, AgentGateway, AgentProvider, ModelTier, ReasoningEffort};
 
 use super::{AgentBlockSpec, TriggerContext};
 
@@ -283,25 +281,29 @@ async fn assess_continue(
     )
     .await;
 
-    if let AgentOutcome::Success { stdout } = outcome {
-        if let Some(parsed) = super::parse_agent_json(&stdout) {
-            let should_continue =
-                parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
-            let reason =
-                parsed.get("reason").and_then(serde_json::Value::as_str).unwrap_or("no reason");
-            tracing::info!(
-                project = %project,
-                should_continue = should_continue,
-                reason = %reason,
-                "strategic continue assessment"
-            );
-            return should_continue;
-        }
-        false
-    } else {
-        tracing::warn!(project = %project, "continue assessment failed, stopping loop");
-        false
-    }
+    super::fold_agent_outcome(
+        outcome,
+        project,
+        "strategic continue assessment",
+        |stdout| {
+            if let Some(parsed) = super::parse_agent_json(&stdout) {
+                let should_continue =
+                    parsed.get("continue").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let reason =
+                    parsed.get("reason").and_then(serde_json::Value::as_str).unwrap_or("no reason");
+                tracing::info!(
+                    project = %project,
+                    should_continue = should_continue,
+                    reason = %reason,
+                    "strategic continue assessment"
+                );
+                should_continue
+            } else {
+                false
+            }
+        },
+        |_ns| false,
+    )
 }
 
 #[cfg(test)]

@@ -136,6 +136,49 @@ pub(crate) fn extract_json(s: &str) -> String {
     s.to_string()
 }
 
+/// Carry type returned to non-success closures in [`fold_agent_outcome`].
+///
+/// `unavailable` distinguishes a hard infrastructure failure (`Unavailable`)
+/// from a soft agent-side failure (`AgentFailed`), letting callers choose
+/// different fallbacks for each case when needed.
+pub(crate) struct AgentNonSuccess {
+    pub error: String,
+    pub unavailable: bool,
+}
+
+/// Fold an [`AgentOutcome`] into a single value `T`.
+///
+/// - `Success { stdout }` → `on_success(stdout)`.
+/// - `AgentFailed { stderr, .. }` → logs a `tracing::warn!` then calls
+///   `on_nonsuccess(AgentNonSuccess { error: stderr, unavailable: false })`.
+/// - `Unavailable { error }` → calls
+///   `on_nonsuccess(AgentNonSuccess { error, unavailable: true })`.
+///
+/// This owns the standard warn + dispatch pattern that the eight observer/summary
+/// blocks each previously hand-rolled as a three-arm `match`.
+pub(crate) fn fold_agent_outcome<T>(
+    outcome: AgentOutcome,
+    project: &str,
+    trace_label: &str,
+    on_success: impl FnOnce(String) -> T,
+    on_nonsuccess: impl FnOnce(AgentNonSuccess) -> T,
+) -> T {
+    match outcome {
+        AgentOutcome::Success { stdout } => on_success(stdout),
+        AgentOutcome::AgentFailed { stderr, .. } => {
+            tracing::warn!(project = %project, stderr = %stderr, "{trace_label} failed");
+            on_nonsuccess(AgentNonSuccess {
+                error: stderr,
+                unavailable: false,
+            })
+        }
+        AgentOutcome::Unavailable { error } => on_nonsuccess(AgentNonSuccess {
+            error,
+            unavailable: true,
+        }),
+    }
+}
+
 /// Match an agent outcome into text output plus a success flag, or return a failure result.
 ///
 /// On `Unavailable`, returns `Err(TaskBlockResult::failure(...))`.
@@ -215,5 +258,59 @@ mod tests {
     fn chain_agent_provider_returns_none_for_unknown_provider() {
         let payload = serde_json::json!({ "agent_provider": "unknown-provider" });
         assert_eq!(chain_agent_provider(&payload), None);
+    }
+
+    #[test]
+    fn fold_agent_outcome_routes_success_to_on_success() {
+        let outcome = AgentOutcome::Success {
+            stdout: "ok".to_string(),
+        };
+        let result: &str = fold_agent_outcome(
+            outcome,
+            "proj",
+            "test",
+            |s| if s == "ok" { "yes" } else { "no" },
+            |_| "fail",
+        );
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn fold_agent_outcome_routes_agent_failed_with_unavailable_false() {
+        let outcome = AgentOutcome::AgentFailed {
+            stderr: "boom".to_string(),
+            failure: None,
+        };
+        let result: Option<bool> = fold_agent_outcome(
+            outcome,
+            "proj",
+            "test",
+            |_| Some(true),
+            |ns| {
+                assert!(!ns.unavailable);
+                assert_eq!(ns.error, "boom");
+                None
+            },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn fold_agent_outcome_routes_unavailable_with_unavailable_true() {
+        let outcome = AgentOutcome::Unavailable {
+            error: "no agent".to_string(),
+        };
+        let result: Option<bool> = fold_agent_outcome(
+            outcome,
+            "proj",
+            "test",
+            |_| Some(true),
+            |ns| {
+                assert!(ns.unavailable);
+                assert_eq!(ns.error, "no agent");
+                None
+            },
+        );
+        assert!(result.is_none());
     }
 }
