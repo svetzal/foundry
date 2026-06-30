@@ -17,20 +17,12 @@ use foundry_sdk::payload::{
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
+use crate::gateway::AgentGateway;
 
-use super::{AgentBlockSpec, emit_result, fold_agent_outcome, invoke_agent};
+use super::{ReadOnlyAgentSpec, emit_result, fold_agent_outcome, invoke_reasoning_agent};
 
 /// Per-call timeout for the ops-digest agent invocation.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The digest agent does not write files.
-const AGENT_ACCESS: AgentAccess = AgentAccess::ReadOnly;
-
-/// Reasoning capability — we want the agent to identify patterns and surface
-/// actionable signals from the raw event stream.
-const AGENT_TIER: ModelTier = ModelTier::Deep;
-const AGENT_EFFORT: ReasoningEffort = ReasoningEffort::High;
 
 /// Trace label for this block's agent invocation span.
 const TRACE_LABEL: &str = "summarize_events";
@@ -112,14 +104,12 @@ async fn summarize(
     }
 
     let prompt = build_prompt(&observed);
-    let outcome = invoke_agent(
+    let outcome = invoke_reasoning_agent(
         agent.as_ref(),
-        AgentBlockSpec {
+        &project,
+        ReadOnlyAgentSpec {
             prompt,
             working_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            access: AGENT_ACCESS,
-            tier: AGENT_TIER,
-            effort: AGENT_EFFORT,
             agent_file: None,
             // Proactive ops-digest formation — not part of a request chain, so
             // there is no per-request override to honour. Uses the daemon default.
@@ -127,7 +117,6 @@ async fn summarize(
             timeout: AGENT_TIMEOUT,
         },
         TRACE_LABEL,
-        &project,
     )
     .await;
 

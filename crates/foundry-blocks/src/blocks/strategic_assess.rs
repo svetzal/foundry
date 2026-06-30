@@ -6,9 +6,9 @@ use foundry_sdk::payload::ProjectIterationRequestedPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
+use crate::gateway::AgentGateway;
 
-use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
+use super::{ReadOnlyAgentSpec, TriggerContext, fold_agent_outcome, invoke_reasoning_agent};
 
 agent_block_new!(
     /// Performs a strategic assessment of the project to identify multiple areas
@@ -55,7 +55,7 @@ impl TaskBlock for StrategicAssessor {
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let agent_file = super::resolve_agent_file(&entry.agent);
 
             let prompt = build_strategic_prompt(
                 &project,
@@ -68,20 +68,17 @@ impl TaskBlock for StrategicAssessor {
                 ),
             );
 
-            let outcome = invoke_agent(
+            let outcome = invoke_reasoning_agent(
                 &*agent,
-                AgentBlockSpec {
+                &project,
+                ReadOnlyAgentSpec {
                     prompt,
                     working_dir: project_path,
-                    access: AgentAccess::ReadOnly,
-                    tier: ModelTier::Deep,
-                    effort: ReasoningEffort::High,
                     agent_file,
                     provider,
                     timeout: entry.timeout(),
                 },
                 "strategic assessment",
-                &project,
             )
             .await;
 

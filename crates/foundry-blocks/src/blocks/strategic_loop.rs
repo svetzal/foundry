@@ -248,7 +248,7 @@ async fn assess_continue(
     };
 
     let project_path = PathBuf::from(&entry.path);
-    let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+    let agent_file = super::resolve_agent_file(&entry.agent);
 
     let default_directive = "Review the current state of the codebase and decide whether further improvement \
          iterations are warranted.\n\n\

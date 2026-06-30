@@ -155,7 +155,7 @@ async fn run_remediation(
          Failure logs:\n{failure_logs}"
     );
 
-    let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+    let agent_file = super::resolve_agent_file(&entry.agent);
 
     let outcome = super::invoke_coding_agent(
         &*agent,

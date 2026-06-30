@@ -16,21 +16,13 @@ use foundry_sdk::payload::{
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
+use crate::gateway::AgentGateway;
 
-use super::{AgentBlockSpec, emit_result, fold_agent_outcome, invoke_agent};
+use super::{ReadOnlyAgentSpec, emit_result, fold_agent_outcome, invoke_reasoning_agent};
 
 /// Per-call timeout for the digest agent invocation. The prompt is large
 /// but cheap — five minutes is generous and bounds a hung agent.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The digest agent does not write files; `ReadOnly` is the right access tier.
-const AGENT_ACCESS: AgentAccess = AgentAccess::ReadOnly;
-
-/// Reasoning capability — we want the agent to spot patterns and call out
-/// risky changes, not just template-fill.
-const AGENT_TIER: ModelTier = ModelTier::Deep;
-const AGENT_EFFORT: ReasoningEffort = ReasoningEffort::High;
 
 /// Trace label that shows up in `tracing` spans for this block's agent call.
 const TRACE_LABEL: &str = "summarize_commits";
@@ -108,17 +100,15 @@ async fn summarize(
     }
 
     let prompt = build_prompt(&observed);
-    let outcome = invoke_agent(
+    let outcome = invoke_reasoning_agent(
         agent.as_ref(),
-        AgentBlockSpec {
+        &project,
+        ReadOnlyAgentSpec {
             prompt,
             // Agent runs over the digest text itself, not against any one
             // project's checkout — use the daemon's process working dir so
             // the agent has no filesystem coupling to a registry entry.
             working_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            access: AGENT_ACCESS,
-            tier: AGENT_TIER,
-            effort: AGENT_EFFORT,
             agent_file: None,
             // Proactive digest formation — not part of a request chain, so there
             // is no per-request override to honour. Uses the daemon default.
@@ -126,7 +116,6 @@ async fn summarize(
             timeout: AGENT_TIMEOUT,
         },
         TRACE_LABEL,
-        &project,
     )
     .await;
 

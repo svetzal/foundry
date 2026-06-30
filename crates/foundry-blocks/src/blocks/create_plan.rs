@@ -99,7 +99,7 @@ impl TaskBlock for CreatePlan {
 
             let prompt = build_plan_prompt(&project, principle, category, assessment);
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let agent_file = super::resolve_agent_file(&entry.agent);
 
             let outcome = invoke_agent(
                 &*agent,

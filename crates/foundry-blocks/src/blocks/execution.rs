@@ -172,7 +172,7 @@ pub(crate) async fn execute_agent_block(
     prompt: String,
 ) -> TaskBlockResult {
     let project_path = PathBuf::from(&entry.path);
-    let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+    let agent_file = super::resolve_agent_file(&entry.agent);
     let provider = super::chain_agent_provider(ctx.payload);
     let pre_sha = capture_pre_execution_sha(shell, &project_path).await;
     let outcome = invoke_coding_agent(

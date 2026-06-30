@@ -7,9 +7,12 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentProvider, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentGateway, AgentProvider};
 
-use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome};
+use super::{
+    ReadOnlyAgentSpec, TriggerContext, fold_agent_outcome, invoke_reasoning_agent,
+    invoke_summary_agent,
+};
 
 agent_block_new!(
     /// Identifies the most-violated engineering principle in the project.
@@ -51,7 +54,7 @@ impl TaskBlock for AssessProject {
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let agent_file = super::resolve_agent_file(&entry.agent);
 
             let (severity, principle, category, assessment) = match run_assessment_agent(
                 &agent,
@@ -136,20 +139,17 @@ async fn run_assessment_agent(
          }}"
     );
 
-    let outcome = super::invoke_agent(
+    let outcome = invoke_reasoning_agent(
         agent.as_ref(),
-        AgentBlockSpec {
+        project,
+        ReadOnlyAgentSpec {
             prompt: assess_prompt,
             working_dir: project_path,
-            access: AgentAccess::ReadOnly,
-            tier: ModelTier::Deep,
-            effort: ReasoningEffort::High,
             agent_file,
             provider,
             timeout,
         },
         "assess project",
-        project,
     )
     .await;
 
@@ -194,20 +194,17 @@ async fn run_naming_agent(
          Output ONLY the kebab-case string, nothing else. Example: fix-error-handling"
     );
 
-    let outcome = super::invoke_agent(
+    let outcome = invoke_summary_agent(
         agent.as_ref(),
-        AgentBlockSpec {
+        project,
+        ReadOnlyAgentSpec {
             prompt: name_prompt,
             working_dir: project_path,
-            access: AgentAccess::ReadOnly,
-            tier: ModelTier::Fast,
-            effort: ReasoningEffort::Low,
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(60),
         },
         "name assessment",
-        project,
     )
     .await;
 

@@ -7,9 +7,9 @@ use foundry_sdk::payload::{ProjectCompletedPayload, SummarizeCompletedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
-use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
+use crate::gateway::AgentGateway;
 
-use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
+use super::{ReadOnlyAgentSpec, TriggerContext, fold_agent_outcome, invoke_summary_agent};
 
 agent_block_new!(
     /// Generates a commit headline and summary after a successful workflow.
@@ -67,22 +67,19 @@ impl TaskBlock for SummarizeResult {
                  SUMMARY: <your summary here>"
                 .to_string();
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let agent_file = super::resolve_agent_file(&entry.agent);
 
-            let outcome = invoke_agent(
+            let outcome = invoke_summary_agent(
                 &*agent,
-                AgentBlockSpec {
+                &project,
+                ReadOnlyAgentSpec {
                     prompt,
                     working_dir: project_path,
-                    access: AgentAccess::ReadOnly,
-                    tier: ModelTier::Fast,
-                    effort: ReasoningEffort::Low,
                     agent_file,
                     provider,
                     timeout: std::time::Duration::from_secs(120),
                 },
                 "summarize result",
-                &project,
             )
             .await;
 

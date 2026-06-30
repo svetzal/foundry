@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
@@ -19,20 +18,6 @@ agent_execution_block! {
     /// Uses `AgentGateway` with `Coding` capability and `Full` access.
     /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
     pub struct ExecuteMaintain
-}
-
-/// Resolve the agent file path from the registry agent name.
-/// Convention: `~/.claude/agents/{agent}.md`
-pub(super) fn resolve_agent_file(agent_name: &str) -> Option<PathBuf> {
-    if agent_name.is_empty() {
-        return None;
-    }
-    let home = std::env::var("HOME").ok()?;
-    let path = PathBuf::from(home)
-        .join(".claude")
-        .join("agents")
-        .join(format!("{agent_name}.md"));
-    if path.exists() { Some(path) } else { None }
 }
 
 /// Decision outcome for an execute-maintain trigger.

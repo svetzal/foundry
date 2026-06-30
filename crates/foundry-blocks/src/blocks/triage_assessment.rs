@@ -7,9 +7,9 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 use foundry_sdk::workflow::WorkflowType;
 
-use crate::gateway::{AgentAccess, AgentGateway, AgentProvider, ModelTier, ReasoningEffort};
+use crate::gateway::{AgentGateway, AgentProvider};
 
-use super::{AgentBlockSpec, TriggerContext, fold_agent_outcome, invoke_agent};
+use super::{ReadOnlyAgentSpec, TriggerContext, fold_agent_outcome, invoke_summary_agent};
 
 /// Severity threshold below which triage rejects assessments as not worth correcting.
 /// Below-threshold rejections are a *successful* no-op outcome of triage filtering,
@@ -52,7 +52,7 @@ impl TaskBlock for TriageAssessment {
             let category = assessment_payload.category.clone();
             let assessment = assessment_payload.assessment.clone();
 
-            let agent_file = super::execute_maintain::resolve_agent_file(&entry.agent);
+            let agent_file = super::resolve_agent_file(&entry.agent);
             let prompt = build_triage_prompt(
                 &project,
                 severity,
@@ -134,20 +134,17 @@ async fn run_triage_agent(
     provider: Option<AgentProvider>,
     project: &str,
 ) -> (bool, String) {
-    let outcome = invoke_agent(
+    let outcome = invoke_summary_agent(
         agent,
-        AgentBlockSpec {
+        project,
+        ReadOnlyAgentSpec {
             prompt,
             working_dir: project_path,
-            access: AgentAccess::ReadOnly,
-            tier: ModelTier::Fast,
-            effort: ReasoningEffort::Low,
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(120),
         },
         "triage assessment",
-        project,
     )
     .await;
 

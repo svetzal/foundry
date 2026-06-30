@@ -8,6 +8,22 @@ use crate::gateway::{
     ReasoningEffort,
 };
 
+/// Resolve the agent file path from the registry agent name.
+///
+/// Convention: `~/.claude/agents/{agent}.md`. Returns `None` when the name is
+/// empty or the file does not exist — callers fall back to the default agent.
+pub(crate) fn resolve_agent_file(agent_name: &str) -> Option<PathBuf> {
+    if agent_name.is_empty() {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    let path = PathBuf::from(home)
+        .join(".claude")
+        .join("agents")
+        .join(format!("{agent_name}.md"));
+    if path.exists() { Some(path) } else { None }
+}
+
 /// Parse a per-request agent provider override from its string form. Returns
 /// `None` when absent or unparseable, so the routing gateway falls back to the
 /// daemon default. Use this with a typed payload's `chain.agent_provider`.
@@ -134,6 +150,78 @@ pub(crate) fn extract_json(s: &str) -> String {
         return s[start..=end].to_string();
     }
     s.to_string()
+}
+
+/// Parameters for a read-only observer agent invocation.
+///
+/// Pass to [`invoke_reasoning_agent`] or [`invoke_summary_agent`] — the
+/// access/tier/effort profile is applied automatically by the wrapper.
+pub(crate) struct ReadOnlyAgentSpec {
+    pub working_dir: PathBuf,
+    pub prompt: String,
+    pub agent_file: Option<PathBuf>,
+    pub provider: Option<AgentProvider>,
+    pub timeout: Duration,
+}
+
+/// Invoke an agent with `ReadOnly` access at the `Deep` tier and `High`
+/// effort — the reasoning/assessment observer profile.
+///
+/// Convenience wrapper around [`invoke_agent`] for observer blocks that need
+/// deep analysis without writing files (`ScoutDrift`, `AssessProject`,
+/// `StrategicAssessor`, `SummarizeCommits`, `SummarizeEvents`).
+pub(crate) async fn invoke_reasoning_agent(
+    agent: &dyn AgentGateway,
+    project: &str,
+    spec: ReadOnlyAgentSpec,
+    trace_label: &str,
+) -> AgentOutcome {
+    invoke_agent(
+        agent,
+        AgentBlockSpec {
+            prompt: spec.prompt,
+            working_dir: spec.working_dir,
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
+            agent_file: spec.agent_file,
+            provider: spec.provider,
+            timeout: spec.timeout,
+        },
+        trace_label,
+        project,
+    )
+    .await
+}
+
+/// Invoke an agent with `ReadOnly` access at the `Fast` tier and `Low`
+/// effort — the lightweight summary/triage observer profile.
+///
+/// Convenience wrapper around [`invoke_agent`] for observer blocks that need
+/// a quick, cheap read-only call (`AssessProject` naming, `SummarizeResult`,
+/// `TriageAssessment`).
+pub(crate) async fn invoke_summary_agent(
+    agent: &dyn AgentGateway,
+    project: &str,
+    spec: ReadOnlyAgentSpec,
+    trace_label: &str,
+) -> AgentOutcome {
+    invoke_agent(
+        agent,
+        AgentBlockSpec {
+            prompt: spec.prompt,
+            working_dir: spec.working_dir,
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Fast,
+            effort: ReasoningEffort::Low,
+            agent_file: spec.agent_file,
+            provider: spec.provider,
+            timeout: spec.timeout,
+        },
+        trace_label,
+        project,
+    )
+    .await
 }
 
 /// Carry type returned to non-success closures in [`fold_agent_outcome`].
@@ -312,5 +400,55 @@ mod tests {
             },
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_agent_file_returns_none_for_empty_name() {
+        assert!(resolve_agent_file("").is_none());
+    }
+
+    #[test]
+    fn resolve_agent_file_returns_none_when_file_does_not_exist() {
+        assert!(resolve_agent_file("nonexistent-agent-xyz-foundry-test").is_none());
+    }
+
+    #[tokio::test]
+    async fn invoke_reasoning_agent_forwards_readonly_deep_high() {
+        use crate::gateway::fakes::FakeAgentGateway;
+
+        let agent = FakeAgentGateway::success_with("analysis complete");
+        let spec = ReadOnlyAgentSpec {
+            working_dir: std::path::PathBuf::from("/tmp"),
+            prompt: "analyze this".to_string(),
+            agent_file: None,
+            provider: None,
+            timeout: Duration::from_secs(60),
+        };
+        invoke_reasoning_agent(&*agent, "proj", spec, "test").await;
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
+        assert_eq!(invocations[0].tier, ModelTier::Deep);
+        assert_eq!(invocations[0].effort, ReasoningEffort::High);
+    }
+
+    #[tokio::test]
+    async fn invoke_summary_agent_forwards_readonly_fast_low() {
+        use crate::gateway::fakes::FakeAgentGateway;
+
+        let agent = FakeAgentGateway::success_with("summary done");
+        let spec = ReadOnlyAgentSpec {
+            working_dir: std::path::PathBuf::from("/tmp"),
+            prompt: "summarize this".to_string(),
+            agent_file: None,
+            provider: None,
+            timeout: Duration::from_secs(60),
+        };
+        invoke_summary_agent(&*agent, "proj", spec, "test").await;
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
+        assert_eq!(invocations[0].tier, ModelTier::Fast);
+        assert_eq!(invocations[0].effort, ReasoningEffort::Low);
     }
 }
