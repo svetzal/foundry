@@ -122,7 +122,7 @@ fn handle_assessment_completed(
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    super::stub_event_result(
+    super::single_event_result(
         format!("{project}: strategic loop iteration 1 — {area_name}"),
         EventType::ProjectIterationRequested,
         project.to_string(),
@@ -202,7 +202,7 @@ async fn handle_inner_completed(
     });
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    Ok(super::stub_event_result(
+    Ok(super::single_event_result(
         format!("{project}: strategic loop continuing — iteration {next_iteration}"),
         EventType::ProjectIterationRequested,
         project.to_string(),
@@ -226,7 +226,7 @@ fn complete_loop(
     // Forward actions but NOT loop_context — terminal blocks should fire
     forward_payload_fields(payload, &mut event_payload, &["actions"]);
 
-    super::stub_event_result(
+    super::single_event_result(
         format!("{project}: strategic loop completed"),
         EventType::ProjectIterationCompleted,
         project.to_string(),

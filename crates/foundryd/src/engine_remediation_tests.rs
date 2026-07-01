@@ -105,7 +105,7 @@ fn vuln_engine() -> Engine {
     )));
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(Arc::clone(&registry))));
     engine.register(Box::new(foundry_blocks::blocks::cut_release_step(Arc::clone(&registry))));
-    engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::stub()));
+    engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::new(Arc::clone(&registry))));
     engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(Arc::clone(&registry))));
     engine
 }

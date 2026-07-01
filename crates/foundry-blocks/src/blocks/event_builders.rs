@@ -221,11 +221,11 @@ pub(crate) fn dry_run_remediation_event(
     )
 }
 
-/// Emit a single-event success result with a raw JSON payload, without serialization.
+/// Emit a single-event success result from a raw JSON payload, without serialization.
 ///
-/// Use for stub/fallback paths that already have a `serde_json::Value` payload
-/// (e.g., no-repo results) and don't need typed payload serialization.
-pub(crate) fn stub_event_result(
+/// Use when the payload is already a `serde_json::Value` and typed serialization
+/// is not needed — for example, when forwarding an assembled payload verbatim.
+pub(crate) fn single_event_result(
     summary: impl Into<String>,
     event_type: EventType,
     project: String,
@@ -287,7 +287,8 @@ mod tests {
     use super::{
         build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
         dry_run_remediation_event, dry_run_single_event, emit_event_result, emit_result,
-        event_from_infallible_payload, event_from_payload, format_gates_context, stub_event_result,
+        event_from_infallible_payload, event_from_payload, format_gates_context,
+        single_event_result,
     };
 
     fn full() -> Throttle {
@@ -476,9 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn stub_event_result_passes_payload_through_verbatim() {
+    fn single_event_result_passes_payload_through_verbatim() {
         let payload = serde_json::json!({"reason": "no-repo"});
-        let result = stub_event_result(
+        let result = single_event_result(
             "skipped",
             EventType::ProjectRunCompleted,
             "p".to_string(),

@@ -163,7 +163,7 @@ fn build_strategic_result(
         event_payload["actions"] = actions.clone();
     }
 
-    super::stub_event_result(
+    super::single_event_result(
         format!("{project}: strategic assessment identified {area_count} areas"),
         EventType::StrategicAssessmentCompleted,
         project.to_string(),

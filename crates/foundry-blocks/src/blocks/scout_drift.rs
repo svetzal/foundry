@@ -261,7 +261,7 @@ fn build_drift_result(
         event_payload["parse_error"] = serde_json::Value::String(err.clone());
     }
 
-    super::stub_event_result(
+    super::single_event_result(
         format!(
             "{project}: drift assessment — {} candidates, {} high-value",
             result.candidate_count, result.high_value_count

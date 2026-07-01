@@ -8,7 +8,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{ScannerGateway, ShellGateway};
 
-use super::stub_event_result;
+use super::single_event_result;
 
 /// Scans a release tag for known vulnerabilities.
 /// Observer — always runs regardless of throttle.
@@ -103,7 +103,7 @@ impl AuditReleaseTag {
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());
 
-            Ok(super::stub_event_result(
+            Ok(super::single_event_result(
                 format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
                 EventType::ReleaseTagAudited,
                 project,
@@ -300,7 +300,7 @@ async fn perform_tag_checkout_and_scan(
         payload["dirty"] = serde_json::Value::Bool(dirty);
     }
 
-    Ok(stub_event_result(
+    Ok(single_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         EventType::ReleaseTagAudited,
         project.to_string(),
@@ -323,7 +323,7 @@ fn emit_payload_result(
     if let Some(d) = dirty {
         payload["dirty"] = serde_json::Value::Bool(d);
     }
-    stub_event_result(
+    single_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         EventType::ReleaseTagAudited,
         project,

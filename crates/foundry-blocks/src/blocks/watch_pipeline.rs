@@ -69,10 +69,19 @@ impl TaskBlock for WatchPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        let repo = match super::read_registry(&self.registry) {
-            Ok(guard) => {
-                guard.find_project(&project).map(|p| p.repo.clone()).filter(|r| !r.is_empty())
-            }
+        // Distinguish: project absent vs. project present but no repo configured.
+        let lookup = match super::read_registry(&self.registry) {
+            Ok(guard) => match guard.find_project(&project) {
+                None => Err(None),
+                Some(p) => {
+                    let repo = p.repo.clone();
+                    if repo.is_empty() {
+                        Err(Some(())) // registered, but no repo
+                    } else {
+                        Ok(repo)
+                    }
+                }
+            },
             Err(e) => return Box::pin(async move { Err(e) }),
         };
 
@@ -84,19 +93,28 @@ impl TaskBlock for WatchPipeline {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let Some(repo) = repo else {
-                // No repository configured — stub: assume success.
-                tracing::info!("no repo configured, using stub pipeline completion");
-                return Ok(super::stub_event_result(
-                    "Release pipeline completed successfully",
-                    EventType::ReleasePipelineCompleted,
-                    project,
-                    throttle,
-                    serde_json::json!({ "status": "success" }),
-                ));
-            };
-
-            poll_pipeline(project, throttle, &repo, new_tag.as_deref(), shell.as_ref()).await
+            match lookup {
+                Err(None) => {
+                    // Project not in registry — honest failure.
+                    tracing::warn!(project = %project, "project not found in registry");
+                    Ok(TaskBlockResult::failure(format!("{project}: not found in registry")))
+                }
+                Err(Some(())) => {
+                    // Registered but no repo — skip with an explicit status.
+                    tracing::info!(project = %project, "no repo configured, skipping pipeline watch");
+                    Ok(super::single_event_result(
+                        "Release pipeline skipped: no repo configured",
+                        EventType::ReleasePipelineCompleted,
+                        project,
+                        throttle,
+                        serde_json::json!({ "status": "skipped" }),
+                    ))
+                }
+                Ok(repo) => {
+                    poll_pipeline(project, throttle, &repo, new_tag.as_deref(), shell.as_ref())
+                        .await
+                }
+            }
         })
     }
 }
@@ -456,7 +474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watch_pipeline_stubs_when_project_not_in_registry() {
+    async fn watch_pipeline_returns_failure_when_project_not_in_registry() {
         let block = WatchPipeline::stub();
         let trigger = Event::new(
             EventType::ReleaseCompleted,
@@ -466,14 +484,12 @@ mod tests {
         );
 
         let result = block.execute(&trigger).await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
-        assert_eq!(result.events[0].payload["status"], "success");
+        assert!(!result.success);
+        assert!(result.events.is_empty());
     }
 
     #[tokio::test]
-    async fn watch_pipeline_stubs_when_project_has_empty_repo() {
+    async fn watch_pipeline_skips_when_project_has_empty_repo() {
         let registry = Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![ProjectEntry {
@@ -504,7 +520,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ReleasePipelineCompleted);
-        assert_eq!(result.events[0].payload["status"], "success");
+        assert_eq!(result.events[0].payload["status"], "skipped");
     }
 
     #[tokio::test(start_paused = true)]

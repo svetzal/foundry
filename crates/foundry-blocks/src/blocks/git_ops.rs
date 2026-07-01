@@ -30,9 +30,7 @@ task_block_new! {
     /// - [`EventType::ProjectMaintenanceCompleted`] → `chore(<project>): automated maintenance`
     /// - All other triggers → `chore(<project>): automated remediation`
     ///
-    /// Fallback: when the project is not found in the registry, stub events are
-    /// emitted so that integration tests that use synthetic project names remain
-    /// green without requiring a real repository on disk.
+    /// When the project is not found in the registry, the block returns a failure result.
     pub struct CommitAndPush {
         shell: ShellGateway = crate::gateway::ProcessShellGateway
     }
@@ -54,12 +52,8 @@ impl CommitAndPush {
             .map(|e| (e.path.clone(), e.actions.push));
 
         let Some((path_str, push_enabled)) = entry_data else {
-            // Project not in registry — emit stub events for test compatibility.
-            tracing::warn!(
-                project = %project,
-                "project not found in registry, using stub commit-and-push"
-            );
-            return Ok(stub_result(&project, throttle, &cve));
+            tracing::warn!(project = %project, "project not found in registry");
+            return Ok(TaskBlockResult::failure(format!("{project}: not found in registry")));
         };
 
         let path = std::path::Path::new(&path_str);
@@ -87,7 +81,6 @@ impl CommitAndPush {
                 cve: cve.clone(),
                 message: commit_msg.clone(),
                 dry_run: None,
-                stub: None,
             },
             push_payload.as_ref(),
         )?;
@@ -178,7 +171,6 @@ impl TaskBlock for CommitAndPush {
             cve: cve.clone(),
             message: None,
             dry_run: Some(true),
-            stub: None,
         });
 
         build_commit_push_events(
@@ -189,7 +181,6 @@ impl TaskBlock for CommitAndPush {
                 cve: cve.clone(),
                 message: commit_message(&trigger.event_type, &project),
                 dry_run: Some(true),
-                stub: None,
             },
             push_payload.as_ref(),
         )
@@ -293,7 +284,6 @@ async fn push_if_enabled(
             cve: cve.to_string(),
             message: None,
             dry_run: None,
-            stub: None,
         }))
     } else {
         tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
@@ -338,34 +328,6 @@ fn commit_message(event_type: &EventType, project: &str) -> String {
         EventType::InnerIterationCompleted => format!("chore({project}): strategic iterate cycle"),
         _ => format!("chore({project}): automated remediation"),
     }
-}
-
-/// Emit stub committed+pushed events when the project has no registry entry.
-fn stub_result(
-    project: &str,
-    throttle: foundry_sdk::throttle::Throttle,
-    cve: &str,
-) -> TaskBlockResult {
-    let events = build_commit_push_events(
-        project,
-        throttle,
-        &ProjectChangesCommittedPayload {
-            project: project.to_string(),
-            cve: cve.to_string(),
-            message: format!("chore({project}): automated remediation"),
-            dry_run: None,
-            stub: Some(true),
-        },
-        Some(&ProjectChangesPushedPayload {
-            project: project.to_string(),
-            cve: cve.to_string(),
-            message: None,
-            dry_run: None,
-            stub: Some(true),
-        }),
-    )
-    .expect("commit and push event payloads are infallibly serializable");
-    TaskBlockResult::success(format!("Committed and pushed fix for {cve} (stub)"), events)
 }
 
 #[cfg(test)]
@@ -525,16 +487,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_project_emits_stub_events() {
+    async fn unknown_project_returns_failure() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger("no-such-project", "CVE-2026-0001");
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
-        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
-        assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
-        assert_eq!(result.events[0].payload["stub"], true);
+        assert!(!result.success);
+        assert!(result.events.is_empty());
     }
 
     #[tokio::test]
@@ -668,7 +628,8 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_skip_remediation_with_loop_context() {
-        // RemediationCompleted is not a completion event, so loop_context should not trigger skip
+        // RemediationCompleted is not a completion event, so loop_context should not trigger skip.
+        // However, with no registry entry the block returns an honest failure.
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = test_event!(EventType::RemediationCompleted, "my-project", {
             "cve": "CVE-2026-0001",
@@ -677,9 +638,9 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        // Should NOT skip — stub events emitted because project not in registry
-        assert!(result.success);
-        assert!(!result.events.is_empty());
+        // Should NOT skip (no nested-loop guard) but returns failure: project not in registry.
+        assert!(!result.success);
+        assert!(result.events.is_empty());
     }
 
     #[tokio::test]

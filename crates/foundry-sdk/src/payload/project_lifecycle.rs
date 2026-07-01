@@ -35,8 +35,6 @@ pub struct ProjectChangesCommittedPayload {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stub: Option<bool>,
 }
 
 /// Payload for `ProjectChangesPushed`.
@@ -48,8 +46,6 @@ pub struct ProjectChangesPushedPayload {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stub: Option<bool>,
 }
 
 /// Payload for `ProjectValidationCompleted`.
