@@ -17,11 +17,26 @@ use super::TriggerContext;
 /// and full filesystem access.
 pub struct DirectPrompt;
 
+fn accepts_direct_prompt(trigger: &Event) -> bool {
+    let workflow = WorkflowType::from_payload(&trigger.payload);
+    if workflow != WorkflowType::Prompt {
+        return false;
+    }
+    trigger
+        .parse_payload::<PreflightCompletedPayload>()
+        .ok()
+        .is_some_and(|p| p.all_passed)
+}
+
 impl TaskBlock for DirectPrompt {
     task_block_meta! {
         name: "Direct Prompt",
         kind: Observer,
         sinks_on: [PreflightCompleted],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_direct_prompt(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -31,19 +46,8 @@ impl TaskBlock for DirectPrompt {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        let workflow = WorkflowType::from_payload(&payload);
-
-        // Self-filter: only run for prompt workflow
-        if workflow != WorkflowType::Prompt {
-            return skip!("Skipped: not a prompt workflow");
-        }
-
+        // accepts() already filtered non-prompt and failed-preflight events.
         let p = parse_payload!(trigger, PreflightCompletedPayload);
-        let all_passed = p.all_passed;
-
-        if !all_passed {
-            return skip!("Skipped: preflight gates did not pass");
-        }
 
         let prompt = p
             .chain
@@ -104,8 +108,8 @@ mod tests {
         sinks_on: [PreflightCompleted],
     );
 
-    #[tokio::test]
-    async fn skips_when_workflow_is_iterate() {
+    #[test]
+    fn accepts_returns_false_for_iterate_workflow() {
         let trigger = Event::new(
             EventType::PreflightCompleted,
             "my-project".to_string(),
@@ -119,14 +123,11 @@ mod tests {
             }),
         );
 
-        let result = DirectPrompt.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(!DirectPrompt.accepts(&trigger), "should not accept iterate workflow");
     }
 
-    #[tokio::test]
-    async fn skips_when_preflight_failed() {
+    #[test]
+    fn accepts_returns_false_when_preflight_failed() {
         let trigger = Event::new(
             EventType::PreflightCompleted,
             "my-project".to_string(),
@@ -141,10 +142,29 @@ mod tests {
             }),
         );
 
-        let result = DirectPrompt.execute(&trigger).await.unwrap();
+        assert!(!DirectPrompt.accepts(&trigger), "should not accept failed preflight");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
+    #[test]
+    fn accepts_returns_true_for_prompt_with_passed_preflight() {
+        let trigger = Event::new(
+            EventType::PreflightCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "workflow": "prompt",
+                "all_passed": true,
+                "required_passed": true,
+                "results": [],
+                "prompt": "do something",
+            }),
+        );
+
+        assert!(
+            DirectPrompt.accepts(&trigger),
+            "should accept prompt workflow with passed preflight"
+        );
     }
 
     #[tokio::test]

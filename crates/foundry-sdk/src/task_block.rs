@@ -144,6 +144,14 @@ pub trait TaskBlock: Send + Sync {
     /// Execute the block's work in response to a triggering event.
     fn execute(&self, trigger: &Event) -> BlockFuture<'_>;
 
+    /// Refine `sinks_on` with a payload-level predicate. The engine only
+    /// dispatches this block when the triggering event both matches
+    /// `sinks_on()` AND satisfies `accepts()`. Defaults to `true` so
+    /// event-type subscription alone routes the block.
+    fn accepts(&self, _trigger: &Event) -> bool {
+        true
+    }
+
     /// The retry policy for this block.
     ///
     /// Defaults to no retries (execute once). Override to enable automatic
@@ -269,6 +277,13 @@ mod tests {
         let block = StubMutator;
         assert!(block.should_execute(Throttle::Full));
         assert!(!block.should_execute(Throttle::DryRun));
+    }
+
+    #[test]
+    fn accepts_default_returns_true() {
+        let event = make_event();
+        assert!(StubObserver.accepts(&event), "observer should accept all events by default");
+        assert!(StubMutator.accepts(&event), "mutator should accept all events by default");
     }
 
     #[test]

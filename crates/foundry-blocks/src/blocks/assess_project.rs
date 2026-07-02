@@ -24,11 +24,23 @@ agent_block_new!(
     pub struct AssessProject
 );
 
+fn accepts_assess_project(trigger: &Event) -> bool {
+    let Ok(p) = trigger.parse_payload::<PreflightCompletedPayload>() else {
+        return false;
+    };
+    let workflow = WorkflowType::from_payload(&trigger.payload);
+    workflow == WorkflowType::Iterate && p.all_passed
+}
+
 impl TaskBlock for AssessProject {
     task_block_meta! {
         name: "Assess Project",
         kind: Observer,
         sinks_on: [PreflightCompleted],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_assess_project(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -37,15 +49,6 @@ impl TaskBlock for AssessProject {
             throttle,
             payload,
         } = TriggerContext::from_trigger(trigger);
-
-        // Self-filter: only run for iterate workflow with passed preflight
-        let p = parse_payload!(trigger, PreflightCompletedPayload);
-        let workflow = WorkflowType::from_payload(&payload);
-        let all_passed = p.all_passed;
-
-        if workflow != WorkflowType::Iterate || !all_passed {
-            return skip!("Skipped: not an iterate workflow or preflight failed");
-        }
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
@@ -275,11 +278,11 @@ mod tests {
         sinks_on: [PreflightCompleted],
     );
 
-    #[tokio::test]
-    async fn skips_non_iterate_workflow() {
+    #[test]
+    fn accepts_returns_false_for_non_iterate_workflow() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = AssessProject::new(agent.clone(), registry);
+        let block = AssessProject::new(agent, registry);
         let trigger = Event::new(
             EventType::PreflightCompleted,
             "my-project".to_string(),
@@ -293,18 +296,14 @@ mod tests {
             }),
         );
 
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(agent.invocations().is_empty());
+        assert!(!block.accepts(&trigger), "should not accept non-iterate workflow");
     }
 
-    #[tokio::test]
-    async fn skips_failed_preflight() {
+    #[test]
+    fn accepts_returns_false_for_failed_preflight() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = AssessProject::new(agent.clone(), registry);
+        let block = AssessProject::new(agent, registry);
         let trigger = Event::new(
             EventType::PreflightCompleted,
             "my-project".to_string(),
@@ -318,10 +317,28 @@ mod tests {
             }),
         );
 
-        let result = block.execute(&trigger).await.unwrap();
+        assert!(!block.accepts(&trigger), "should not accept failed preflight");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
+    #[test]
+    fn accepts_returns_true_for_iterate_with_passed_preflight() {
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
+        let block = AssessProject::new(agent, registry);
+        let trigger = Event::new(
+            EventType::PreflightCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "workflow": "iterate",
+                "all_passed": true,
+                "required_passed": true,
+                "results": [],
+            }),
+        );
+
+        assert!(block.accepts(&trigger), "should accept iterate with passed preflight");
     }
 
     #[tokio::test]

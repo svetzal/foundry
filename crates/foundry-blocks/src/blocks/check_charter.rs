@@ -24,11 +24,23 @@ impl CheckCharter {
     }
 }
 
+fn not_strategic(trigger: &Event) -> bool {
+    !trigger
+        .parse_payload::<ProjectIterationRequestedPayload>()
+        .ok()
+        .and_then(|p| p.strategic)
+        .unwrap_or(false)
+}
+
 impl TaskBlock for CheckCharter {
     task_block_meta! {
         name: "Check Charter",
         kind: Observer,
         sinks_on: [ProjectIterationRequested, ExecutionRequested],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        not_strategic(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -39,14 +51,10 @@ impl TaskBlock for CheckCharter {
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
-        // Self-filter: when strategic=true, StrategicAssessor handles the event instead.
+        // Parse payload for strategic flag and workflow detection.
         // Use .ok() — this block sinks on multiple event types with different payload
         // shapes (ProjectIterationRequested and ExecutionRequested).
         let iter_payload = trigger.parse_payload::<ProjectIterationRequestedPayload>().ok();
-        let strategic = iter_payload.as_ref().and_then(|p| p.strategic).unwrap_or(false);
-        if strategic {
-            return skip!("Skipped: strategic iteration handled by StrategicAssessor");
-        }
 
         // Derive workflow from typed payload if available; fall back to event type.
         let workflow = iter_payload.as_ref().map_or_else(
@@ -188,5 +196,37 @@ mod tests {
         })));
         test_helpers::assert_missing_project_fails(&block, EventType::ProjectIterationRequested)
             .await;
+    }
+
+    #[test]
+    fn accepts_returns_false_for_strategic_event() {
+        let block = CheckCharter::new(Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        })));
+        let trigger = Event::new(
+            EventType::ProjectIterationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project", "workflow": "iterate", "strategic": true}),
+        );
+
+        assert!(!block.accepts(&trigger), "should not accept strategic events");
+    }
+
+    #[test]
+    fn accepts_returns_true_for_non_strategic_event() {
+        let block = CheckCharter::new(Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        })));
+        let trigger = Event::new(
+            EventType::ProjectIterationRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project"}),
+        );
+
+        assert!(block.accepts(&trigger), "should accept non-strategic events");
     }
 }

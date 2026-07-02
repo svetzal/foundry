@@ -56,6 +56,10 @@ impl TaskBlock for RemediatePipeline {
         sinks_on: [PipelineChecked],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        matches!(decide_pipeline_remediate(trigger), PipelineRemediateDecision::Proceed)
+    }
+
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         match decide_pipeline_remediate(trigger) {
             PipelineRemediateDecision::InvalidPayload => {
@@ -78,17 +82,10 @@ impl TaskBlock for RemediatePipeline {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: only remediate when pipeline is failing.
-        match decide_pipeline_remediate(trigger) {
-            PipelineRemediateDecision::SkipPassing => {
-                tracing::info!("pipeline is passing, no remediation needed");
-                return skip!("Pipeline is passing, no remediation needed");
-            }
-            PipelineRemediateDecision::InvalidPayload => {
-                let err = anyhow::anyhow!("invalid PipelineChecked payload");
-                return Box::pin(async move { Err(err) });
-            }
-            PipelineRemediateDecision::Proceed => {}
+        // SkipPassing is handled by accepts(); InvalidPayload is an error condition.
+        if let PipelineRemediateDecision::InvalidPayload = decide_pipeline_remediate(trigger) {
+            let err = anyhow::anyhow!("invalid PipelineChecked payload");
+            return Box::pin(async move { Err(err) });
         }
 
         // Now we know the pipeline is failing; get typed fields.
@@ -201,8 +198,8 @@ mod tests {
         sinks_on: [PipelineChecked],
     );
 
-    #[tokio::test]
-    async fn skips_when_pipeline_passing() {
+    #[test]
+    fn accepts_returns_false_when_passing() {
         let agent = FakeAgentGateway::success();
         let block = RemediatePipeline::new(agent, test_helpers::empty_registry());
         let t = test_event!(EventType::PipelineChecked, "my-project", {
@@ -212,10 +209,35 @@ mod tests {
             "run_name": "CI",
         });
 
-        let result = block.execute(&t).await.unwrap();
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(result.summary.contains("passing"));
+        assert!(!block.accepts(&t), "should not accept passing pipeline events");
+    }
+
+    #[test]
+    fn accepts_returns_true_when_failing() {
+        let agent = FakeAgentGateway::success();
+        let block = RemediatePipeline::new(agent, test_helpers::empty_registry());
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 12345,
+            "run_name": "CI",
+        });
+
+        assert!(block.accepts(&t), "should accept failing pipeline events");
+    }
+
+    #[test]
+    fn accepts_returns_false_for_invalid_payload() {
+        let agent = FakeAgentGateway::success();
+        let block = RemediatePipeline::new(agent, test_helpers::empty_registry());
+        let t = foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::PipelineChecked,
+            "proj".to_string(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!("not an object"),
+        );
+
+        assert!(!block.accepts(&t), "should not accept events with invalid payload");
     }
 
     #[tokio::test]
@@ -333,8 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_execute_agree_on_skip_for_passing() {
-        // Both dry_run_events and execute must skip when pipeline is passing.
+    fn dry_run_and_accepts_agree_on_skip_for_passing() {
+        // dry_run_events and accepts() must both reject when pipeline is passing.
         let block =
             RemediatePipeline::new(FakeAgentGateway::success(), test_helpers::empty_registry());
         let t = test_event!(EventType::PipelineChecked, "proj", {
@@ -344,6 +366,6 @@ mod tests {
             "run_name": "CI",
         });
         assert!(block.dry_run_events(&t).is_empty(), "dry_run must skip passing pipeline");
-        // execute path is tested in skips_when_pipeline_passing
+        assert!(!block.accepts(&t), "accepts() must reject passing pipeline events");
     }
 }

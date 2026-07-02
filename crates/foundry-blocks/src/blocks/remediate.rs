@@ -50,6 +50,10 @@ impl TaskBlock for RemediateVulnerability {
         sinks_on: [MainBranchAudited],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        matches!(decide_remediate(trigger), RemediateDecision::Proceed { .. })
+    }
+
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         match decide_remediate(trigger) {
             RemediateDecision::SkipClean => vec![],
@@ -66,10 +70,9 @@ impl TaskBlock for RemediateVulnerability {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: only remediate when main branch is dirty.
-        // CVE is also extracted here so both dry_run_events and execute share the same logic.
+        // Extract CVE from the decision. accepts() already filtered non-Proceed variants.
         let RemediateDecision::Proceed { cve } = decide_remediate(trigger) else {
-            tracing::info!("main branch is clean, skipping remediation");
+            // Defensive: accepts() should have prevented reaching here for SkipClean.
             return skip!("Skipped: main branch is clean");
         };
 
@@ -143,8 +146,8 @@ mod tests {
         test_event!(EventType::MainBranchAudited, project, { "dirty": false, "cve": "CVE-2026-9999" })
     }
 
-    #[tokio::test]
-    async fn skips_when_main_branch_is_clean() {
+    #[test]
+    fn accepts_returns_false_when_clean() {
         let agent = FakeAgentGateway::success();
         let block = RemediateVulnerability::new(
             agent,
@@ -155,10 +158,22 @@ mod tests {
         );
         let trigger = clean_trigger("any-project");
 
-        let result = block.execute(&trigger).await.unwrap();
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(result.summary.contains("clean"));
+        assert!(!block.accepts(&trigger), "should not accept clean branch events");
+    }
+
+    #[test]
+    fn accepts_returns_true_when_dirty() {
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(
+            agent,
+            Arc::new(RwLock::new(Registry {
+                version: 2,
+                projects: vec![],
+            })),
+        );
+        let trigger = dirty_trigger("any-project", "CVE-2026-1234");
+
+        assert!(block.accepts(&trigger), "should accept dirty branch events");
     }
 
     #[tokio::test]
@@ -284,8 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_execute_agree_on_skip_for_clean() {
-        // dry_run_events and execute must both skip when branch is clean.
+    fn dry_run_and_accepts_agree_on_skip_for_clean() {
+        // dry_run_events and accepts() must both reject when branch is clean.
         let agent = FakeAgentGateway::success();
         let block = RemediateVulnerability::new(
             agent,
@@ -296,6 +311,6 @@ mod tests {
         );
         let trigger = clean_trigger("proj");
         assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when clean");
-        // execute path is tested in skips_when_main_branch_is_clean
+        assert!(!block.accepts(&trigger), "accepts() must reject when clean");
     }
 }

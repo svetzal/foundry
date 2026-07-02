@@ -24,6 +24,14 @@ agent_block_new!(
     pub struct StrategicAssessor
 );
 
+fn accepts_strategic(trigger: &Event) -> bool {
+    trigger
+        .parse_payload::<ProjectIterationRequestedPayload>()
+        .ok()
+        .and_then(|p| p.strategic)
+        .unwrap_or(false)
+}
+
 impl TaskBlock for StrategicAssessor {
     task_block_meta! {
         name: "Strategic Assessor",
@@ -31,19 +39,17 @@ impl TaskBlock for StrategicAssessor {
         sinks_on: [ProjectIterationRequested],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_strategic(trigger)
+    }
+
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project, throttle, ..
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: only run when strategic mode is requested.
-        // When strategic=false or absent, the existing CheckCharter path handles it.
+        // accepts() already filtered non-strategic events.
         let p = parse_payload!(trigger, ProjectIterationRequestedPayload);
-        let strategic = p.strategic.unwrap_or(false);
-
-        if !strategic {
-            return skip!("Skipped: not a strategic iteration");
-        }
 
         let max_iterations = p.max_iterations.unwrap_or(5);
         let strategic_prompt = p.strategic_prompt.clone();
@@ -210,20 +216,28 @@ mod tests {
         sinks_on: [ProjectIterationRequested],
     );
 
-    #[tokio::test]
-    async fn skips_when_strategic_not_set() {
+    #[test]
+    fn accepts_returns_false_when_strategic_not_set() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = StrategicAssessor::new(agent.clone(), registry);
+        let block = StrategicAssessor::new(agent, registry);
         let trigger = test_event!(EventType::ProjectIterationRequested, "my-project", {
             "project": "my-project", "workflow": "iterate"
         });
 
-        let result = block.execute(&trigger).await.unwrap();
+        assert!(!block.accepts(&trigger), "should not accept non-strategic events");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(agent.invocations().is_empty());
+    #[test]
+    fn accepts_returns_true_when_strategic() {
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
+        let block = StrategicAssessor::new(agent, registry);
+        let trigger = test_event!(EventType::ProjectIterationRequested, "my-project", {
+            "project": "my-project", "workflow": "iterate", "strategic": true
+        });
+
+        assert!(block.accepts(&trigger), "should accept strategic events");
     }
 
     #[tokio::test]

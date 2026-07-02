@@ -20,11 +20,22 @@ task_block_new! {
     }
 }
 
+fn accepts_audit_main(trigger: &Event) -> bool {
+    trigger
+        .parse_payload::<ReleaseTagAuditedPayload>()
+        .ok()
+        .is_some_and(|p| p.vulnerable)
+}
+
 impl TaskBlock for AuditMainBranch {
     task_block_meta! {
         name: "Audit Main Branch",
         kind: Observer,
         sinks_on: [ReleaseTagAudited],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_audit_main(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -33,11 +44,6 @@ impl TaskBlock for AuditMainBranch {
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, ReleaseTagAuditedPayload);
-
-        if !p.vulnerable {
-            tracing::info!("release tag not vulnerable, skipping main branch audit");
-            return skip!("Skipped: release tag not vulnerable");
-        }
 
         // Payload fallback values — used when the project is not in the registry,
         // or when the scanner cannot run (no lockfile / tooling not installed).
@@ -129,8 +135,8 @@ mod tests {
         assert_eq!(block.sinks_on(), &[EventType::ReleaseTagAudited]);
     }
 
-    #[tokio::test]
-    async fn main_branch_skips_when_not_vulnerable() {
+    #[test]
+    fn accepts_returns_false_when_not_vulnerable() {
         let block = AuditMainBranch::new(Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
@@ -140,9 +146,21 @@ mod tests {
             "test-project",
             serde_json::json!({"vulnerable": false, "cve": "CVE-2026-1234"}),
         );
-        let result = block.execute(&trigger).await.unwrap();
-        assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(!block.accepts(&trigger), "should not accept non-vulnerable release tag events");
+    }
+
+    #[test]
+    fn accepts_returns_true_when_vulnerable() {
+        let block = AuditMainBranch::new(Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        })));
+        let trigger = test_helpers::make_trigger(
+            EventType::ReleaseTagAudited,
+            "test-project",
+            serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234"}),
+        );
+        assert!(block.accepts(&trigger), "should accept vulnerable release tag events");
     }
 
     #[tokio::test]

@@ -163,6 +163,13 @@ async fn cleanup_stale_worktrees(project: &str, path: &Path, shell: &dyn ShellGa
     remove_worktrees(project, path, shell, &result.stdout).await
 }
 
+fn accepts_cleanup(trigger: &Event) -> bool {
+    trigger
+        .parse_payload::<ProjectValidationCompletedPayload>()
+        .ok()
+        .is_some_and(|p| p.status == "ok")
+}
+
 impl TaskBlock for CleanupBranches {
     task_block_meta! {
         name: "Cleanup Branches",
@@ -170,12 +177,13 @@ impl TaskBlock for CleanupBranches {
         sinks_on: [ProjectValidationCompleted],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_cleanup(trigger)
+    }
+
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let shell = Arc::clone(&self.shell);
-
-        let p = parse_payload!(trigger, ProjectValidationCompletedPayload);
-        let status_ok = p.status == "ok";
 
         // Extract registry data before the async boundary — the RwLock guard must not cross .await.
         let entry = match super::read_registry(&self.registry) {
@@ -184,11 +192,7 @@ impl TaskBlock for CleanupBranches {
         };
 
         Box::pin(async move {
-            // Self-filter: only act on successful validations.
-            if !status_ok {
-                return Ok(TaskBlockResult::success("Skipped: validation not ok", vec![]));
-            }
-
+            // accepts() already filtered non-ok validation events.
             let Some(entry) = entry else {
                 return Ok(TaskBlockResult::success(
                     format!("Skipped: {project} not in registry"),
@@ -294,33 +298,42 @@ mod tests {
         sinks_on: [ProjectValidationCompleted],
     );
 
-    // -- Self-filter tests --
+    // -- Self-filter tests (accepts()) --
 
-    #[tokio::test]
-    async fn skips_when_validation_not_ok() {
+    #[test]
+    fn accepts_returns_false_when_validation_not_ok() {
         let dir = tempfile::tempdir().unwrap();
         let registry = make_registry("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::success();
-        let block = CleanupBranches::with_gateways(registry, shell.clone());
+        let block = CleanupBranches::with_gateways(registry, shell);
 
-        let result = block.execute(&validation_error("my-project")).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.summary.contains("Skipped"));
-        assert!(shell.invocations().is_empty(), "should not invoke any git commands");
+        assert!(
+            !block.accepts(&validation_error("my-project")),
+            "should not accept error status"
+        );
     }
 
-    #[tokio::test]
-    async fn skips_when_validation_skipped() {
+    #[test]
+    fn accepts_returns_false_when_validation_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let registry = make_registry("my-project", dir.path().to_str().unwrap());
         let shell = FakeShellGateway::success();
-        let block = CleanupBranches::with_gateways(registry, shell.clone());
+        let block = CleanupBranches::with_gateways(registry, shell);
 
-        let result = block.execute(&validation_skipped("my-project")).await.unwrap();
+        assert!(
+            !block.accepts(&validation_skipped("my-project")),
+            "should not accept skipped status"
+        );
+    }
 
-        assert!(result.success);
-        assert!(result.summary.contains("Skipped"));
+    #[test]
+    fn accepts_returns_true_for_ok_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = make_registry("my-project", dir.path().to_str().unwrap());
+        let shell = FakeShellGateway::success();
+        let block = CleanupBranches::with_gateways(registry, shell);
+
+        assert!(block.accepts(&validation_ok("my-project")), "should accept ok status");
     }
 
     #[tokio::test]

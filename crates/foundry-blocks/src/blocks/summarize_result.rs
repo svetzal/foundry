@@ -21,11 +21,25 @@ agent_block_new!(
     pub struct SummarizeResult
 );
 
+fn accepts_summarize(trigger: &Event) -> bool {
+    if has_loop_context(&trigger.payload) {
+        return false;
+    }
+    trigger
+        .parse_payload::<ProjectCompletedPayload>()
+        .ok()
+        .is_some_and(|p| p.success)
+}
+
 impl TaskBlock for SummarizeResult {
     task_block_meta! {
         name: "Summarize Result",
         kind: Observer,
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_summarize(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -35,21 +49,7 @@ impl TaskBlock for SummarizeResult {
             payload,
         } = TriggerContext::from_trigger(trigger);
 
-        // Self-filter: skip intermediate completions inside a nested loop.
-        // The outermost loop controller emits the terminal completion without
-        // loop_context, which is when we should summarize.
-        if has_loop_context(&payload) {
-            return skip!("Skipped: inside nested loop (intermediate completion)");
-        }
-
-        // Self-filter: only summarize successful completions
-        let p = parse_payload!(trigger, ProjectCompletedPayload);
-        let success = p.success;
-
-        if !success {
-            return skip!("Skipped: workflow did not succeed");
-        }
-
+        // accepts() already filtered loop-context and failed completions.
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
         let provider = super::chain_agent_provider(&payload);
@@ -201,11 +201,11 @@ mod tests {
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     );
 
-    #[tokio::test]
-    async fn skips_when_loop_context_present() {
+    #[test]
+    fn accepts_returns_false_when_loop_context_present() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = SummarizeResult::new(agent.clone(), registry);
+        let block = SummarizeResult::new(agent, registry);
         let trigger = Event::new(
             EventType::ProjectIterationCompleted,
             "my-project".to_string(),
@@ -219,25 +219,30 @@ mod tests {
             }),
         );
 
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(agent.invocations().is_empty(), "agent should not be called");
+        assert!(!block.accepts(&trigger), "should not accept events with loop context");
     }
 
-    #[tokio::test]
-    async fn skips_failed_completion() {
+    #[test]
+    fn accepts_returns_false_for_failed_completion() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
-        let block = SummarizeResult::new(agent.clone(), registry);
+        let block = SummarizeResult::new(agent, registry);
         let trigger = failed_completion("my-project", EventType::ProjectMaintenanceCompleted);
 
-        let result = block.execute(&trigger).await.unwrap();
+        assert!(!block.accepts(&trigger), "should not accept failed completions");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(agent.invocations().is_empty());
+    #[test]
+    fn accepts_returns_true_for_successful_completion_without_loop_context() {
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project("my-project", "/tmp/test");
+        let block = SummarizeResult::new(agent, registry);
+        let trigger = success_completion("my-project", EventType::ProjectIterationCompleted);
+
+        assert!(
+            block.accepts(&trigger),
+            "should accept successful completions without loop context"
+        );
     }
 
     #[tokio::test]

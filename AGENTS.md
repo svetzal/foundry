@@ -196,6 +196,39 @@ See `book/src/architecture/tracing.md` for the full model. When adding a new wor
 - No external observability dependencies — tracing spans only
 - All tasks must include tests and all relevant documentation updates
 
+## Dispatch / Routing
+
+The engine is the single routing authority. Blocks are matched by two sequential filters before `execute()` is called:
+
+1. **`sinks_on()`** — coarse event-type filter (which `EventType` values this block handles)
+2. **`accepts(&self, trigger: &Event) -> bool`** — fine-grained payload-level predicate
+
+### accepts() convention
+
+Move a guard into `accepts()` when it says **"this event isn't for me"** based on payload content:
+
+- Payload flag or field that determines whether the block should run (e.g. `strategic: true`, `all_passed: true`, `vulnerable: true`)
+- Workflow-type routing (e.g. "only handle `Validate` workflow preflight events")
+- Result-state routing (e.g. "only handle passing pipeline checks" → `decides_passing`)
+
+`accepts()` should **always** handle payload parse errors by returning `false` (unknown events are rejected, not panicked on).
+
+The default implementation returns `true`, so blocks with no payload filter do not need to override it.
+
+### Leave in execute()
+
+Keep guards in `execute()` — with a `// Domain skip:` comment explaining why — when the skip emits a **meaningful domain event**:
+
+- `OpsDigestCompleted { skipped: true }` — tells the write block to short-circuit
+- `ProjectValidationCompleted { status: "skipped" }` — domain fact that validation was skipped
+- "project not in registry" halting a chain mid-execution
+
+The test naming convention reflects this split:
+
+- `accepts_returns_false_when_*` / `accepts_returns_true_when_*` — sync unit tests for the `accepts()` predicate
+- `dry_run_and_accepts_agree_on_skip_for_*` — verifies that `dry_run_events` and `accepts()` agree (replaces old `dry_run_and_execute_agree_on_skip_for_*`)
+- Domain-skip tests remain async and test `execute()` behavior directly
+
 ## Branching Workflow
 
 This project follows trunk-based development. `main` is the only long-lived branch. All work lands on `main` via direct commit. Feature branches are not pushed to `origin` and pull requests are not used. Short-lived local working branches (e.g. from hopper worktrees) are merged to `main` and deleted locally before work is considered complete.

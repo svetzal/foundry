@@ -66,7 +66,12 @@ async fn summarize(
     observed: OpsObservedPayload,
     agent: Arc<dyn AgentGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
-    // Self-filter: the pressure gate said skip — pass the signal through.
+    // Domain skip: emitting OpsDigestCompleted { skipped: true } is the
+    // intended domain behavior here — it signals the downstream write block to
+    // short-circuit without writing a file.  This is not a routing guard; the
+    // ops-digest chain deliberately accepts all OpsObserved events and handles
+    // the pressure-gate decision inside execute().  Per the accepts() convention,
+    // this stays in execute() because the skip event is a meaningful domain fact.
     if !observed.proceed {
         let payload = OpsDigestCompletedPayload {
             success: true,

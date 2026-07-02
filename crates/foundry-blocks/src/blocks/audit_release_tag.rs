@@ -85,6 +85,12 @@ impl AuditReleaseTag {
         };
         let scanner = Arc::clone(&self.scanner);
 
+        // Domain skip: when the project is not in the registry this block has no
+        // audit target, so it returns an empty result to halt the chain.  This
+        // is not a routing guard — the block legitimately sinks on every
+        // ProjectChangesPushed event and decides at runtime whether to act.
+        // Per the accepts() convention, this stays in execute() because "project
+        // unknown" is a meaningful runtime condition, not a payload filter.
         let Some(entry) = entry else {
             tracing::info!(%project, "project not in registry, skipping post-push audit");
             return skip!("Skipped: project not in registry");

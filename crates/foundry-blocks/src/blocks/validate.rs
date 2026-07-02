@@ -119,7 +119,9 @@ impl TaskBlock for ValidateProject {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            // Self-filter: only act on active (non-skipped) projects.
+            // Domain skip: emitting ProjectValidationCompleted { status: "skipped" } is the
+            // intended domain behavior here — not a routing guard. Per the accepts() convention,
+            // this stays in execute() because the skip event is a meaningful domain fact.
             let Some(entry) = entry else {
                 tracing::info!(%project, "project skipped or not in registry, skipping validation");
                 return super::emit_result(

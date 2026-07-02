@@ -482,7 +482,7 @@ impl Engine {
             let matching: Vec<&dyn TaskBlock> = self
                 .blocks
                 .iter()
-                .filter(|b| b.sinks_on().contains(&current.event_type))
+                .filter(|b| b.sinks_on().contains(&current.event_type) && b.accepts(&current))
                 .map(std::convert::AsRef::as_ref)
                 .collect();
 
@@ -523,6 +523,55 @@ mod tests {
     use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;
+
+    /// A block that sinks on the right event type but always rejects via `accepts()`.
+    struct RejectingObserver;
+
+    impl TaskBlock for RejectingObserver {
+        fn name(&self) -> &'static str {
+            "Rejecting Observer"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::GreetingRequested]
+        }
+
+        fn accepts(&self, _trigger: &Event) -> bool {
+            false
+        }
+
+        fn execute(
+            &self,
+            _trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            Box::pin(async { Ok(TaskBlockResult::success("should not be called", vec![])) })
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_false_blocks_no_executions_and_no_events() {
+        let mut engine = Engine::new();
+        engine.register(Box::new(RejectingObserver));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        // Block sinks on GreetingRequested but accepts() returns false — never executes.
+        assert_eq!(result.block_executions.len(), 0, "block should not be executed");
+        // Only the root event; the rejecting block produces no downstream events.
+        assert_eq!(result.events.len(), 1, "only the root event should be present");
+    }
 
     #[test]
     fn opens_span_recognizes_builtin_and_registered_custom_openers() {

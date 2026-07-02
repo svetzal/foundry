@@ -1,6 +1,6 @@
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{PreflightCompletedPayload, ValidationCompletedPayload};
-use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock};
 use foundry_sdk::workflow::WorkflowType;
 
 use super::TriggerContext;
@@ -16,11 +16,22 @@ use super::TriggerContext;
 /// Emits `ValidationCompleted` with per-gate results and overall success.
 pub struct RouteValidationResult;
 
+fn accepts_validate(trigger: &Event) -> bool {
+    trigger.parse_payload::<PreflightCompletedPayload>().ok().is_some_and(|p| {
+        p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown)
+            == WorkflowType::Validate
+    })
+}
+
 impl TaskBlock for RouteValidationResult {
     task_block_meta! {
         name: "Route Validation Result",
         kind: Observer,
         sinks_on: [PreflightCompleted],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        accepts_validate(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -29,19 +40,10 @@ impl TaskBlock for RouteValidationResult {
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, PreflightCompletedPayload);
-        let workflow = p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown);
         let required_passed = p.required_passed;
         let results = serde_json::json!(p.results);
 
         Box::pin(async move {
-            // Self-filter: only handle validation workflow
-            if workflow != WorkflowType::Validate {
-                return Ok(TaskBlockResult::success(
-                    format!("{project}: skipped (not validate)"),
-                    vec![],
-                ));
-            }
-
             super::emit_event_result(
                 if required_passed {
                     format!("{project}: validation passed")
@@ -99,22 +101,22 @@ mod tests {
         sinks_on: [PreflightCompleted],
     );
 
-    #[tokio::test]
-    async fn ignores_iterate_workflow() {
+    #[test]
+    fn accepts_returns_false_for_iterate_workflow() {
         let trigger = preflight_event("my-project", "iterate", true, true, &serde_json::json!([]));
-        let result = RouteValidationResult.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty(), "should not emit for iterate workflow");
+        assert!(!RouteValidationResult.accepts(&trigger), "should not accept iterate workflow");
     }
 
-    #[tokio::test]
-    async fn ignores_maintain_workflow() {
+    #[test]
+    fn accepts_returns_false_for_maintain_workflow() {
         let trigger = preflight_event("my-project", "maintain", true, true, &serde_json::json!([]));
-        let result = RouteValidationResult.execute(&trigger).await.unwrap();
+        assert!(!RouteValidationResult.accepts(&trigger), "should not accept maintain workflow");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty(), "should not emit for maintain workflow");
+    #[test]
+    fn accepts_returns_true_for_validate_workflow() {
+        let trigger = preflight_event("my-project", "validate", true, true, &serde_json::json!([]));
+        assert!(RouteValidationResult.accepts(&trigger), "should accept validate workflow");
     }
 
     #[tokio::test]

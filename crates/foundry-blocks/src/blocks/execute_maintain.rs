@@ -47,6 +47,10 @@ impl TaskBlock for ExecuteMaintain {
         sinks_on: [GateResolutionCompleted],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        decide_maintain(trigger) == MaintainDecision::Proceed
+    }
+
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         match decide_maintain(trigger) {
             MaintainDecision::SkipNonMaintain => vec![],
@@ -62,11 +66,6 @@ impl TaskBlock for ExecuteMaintain {
             throttle,
             payload,
         } = TriggerContext::from_trigger(trigger);
-
-        // Self-filter: only handle maintain workflow.
-        if decide_maintain(trigger) == MaintainDecision::SkipNonMaintain {
-            return skip!("Skipped: not a maintain workflow");
-        }
 
         let p = parse_payload!(trigger, GateResolutionCompletedPayload);
         let gates = p.gates;
@@ -129,27 +128,40 @@ mod tests {
         sinks_on: [GateResolutionCompleted],
     );
 
-    #[tokio::test]
-    async fn skips_iterate_workflow() {
+    #[test]
+    fn accepts_returns_false_for_iterate_workflow() {
         let agent = FakeAgentGateway::success();
         let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
             "my-project",
             "/tmp/test",
             "rust-craftsperson",
         ));
-        let block = ExecuteMaintain::new(agent.clone(), registry);
+        let block = ExecuteMaintain::new(agent, registry);
         let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
             "project": "my-project",
             "workflow": "iterate",
             "gates": [],
         });
 
-        let result = block.execute(&trigger).await.unwrap();
+        assert!(!block.accepts(&trigger), "block should not accept iterate workflow events");
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(result.summary.contains("not a maintain"));
-        assert!(agent.invocations().is_empty());
+    #[test]
+    fn accepts_returns_true_for_maintain_workflow() {
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            "/tmp/test",
+            "rust-craftsperson",
+        ));
+        let block = ExecuteMaintain::new(agent, registry);
+        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [],
+        });
+
+        assert!(block.accepts(&trigger), "block should accept maintain workflow events");
     }
 
     #[tokio::test]
@@ -513,6 +525,6 @@ mod tests {
             block.dry_run_events(&trigger).is_empty(),
             "dry_run must skip non-maintain workflows"
         );
-        // execute path is tested in skips_iterate_workflow
+        assert!(!block.accepts(&trigger), "accepts() must reject non-maintain workflows");
     }
 }
