@@ -281,7 +281,8 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "cmx-core"
 version = "0.1.0"
-source = "git+https://github.com/svetzal/context-mixer2?rev=524aa1c24cb67c1660479b6ad6011f2b15322e62#524aa1c24cb67c1660479b6ad6011f2b15322e62"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f33083074be80a796d3e372571c8adc6ec6b13f81ea0268ffea4a24c44ffacb"
 dependencies = [
  "anyhow",
  "chrono",

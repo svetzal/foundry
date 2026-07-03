@@ -26,14 +26,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 comfy-table = { workspace = true }
-cmx-core = { git = "https://github.com/svetzal/context-mixer2", rev = "524aa1c24cb67c1660479b6ad6011f2b15322e62" }
+cmx-core = "0.1"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-cmx-core = { git = "https://github.com/svetzal/context-mixer2", rev = "524aa1c24cb67c1660479b6ad6011f2b15322e62", features = ["test-support"] }
+cmx-core = { version = "0.1", features = ["test-support"] }
 
 [lints]
 workspace = true

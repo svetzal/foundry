@@ -1,8 +1,5 @@
-use std::path::PathBuf;
-
 use anyhow::{Result, bail};
 use cmx_core::context::AppContext;
-use cmx_core::platform::Platform;
 use cmx_core::production::ProductionContext;
 use cmx_core::skill_fs::SkillFile;
 use cmx_core::skill_install::{
@@ -23,26 +20,14 @@ fn scope_from_flags(local: bool) -> Scope {
 
 fn bundled_skill() -> BundledSkill {
     BundledSkill::from_files(vec![
-        SkillFile {
-            rel_path: PathBuf::from("SKILL.md"),
-            bytes: SKILL_MD.as_bytes().to_vec(),
-        },
-        SkillFile {
-            rel_path: PathBuf::from("references/event-model.md"),
-            bytes: EVENT_MODEL_MD.as_bytes().to_vec(),
-        },
-        SkillFile {
-            rel_path: PathBuf::from("references/workflows.md"),
-            bytes: WORKFLOWS_MD.as_bytes().to_vec(),
-        },
+        SkillFile::text("SKILL.md", SKILL_MD),
+        SkillFile::text("references/event-model.md", EVENT_MODEL_MD),
+        SkillFile::text("references/workflows.md", WORKFLOWS_MD),
     ])
 }
 
 fn make_installer() -> SkillInstaller {
-    SkillInstaller::new(ToolIdentity {
-        name: "foundry".into(),
-        version: VERSION.into(),
-    })
+    SkillInstaller::new(ToolIdentity::new("foundry", VERSION))
 }
 
 // ── JSON output shapes ────────────────────────────────────────────────────
@@ -74,40 +59,33 @@ struct JsonRemoveOutput {
 
 // ── Output rendering ──────────────────────────────────────────────────────
 
-fn render_install_output(plan: &InstallPlan, report: &Report, json: bool) -> Result<()> {
+fn render_install_output(_plan: &InstallPlan, report: &Report, json: bool) -> Result<()> {
     if json {
-        let mut targets: Vec<JsonTargetResult> = report
-            .applied
+        let targets: Vec<JsonTargetResult> = report
+            .targets
             .iter()
-            .map(|a| {
-                let action = match &a.action {
-                    TargetAction::Install => "installed".to_string(),
-                    TargetAction::Update { .. } => "updated".to_string(),
-                    TargetAction::Downgrade { .. } => "downgraded".to_string(),
-                    _ => "written".to_string(),
+            .map(|o| {
+                let action = if o.action.will_write() {
+                    match &o.action {
+                        TargetAction::Install => "installed".to_string(),
+                        TargetAction::Update { .. } => "updated".to_string(),
+                        TargetAction::Downgrade { .. } => "downgraded".to_string(),
+                        _ => "written".to_string(),
+                    }
+                } else {
+                    "up_to_date".to_string()
                 };
                 JsonTargetResult {
-                    platform: format!("{}", a.platform),
+                    platform: format!("{}", o.platform),
                     action,
-                    dest_dir: a.dest_dir.to_string_lossy().into_owned(),
-                    files_written: a.files_written,
+                    dest_dir: o.dest_dir.to_string_lossy().into_owned(),
+                    files_written: o.files_written,
                 }
             })
             .collect();
 
-        for platform in &report.skipped {
-            if let Some(tp) = plan.targets.iter().find(|t| t.platform == *platform) {
-                targets.push(JsonTargetResult {
-                    platform: format!("{platform}"),
-                    action: "up_to_date".to_string(),
-                    dest_dir: tp.dest_dir.to_string_lossy().into_owned(),
-                    files_written: 0,
-                });
-            }
-        }
-
-        let applied_count = report.applied.len();
-        let skipped_count = report.skipped.len();
+        let applied_count = report.applied().count();
+        let skipped_count = report.skipped().count();
         let message = format!(
             "foundry skill v{VERSION}: {applied_count} installed, {skipped_count} up to date"
         );
@@ -120,29 +98,7 @@ fn render_install_output(plan: &InstallPlan, report: &Report, json: bool) -> Res
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        for applied in &report.applied {
-            let action_str = match &applied.action {
-                TargetAction::Install => format!("+ installed v{VERSION}"),
-                TargetAction::Update { from } => {
-                    format!("~ updated v{} → v{VERSION}", from.as_deref().unwrap_or("?"))
-                }
-                TargetAction::Downgrade { from } => {
-                    format!("~ downgraded v{from} → v{VERSION} (--force)")
-                }
-                _ => format!("  written v{VERSION}"),
-            };
-            println!("  {} {} → {}", applied.platform, action_str, applied.dest_dir.display());
-        }
-        for platform in &report.skipped {
-            if let Some(tp) = plan.targets.iter().find(|t| t.platform == *platform) {
-                println!("  {} = up to date v{VERSION} → {}", platform, tp.dest_dir.display());
-            }
-        }
-        let applied_count = report.applied.len();
-        let skipped_count = report.skipped.len();
-        println!(
-            "\nfoundry skill v{VERSION}: {applied_count} installed, {skipped_count} up to date."
-        );
+        println!("{report}");
     }
     Ok(())
 }
@@ -166,13 +122,8 @@ fn render_remove_output(report: &RemoveReport, json: bool) -> Result<()> {
             was_tracked: report.was_tracked,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if !report.was_on_disk && !report.was_tracked {
-        println!("foundry skill is not installed (nothing to remove).");
     } else {
-        for dir in &report.removed_dirs {
-            println!("  - removed {}", dir.display());
-        }
-        println!("\nfoundry skill removed.");
+        println!("{report}");
     }
     Ok(())
 }
@@ -231,7 +182,7 @@ fn run_impl(
 /// - `json`: emit machine-readable JSON instead of human output.
 pub fn run(local: bool, force: bool, json: bool) -> Result<()> {
     let scope = scope_from_flags(local);
-    let pctx = ProductionContext::from_env(Platform::Claude)?;
+    let pctx = ProductionContext::claude()?;
     let ctx = pctx.ctx();
     run_impl(scope, force, false, json, &ctx)
 }
@@ -243,7 +194,7 @@ pub fn run(local: bool, force: bool, json: bool) -> Result<()> {
 /// - `json`: emit machine-readable JSON instead of human output.
 pub fn remove(local: bool, json: bool) -> Result<()> {
     let scope = scope_from_flags(local);
-    let pctx = ProductionContext::from_env(Platform::Claude)?;
+    let pctx = ProductionContext::claude()?;
     let ctx = pctx.ctx();
     run_impl(scope, false, true, json, &ctx)
 }
