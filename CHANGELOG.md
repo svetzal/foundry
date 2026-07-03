@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `--global` is retained as a no-op alias (load-bearing: registry's derived skill-install command is `{binary} init --global --force`).
   - New `--remove` flag uninstalls the skill and cleans the lock entry.
   - Installed files are **byte-identical to bundled content** — the version stamp previously injected into `SKILL.md` frontmatter (`foundry-version:` / `metadata.version`) is gone. The cmx-core lockfile (`~/.config/context-mixer/cmx-lock.json`) is the sole source of truth for the installed version.
-  - `--json` output shape changed: `targets[]` replaces `files[]`; `lock_entry_present` added; `foundry-version` stamp field removed.
+  - `--json` output shape changed: `targets[]` replaces `files[]`; `foundry-version` stamp field removed.
 
 ### Fixed
 
