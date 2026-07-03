@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`foundry init` now uses cmx-core for skill installation.** The hand-rolled install mechanism has been replaced with [cmx-core](https://github.com/svetzal/context-mixer2/tree/main/cmx-core) (`SkillInstaller`). Behavioural changes:
+  - **Default scope is now global** (`~/.claude/skills/foundry/`). Use `foundry init --local` for project scope.
+  - `--global` is retained as a no-op alias (load-bearing: registry's derived skill-install command is `{binary} init --global --force`).
+  - New `--remove` flag uninstalls the skill and cleans the lock entry.
+  - Installed files are **byte-identical to bundled content** — the version stamp previously injected into `SKILL.md` frontmatter (`foundry-version:` / `metadata.version`) is gone. The cmx-core lockfile (`~/.config/context-mixer/cmx-lock.json`) is the sole source of truth for the installed version.
+  - `--json` output shape changed: `targets[]` replaces `files[]`; `lock_entry_present` added; `foundry-version` stamp field removed.
+
 ### Fixed
 
 - **Post-push auditor honours per-project accepted CVEs.** New optional `audit_exceptions` field on registry `ProjectEntry` lets a project declare formally-accepted CVE/advisory IDs (case-insensitive). Matching vulnerabilities are filtered from the post-push auditor's output and logged as suppressed. Absent/empty preserves prior behaviour. Set by editing `~/.foundry/registry.json` (CLI wiring deferred).

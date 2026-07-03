@@ -164,15 +164,23 @@ enum Commands {
         bump: Option<String>,
     },
 
-    /// Install the Foundry skill for Claude agents
+    /// Install (or remove) the Foundry skill for Claude agents
     Init {
-        /// Install globally (~/.claude/skills/) instead of locally (.claude/skills/)
+        /// Install into the project (.claude/skills/foundry/) instead of globally
+        #[arg(long)]
+        local: bool,
+
+        /// Accepted for compatibility; global is the default (no-op)
         #[arg(long)]
         global: bool,
 
-        /// Overwrite files even if an installed version is newer
+        /// Overwrite files even if an installed version is newer (downgrade)
         #[arg(long)]
         force: bool,
+
+        /// Remove the installed Foundry skill and clean the lock entry
+        #[arg(long)]
+        remove: bool,
 
         /// Emit machine-readable JSON instead of human output
         #[arg(long)]
@@ -540,10 +548,18 @@ async fn main() -> Result<()> {
             event_commands::history(date.as_deref(), project.as_deref())
         }
         Commands::Init {
-            global,
+            local,
+            global: _, // accepted for registry compatibility; global is the default
             force,
+            remove,
             json,
-        } => init_commands::run(global, force, json),
+        } => {
+            if remove {
+                init_commands::remove(local, json)
+            } else {
+                init_commands::run(local, force, json)
+            }
+        }
         Commands::Gates { project, dir, init } => {
             let project_dir = gates_commands::resolve_project_dir(
                 project.as_deref(),

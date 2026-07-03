@@ -1,7 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::Result;
-use semver::Version;
+use anyhow::{Result, bail};
+use cmx_core::context::AppContext;
+use cmx_core::platform::Platform;
+use cmx_core::production::ProductionContext;
+use cmx_core::skill_fs::SkillFile;
+use cmx_core::skill_install::{
+    BundledSkill, InstallPlan, RemoveReport, Report, Scope, SkillInstaller, TargetAction,
+    ToolIdentity,
+};
 use serde::Serialize;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -10,256 +17,243 @@ const SKILL_MD: &str = include_str!("../../../skill/foundry/SKILL.md");
 const EVENT_MODEL_MD: &str = include_str!("../../../skill/foundry/references/event-model.md");
 const WORKFLOWS_MD: &str = include_str!("../../../skill/foundry/references/workflows.md");
 
-/// Files to install, relative to the skill root directory.
-const FILES: &[(&str, &str)] = &[
-    ("SKILL.md", SKILL_MD),
-    ("references/event-model.md", EVENT_MODEL_MD),
-    ("references/workflows.md", WORKFLOWS_MD),
-];
-
-/// The outcome for a single installed file.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum Action {
-    Created,
-    Updated,
-    UpToDate,
-    Skipped,
+fn scope_from_flags(local: bool) -> Scope {
+    if local { Scope::Local } else { Scope::Global }
 }
 
-impl Action {
-    const fn icon(&self) -> char {
-        match self {
-            Self::Created => '+',
-            Self::Updated => '~',
-            Self::UpToDate => '=',
-            Self::Skipped => '!',
-        }
-    }
+fn bundled_skill() -> BundledSkill {
+    BundledSkill::from_files(vec![
+        SkillFile {
+            rel_path: PathBuf::from("SKILL.md"),
+            bytes: SKILL_MD.as_bytes().to_vec(),
+        },
+        SkillFile {
+            rel_path: PathBuf::from("references/event-model.md"),
+            bytes: EVENT_MODEL_MD.as_bytes().to_vec(),
+        },
+        SkillFile {
+            rel_path: PathBuf::from("references/workflows.md"),
+            bytes: WORKFLOWS_MD.as_bytes().to_vec(),
+        },
+    ])
+}
 
-    const fn label(&self) -> &'static str {
-        match self {
-            Self::Created => "Created",
-            Self::Updated => "Updated",
-            Self::UpToDate => "Up to date",
-            Self::Skipped => "Skipped",
-        }
-    }
+fn make_installer() -> SkillInstaller {
+    SkillInstaller::new(ToolIdentity {
+        name: "foundry".into(),
+        version: VERSION.into(),
+    })
+}
+
+// ── JSON output shapes ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct JsonTargetResult {
+    platform: String,
+    action: String,
+    dest_dir: String,
+    files_written: usize,
 }
 
 #[derive(Serialize)]
-struct FileResult {
-    path: String,
-    action: Action,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    installed_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warning: Option<String>,
-}
-
-#[derive(Serialize)]
-struct JsonOutput {
+struct JsonInstallOutput {
     success: bool,
     message: String,
     version: String,
-    files: Vec<FileResult>,
+    targets: Vec<JsonTargetResult>,
 }
 
-/// Inject `foundry-version: <version>` into YAML frontmatter, and update
-/// `metadata.version` if present. If the body has no frontmatter, prepend
-/// a minimal one.
-fn stamp(body: &str, version: &str) -> String {
-    let Some(rest) = body.strip_prefix("---\n") else {
-        return format!("---\nfoundry-version: {version}\n---\n\n{body}");
-    };
-
-    let (frontmatter, after) = if let Some(pos) = rest.find("\n---\n") {
-        (&rest[..pos], &rest[(pos + 5)..])
-    } else if let Some(stripped) = rest.strip_suffix("\n---") {
-        (stripped, "")
-    } else {
-        // Malformed frontmatter — treat as no frontmatter.
-        return format!("---\nfoundry-version: {version}\n---\n\n{body}");
-    };
-
-    let stamped_fm = stamp_frontmatter(frontmatter, version);
-    format!("---\n{stamped_fm}\n---\n{after}")
+#[derive(Serialize)]
+struct JsonRemoveOutput {
+    success: bool,
+    message: String,
+    removed_dirs: Vec<String>,
+    was_on_disk: bool,
+    was_tracked: bool,
 }
 
-/// Inject/replace `foundry-version:` in a frontmatter block (the text between
-/// the `---` delimiters, without the delimiters themselves). Also updates
-/// `metadata.version` if present.
-fn stamp_frontmatter(frontmatter: &str, version: &str) -> String {
-    let mut lines: Vec<String> = frontmatter.lines().map(String::from).collect();
-    let mut in_metadata = false;
-    let mut metadata_version_updated = false;
+// ── Output rendering ──────────────────────────────────────────────────────
 
-    for line in &mut lines {
-        if line.as_str() == "metadata:" {
-            in_metadata = true;
-            continue;
-        }
-        if in_metadata {
-            if line.starts_with("  ") {
-                if !metadata_version_updated && line.trim_start().starts_with("version:") {
-                    *line = format!("  version: \"{version}\"");
-                    metadata_version_updated = true;
-                }
-            } else if !line.is_empty() {
-                in_metadata = false;
-            }
-        }
-    }
-
-    let version_line = format!("foundry-version: {version}");
-    if let Some(pos) = lines.iter().position(|l| l.starts_with("foundry-version:")) {
-        lines[pos] = version_line;
-    } else {
-        lines.push(version_line);
-    }
-
-    lines.join("\n")
-}
-
-/// Parse `foundry-version: X.Y.Z` from the leading frontmatter block.
-/// Returns `None` if absent, unparseable, or there is no frontmatter.
-fn parse_stamp(content: &str) -> Option<Version> {
-    let rest = content.strip_prefix("---\n")?;
-
-    let frontmatter = if let Some(pos) = rest.find("\n---\n") {
-        &rest[..pos]
-    } else {
-        rest.strip_suffix("\n---")?
-    };
-
-    for line in frontmatter.lines() {
-        if let Some(v) = line.strip_prefix("foundry-version:") {
-            return Version::parse(v.trim()).ok();
-        }
-    }
-    None
-}
-
-/// Determine the action for a single file without performing any I/O.
-///
-/// Returns `(Action, Option<warning_message>)`.
-fn decide_action(
-    on_disk: Option<&str>,
-    stamped_content: &str,
-    force: bool,
-    binary_version: &Version,
-) -> (Action, Option<String>) {
-    let Some(existing) = on_disk else {
-        return (Action::Created, None);
-    };
-
-    if let Some(installed_ver) = parse_stamp(existing)
-        && &installed_ver > binary_version
-    {
-        if force {
-            let warning =
-                format!("Downgrading from v{installed_ver} to v{binary_version} (--force).");
-            return (Action::Updated, Some(warning));
-        }
-        let warning = format!(
-            "Installed v{installed_ver} is newer than binary v{binary_version}. Use --force to downgrade."
-        );
-        return (Action::Skipped, Some(warning));
-    }
-
-    if existing == stamped_content {
-        (Action::UpToDate, None)
-    } else {
-        (Action::Updated, None)
-    }
-}
-
-/// Install all skill files into `base`, returning per-file results. Performs
-/// the actual file I/O but does not print any output.
-fn install_files(base: &Path, force: bool, binary_version: &Version) -> Result<Vec<FileResult>> {
-    let mut results = Vec::new();
-
-    for (relative_path, embedded) in FILES {
-        let dest = base.join(relative_path);
-        let version_str = binary_version.to_string();
-        let stamped = stamp(embedded, &version_str);
-
-        let existing_content = std::fs::read_to_string(&dest).ok();
-        let installed_version =
-            existing_content.as_deref().and_then(parse_stamp).map(|v| v.to_string());
-
-        let (action, warning) =
-            decide_action(existing_content.as_deref(), &stamped, force, binary_version);
-
-        if matches!(action, Action::Created | Action::Updated) {
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&dest, &stamped)?;
-        }
-
-        results.push(FileResult {
-            path: (*relative_path).to_string(),
-            action,
-            installed_version,
-            warning,
-        });
-    }
-
-    Ok(results)
-}
-
-pub fn run(global: bool, force: bool, json: bool) -> Result<()> {
-    let base = if global {
-        let home = std::env::var("HOME")?;
-        PathBuf::from(home).join(".claude").join("skills").join("foundry")
-    } else {
-        PathBuf::from(".claude").join("skills").join("foundry")
-    };
-
-    let binary_version = Version::parse(VERSION).expect("CARGO_PKG_VERSION is valid semver");
-    let results = install_files(&base, force, &binary_version)?;
-
-    let any_skipped = results.iter().any(|r| r.action == Action::Skipped);
-
-    let created = results.iter().filter(|r| r.action == Action::Created).count();
-    let updated = results.iter().filter(|r| r.action == Action::Updated).count();
-    let up_to_date = results.iter().filter(|r| r.action == Action::UpToDate).count();
-    let skipped = results.iter().filter(|r| r.action == Action::Skipped).count();
-
-    let summary = format!(
-        "Installed foundry skill (v{VERSION}): {created} created, {updated} updated, \
-         {up_to_date} up to date, {skipped} skipped"
-    );
-
+fn render_install_output(plan: &InstallPlan, report: &Report, json: bool) -> Result<()> {
     if json {
-        let output = JsonOutput {
-            success: !any_skipped,
-            message: summary,
+        let mut targets: Vec<JsonTargetResult> = report
+            .applied
+            .iter()
+            .map(|a| {
+                let action = match &a.action {
+                    TargetAction::Install => "installed".to_string(),
+                    TargetAction::Update { .. } => "updated".to_string(),
+                    TargetAction::Downgrade { .. } => "downgraded".to_string(),
+                    _ => "written".to_string(),
+                };
+                JsonTargetResult {
+                    platform: format!("{}", a.platform),
+                    action,
+                    dest_dir: a.dest_dir.to_string_lossy().into_owned(),
+                    files_written: a.files_written,
+                }
+            })
+            .collect();
+
+        for platform in &report.skipped {
+            if let Some(tp) = plan.targets.iter().find(|t| t.platform == *platform) {
+                targets.push(JsonTargetResult {
+                    platform: format!("{platform}"),
+                    action: "up_to_date".to_string(),
+                    dest_dir: tp.dest_dir.to_string_lossy().into_owned(),
+                    files_written: 0,
+                });
+            }
+        }
+
+        let applied_count = report.applied.len();
+        let skipped_count = report.skipped.len();
+        let message = format!(
+            "foundry skill v{VERSION}: {applied_count} installed, {skipped_count} up to date"
+        );
+
+        let output = JsonInstallOutput {
+            success: true,
+            message,
             version: VERSION.to_string(),
-            files: results,
+            targets,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        for file in &results {
-            if let Some(ref w) = file.warning {
-                eprintln!("  warning: {w}");
-            }
-            println!("  {} {}: {}", file.action.icon(), file.action.label(), file.path);
+        for applied in &report.applied {
+            let action_str = match &applied.action {
+                TargetAction::Install => format!("+ installed v{VERSION}"),
+                TargetAction::Update { from } => {
+                    format!("~ updated v{} → v{VERSION}", from.as_deref().unwrap_or("?"))
+                }
+                TargetAction::Downgrade { from } => {
+                    format!("~ downgraded v{from} → v{VERSION} (--force)")
+                }
+                _ => format!("  written v{VERSION}"),
+            };
+            println!("  {} {} → {}", applied.platform, action_str, applied.dest_dir.display());
         }
-        println!("\n{summary}.");
+        for platform in &report.skipped {
+            if let Some(tp) = plan.targets.iter().find(|t| t.platform == *platform) {
+                println!("  {} = up to date v{VERSION} → {}", platform, tp.dest_dir.display());
+            }
+        }
+        let applied_count = report.applied.len();
+        let skipped_count = report.skipped.len();
+        println!(
+            "\nfoundry skill v{VERSION}: {applied_count} installed, {skipped_count} up to date."
+        );
     }
+    Ok(())
+}
 
-    if any_skipped {
-        std::process::exit(1);
+fn render_remove_output(report: &RemoveReport, json: bool) -> Result<()> {
+    if json {
+        let message = if report.was_on_disk {
+            format!("foundry skill removed (v{VERSION})")
+        } else {
+            "foundry skill was not installed (nothing to remove)".to_string()
+        };
+        let output = JsonRemoveOutput {
+            success: true,
+            message,
+            removed_dirs: report
+                .removed_dirs
+                .iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect(),
+            was_on_disk: report.was_on_disk,
+            was_tracked: report.was_tracked,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if !report.was_on_disk && !report.was_tracked {
+        println!("foundry skill is not installed (nothing to remove).");
+    } else {
+        for dir in &report.removed_dirs {
+            println!("  - removed {}", dir.display());
+        }
+        println!("\nfoundry skill removed.");
+    }
+    Ok(())
+}
+
+// ── Core implementation (accepts injected AppContext for testability) ────────
+
+fn run_impl(
+    scope: Scope,
+    force: bool,
+    remove: bool,
+    json: bool,
+    ctx: &AppContext<'_>,
+) -> Result<()> {
+    let installer = make_installer();
+
+    if remove {
+        let report = installer.remove(scope, ctx)?;
+        render_remove_output(&report, json)?;
+    } else {
+        let skill = bundled_skill();
+        let plan = installer.plan(&skill, scope, force, ctx)?;
+
+        if plan.is_blocked() {
+            let reasons: Vec<String> = plan
+                .targets
+                .iter()
+                .filter_map(|t| {
+                    if let TargetAction::RefuseNewer { installed } = &t.action {
+                        Some(format!(
+                            "{}: installed v{installed} is newer than bundled v{VERSION}; \
+                             use --force to downgrade",
+                            t.platform
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            bail!("{}", reasons.join("\n"));
+        }
+
+        let report = installer.apply(&skill, &plan, ctx)?;
+        render_install_output(&plan, &report, json)?;
     }
 
     Ok(())
 }
 
+// ── Public entry points ───────────────────────────────────────────────────
+
+/// Install the Foundry companion skill.
+///
+/// - `local`: when true, install into `./.claude/skills/foundry/` (project scope);
+///   when false (default), install into `~/.claude/skills/foundry/` (global).
+/// - `force`: override the newer-installed refusal (downgrade).
+/// - `json`: emit machine-readable JSON instead of human output.
+pub fn run(local: bool, force: bool, json: bool) -> Result<()> {
+    let scope = scope_from_flags(local);
+    let pctx = ProductionContext::from_env(Platform::Claude)?;
+    let ctx = pctx.ctx();
+    run_impl(scope, force, false, json, &ctx)
+}
+
+/// Remove the installed Foundry companion skill.
+///
+/// - `local`: when true, remove from `./.claude/skills/foundry/` (project scope);
+///   when false (default), remove from `~/.claude/skills/foundry/` (global).
+/// - `json`: emit machine-readable JSON instead of human output.
+pub fn remove(local: bool, json: bool) -> Result<()> {
+    let scope = scope_from_flags(local);
+    let pctx = ProductionContext::from_env(Platform::Claude)?;
+    let ctx = pctx.ctx();
+    run_impl(scope, false, true, json, &ctx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmx_core::lockfile;
+    use cmx_core::test_support::TestContext;
+    use cmx_core::types::InstallScope;
 
     // ── Embedded content sanity ─────────────────────────────────────────────
 
@@ -275,175 +269,177 @@ mod tests {
         assert!(SKILL_MD.starts_with("---"), "SKILL.md should start with YAML frontmatter");
     }
 
-    // ── stamp() unit tests ──────────────────────────────────────────────────
+    // ── Scope helper ────────────────────────────────────────────────────────
 
     #[test]
-    fn stamp_injects_into_existing_frontmatter() {
-        let result = stamp(SKILL_MD, "1.2.3");
-        assert!(result.starts_with("---\n"), "should preserve frontmatter opening");
+    fn no_local_flag_gives_global_scope() {
+        assert!(matches!(scope_from_flags(false), Scope::Global));
+    }
+
+    #[test]
+    fn local_flag_gives_local_scope() {
+        assert!(matches!(scope_from_flags(true), Scope::Local));
+    }
+
+    // ── BundledSkill shape ──────────────────────────────────────────────────
+
+    #[test]
+    fn bundled_skill_has_skill_md_at_root() {
+        let skill = bundled_skill();
+        assert!(skill.has_skill_md(), "BundledSkill must contain SKILL.md at root");
+    }
+
+    #[test]
+    fn bundled_skill_contains_all_three_files() {
+        let skill = bundled_skill();
+        assert_eq!(skill.files.len(), 3, "BundledSkill should contain 3 files");
+        let paths: Vec<String> =
+            skill.files.iter().map(|f| f.rel_path.to_string_lossy().into_owned()).collect();
+        assert!(paths.iter().any(|p| p == "SKILL.md"), "SKILL.md must be present");
         assert!(
-            result.contains("foundry-version: 1.2.3"),
-            "should contain version stamp; got:\n{result}"
+            paths.iter().any(|p| p == "references/event-model.md"),
+            "references/event-model.md must be present"
+        );
+        assert!(
+            paths.iter().any(|p| p == "references/workflows.md"),
+            "references/workflows.md must be present"
         );
     }
 
-    #[test]
-    fn stamp_prepends_frontmatter_when_absent() {
-        let body = "# Some content\nHello world\n";
-        let result = stamp(body, "1.2.3");
-        assert!(
-            result.starts_with("---\nfoundry-version: 1.2.3\n---\n\n"),
-            "should prepend minimal frontmatter; got:\n{result}"
-        );
-        assert!(result.contains("# Some content"), "should preserve body");
-    }
-
-    #[test]
-    fn stamp_updates_metadata_version_if_present() {
-        let result = stamp(SKILL_MD, "5.6.7");
-        assert!(
-            result.contains("  version: \"5.6.7\""),
-            "should update metadata.version; got:\n{result}"
-        );
-    }
-
-    #[test]
-    fn stamp_replaces_existing_foundry_version_on_restamp() {
-        // Second stamp call should replace, not append.
-        let first = stamp(SKILL_MD, "1.0.0");
-        let second = stamp(&first, "2.0.0");
-        let occurrences = second.matches("foundry-version:").count();
-        assert_eq!(occurrences, 1, "should have exactly one foundry-version line; got:\n{second}");
-        assert!(second.contains("foundry-version: 2.0.0"));
-        assert!(!second.contains("foundry-version: 1.0.0"));
-    }
-
-    // ── parse_stamp() unit tests ────────────────────────────────────────────
-
-    #[test]
-    fn parse_stamp_returns_none_when_absent() {
-        assert!(parse_stamp("# No frontmatter\nHello").is_none());
-        assert!(parse_stamp("---\nname: test\n---\nBody").is_none());
-    }
-
-    #[test]
-    fn parse_stamp_returns_version_when_present() {
-        let content = "---\nname: test\nfoundry-version: 3.4.5\n---\nBody";
-        let ver = parse_stamp(content).expect("should parse version");
-        assert_eq!(ver, Version::parse("3.4.5").unwrap());
-    }
-
-    // ── decide_action() unit tests ──────────────────────────────────────────
-
-    #[test]
-    fn absent_file_is_created() {
-        let ver = Version::parse("0.11.0").unwrap();
-        let stamped = stamp(SKILL_MD, "0.11.0");
-        let (action, warning) = decide_action(None, &stamped, false, &ver);
-        assert_eq!(action, Action::Created);
-        assert!(warning.is_none());
-    }
-
-    #[test]
-    fn identical_content_is_up_to_date() {
-        let ver = Version::parse("0.11.0").unwrap();
-        let stamped = stamp(SKILL_MD, "0.11.0");
-        let (action, warning) = decide_action(Some(&stamped), &stamped, false, &ver);
-        assert_eq!(action, Action::UpToDate);
-        assert!(warning.is_none());
-    }
-
-    #[test]
-    fn older_installed_is_updated() {
-        let ver = Version::parse("0.11.0").unwrap();
-        let old_content = stamp(SKILL_MD, "0.1.0");
-        let new_stamped = stamp(SKILL_MD, "0.11.0");
-        let (action, warning) = decide_action(Some(&old_content), &new_stamped, false, &ver);
-        assert_eq!(action, Action::Updated);
-        assert!(warning.is_none());
-    }
-
-    #[test]
-    fn newer_installed_is_skipped_without_force() {
-        let ver = Version::parse("0.11.0").unwrap();
-        let newer_content = stamp(SKILL_MD, "99.0.0");
-        let current_stamped = stamp(SKILL_MD, "0.11.0");
-        let (action, warning) = decide_action(Some(&newer_content), &current_stamped, false, &ver);
-        assert_eq!(action, Action::Skipped);
-        let w = warning.expect("should have a warning");
-        assert!(
-            w.contains("Use --force to downgrade"),
-            "warning should mention --force; got: {w}"
-        );
-    }
-
-    #[test]
-    fn newer_installed_with_force_is_updated() {
-        let ver = Version::parse("0.11.0").unwrap();
-        let newer_content = stamp(SKILL_MD, "99.0.0");
-        let current_stamped = stamp(SKILL_MD, "0.11.0");
-        let (action, warning) = decide_action(Some(&newer_content), &current_stamped, true, &ver);
-        assert_eq!(action, Action::Updated);
-        let w = warning.expect("should have a downgrade warning even with --force");
-        assert!(w.contains("Downgrading"), "warning should mention downgrade; got: {w}");
-    }
-
-    // ── install_files() integration tests ───────────────────────────────────
+    // ── Integration tests (fake filesystem via test-support) ─────────────────
 
     #[test]
     fn installs_all_files_to_target_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("foundry");
-        let ver = Version::parse(VERSION).unwrap();
+        let t = TestContext::new();
+        let ctx = t.ctx();
 
-        install_files(&base, false, &ver).unwrap();
+        run_impl(Scope::Global, false, false, false, &ctx).unwrap();
 
-        assert!(base.join("SKILL.md").exists());
-        assert!(base.join("references/event-model.md").exists());
-        assert!(base.join("references/workflows.md").exists());
+        let home = &t.paths.home_dir;
+        let skill_dir = home.join(".claude").join("skills").join("foundry");
+
+        assert!(t.fs.file_exists(&skill_dir.join("SKILL.md")), "SKILL.md must be installed");
+        assert!(
+            t.fs.file_exists(&skill_dir.join("references").join("event-model.md")),
+            "references/event-model.md must be installed"
+        );
+        assert!(
+            t.fs.file_exists(&skill_dir.join("references").join("workflows.md")),
+            "references/workflows.md must be installed"
+        );
+
+        // Installed SKILL.md is byte-identical to bundled content — no version stamp
+        let installed =
+            t.fs.get_file_content(&skill_dir.join("SKILL.md"))
+                .expect("SKILL.md should be present");
+        assert_eq!(
+            installed,
+            SKILL_MD.as_bytes(),
+            "installed SKILL.md must be byte-identical to the embedded constant (no stamp)"
+        );
+
+        // Lock entry was written
+        let lock = lockfile::load(InstallScope::Global, &t.fs, &t.paths)
+            .expect("lock file should be loadable");
+        assert!(lock.packages.contains_key("foundry"), "lock entry for 'foundry' must exist");
     }
 
     #[test]
-    fn installed_skill_md_contains_version_stamp() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("foundry");
-        let ver = Version::parse(VERSION).unwrap();
+    fn second_install_is_idempotent() {
+        let t = TestContext::new();
+        let ctx = t.ctx();
 
-        install_files(&base, false, &ver).unwrap();
+        run_impl(Scope::Global, false, false, false, &ctx).unwrap();
+        // Second call with the same version must not fail
+        run_impl(Scope::Global, false, false, false, &ctx).unwrap();
 
-        let content = std::fs::read_to_string(base.join("SKILL.md")).unwrap();
+        let lock = lockfile::load(InstallScope::Global, &t.fs, &t.paths).unwrap();
         assert!(
-            content.contains(&format!("foundry-version: {VERSION}")),
-            "installed SKILL.md should contain version stamp"
+            lock.packages.contains_key("foundry"),
+            "lock entry must persist after second run"
         );
     }
 
-    // ── JSON output shape test ───────────────────────────────────────────────
+    #[test]
+    fn remove_uninstalls_all_files_and_clears_lock() {
+        let t = TestContext::new();
+        let ctx = t.ctx();
+
+        // Install first
+        run_impl(Scope::Global, false, false, false, &ctx).unwrap();
+
+        let home = &t.paths.home_dir;
+        let skill_dir = home.join(".claude").join("skills").join("foundry");
+        assert!(t.fs.file_exists(&skill_dir.join("SKILL.md")), "must be installed before remove");
+
+        // Remove
+        run_impl(Scope::Global, false, true, false, &ctx).unwrap();
+
+        // Skill files should be gone
+        assert!(!t.fs.file_exists(&skill_dir.join("SKILL.md")), "SKILL.md should be removed");
+        assert!(
+            !t.fs.file_exists(&skill_dir.join("references").join("event-model.md")),
+            "references/event-model.md should be removed"
+        );
+        assert!(
+            !t.fs.file_exists(&skill_dir.join("references").join("workflows.md")),
+            "references/workflows.md should be removed"
+        );
+
+        // Lock entry should be cleared
+        let lock = lockfile::load(InstallScope::Global, &t.fs, &t.paths).unwrap();
+        assert!(
+            !lock.packages.contains_key("foundry"),
+            "lock entry for 'foundry' must be removed"
+        );
+    }
+
+    // ── JSON output shape ─────────────────────────────────────────────────
 
     #[test]
-    fn json_output_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("foundry");
-        let ver = Version::parse(VERSION).unwrap();
-        let results = install_files(&base, false, &ver).unwrap();
-
-        let output = JsonOutput {
+    fn json_install_output_has_expected_fields() {
+        let output = JsonInstallOutput {
             success: true,
-            message: "test message".to_string(),
-            version: VERSION.to_string(),
-            files: results,
+            message: "foundry skill v0.1.0: 1 installed, 0 up to date".to_string(),
+            version: "0.1.0".to_string(),
+            targets: vec![JsonTargetResult {
+                platform: "Claude".to_string(),
+                action: "installed".to_string(),
+                dest_dir: "/home/user/.claude/skills/foundry".to_string(),
+                files_written: 3,
+            }],
         };
         let json_str = serde_json::to_string(&output).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-        assert!(parsed["success"].is_boolean(), "success should be boolean");
-        assert!(parsed["message"].is_string(), "message should be string");
-        assert!(parsed["version"].is_string(), "version should be string");
-        assert!(parsed["files"].is_array(), "files should be array");
+        assert!(parsed["success"].is_boolean(), "success must be boolean");
+        assert!(parsed["message"].is_string(), "message must be string");
+        assert!(parsed["version"].is_string(), "version must be string");
+        assert!(parsed["targets"].is_array(), "targets must be array");
+        let targets = parsed["targets"].as_array().unwrap();
+        assert!(!targets.is_empty(), "targets must not be empty");
+        assert!(targets[0]["platform"].is_string(), "target.platform must be string");
+        assert!(targets[0]["action"].is_string(), "target.action must be string");
+        assert!(targets[0]["dest_dir"].is_string(), "target.dest_dir must be string");
+        assert!(targets[0]["files_written"].is_number(), "target.files_written must be number");
+    }
 
-        let files = parsed["files"].as_array().unwrap();
-        assert!(!files.is_empty(), "files should not be empty");
-        assert!(files[0]["path"].is_string(), "file.path should be string");
-        assert!(files[0]["action"].is_string(), "file.action should be string");
+    #[test]
+    fn json_remove_output_has_expected_fields() {
+        let output = JsonRemoveOutput {
+            success: true,
+            message: "foundry skill removed (v0.1.0)".to_string(),
+            removed_dirs: vec!["/home/user/.claude/skills/foundry".to_string()],
+            was_on_disk: true,
+            was_tracked: true,
+        };
+        let json_str = serde_json::to_string(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert!(parsed["success"].is_boolean());
+        assert!(parsed["message"].is_string());
+        assert!(parsed["removed_dirs"].is_array());
+        assert!(parsed["was_on_disk"].is_boolean());
+        assert!(parsed["was_tracked"].is_boolean());
     }
 }

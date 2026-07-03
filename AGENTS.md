@@ -243,8 +243,9 @@ This project follows trunk-based development. `main` is the only long-lived bran
 To cut a release:
 
 ```bash
-# 1. Update version in Cargo.toml [workspace.package] and skill/foundry/SKILL.md
-#    metadata.version (must match Cargo.toml — see "Deployable Skill" below).
+# 1. Update version in Cargo.toml [workspace.package] and (as convention) skill/foundry/SKILL.md
+#    metadata.version (see "Deployable Skill" below — runtime no longer stamps this, but keep
+#    it in sync for human readers).
 # 2. Update CHANGELOG.md — move [Unreleased] content to a new dated [vX.Y.Z] section.
 # 3. cargo build to refresh Cargo.lock.
 # 4. Commit the bump, then:
@@ -288,12 +289,16 @@ mdbook build book/
 
 The `skill/foundry/` directory contains the Claude Code skill that teaches agents how to use Foundry. It is deployed via `foundry init`:
 
-- `foundry init` — installs to project-local `.claude/skills/foundry/`
-- `foundry init --global` — installs to `~/.claude/skills/foundry/` (available across all projects)
+- `foundry init` — installs to `~/.claude/skills/foundry/` (globally, the default)
+- `foundry init --local` — installs to `.claude/skills/foundry/` (project scope)
+- `foundry init --global` — accepted no-op alias; global is the default (load-bearing: foundry's registry derives `{binary} init --global --force` as the skill-install command)
+- `foundry init --remove` — uninstalls the skill and cleans the lock entry in `~/.config/context-mixer/`
 
-When adding new CLI commands or workflows, update the in-repo skill files (`SKILL.md`, `references/workflows.md`, `references/event-model.md`) to match, then re-run `foundry init --global` to deploy.
+Installation is managed by [cmx-core](https://github.com/svetzal/context-mixer2/tree/main/cmx-core). Installed files are byte-identical to the bundled content; the installed version is tracked via a lockfile under `~/.config/context-mixer/cmx-lock.json` rather than stamped into the file content.
 
-The skill version in `skill/foundry/SKILL.md` (metadata `version` field) must always match the workspace version in `Cargo.toml`. When bumping the version for a release, update both locations.
+When adding new CLI commands or workflows, update the in-repo skill files (`SKILL.md`, `references/workflows.md`, `references/event-model.md`) to match, then re-run `foundry init` to deploy globally.
+
+The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync with the workspace version in `Cargo.toml` as an authoring convention for human readers, but the runtime no longer stamps or reads it — the cmx-core lockfile is the sole source of truth for the installed version.
 
 ## Key Directories
 

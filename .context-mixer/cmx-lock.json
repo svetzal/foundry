@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "packages": {
+    "foundry": {
+      "type": "skill",
+      "version": "0.26.1",
+      "installed_at": "2026-07-03T16:22:04.134033+00:00",
+      "source": {
+        "repo": "bundled:foundry",
+        "path": "skills/foundry"
+      },
+      "source_checksum": "sha256:acf87ccb235acd4ff8f20a61b8c6e05e35d0c2faf3902edefc25feabd805f5b2",
+      "installed_checksum": "sha256:acf87ccb235acd4ff8f20a61b8c6e05e35d0c2faf3902edefc25feabd805f5b2"
+    }
+  }
+}
