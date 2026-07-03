@@ -1,0 +1,16 @@
+[Unit]
+Description=Foundry daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/foundryd
+Restart=always
+RestartSec=5
+WorkingDirectory=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/foundry/foundryd.env
+
+[Install]
+WantedBy=default.target

@@ -62,6 +62,16 @@ Start the daemon:
 foundryd
 ```
 
+### Linux daemon setup
+
+For Linux infrastructure, install the release tarball binaries to
+`/usr/local/bin` and run `foundryd` as the operating user via a user-level
+`systemd` service. Do not run `foundryd` as root; it needs the same GitHub,
+agent CLI, repo checkout, and `~/.foundry` state as the user who owns the
+workspaces.
+
+See `systemd/README.md` and `systemd/foundryd.service`.
+
 ## Quality Gates
 
 Run all of these before considering work complete:
