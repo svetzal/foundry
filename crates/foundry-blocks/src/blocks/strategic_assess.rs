@@ -128,15 +128,16 @@ impl TaskBlock for StrategicAssessor {
 }
 
 fn build_strategic_prompt(project: &str, directive: &str) -> String {
-    format!(
-        "You are performing a strategic assessment of the project '{project}'.\n\n\
-         {directive}\n\n\
-         Output ONLY valid JSON in this exact format, nothing else:\n\
-         {{\n  \
+    super::json_output_prompt(
+        &format!(
+            "You are performing a strategic assessment of the project '{project}'.\n\n\
+             {directive}"
+        ),
+        "{{\n  \
            \"areas\": [\n    \
              {{\"area\": \"<short description>\", \"severity\": <1-10>, \"category\": \"<category>\"}}\n  \
            ]\n\
-         }}"
+         }}",
     )
 }
 

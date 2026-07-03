@@ -267,6 +267,16 @@ pub(crate) fn fold_agent_outcome<T>(
     }
 }
 
+/// Build a prompt that ends with the standard JSON-output envelope.
+///
+/// Appends `"\n\nOutput ONLY valid JSON in this exact format, nothing else:\n{schema_block}"`
+/// to `preamble`, giving assessment blocks a single place to spell the sentinel.
+pub(crate) fn json_output_prompt(preamble: &str, schema_block: &str) -> String {
+    format!(
+        "{preamble}\n\nOutput ONLY valid JSON in this exact format, nothing else:\n{schema_block}"
+    )
+}
+
 /// Match an agent outcome into text output plus a success flag, or return a failure result.
 ///
 /// On `Unavailable`, returns `Err(TaskBlockResult::failure(...))`.
@@ -299,6 +309,17 @@ pub(crate) fn match_agent_text_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_output_prompt_appends_envelope() {
+        let result = json_output_prompt("My preamble.", "{\"key\": \"value\"}");
+        assert!(result.starts_with("My preamble."));
+        let envelope_count = result
+            .matches("Output ONLY valid JSON in this exact format, nothing else:")
+            .count();
+        assert_eq!(envelope_count, 1);
+        assert!(result.contains("{\"key\": \"value\"}"));
+    }
 
     #[test]
     fn parse_agent_provider_returns_none_for_none_input() {

@@ -97,7 +97,7 @@ impl TaskBlock for WatchPipeline {
                 Err(None) => {
                     // Project not in registry — honest failure.
                     tracing::warn!(project = %project, "project not found in registry");
-                    Ok(TaskBlockResult::failure(format!("{project}: not found in registry")))
+                    Ok(TaskBlockResult::project_not_found(&project))
                 }
                 Err(Some(())) => {
                     // Registered but no repo — skip with an explicit status.

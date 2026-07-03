@@ -258,6 +258,8 @@ async fn assess_continue(
          - Or has the codebase reached a plateau where further changes would be diminishing returns?";
     let directive = custom_prompt.unwrap_or(default_directive);
 
+    // Intentionally distinct prompt shape: abbreviated schema inline, no "in this exact format"
+    // sentinel — does not use json_output_prompt.
     let prompt = format!(
         "You have just completed an iteration of improvements on project '{project}'. \
          {directive}\n\n\

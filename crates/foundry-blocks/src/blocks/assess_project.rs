@@ -128,18 +128,19 @@ async fn run_assessment_agent(
     provider: Option<AgentProvider>,
     timeout: std::time::Duration,
 ) -> anyhow::Result<(i64, String, String, String)> {
-    let assess_prompt = format!(
-        "You are assessing the project '{project}' for code quality improvements.\n\n\
-         Analyze the codebase and identify the single most-violated engineering principle. \
-         Consider: code clarity, test coverage, error handling, naming, duplication, \
-         separation of concerns, and adherence to the project's stated conventions.\n\n\
-         Output ONLY valid JSON in this exact format, nothing else:\n\
-         {{\n  \
+    let assess_prompt = super::json_output_prompt(
+        &format!(
+            "You are assessing the project '{project}' for code quality improvements.\n\n\
+             Analyze the codebase and identify the single most-violated engineering principle. \
+             Consider: code clarity, test coverage, error handling, naming, duplication, \
+             separation of concerns, and adherence to the project's stated conventions."
+        ),
+        "{{\n  \
            \"severity\": <1-10 integer>,\n  \
            \"principle\": \"<the principle being violated>\",\n  \
            \"category\": \"<one of: clarity, testing, error-handling, naming, duplication, architecture, conventions>\",\n  \
            \"assessment\": \"<2-3 sentence description of the violation and where it occurs>\"\n\
-         }}"
+         }}",
     );
 
     let outcome = invoke_reasoning_agent(

@@ -110,6 +110,8 @@ You must actively scan for the following patterns:
 - "should never happen" branches
 - silent catches or ignored errors"#;
 
+// Intentionally distinct prompt shape: multi-section markdown with a "You must" phrasing
+// and a verbose schema — does not use json_output_prompt (which is for compact inline schemas).
 const JSON_OUTPUT_INSTRUCTIONS: &str = r#"
 
 ---

@@ -110,19 +110,20 @@ fn build_triage_prompt(
     assessment: &str,
     threshold: u64,
 ) -> String {
-    format!(
-        "You are triaging an assessment for project '{project}'.\n\n\
-         Assessment:\n\
-         - Severity: {severity}/10\n\
-         - Principle: {principle}\n\
-         - Category: {category}\n\
-         - Details: {assessment}\n\n\
-         Decide whether this assessment should be accepted for correction.\n\
-         Accept if: severity >= {threshold} AND the work is substantive (not busy-work like \
-         trivial comment changes, whitespace formatting, or purely cosmetic tweaks).\n\
-         Reject if: severity < {threshold} OR the work is busy-work.\n\n\
-         Output ONLY valid JSON in this exact format, nothing else:\n\
-         {{\"accepted\": true/false, \"reason\": \"<brief explanation>\"}}"
+    super::json_output_prompt(
+        &format!(
+            "You are triaging an assessment for project '{project}'.\n\n\
+             Assessment:\n\
+             - Severity: {severity}/10\n\
+             - Principle: {principle}\n\
+             - Category: {category}\n\
+             - Details: {assessment}\n\n\
+             Decide whether this assessment should be accepted for correction.\n\
+             Accept if: severity >= {threshold} AND the work is substantive (not busy-work like \
+             trivial comment changes, whitespace formatting, or purely cosmetic tweaks).\n\
+             Reject if: severity < {threshold} OR the work is busy-work."
+        ),
+        "{{\"accepted\": true/false, \"reason\": \"<brief explanation>\"}}",
     )
 }
 

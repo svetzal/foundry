@@ -14,8 +14,8 @@ mod execution;
 pub(super) use agent_helpers::{
     AgentBlockSpec, CodingAgentSpec, ReadOnlyAgentSpec, chain_agent_provider, extract_json,
     fold_agent_outcome, invoke_agent, invoke_coding_agent, invoke_reasoning_agent,
-    invoke_summary_agent, match_agent_text_outcome, parse_agent_json, parse_agent_provider,
-    resolve_agent_file,
+    invoke_summary_agent, json_output_prompt, match_agent_text_outcome, parse_agent_json,
+    parse_agent_provider, resolve_agent_file,
 };
 pub(super) use digest_io::{
     plural, render_agent_body_digest, today_dated_path, write_digest_and_emit,

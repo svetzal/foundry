@@ -53,7 +53,7 @@ impl CommitAndPush {
 
         let Some((path_str, push_enabled)) = entry_data else {
             tracing::warn!(project = %project, "project not found in registry");
-            return Ok(TaskBlockResult::failure(format!("{project}: not found in registry")));
+            return Ok(TaskBlockResult::project_not_found(&project));
         };
 
         let path = std::path::Path::new(&path_str);
