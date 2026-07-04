@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   through the lightweight task formation, backed by `ExecutionRequested` and
   the existing plan, execute, verify, summarize, and commit chain.
 
+### Fixed
+
+- Claude agent invocations now pass `--agent <name>` instead of the resolved
+  `~/.claude/agents/<name>.md` path, matching current Claude Code CLI
+  behaviour and preventing maintenance retries from failing before execution.
+
 ## [0.27.0] - 2026-07-04
 
 ### Changed

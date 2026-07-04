@@ -125,7 +125,7 @@ impl CliAgentAdapter for ClaudeAdapter {
         ];
         if let Some(ref agent_file) = request.agent_file {
             args.push("--agent".to_string());
-            args.push(agent_file.display().to_string());
+            args.push(claude_agent_name(agent_file));
         }
         if request.access == AgentAccess::ReadOnly {
             args.push("--allowedTools".to_string());
@@ -194,6 +194,13 @@ cli_agent_gateway! {
     /// `AgentSessionStarted` / `AgentSessionEnded` lifecycle events on the supplied
     /// broadcast channel.
     ClaudeAgentGateway, ClaudeAdapter
+}
+
+fn claude_agent_name(agent_file: &Path) -> String {
+    agent_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map_or_else(|| agent_file.display().to_string(), ToString::to_string)
 }
 
 /// Extract the final assistant text from a stream-json transcript.
@@ -615,7 +622,9 @@ mod claude_agent_gateway_streaming_tests {
             access: AgentAccess::ReadOnly,
             tier: ModelTier::Deep,
             effort: ReasoningEffort::High,
-            agent_file: None,
+            agent_file: Some(PathBuf::from(
+                "/Users/svetzal/.claude/agents/typescript-bun-cli-craftsperson.md",
+            )),
             provider: None,
             timeout: Duration::from_secs(5),
         };
@@ -630,6 +639,12 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "--effort"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "high"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");
+        let agent_flag = captured.iter().position(|a| a == "--agent").expect("agent flag present");
+        assert_eq!(
+            captured.get(agent_flag + 1).map(String::as_str),
+            Some("typescript-bun-cli-craftsperson")
+        );
+        assert!(!captured.iter().any(|a| a.ends_with(".md")), "args: {captured:?}");
     }
 }
 
