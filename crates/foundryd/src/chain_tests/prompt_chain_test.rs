@@ -165,6 +165,9 @@ async fn prompt_workflow_happy_path() {
 }
 
 #[tokio::test]
+// The `task` workflow reuses the direct prompt formation: `ExecutionRequested` with
+// `workflow: "task"` routes through `DirectPrompt` exactly like `workflow: "prompt"`,
+// skipping assessment/triage/plan blocks.
 async fn task_workflow_happy_path() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
