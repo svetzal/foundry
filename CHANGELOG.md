@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-04
+
 ### Changed
 
 - **`foundry init` now uses cmx-core for skill installation.** The hand-rolled install mechanism has been replaced with [cmx-core](https://github.com/svetzal/context-mixer2/tree/main/cmx-core) (`SkillInstaller`). Behavioural changes:
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Post-push auditor honours per-project accepted CVEs.** New optional `audit_exceptions` field on registry `ProjectEntry` lets a project declare formally-accepted CVE/advisory IDs (case-insensitive). Matching vulnerabilities are filtered from the post-push auditor's output and logged as suppressed. Absent/empty preserves prior behaviour. Set by editing `~/.foundry/registry.json` (CLI wiring deferred).
+- **Release pipeline watch no longer times out on healthy pipelines.** `gh run view` in the pipeline watcher's run-by-id polling ran without `--repo` from the daemon's working directory (not a git repository), so every poll failed and the watcher burned its full 30-minute timeout before emitting a false `release_pipeline_completed` timed-out/failure — which also stalled `foundry release` clients waiting on `local_install_completed`. Regressed in the run-by-id polling change released in 0.18.0.
 
 ## [0.26.1] - 2026-06-26
 
