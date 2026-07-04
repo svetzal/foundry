@@ -190,7 +190,7 @@ async fn poll_pipeline(
             );
         }
 
-        match query_run_by_id(run_id, shell).await {
+        match query_run_by_id(repo, run_id, shell).await {
             Ok(Some((status, conclusion))) => match interpret_run_status(&status, &conclusion) {
                 RunOutcome::Completed { success } => {
                     tracing::info!(%repo, run_id, %conclusion, "pipeline completed");
@@ -354,9 +354,13 @@ async fn find_release_run_id(
 
 /// Query a specific workflow run by its database ID via the `gh` CLI.
 ///
+/// `--repo` is required: the daemon's working directory is not a git repository,
+/// so `gh` cannot infer the repo from context.
+///
 /// Returns `Ok(Some((status, conclusion)))` on success, `Ok(None)` when the run
 /// view returns no data, and `Err` on CLI or JSON parse failure.
 async fn query_run_by_id(
+    repo: &str,
     run_id: u64,
     shell: &dyn ShellGateway,
 ) -> anyhow::Result<Option<(String, String)>> {
@@ -365,7 +369,15 @@ async fn query_run_by_id(
         .run(
             Path::new("."),
             "gh",
-            &["run", "view", &id_str, "--json", "status,conclusion"],
+            &[
+                "run",
+                "view",
+                &id_str,
+                "--repo",
+                repo,
+                "--json",
+                "status,conclusion",
+            ],
             None,
             None,
         )
@@ -695,6 +707,34 @@ mod tests {
         // headBranch match (score=1) causes us to select run #5 → failure
         assert!(!result.success);
         assert_eq!(result.events[0].payload["conclusion"], "failure");
+    }
+
+    #[tokio::test]
+    async fn query_run_by_id_passes_repo_flag() {
+        // Regression: the daemon's cwd is not a git repository, so `gh run view`
+        // without --repo fails with "failed to determine base repo" on every
+        // poll until the 30-minute timeout (observed on hopper releases
+        // 2026-05-23 and 2026-07-04).
+        let shell = FakeShellGateway::always(run_view_completed("success"));
+
+        let result = query_run_by_id("owner/repo", 42, shell.as_ref()).await.unwrap();
+
+        assert_eq!(result, Some(("completed".to_string(), "success".to_string())));
+        let invs = shell.invocations();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].command, "gh");
+        assert_eq!(
+            invs[0].args,
+            vec![
+                "run",
+                "view",
+                "42",
+                "--repo",
+                "owner/repo",
+                "--json",
+                "status,conclusion"
+            ]
+        );
     }
 
     #[tokio::test]
