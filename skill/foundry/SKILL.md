@@ -122,6 +122,11 @@ The task formation checks the project charter, resolves gates, forwards your
 description directly to the coding agent, verifies gates, then summarizes and
 commits through the existing Foundry blocks.
 
+While the command is waiting, it streams both workflow events and transient
+block progress messages such as `running block Run Verify Gates` and
+`finished block Run Verify Gates (ok, 143.0s)`. Progress messages are not
+persisted to the event log.
+
 Use this for small, concrete, immediately executable coding work. Keep using
 Hopper for queued/scheduled/background work until Foundry grows a durable work
 item store and worker lifecycle.
@@ -211,7 +216,10 @@ The release chain also fires automatically during vulnerability remediation when
 
 ### Prefer convenience commands over raw emit
 
-Always use the convenience commands above (`task`, `iterate`, `scout`, `validate`, `run`, `gates`, `pipeline`, `release`) rather than `foundry emit`. The convenience commands handle watch-stream setup, progress display, and trace rendering automatically.
+Always use the convenience commands above (`task`, `iterate`, `scout`,
+`validate`, `run`, `gates`, `pipeline`, `release`) rather than `foundry emit`.
+The convenience commands handle watch-stream setup, block progress display, and
+trace rendering automatically.
 
 Only use `foundry emit` for workflows that lack a convenience command (e.g., vulnerability scanning) or for advanced debugging:
 

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::broadcast;
 
@@ -148,6 +149,57 @@ impl Engine {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event.clone());
         }
+    }
+
+    /// Broadcast a transient progress message to Watch subscribers.
+    ///
+    /// Progress messages are intentionally not persisted to the event log and
+    /// are never delivered to downstream blocks. They exist only so interactive
+    /// clients can show that a long-running block is active.
+    fn broadcast_progress(&self, current: &Event, event_type: &str, payload: serde_json::Value) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+
+        let progress = Event::new(
+            EventType::Custom(event_type.to_string()),
+            current.project.clone(),
+            current.throttle,
+            payload,
+        )
+        .with_trace_id(current.trace_id.clone())
+        .with_span_ids(current.span_id.clone(), current.parent_span_id.clone());
+
+        let _ = tx.send(progress);
+    }
+
+    fn broadcast_block_started(&self, block: &dyn TaskBlock, current: &Event) {
+        self.broadcast_progress(
+            current,
+            "block_started",
+            serde_json::json!({
+                "block": block.name(),
+                "trigger_event_id": current.id,
+                "trigger_event_type": current.event_type.to_string(),
+                "status": "running",
+            }),
+        );
+    }
+
+    fn broadcast_block_completed(&self, execution: &BlockExecution, current: &Event) {
+        self.broadcast_progress(
+            current,
+            "block_completed",
+            serde_json::json!({
+                "block": execution.block_name,
+                "duration_ms": execution.duration_ms,
+                "status": if execution.success { "ok" } else { "failed" },
+                "success": execution.success,
+                "summary": execution.summary,
+                "trigger_event_id": execution.trigger_event_id,
+                "trigger_event_type": current.event_type.to_string(),
+            }),
+        );
     }
 
     /// Offer a delivered event to the gather store. If it satisfies a gather
@@ -389,9 +441,11 @@ impl Engine {
     ) -> BlockExecution {
         let block_span_id = foundry_sdk::event::mint_span_id();
         let workflow_span_id = current.span_id.clone();
-        let block_start = std::time::Instant::now();
+        let block_start = Instant::now();
 
-        match classify_dispatch(
+        self.broadcast_block_started(block, current);
+
+        let execution = match classify_dispatch(
             block.kind(),
             current.throttle,
             block.should_execute(current.throttle),
@@ -443,7 +497,10 @@ impl Engine {
                 )
                 .await
             }
-        }
+        };
+
+        self.broadcast_block_completed(&execution, current);
+        execution
     }
 
     /// Process an event: find matching task blocks, execute them, and propagate
@@ -699,6 +756,57 @@ mod tests {
         );
         assert_eq!(result.block_executions.len(), 2);
         assert!(result.block_executions.iter().all(|b| b.success));
+    }
+
+    #[tokio::test]
+    async fn broadcasts_transient_block_progress_without_persisting_it() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let mut engine = Engine::new().with_event_broadcaster(tx);
+        engine.register(Box::new(TestObserver));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"name": "world"}),
+        );
+
+        let result = engine.process(trigger).await;
+
+        let mut streamed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            streamed.push(event);
+        }
+
+        let streamed_types: Vec<String> = streamed.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(
+            streamed_types,
+            [
+                "greeting_requested",
+                "block_started",
+                "greeting_composed",
+                "block_completed",
+            ]
+        );
+
+        let result_types: Vec<String> =
+            result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(result_types, ["greeting_requested", "greeting_composed"]);
+
+        let started = streamed
+            .iter()
+            .find(|e| e.event_type.as_str() == "block_started")
+            .expect("block_started is streamed");
+        assert_eq!(started.payload["block"], "Test Observer");
+        assert_eq!(started.payload["status"], "running");
+
+        let completed = streamed
+            .iter()
+            .find(|e| e.event_type.as_str() == "block_completed")
+            .expect("block_completed is streamed");
+        assert_eq!(completed.payload["block"], "Test Observer");
+        assert_eq!(completed.payload["status"], "ok");
+        assert_eq!(completed.payload["success"], true);
     }
 
     #[tokio::test]

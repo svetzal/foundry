@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Synchronous workflow commands now stream transient block progress messages
+  such as `running block Run Verify Gates` and `finished block Run Verify Gates`
+  while long-running blocks execute.
 - `foundry task <project> "<description>"` runs one user-provided coding task
   through the lightweight task formation, backed by `ExecutionRequested` and
   the existing plan, execute, verify, summarize, and commit chain.

@@ -56,10 +56,13 @@ impl WorkflowRunner {
             })
             .await?
             .into_inner();
+        println!("Event: {}", response.event_id);
+        println!();
 
         let mut events = Vec::new();
         while let Some(event) = stream.message().await? {
             let done = is_terminal(&event.event_type, &event.payload_json);
+            print_watch_event(&event);
             events.push(event);
             if done {
                 break;
@@ -87,11 +90,54 @@ impl WorkflowRunner {
     }
 }
 
-/// Print a slice of watch events in `[project] event_type (status)` format.
-fn print_watch_events(events: &[WatchResponse]) {
-    for event in events {
-        let status = extract_status(&event.payload_json);
-        println!("[{}] {} {}", event.project, event.event_type, status);
+fn print_watch_event(event: &WatchResponse) {
+    match event.event_type.as_str() {
+        "block_started" => print_block_started(event),
+        "block_completed" => print_block_completed(event),
+        _ => {
+            let status = extract_status(&event.payload_json);
+            println!("[{}] {} {}", event.project, event.event_type, status);
+        }
+    }
+}
+
+fn print_block_started(event: &WatchResponse) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
+        println!("[{}] block started", event.project);
+        return;
+    };
+    let block = v.str_or("block", "unknown block");
+    let trigger = v.str_or("trigger_event_type", "unknown trigger");
+    println!("[{}] running block {block} (from {trigger})", event.project);
+}
+
+fn print_block_completed(event: &WatchResponse) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
+        println!("[{}] block completed", event.project);
+        return;
+    };
+    let block = v.str_or("block", "unknown block");
+    let status = v.str_or("status", "done");
+    let duration = v
+        .get("duration_ms")
+        .and_then(serde_json::Value::as_u64)
+        .map(format_duration)
+        .unwrap_or_default();
+    let suffix = if duration.is_empty() {
+        format!("({status})")
+    } else {
+        format!("({status}, {duration})")
+    };
+    println!("[{}] finished block {block} {suffix}", event.project);
+}
+
+fn format_duration(duration_ms: u64) -> String {
+    if duration_ms < 1_000 {
+        format!("{duration_ms}ms")
+    } else {
+        let seconds = duration_ms / 1_000;
+        let tenths = (duration_ms % 1_000) / 100;
+        format!("{seconds}.{tenths}s")
     }
 }
 
@@ -154,8 +200,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
 
     // Stream progress events until the maintenance run completes.
     while let Some(event) = stream.message().await? {
-        let status = extract_status(&event.payload_json);
-        println!("[{}] {} {}", event.project, event.event_type, status);
+        print_watch_event(&event);
 
         if is_run_complete(&event.event_type, &event.payload_json, is_system_run) {
             break;
@@ -207,16 +252,12 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
         payload["agent_provider"] = serde_json::json!(p);
     }
     let runner = WorkflowRunner::new(addr, project);
-    let (event_id, events) = runner
+    println!("Iterating {project}...");
+    let (event_id, _events) = runner
         .run_workflow("project_iteration_requested", payload, |t, _| {
             t == "project_iteration_completed"
         })
         .await?;
-
-    println!("Iterating {project}...");
-    println!("Event: {event_id}");
-    println!();
-    print_watch_events(&events);
 
     runner.show_trace(&event_id).await?;
     Ok(())
@@ -233,18 +274,14 @@ pub async fn task(addr: &str, project: &str, description: &str, agent: Option<&s
         payload["agent_provider"] = serde_json::json!(p);
     }
     let runner = WorkflowRunner::new(addr, project);
-    let (event_id, events) = runner
+    println!("Running task for {project}...");
+    let (event_id, _events) = runner
         .run_workflow("execution_requested", payload, |t, p| {
             t == "project_iteration_completed"
                 && serde_json::from_str::<serde_json::Value>(p)
                     .is_ok_and(|v| v.str_or("workflow", "") == "task")
         })
         .await?;
-
-    println!("Running task for {project}...");
-    println!("Event: {event_id}");
-    println!();
-    print_watch_events(&events);
 
     runner.show_trace(&event_id).await?;
     Ok(())
@@ -256,7 +293,8 @@ pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<
         Some(b) => serde_json::json!({ "bump": b }),
         None => serde_json::json!({}),
     };
-    let (event_id, events) = runner
+    println!("Releasing {project}...");
+    let (event_id, _events) = runner
         .run_workflow("release_requested", payload, |t, p| {
             t == "local_install_completed"
                 || (t == "release_completed"
@@ -264,11 +302,6 @@ pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<
                         .is_ok_and(|v| !v.bool_or("success", true)))
         })
         .await?;
-
-    println!("Releasing {project}...");
-    println!("Event: {event_id}");
-    println!();
-    print_watch_events(&events);
 
     runner.show_trace(&event_id).await?;
     Ok(())
@@ -281,15 +314,12 @@ pub async fn scout(addr: &str, project: &str, agent: Option<&str>) -> Result<()>
         None => serde_json::Value::Null,
     };
     let runner = WorkflowRunner::new(addr, project);
+    println!("Scouting {project} for intent drift...");
     let (event_id, events) = runner
         .run_workflow("drift_assessment_requested", payload, |t, _| {
             t == "drift_assessment_completed"
         })
         .await?;
-
-    println!("Scouting {project} for intent drift...");
-    println!("Event: {event_id}");
-    println!();
 
     if let Some(terminal) = events.iter().find(|e| e.event_type == "drift_assessment_completed") {
         print_scout_result(project, &terminal.payload_json);
@@ -306,7 +336,8 @@ pub async fn pipeline(addr: &str, project: &str, agent: Option<&str>) -> Result<
         None => serde_json::Value::Null,
     };
     let runner = WorkflowRunner::new(addr, project);
-    let (event_id, events) = runner
+    println!("Checking pipeline for {project}...");
+    let (event_id, _events) = runner
         .run_workflow("pipeline_check_requested", payload, |t, p| {
             (t == "pipeline_checked"
                 && serde_json::from_str::<serde_json::Value>(p)
@@ -314,11 +345,6 @@ pub async fn pipeline(addr: &str, project: &str, agent: Option<&str>) -> Result<
                 || t == "remediation_completed"
         })
         .await?;
-
-    println!("Checking pipeline for {project}...");
-    println!("Event: {event_id}");
-    println!();
-    print_watch_events(&events);
 
     runner.show_trace(&event_id).await?;
     Ok(())
@@ -530,5 +556,12 @@ mod tests {
     fn extract_status_empty() {
         assert_eq!(extract_status("{}"), String::new());
         assert_eq!(extract_status(""), String::new());
+    }
+
+    #[test]
+    fn format_duration_uses_ms_below_one_second_and_tenths_after() {
+        assert_eq!(format_duration(999), "999ms");
+        assert_eq!(format_duration(1_000), "1.0s");
+        assert_eq!(format_duration(143_967), "143.9s");
     }
 }
