@@ -5,11 +5,12 @@ use foundry_sdk::workflow::WorkflowType;
 
 use super::TriggerContext;
 
-/// Bridges the prompt workflow from preflight directly to execution,
+/// Bridges user-provided task/prompt workflows from preflight directly to execution,
 /// bypassing assessment, triage, and plan creation.
 ///
 /// Observer — sinks on `PreflightCompleted`.
-/// Self-filters: only runs when `workflow == "prompt"` and `all_passed == true`.
+/// Self-filters: only runs when `workflow == "task"` or `workflow == "prompt"`,
+/// and `all_passed == true`.
 ///
 /// Takes the user-provided `prompt` from the payload and emits
 /// `PlanCompleted` with the prompt as the plan. This feeds directly
@@ -19,7 +20,7 @@ pub struct DirectPrompt;
 
 fn accepts_direct_prompt(trigger: &Event) -> bool {
     let workflow = WorkflowType::from_payload(&trigger.payload);
-    if workflow != WorkflowType::Prompt {
+    if workflow != WorkflowType::Task && workflow != WorkflowType::Prompt {
         return false;
     }
     trigger
@@ -48,6 +49,7 @@ impl TaskBlock for DirectPrompt {
 
         // accepts() already filtered non-prompt and failed-preflight events.
         let p = parse_payload!(trigger, PreflightCompletedPayload);
+        let workflow = WorkflowType::from_payload(&payload);
 
         let prompt = p
             .chain
@@ -83,7 +85,7 @@ impl TaskBlock for DirectPrompt {
                     principle: String::new(),
                     category: String::new(),
                     assessment: String::new(),
-                    workflow: WorkflowType::Prompt.to_string(),
+                    workflow: workflow.to_string(),
                     // Direct prompt always implies real work is intended.
                     correction_needed: true,
                     correction_reason: String::new(),
@@ -124,6 +126,28 @@ mod tests {
         );
 
         assert!(!DirectPrompt.accepts(&trigger), "should not accept iterate workflow");
+    }
+
+    #[test]
+    fn accepts_returns_true_for_task_with_passed_preflight() {
+        let trigger = Event::new(
+            EventType::PreflightCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "workflow": "task",
+                "all_passed": true,
+                "required_passed": true,
+                "results": [],
+                "prompt": "do something",
+            }),
+        );
+
+        assert!(
+            DirectPrompt.accepts(&trigger),
+            "should accept task workflow with passed preflight"
+        );
     }
 
     #[test]
@@ -217,6 +241,30 @@ mod tests {
         assert_eq!(result.events[0].payload["workflow"], "prompt");
         // Gates should be forwarded
         assert!(result.events[0].payload.get("gates").is_some());
+    }
+
+    #[tokio::test]
+    async fn emits_plan_completed_with_task_workflow() {
+        let trigger = Event::new(
+            EventType::PreflightCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "workflow": "task",
+                "all_passed": true,
+                "required_passed": true,
+                "results": [],
+                "prompt": "Add a --quiet flag.",
+            }),
+        );
+
+        let result = DirectPrompt.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].event_type, EventType::PlanCompleted);
+        assert_eq!(result.events[0].payload["plan"], "Add a --quiet flag.");
+        assert_eq!(result.events[0].payload["workflow"], "task");
     }
 
     #[tokio::test]

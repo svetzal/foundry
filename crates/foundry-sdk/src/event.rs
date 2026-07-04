@@ -487,6 +487,7 @@ impl EventType {
                 | EventType::ProjectRunStarted
                 | EventType::ProjectIterationRequested
                 | EventType::ProjectMaintenanceRequested
+                | EventType::ExecutionRequested
                 | EventType::ValidationRequested
                 | EventType::DriftAssessmentRequested
                 | EventType::ReleaseRequested
@@ -1062,6 +1063,7 @@ mod tests {
         assert!(EventType::ProjectRunStarted.is_span_opener());
         assert!(EventType::ProjectIterationRequested.is_span_opener());
         assert!(EventType::ProjectMaintenanceRequested.is_span_opener());
+        assert!(EventType::ExecutionRequested.is_span_opener());
         assert!(EventType::ValidationRequested.is_span_opener());
         assert!(EventType::DriftAssessmentRequested.is_span_opener());
         assert!(EventType::ReleaseRequested.is_span_opener());

@@ -31,6 +31,7 @@ ProjectIterationRequested
 ```
 
 **Stop conditions:**
+
 - Charter check fails (`success: false`) — chain stops at CharterCheckCompleted
 - Preflight gates fail — AssessProject self-filters, chain stops
 - Triage rejects (`accepted: false`) — CreatePlan self-filters, chain stops
@@ -71,6 +72,36 @@ ValidationRequested
                       └─ RouteValidationResult (Observer)
                            └─ ValidationCompleted {success: bool, results: [...]}
 ```
+
+## Task Workflow
+
+Triggered by `foundry task <project> "<description>"`. Mutating, but not queued.
+The user-provided description is the plan.
+
+```text
+ExecutionRequested {workflow: "task", prompt: "..."}
+  └─ CheckCharter (Observer)
+       └─ CharterCheckCompleted {success: true, workflow: "task"}
+            └─ ResolveGates (Observer)
+                 └─ GateResolutionCompleted {workflow: "task", gates: [...]}
+                      └─ RunPreflightGates (Observer) — skips for task
+                           └─ PreflightCompleted {workflow: "task", skipped: true}
+                                └─ DirectPrompt (Observer)
+                                     └─ PlanCompleted {workflow: "task", plan: prompt}
+                                          └─ ExecutePlan (Mutator, AI Coding)
+                                               └─ ExecutionCompleted {workflow: "task"}
+                                                    └─ RunVerifyGates (Observer)
+                                                         └─ GateVerificationCompleted
+                                                              └─ RouteGateResult (Observer)
+                                                                   ├─ [passed] ProjectIterationCompleted {workflow: "task"}
+                                                                   │    └─ SummarizeResult → CommitAndPush
+                                                                   └─ [failed, retries < 3] RetryRequested
+                                                                        └─ RetryExecution → loops back
+```
+
+This first slice reuses the existing project completion event with
+`workflow="task"` rather than introducing a durable work-item queue or a
+dedicated `TaskCompleted` event.
 
 ## Drift Scout Workflow
 

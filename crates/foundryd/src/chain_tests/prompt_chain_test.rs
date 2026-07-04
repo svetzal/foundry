@@ -165,6 +165,62 @@ async fn prompt_workflow_happy_path() {
 }
 
 #[tokio::test]
+async fn task_workflow_happy_path() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
+    std::fs::write(
+        dir.path().join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"true","required":true}]}"#,
+    )
+    .unwrap();
+
+    let registry =
+        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+
+    let agent = test_helpers::sequenced_agent(vec![
+        "Done, implemented the task",
+        "HEADLINE: Implement task\nSUMMARY: Implemented the requested task.",
+    ]);
+
+    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
+
+    let trigger = Event::new(
+        EventType::ExecutionRequested,
+        "test-project".to_string(),
+        Throttle::Full,
+        serde_json::json!({
+            "project": "test-project",
+            "workflow": "task",
+            "prompt": "Add a --quiet flag to the CLI.",
+        }),
+    );
+
+    let result = engine.process(trigger).await;
+
+    let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+
+    assert!(event_types.iter().any(|t| t == "plan_completed"));
+    assert!(event_types.iter().any(|t| t == "execution_completed"));
+    assert!(event_types.iter().any(|t| t == "gate_verification_completed"));
+    assert!(event_types.iter().any(|t| t == "project_iteration_completed"));
+    assert!(!event_types.iter().any(|t| t == "assessment_completed"));
+    assert!(!event_types.iter().any(|t| t == "triage_completed"));
+
+    let plan_event =
+        result.events.iter().find(|e| e.event_type == EventType::PlanCompleted).unwrap();
+    assert_eq!(plan_event.payload["plan"], "Add a --quiet flag to the CLI.");
+    assert_eq!(plan_event.payload["workflow"], "task");
+
+    let terminal_event = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .unwrap();
+    assert_eq!(terminal_event.payload["workflow"], "task");
+    assert_eq!(terminal_event.payload["success"], true);
+}
+
+#[tokio::test]
 async fn prompt_workflow_charter_failure_stops_chain() {
     let dir = tempfile::tempdir().unwrap();
     // No CHARTER.md — charter check will fail

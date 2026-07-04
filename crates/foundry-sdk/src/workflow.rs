@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub enum WorkflowType {
     Iterate,
     Maintain,
+    Task,
     Prompt,
     Validate,
     Scout,
@@ -57,6 +58,7 @@ mod tests {
         let cases = [
             (WorkflowType::Iterate, "iterate"),
             (WorkflowType::Maintain, "maintain"),
+            (WorkflowType::Task, "task"),
             (WorkflowType::Prompt, "prompt"),
             (WorkflowType::Validate, "validate"),
             (WorkflowType::Scout, "scout"),
@@ -92,6 +94,7 @@ mod tests {
         use std::str::FromStr;
         assert_eq!(WorkflowType::from_str("iterate").unwrap(), WorkflowType::Iterate);
         assert_eq!(WorkflowType::from_str("maintain").unwrap(), WorkflowType::Maintain);
+        assert_eq!(WorkflowType::from_str("task").unwrap(), WorkflowType::Task);
         assert_eq!(WorkflowType::from_str("prompt").unwrap(), WorkflowType::Prompt);
         assert_eq!(WorkflowType::from_str("validate").unwrap(), WorkflowType::Validate);
         assert_eq!(WorkflowType::from_str("scout").unwrap(), WorkflowType::Scout);
@@ -103,6 +106,7 @@ mod tests {
     fn as_str_returns_snake_case() {
         assert_eq!(WorkflowType::Iterate.as_str(), "iterate");
         assert_eq!(WorkflowType::Maintain.as_str(), "maintain");
+        assert_eq!(WorkflowType::Task.as_str(), "task");
         assert_eq!(WorkflowType::Unknown.as_str(), "unknown");
     }
 }

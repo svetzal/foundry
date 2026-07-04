@@ -132,6 +132,20 @@ enum Commands {
         agent: Option<String>,
     },
 
+    /// Run one user-provided coding task on a project
+    Task {
+        /// Project name from registry
+        project: String,
+
+        /// Concrete task description for the coding agent
+        description: String,
+
+        /// Agent backend to run on: claude, opencode, or codex
+        /// (overrides the daemon default for this run)
+        #[arg(long)]
+        agent: Option<String>,
+    },
+
     /// Scout a project for intent drift (bug candidates)
     Scout {
         /// Project name from registry
@@ -535,6 +549,11 @@ async fn main() -> Result<()> {
         Commands::Iterate { project, agent } => {
             workflow_commands::iterate(&cli.addr, &project, agent.as_deref()).await
         }
+        Commands::Task {
+            project,
+            description,
+            agent,
+        } => workflow_commands::task(&cli.addr, &project, &description, agent.as_deref()).await,
         Commands::Scout { project, agent } => {
             workflow_commands::scout(&cli.addr, &project, agent.as_deref()).await
         }

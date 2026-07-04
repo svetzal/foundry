@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry task <project> "<description>"` runs one user-provided coding task
+  through the lightweight task formation, backed by `ExecutionRequested` and
+  the existing plan, execute, verify, summarize, and commit chain.
+
 ## [0.27.0] - 2026-07-04
 
 ### Changed

@@ -222,6 +222,34 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
     Ok(())
 }
 
+pub async fn task(addr: &str, project: &str, description: &str, agent: Option<&str>) -> Result<()> {
+    let agent_provider = resolve_agent_override(agent)?;
+    let mut payload = serde_json::json!({
+        "project": project,
+        "workflow": "task",
+        "prompt": description,
+    });
+    if let Some(p) = &agent_provider {
+        payload["agent_provider"] = serde_json::json!(p);
+    }
+    let runner = WorkflowRunner::new(addr, project);
+    let (event_id, events) = runner
+        .run_workflow("execution_requested", payload, |t, p| {
+            t == "project_iteration_completed"
+                && serde_json::from_str::<serde_json::Value>(p)
+                    .is_ok_and(|v| v.str_or("workflow", "") == "task")
+        })
+        .await?;
+
+    println!("Running task for {project}...");
+    println!("Event: {event_id}");
+    println!();
+    print_watch_events(&events);
+
+    runner.show_trace(&event_id).await?;
+    Ok(())
+}
+
 pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<()> {
     let runner = WorkflowRunner::new(addr, project);
     let payload = match &bump {

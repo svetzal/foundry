@@ -56,11 +56,11 @@ These blocks appear in multiple formations:
 | Watch Pipeline | Mutator | `release_completed` | `release_pipeline_completed` |
 | Install Locally | Mutator | `project_changes_pushed`, `release_pipeline_completed` | `local_install_completed` |
 
-### Prompt Workflow Blocks
+### Task/Prompt Workflow Blocks
 
 | Block | Kind | Sinks On | Emits |
 |-------|------|----------|-------|
-| Direct Prompt | Observer | `preflight_completed` (workflow=prompt) | `plan_completed` |
+| Direct Prompt | Observer | `preflight_completed` (task/prompt) | `plan_completed` |
 
 ### Strategic Loop Blocks
 
@@ -125,13 +125,13 @@ flowchart TD
     K --> N[[Commit and Push]]
 ```
 
-### Prompt Formation
+### Task Formation
 
 Entry event: `execution_requested`
 
-A streamlined formation that executes an arbitrary user-provided prompt
-with gate verification. It skips assessment, triage, and plan creation —
-the user's prompt IS the plan.
+A streamlined formation that executes an arbitrary user-provided task
+description with gate verification. It skips assessment, triage, and plan
+creation — the user's description IS the plan.
 
 ```mermaid
 flowchart TD
@@ -152,9 +152,12 @@ flowchart TD
 Usage:
 
 ```bash
-foundry emit execution_requested my-project \
-  --payload '{"prompt": "Pick the highest priority interaction from et and implement it."}'
+foundry task my-project "Pick the highest priority interaction from et and implement it."
 ```
+
+The older direct event shape remains supported for compatibility by emitting
+`execution_requested` with `workflow="prompt"` or `workflow="task"` in the
+payload.
 
 ### Strategic Iterate Formation
 

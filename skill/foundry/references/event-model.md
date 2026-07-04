@@ -34,6 +34,7 @@ Events follow four suffix categories:
 | Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity |
 
 Rules:
+
 - Commands are always `*Requested` — never `*Triggered`.
 - `*Completed` is the default for lifecycle endpoints.
 - `*Started`/`*Completed` must pair.
@@ -45,6 +46,7 @@ Rules:
 Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseRequested` → `release_requested`).
 
 ### Vulnerability Remediation Workflow
+
 | Event | Category |
 |-------|----------|
 | `ScanRequested` | Command |
@@ -59,6 +61,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `LocalInstallCompleted` | Lifecycle end |
 
 ### Project Lifecycle (Cross-workflow)
+
 | Event | Category |
 |-------|----------|
 | `ProjectValidationCompleted` | Lifecycle end |
@@ -68,15 +71,18 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `ProjectChangesPushed` | Domain fact |
 
 ### Workflow Triggers
+
 | Event | Category |
 |-------|----------|
 | `ProjectIterationRequested` | Command |
 | `ProjectMaintenanceRequested` | Command |
+| `ExecutionRequested` | Command |
 | `ValidationRequested` | Command |
 | `DriftAssessmentRequested` | Command |
 | `PipelineCheckRequested` | Command |
 
 ### Run Lifecycle
+
 | Event | Category |
 |-------|----------|
 | `MaintenanceCycleStarted` | Lifecycle start (system-level fan-out) |
@@ -85,6 +91,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `ProjectRunCompleted` | Lifecycle end (per-project) |
 
 ### Gate Orchestration
+
 | Event | Category |
 |-------|----------|
 | `GateResolutionCompleted` | Lifecycle end |
@@ -95,6 +102,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `SummarizeCompleted` | Lifecycle end |
 
 ### Iterate Workflow (Phase 3)
+
 | Event | Category |
 |-------|----------|
 | `CharterCheckCompleted` | Lifecycle end |
@@ -103,16 +111,19 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `PlanCompleted` | Lifecycle end |
 
 ### Pipeline Health Check
+
 | Event | Category |
 |-------|----------|
 | `PipelineChecked` | Domain fact |
 
 ### Drift Scout
+
 | Event | Category |
 |-------|----------|
 | `DriftAssessmentCompleted` | Lifecycle end |
 
 ### Ops Digest Formation
+
 | Event | Category |
 |-------|----------|
 | `OpsDigestStarted` | Lifecycle start (span opener) |

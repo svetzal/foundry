@@ -106,6 +106,7 @@ Rules:
 | Command | Purpose |
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
+| `foundry task <project> "<description>"` | Run one user-provided coding task |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
 | `foundry run` | Full maintenance across registered projects (the nightly schedule is now driven by the `nightly-maintenance` sentinel inside `foundryd`) |
