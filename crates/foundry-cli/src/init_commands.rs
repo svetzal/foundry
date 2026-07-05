@@ -279,14 +279,25 @@ mod tests {
             "references/workflows.md must be installed"
         );
 
-        // Installed SKILL.md is byte-identical to bundled content — no version stamp
+        // cmx-core reconciles metadata.version to the foundry binary version at
+        // install: the installed SKILL.md matches cmx-core's reconciled bundle and
+        // declares that version in its frontmatter.
         let installed =
             t.fs.get_file_content(&skill_dir.join("SKILL.md"))
                 .expect("SKILL.md should be present");
+        let expected = cmx_core::frontmatter::reconcile_skill_version(
+            &[SkillFile::text("SKILL.md", SKILL_MD)],
+            VERSION,
+        );
         assert_eq!(
             installed,
-            SKILL_MD.as_bytes(),
-            "installed SKILL.md must be byte-identical to the embedded constant (no stamp)"
+            expected[0].bytes.as_slice(),
+            "installed SKILL.md must match cmx-core's reconciled bundle"
+        );
+        let installed_str = std::str::from_utf8(&installed).expect("SKILL.md is utf-8");
+        assert!(
+            installed_str.contains(&format!("version: \"{VERSION}\"")),
+            "installed SKILL.md must declare metadata.version {VERSION}"
         );
 
         // Lock entry was written

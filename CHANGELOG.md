@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `foundry init` now installs on cmx-core 0.2, which reconciles the skill's
+  `metadata.version` to the foundry binary version at install time. foundry's
+  `SKILL.md` previously carried no version, so `cmx doctor` saw the installed
+  skill as unversioned; it now declares `metadata.version` (e.g. `"0.27.0"`)
+  automatically, with no in-tool stamping.
+
 ### Added
 
 - Synchronous workflow commands now stream transient block progress messages

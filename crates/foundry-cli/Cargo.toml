@@ -26,14 +26,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 comfy-table = { workspace = true }
-cmx-core = "0.1"
+cmx-core = "0.2"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-cmx-core = { version = "0.1", features = ["test-support"] }
+cmx-core = { version = "0.2", features = ["test-support"] }
 
 [lints]
 workspace = true
