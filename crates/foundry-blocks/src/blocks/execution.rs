@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use foundry_sdk::event::EventType;
 use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
 use foundry_sdk::registry::ProjectEntry;
@@ -115,8 +114,7 @@ pub(crate) fn build_agent_execution_result(
 
     let context = LoopContext::extract_from(trigger_payload);
     TaskBlockResult {
-        events: vec![super::event_from_infallible_payload(
-            EventType::ExecutionCompleted,
+        events: vec![super::execution_completed_event(
             project,
             throttle,
             &ExecutionCompletedPayload {

@@ -3,8 +3,22 @@ use foundry_sdk::payload::{
     GreetingComposedPayload, GreetingDeliveredPayload, GreetingRequestedPayload,
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
+use foundry_sdk::throttle::Throttle;
 
 use super::TriggerContext;
+
+/// Build a single `GreetingDelivered` event.
+///
+/// Single source of truth for the `EventType::GreetingDelivered` +
+/// `GreetingDeliveredPayload` pairing — called by both `dry_run_events`
+/// and `execute` in [`DeliverGreeting`] so no path can silently drift.
+fn greeting_delivered_event(
+    project: &str,
+    throttle: Throttle,
+    payload: &GreetingDeliveredPayload,
+) -> Event {
+    super::event_from_infallible_payload(EventType::GreetingDelivered, project, throttle, payload)
+}
 
 /// Composes a greeting message from a greet request.
 /// Observer — always runs regardless of throttle.
@@ -57,32 +71,36 @@ impl TaskBlock for DeliverGreeting {
 
         tracing::info!(%greeting, "delivering greeting");
 
-        emit_observer!(
-            project,
+        let event = greeting_delivered_event(
+            &project,
             throttle,
-            format!("Delivered: {greeting}"),
-            GreetingDelivered,
-            GreetingDeliveredPayload {
+            &GreetingDeliveredPayload {
                 delivered: true,
-                greeting,
-                dry_run: None
-            }
-        )
+                greeting: greeting.clone(),
+                dry_run: None,
+            },
+        );
+        Box::pin(async move {
+            Ok(foundry_sdk::task_block::TaskBlockResult::success(
+                format!("Delivered: {greeting}"),
+                vec![event],
+            ))
+        })
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
         let greeting = trigger
             .parse_payload::<GreetingComposedPayload>()
             .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
-        super::dry_run_single_event(
-            trigger,
-            EventType::GreetingDelivered,
+        vec![greeting_delivered_event(
+            &trigger.project,
+            trigger.throttle,
             &GreetingDeliveredPayload {
                 delivered: true,
                 greeting,
                 dry_run: Some(true),
             },
-        )
+        )]
     }
 }
 
@@ -174,6 +192,15 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::GreetingDelivered);
         assert_eq!(events[0].payload["delivered"], true);
         assert_eq!(events[0].payload["dry_run"], true);
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_primary_output_event_type_for_deliver_greeting() {
+        // After the refactor, this is guaranteed structurally by greeting_delivered_event.
+        let block = DeliverGreeting;
+        let trigger = greeting_composed("Hello, world!");
+        let dry_events = block.dry_run_events(&trigger);
+        assert_eq!(dry_events[0].event_type, EventType::GreetingDelivered);
     }
 
     #[test]

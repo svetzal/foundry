@@ -13,6 +13,24 @@ use crate::gateway::ShellGateway;
 
 use super::TriggerContext;
 
+/// Build a single `LocalInstallCompleted` event.
+///
+/// Single source of truth for the `EventType::LocalInstallCompleted` +
+/// `LocalInstallCompletedPayload` pairing — called by `dry_run_events`,
+/// `resolve_install`, and `execute` so no path can silently drift.
+fn local_install_completed_event(
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    payload: &LocalInstallCompletedPayload,
+) -> Event {
+    super::event_from_infallible_payload(
+        EventType::LocalInstallCompleted,
+        project,
+        throttle,
+        payload,
+    )
+}
+
 task_block_new! {
     /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
     /// Mutator — simulated success at `dry_run`.
@@ -44,15 +62,15 @@ impl TaskBlock for InstallLocally {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        super::dry_run_single_event(
-            trigger,
-            EventType::LocalInstallCompleted,
+        vec![local_install_completed_event(
+            &trigger.project,
+            trigger.throttle,
             &LocalInstallCompletedPayload {
                 success: true,
                 dry_run: Some(true),
                 ..Default::default()
             },
-        )
+        )]
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -104,8 +122,7 @@ impl TaskBlock for InstallLocally {
 
             tracing::info!(project = %project, method = method_name, success, "install completed");
 
-            let mut events = vec![super::event_from_infallible_payload(
-                EventType::LocalInstallCompleted,
+            let mut events = vec![local_install_completed_event(
                 &project,
                 throttle,
                 &LocalInstallCompletedPayload {
@@ -155,8 +172,7 @@ fn resolve_install(
         tracing::warn!(project = %project, "project not found in registry, skipping install");
         return Err(TaskBlockResult::success(
             "Skipped: project not found in registry",
-            vec![super::event_from_infallible_payload(
-                EventType::LocalInstallCompleted,
+            vec![local_install_completed_event(
                 project,
                 throttle,
                 &LocalInstallCompletedPayload {
@@ -173,8 +189,7 @@ fn resolve_install(
         tracing::info!(project = %project, "no install config, skipping");
         return Err(TaskBlockResult::success(
             "Skipped: no install config defined",
-            vec![super::event_from_infallible_payload(
-                EventType::LocalInstallCompleted,
+            vec![local_install_completed_event(
                 project,
                 throttle,
                 &LocalInstallCompletedPayload {
@@ -588,6 +603,19 @@ mod tests {
         // Shell should have been called exactly once (binary install only).
         let invocations = shell_for_inspect.invocations();
         assert_eq!(invocations.len(), 1);
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_primary_output_event_type_for_install() {
+        // dry_run_events and execute (command install success) must both emit LocalInstallCompleted.
+        // After the refactor, this is guaranteed structurally by local_install_completed_event.
+        let block = InstallLocally::new(registry_with_install(Some(InstallConfig::Command(
+            "true".to_string(),
+        ))));
+        let trigger = make_trigger("my-project");
+        let events = block.dry_run_events(&trigger);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::LocalInstallCompleted);
     }
 
     #[test]

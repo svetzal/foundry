@@ -74,6 +74,34 @@ pub(crate) fn emit_result(
     emit_event_result(summary, true, event_type, project, throttle, payload)
 }
 
+/// Build a single `RemediationCompleted` event.
+///
+/// Single source of truth for the `EventType::RemediationCompleted` +
+/// `RemediationCompletedPayload` pairing — called by both
+/// [`dry_run_remediation_event`] and [`build_agent_remediation_result`].
+fn remediation_completed_event(
+    project: &str,
+    throttle: Throttle,
+    cve: Option<String>,
+    pipeline_fix: Option<bool>,
+    success: bool,
+    summary: Option<String>,
+    dry_run: Option<bool>,
+) -> Event {
+    event_from_infallible_payload(
+        EventType::RemediationCompleted,
+        project,
+        throttle,
+        &RemediationCompletedPayload {
+            cve,
+            success,
+            summary,
+            dry_run,
+            pipeline_fix,
+        },
+    )
+}
+
 /// Build a `TaskBlockResult` for an agent-driven remediation, handling the
 /// response match, tracing, payload serialization, and summary formatting.
 ///
@@ -117,17 +145,14 @@ pub(crate) fn build_agent_remediation_result(
     );
 
     TaskBlockResult {
-        events: vec![event_from_infallible_payload(
-            EventType::RemediationCompleted,
+        events: vec![remediation_completed_event(
             project,
             throttle,
-            &RemediationCompletedPayload {
-                cve,
-                success,
-                summary: Some(summary.clone()),
-                dry_run: None,
-                pipeline_fix,
-            },
+            cve,
+            pipeline_fix,
+            success,
+            Some(summary.clone()),
+            None,
         )],
         success,
         summary: if success {
@@ -156,20 +181,34 @@ pub(crate) fn dry_run_single_event(
     ]
 }
 
+/// Build a single `ExecutionCompleted` event.
+///
+/// Single source of truth for the `EventType::ExecutionCompleted` +
+/// `ExecutionCompletedPayload` pairing — called by both
+/// [`dry_run_execution_event`] and the real-execution path in
+/// [`super::execution::build_agent_execution_result`].
+pub(crate) fn execution_completed_event(
+    project: &str,
+    throttle: Throttle,
+    payload: &ExecutionCompletedPayload,
+) -> Event {
+    event_from_infallible_payload(EventType::ExecutionCompleted, project, throttle, payload)
+}
+
 /// Produce the single simulated-success `ExecutionCompleted` event used by
 /// `dry_run_events()` across all three execution blocks.
 ///
 /// Encapsulates `LoopContext::extract_from`, `ExecutionCompletedPayload` construction,
-/// `trigger.with_payload()`, and the infallibility `.expect()`.
+/// and payload serialization via [`execution_completed_event`].
 pub(crate) fn dry_run_execution_event(
     trigger: &Event,
     workflow: WorkflowType,
     retry_count: Option<u64>,
 ) -> Vec<Event> {
     let context = LoopContext::extract_from(&trigger.payload);
-    dry_run_single_event(
-        trigger,
-        EventType::ExecutionCompleted,
+    vec![execution_completed_event(
+        &trigger.project,
+        trigger.throttle,
         &ExecutionCompletedPayload {
             project: trigger.project.clone(),
             workflow: workflow.to_string(),
@@ -183,7 +222,7 @@ pub(crate) fn dry_run_execution_event(
             failure: AgentFailureMetadata::default(),
             context,
         },
-    )
+    )]
 }
 
 /// Build the quality-gates context paragraph included in agent prompts.
@@ -202,23 +241,25 @@ pub(crate) fn format_gates_context(gates: Option<&serde_json::Value>) -> String 
 
 /// Produce the single simulated-success `RemediationCompleted` event used by
 /// `dry_run_events()` in `remediate` and `remediate_pipeline`.
+///
+/// Delegates to [`remediation_completed_event`] so the
+/// `EventType::RemediationCompleted` + `RemediationCompletedPayload` pairing
+/// has a single construction site.
 pub(crate) fn dry_run_remediation_event(
     trigger: &Event,
     cve: Option<String>,
     pipeline_fix: Option<bool>,
 ) -> Vec<Event> {
     let summary = cve.as_ref().map(|_| String::new());
-    dry_run_single_event(
-        trigger,
-        EventType::RemediationCompleted,
-        &RemediationCompletedPayload {
-            cve,
-            success: true,
-            summary,
-            dry_run: Some(true),
-            pipeline_fix,
-        },
-    )
+    vec![remediation_completed_event(
+        &trigger.project,
+        trigger.throttle,
+        cve,
+        pipeline_fix,
+        true,
+        summary,
+        Some(true),
+    )]
 }
 
 /// Emit a single-event success result from a raw JSON payload, without serialization.
@@ -287,8 +328,8 @@ mod tests {
     use super::{
         build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,
         dry_run_remediation_event, dry_run_single_event, emit_event_result, emit_result,
-        event_from_infallible_payload, event_from_payload, format_gates_context,
-        single_event_result,
+        event_from_infallible_payload, event_from_payload, execution_completed_event,
+        format_gates_context, single_event_result,
     };
 
     fn full() -> Throttle {
@@ -534,5 +575,84 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::ProjectRunCompleted);
         assert_eq!(events[0].payload["dry_run"], true);
+    }
+
+    #[test]
+    fn execution_completed_event_produces_event_with_correct_type_and_project() {
+        use foundry_sdk::gateway::AgentFailureMetadata;
+        use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
+        let payload = ExecutionCompletedPayload {
+            project: "p".to_string(),
+            workflow: "iterate".to_string(),
+            success: true,
+            summary: String::new(),
+            execution_output: None,
+            dry_run: Some(true),
+            retry_count: None,
+            changes_detected: None,
+            files_changed: vec![],
+            failure: AgentFailureMetadata::default(),
+            context: LoopContext::extract_from(&serde_json::json!({})),
+        };
+        let event = execution_completed_event("p", full(), &payload);
+        assert_eq!(event.event_type, EventType::ExecutionCompleted);
+        assert_eq!(event.project, "p");
+        assert_eq!(event.payload["success"], true);
+        assert_eq!(event.payload["dry_run"], true);
+    }
+
+    /// Verify that dry_run_execution_event and the real-execution path both agree
+    /// on emitting EventType::ExecutionCompleted — structural guarantee from the
+    /// single `execution_completed_event` builder.
+    #[test]
+    fn dry_run_execution_event_and_execution_completed_event_agree_on_type() {
+        use foundry_sdk::gateway::AgentFailureMetadata;
+        use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
+        let trigger = trigger_event();
+        let dry_run_events =
+            dry_run_execution_event(&trigger, foundry_sdk::workflow::WorkflowType::Iterate, None);
+        assert_eq!(dry_run_events[0].event_type, EventType::ExecutionCompleted);
+
+        // Real path: build via execution_completed_event directly.
+        let real_payload = ExecutionCompletedPayload {
+            project: "test-proj".to_string(),
+            workflow: "iterate".to_string(),
+            success: true,
+            summary: "done".to_string(),
+            execution_output: None,
+            dry_run: None,
+            retry_count: None,
+            changes_detected: Some(true),
+            files_changed: vec![],
+            failure: AgentFailureMetadata::default(),
+            context: LoopContext::extract_from(&serde_json::json!({})),
+        };
+        let real_event = execution_completed_event("test-proj", full(), &real_payload);
+        assert_eq!(real_event.event_type, EventType::ExecutionCompleted);
+        assert_eq!(dry_run_events[0].event_type, real_event.event_type);
+    }
+
+    /// Verify that dry_run_remediation_event and build_agent_remediation_result both
+    /// agree on emitting EventType::RemediationCompleted — structural guarantee from
+    /// the single `remediation_completed_event` builder.
+    #[test]
+    fn dry_run_and_build_agent_remediation_agree_on_event_type() {
+        let trigger = trigger_event();
+        let dry_run_events = dry_run_remediation_event(&trigger, Some("CVE-1".to_string()), None);
+        assert_eq!(dry_run_events[0].event_type, EventType::RemediationCompleted);
+
+        let real_result = build_agent_remediation_result(
+            "test-proj",
+            full(),
+            AgentOutcome::Success {
+                stdout: "fixed".to_string(),
+            },
+            Some("CVE-1".to_string()),
+            None,
+            "Fixed",
+            "Failed",
+        );
+        assert_eq!(real_result.events[0].event_type, EventType::RemediationCompleted);
+        assert_eq!(dry_run_events[0].event_type, real_result.events[0].event_type);
     }
 }

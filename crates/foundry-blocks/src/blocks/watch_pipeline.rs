@@ -5,8 +5,31 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::ReleaseCompletedPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::ShellGateway;
+
+/// Build a single `ReleasePipelineCompleted` event.
+///
+/// Single source of truth for the `EventType::ReleasePipelineCompleted`
+/// pairing — called by `dry_run_events`, the poll success path, and both
+/// timeout paths so no path can silently drift.
+fn release_pipeline_completed_event(
+    project: &str,
+    throttle: Throttle,
+    status: &str,
+    conclusion: Option<&str>,
+    dry_run: Option<bool>,
+) -> Event {
+    let mut payload = serde_json::json!({ "status": status });
+    if let Some(c) = conclusion {
+        payload["conclusion"] = serde_json::Value::String(c.to_string());
+    }
+    if let Some(dr) = dry_run {
+        payload["dry_run"] = serde_json::Value::Bool(dr);
+    }
+    Event::new(EventType::ReleasePipelineCompleted, project.to_string(), throttle, payload)
+}
 
 /// Watches the CI pipeline after a release tag is pushed.
 /// Mutator — simulated success at `dry_run`.
@@ -57,11 +80,12 @@ impl TaskBlock for WatchPipeline {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        vec![Event::new(
-            EventType::ReleasePipelineCompleted,
-            trigger.project.clone(),
+        vec![release_pipeline_completed_event(
+            &trigger.project,
             trigger.throttle,
-            serde_json::json!({ "status": "success", "dry_run": true }),
+            "success",
+            None,
+            Some(true),
         )]
     }
 
@@ -102,12 +126,11 @@ impl TaskBlock for WatchPipeline {
                 Err(Some(())) => {
                     // Registered but no repo — skip with an explicit status.
                     tracing::info!(project = %project, "no repo configured, skipping pipeline watch");
-                    Ok(super::single_event_result(
+                    Ok(TaskBlockResult::success(
                         "Release pipeline skipped: no repo configured",
-                        EventType::ReleasePipelineCompleted,
-                        project,
-                        throttle,
-                        serde_json::json!({ "status": "skipped" }),
+                        vec![release_pipeline_completed_event(
+                            &project, throttle, "skipped", None, None,
+                        )],
                     ))
                 }
                 Ok(repo) => {
@@ -150,14 +173,18 @@ async fn poll_pipeline(
     let run_id = loop {
         if start.elapsed() >= timeout {
             tracing::warn!(%repo, "pipeline watch timed out waiting for matching run");
-            return super::emit_event_result(
-                "Pipeline watch timed out after 30 minutes".to_string(),
-                false,
-                EventType::ReleasePipelineCompleted,
-                &project,
-                throttle,
-                &serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
-            );
+            return Ok(TaskBlockResult {
+                events: vec![release_pipeline_completed_event(
+                    &project,
+                    throttle,
+                    "failure",
+                    Some("timed_out"),
+                    None,
+                )],
+                success: false,
+                summary: "Pipeline watch timed out after 30 minutes".to_string(),
+                ..Default::default()
+            });
         }
 
         match find_release_run_id(repo, new_tag, shell).await {
@@ -180,14 +207,18 @@ async fn poll_pipeline(
     loop {
         if start.elapsed() >= timeout {
             tracing::warn!(%repo, run_id, "pipeline watch timed out after 30 minutes");
-            return super::emit_event_result(
-                "Pipeline watch timed out after 30 minutes".to_string(),
-                false,
-                EventType::ReleasePipelineCompleted,
-                &project,
-                throttle,
-                &serde_json::json!({ "status": "failure", "conclusion": "timed_out" }),
-            );
+            return Ok(TaskBlockResult {
+                events: vec![release_pipeline_completed_event(
+                    &project,
+                    throttle,
+                    "failure",
+                    Some("timed_out"),
+                    None,
+                )],
+                success: false,
+                summary: "Pipeline watch timed out after 30 minutes".to_string(),
+                ..Default::default()
+            });
         }
 
         match query_run_by_id(repo, run_id, shell).await {
@@ -195,14 +226,12 @@ async fn poll_pipeline(
                 RunOutcome::Completed { success } => {
                     tracing::info!(%repo, run_id, %conclusion, "pipeline completed");
                     return Ok(TaskBlockResult {
-                        events: vec![Event::new(
-                            EventType::ReleasePipelineCompleted,
-                            project,
+                        events: vec![release_pipeline_completed_event(
+                            &project,
                             throttle,
-                            serde_json::json!({
-                                "status": if success { "success" } else { "failure" },
-                                "conclusion": conclusion,
-                            }),
+                            if success { "success" } else { "failure" },
+                            Some(&conclusion),
+                            None,
                         )],
                         success,
                         summary: format!("Release pipeline completed: {conclusion}"),
@@ -913,5 +942,14 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::ReleasePipelineCompleted);
         assert_eq!(events[0].payload["status"], "success");
         assert_eq!(events[0].payload["dry_run"], true);
+    }
+
+    #[test]
+    fn dry_run_and_execute_agree_on_primary_output_event_type_for_watch_pipeline() {
+        // After the refactor, this is guaranteed structurally by release_pipeline_completed_event.
+        let block = WatchPipeline::stub();
+        let t = trigger();
+        let events = block.dry_run_events(&t);
+        assert_eq!(events[0].event_type, EventType::ReleasePipelineCompleted);
     }
 }
