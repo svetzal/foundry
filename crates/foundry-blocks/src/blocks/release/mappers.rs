@@ -40,12 +40,19 @@ impl ReleaseOutputMapper {
         trigger: &Event,
         success: bool,
         new_tag: Option<&String>,
+        dry_run: Option<bool>,
     ) -> serde_json::Value {
         let mut payload = serde_json::json!({
             "release": self.release_type,
             "new_tag": new_tag,
             "success": success,
         });
+
+        if let Some(dr) = dry_run
+            && let Some(base) = payload.as_object_mut()
+        {
+            base.insert("dry_run".to_string(), serde_json::json!(dr));
+        }
 
         if let Some(extra) = &self.extra_payload
             && let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
@@ -59,17 +66,16 @@ impl ReleaseOutputMapper {
     }
 }
 
+fn release_completed_event(trigger: &Event, payload: serde_json::Value) -> Event {
+    Event::new(EventType::ReleaseCompleted, trigger.project.clone(), trigger.throttle, payload)
+}
+
 impl OutputMapper<ReleaseOutput> for ReleaseOutputMapper {
     fn map(&self, output: ReleaseOutput, trigger: &Event) -> TaskBlockResult {
-        let payload = self.build_payload(trigger, output.success, output.new_tag.as_ref());
+        let payload = self.build_payload(trigger, output.success, output.new_tag.as_ref(), None);
 
         TaskBlockResult {
-            events: vec![Event::new(
-                EventType::ReleaseCompleted,
-                trigger.project.clone(),
-                trigger.throttle,
-                payload,
-            )],
+            events: vec![release_completed_event(trigger, payload)],
             success: output.success,
             summary: output.summary,
             raw_output: output.raw_output,
@@ -79,25 +85,9 @@ impl OutputMapper<ReleaseOutput> for ReleaseOutputMapper {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let mut payload = serde_json::json!({
-            "release": self.release_type,
-            "success": true,
-            "dry_run": true,
-        });
-
-        if let Some(extra) = &self.extra_payload
-            && let (Some(base), Some(extra)) = (payload.as_object_mut(), extra(trigger).as_object())
-        {
-            for (k, v) in extra {
-                base.insert(k.clone(), v.clone());
-            }
-        }
-
-        vec![Event::new(
-            EventType::ReleaseCompleted,
-            trigger.project.clone(),
-            trigger.throttle,
-            payload,
+        vec![release_completed_event(
+            trigger,
+            self.build_payload(trigger, true, None, Some(true)),
         )]
     }
 }
@@ -244,6 +234,35 @@ mod tests {
 
         assert_eq!(events[0].payload["extra"], "value");
         assert_eq!(events[0].payload["dry_run"], true);
+    }
+
+    #[test]
+    fn dry_run_and_map_agree_on_release_type_and_extra_fields() {
+        let mapper = ReleaseOutputMapper::new("patch")
+            .with_extra_payload(|_| serde_json::json!({ "cve": "CVE-2026-0001" }));
+        let trigger = make_trigger(serde_json::json!({}));
+
+        let map_result = mapper.map(successful_output(Some("v1.0.0")), &trigger);
+        let dry_events = mapper.dry_run_events(&trigger);
+
+        assert_eq!(map_result.events.len(), 1);
+        assert_eq!(dry_events.len(), 1);
+
+        // Both paths must produce the same event type.
+        assert_eq!(map_result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(dry_events[0].event_type, EventType::ReleaseCompleted);
+
+        // Both must carry the same release type.
+        assert_eq!(map_result.events[0].payload["release"], "patch");
+        assert_eq!(dry_events[0].payload["release"], "patch");
+
+        // Both must carry extra fields from the shared build_payload path.
+        assert_eq!(map_result.events[0].payload["cve"], "CVE-2026-0001");
+        assert_eq!(dry_events[0].payload["cve"], "CVE-2026-0001");
+
+        // Only dry_run carries the dry_run flag; real map does not.
+        assert!(map_result.events[0].payload.get("dry_run").is_none_or(|v| v.is_null()));
+        assert_eq!(dry_events[0].payload["dry_run"], true);
     }
 
     // --- VulnReleaseMapper ---
