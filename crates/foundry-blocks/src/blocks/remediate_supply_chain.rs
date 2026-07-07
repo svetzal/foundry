@@ -36,7 +36,7 @@
 //! rewrite case, handled in a later increment. Non-Rust stacks report
 //! `no_fixer` until their fixer lands.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
@@ -148,6 +148,49 @@ impl TaskBlock for RemediateSupplyChain {
     }
 }
 
+/// Pre-I/O routing decision for a single project's remediation attempt.
+#[derive(Debug, PartialEq)]
+enum ProjectRemediationPlan {
+    /// No fixable findings in this project's scan; nothing to attempt.
+    NothingFixable,
+    /// The project has fixable findings but is not registered; skip.
+    NotInRegistry,
+    /// The project's stack has no auto-fix mechanism yet.
+    NoFixer { stack: String },
+    /// All pre-I/O checks pass; proceed to gate-verify-and-apply at this path.
+    Proceed { path: PathBuf },
+}
+
+/// Decide the pre-I/O remediation route for a single project scan.
+///
+/// Pure function — no filesystem or shell I/O; exercised directly in unit
+/// tests. Covers: empty fixable set, missing registry entry, unsupported stack,
+/// and the proceed path. Gate-file existence and tree-cleanliness are genuinely
+/// I/O-bound and remain in the imperative shell (`remediate_project`).
+fn plan_project_remediation(
+    proj: &foundry_sdk::payload::ProjectSupplyChainScan,
+    entries: &[ProjectEntry],
+) -> ProjectRemediationPlan {
+    let has_fixable = proj.findings.iter().any(|f| f.fix_version.is_some());
+    if !has_fixable {
+        return ProjectRemediationPlan::NothingFixable;
+    }
+
+    let Some(entry) = entries.iter().find(|e| e.name == proj.project) else {
+        return ProjectRemediationPlan::NotInRegistry;
+    };
+
+    if entry.stack != Stack::Rust {
+        return ProjectRemediationPlan::NoFixer {
+            stack: entry.stack.to_string(),
+        };
+    }
+
+    ProjectRemediationPlan::Proceed {
+        path: PathBuf::from(&entry.path),
+    }
+}
+
 /// Count live findings split into fixable (a populated fix version) vs
 /// policy-call (none).
 fn classify(scan: &SupplyChainScannedPayload) -> (u64, u64) {
@@ -175,27 +218,25 @@ async fn remediate_project(
 ) {
     let fixable: Vec<&SupplyChainFinding> =
         proj.findings.iter().filter(|f| f.fix_version.is_some()).collect();
-    if fixable.is_empty() {
-        return;
-    }
 
-    let Some(entry) = entries.iter().find(|e| e.name == proj.project) else {
-        push_each(outcomes, proj, &fixable, "skipped", Some("project not in registry"));
-        return;
+    // Consult the pure routing plan for all decisions that need no I/O.
+    let path = match plan_project_remediation(proj, entries) {
+        ProjectRemediationPlan::NothingFixable => return,
+        ProjectRemediationPlan::NotInRegistry => {
+            push_each(outcomes, proj, &fixable, "skipped", Some("project not in registry"));
+            return;
+        }
+        ProjectRemediationPlan::NoFixer { stack } => {
+            let detail = format!("no auto-fix mechanism for {stack} yet");
+            push_each(outcomes, proj, &fixable, "no_fixer", Some(&detail));
+            return;
+        }
+        ProjectRemediationPlan::Proceed { path } => path,
     };
-
-    // This increment ships a single fixer — the in-range Rust bump.
-    if entry.stack != Stack::Rust {
-        let detail = format!("no auto-fix mechanism for {} yet", entry.stack);
-        push_each(outcomes, proj, &fixable, "no_fixer", Some(&detail));
-        return;
-    }
-
-    let path = Path::new(&entry.path);
 
     // Verify-and-rollback is mandatory; a repo with no gates cannot be verified,
     // so it is never mutated.
-    let gates = match crate::gate_file::read_gates(path) {
+    let gates = match crate::gate_file::read_gates(&path) {
         Ok(g) => g,
         Err(e) => {
             let detail = format!("could not read gates: {e}");
@@ -210,7 +251,7 @@ async fn remediate_project(
 
     // Never mutate a tree that already carries changes — rollback must be able
     // to revert to a known-clean HEAD without clobbering someone else's work.
-    if !git_tree_clean(shell, path).await {
+    if !git_tree_clean(shell, &path).await {
         push_each(outcomes, proj, &fixable, "skipped", Some("working tree not clean"));
         return;
     }
@@ -218,7 +259,7 @@ async fn remediate_project(
     for f in fixable {
         let fix_version = f.fix_version.as_deref().unwrap_or_default();
 
-        if !cargo_precise_update(shell, path, &f.package, fix_version).await {
+        if !cargo_precise_update(shell, &path, &f.package, fix_version).await {
             let detail = format!(
                 "cargo update -p {} --precise {fix_version} failed (version likely out of the manifest's range — override-pin rewrite case)",
                 f.package
@@ -227,17 +268,17 @@ async fn remediate_project(
             continue;
         }
 
-        match crate::gate_runner::run_gates(&gates, path, shell).await {
+        match crate::gate_runner::run_gates(&gates, &path, shell).await {
             Ok(r) if r.required_passed => {
                 let msg = format!(
                     "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
                     f.package, f.cve
                 );
-                if git_commit_file(shell, path, RUST_LOCKFILE, &msg).await {
+                if git_commit_file(shell, &path, RUST_LOCKFILE, &msg).await {
                     let detail = format!("verified by gates, committed {fix_version}");
                     outcomes.push(outcome(proj, f, "applied", Some(&detail)));
                 } else {
-                    git_restore(shell, path, RUST_LOCKFILE).await;
+                    git_restore(shell, &path, RUST_LOCKFILE).await;
                     outcomes.push(outcome(
                         proj,
                         f,
@@ -247,7 +288,7 @@ async fn remediate_project(
                 }
             }
             Ok(_) => {
-                git_restore(shell, path, RUST_LOCKFILE).await;
+                git_restore(shell, &path, RUST_LOCKFILE).await;
                 outcomes.push(outcome(
                     proj,
                     f,
@@ -256,7 +297,7 @@ async fn remediate_project(
                 ));
             }
             Err(e) => {
-                git_restore(shell, path, RUST_LOCKFILE).await;
+                git_restore(shell, &path, RUST_LOCKFILE).await;
                 let detail = format!("gate run errored: {e}; reverted");
                 outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
             }
@@ -716,5 +757,46 @@ mod tests {
         let out = remediated(&result);
         assert_eq!(out.outcomes[0].status, "skipped");
         assert!(out.outcomes[0].detail.as_deref().unwrap().contains("not in registry"));
+    }
+
+    // -- plan_project_remediation pure function tests --
+
+    #[test]
+    fn plan_returns_nothing_fixable_when_all_findings_are_policy_calls() {
+        let proj = project("alpha", "rust", vec![finding("CVE-1", None)]);
+        let entry = rust_entry("alpha", "some/path");
+        assert_eq!(
+            plan_project_remediation(&proj, &[entry]),
+            ProjectRemediationPlan::NothingFixable
+        );
+    }
+
+    #[test]
+    fn plan_returns_not_in_registry_when_project_has_no_entry() {
+        let proj = project("ghost", "rust", vec![finding("CVE-1", Some("1.2.3"))]);
+        assert_eq!(plan_project_remediation(&proj, &[]), ProjectRemediationPlan::NotInRegistry);
+    }
+
+    #[test]
+    fn plan_returns_no_fixer_for_non_rust_stack() {
+        let proj = project("alpha", "typescript", vec![finding("CVE-1", Some("1.2.3"))]);
+        let mut entry = rust_entry("alpha", "some/path");
+        entry.stack = Stack::TypeScript;
+        assert!(matches!(
+            plan_project_remediation(&proj, &[entry]),
+            ProjectRemediationPlan::NoFixer { .. }
+        ));
+    }
+
+    #[test]
+    fn plan_returns_proceed_for_rust_project_with_fixable_findings() {
+        let proj = project("alpha", "rust", vec![finding("CVE-1", Some("1.2.3"))]);
+        let entry = rust_entry("alpha", "some/path");
+        assert_eq!(
+            plan_project_remediation(&proj, &[entry]),
+            ProjectRemediationPlan::Proceed {
+                path: std::path::PathBuf::from("some/path")
+            }
+        );
     }
 }

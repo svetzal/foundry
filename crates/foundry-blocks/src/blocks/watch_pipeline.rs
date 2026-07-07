@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::ReleaseCompletedPayload;
-use foundry_sdk::registry::Registry;
+use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
@@ -29,6 +29,29 @@ fn release_pipeline_completed_event(
         payload["dry_run"] = serde_json::Value::Bool(dr);
     }
     Event::new(EventType::ReleasePipelineCompleted, project.to_string(), throttle, payload)
+}
+
+/// Routing decision for a pipeline-watch attempt, derived purely from the
+/// registry lookup — no I/O.
+#[derive(Debug, PartialEq)]
+enum PipelineRoute {
+    /// Project was not found in the registry.
+    NotInRegistry,
+    /// Project is registered but has no GitHub repository configured.
+    NoRepo,
+    /// Watch the pipeline for this repository slug (`owner/repo`).
+    Watch(String),
+}
+
+/// Determine the pipeline-watch route from a registry lookup result.
+///
+/// Pure function — no I/O; exercised directly in unit tests.
+fn decide_pipeline_route(project: Option<&ProjectEntry>) -> PipelineRoute {
+    match project {
+        None => PipelineRoute::NotInRegistry,
+        Some(p) if p.repo.is_empty() => PipelineRoute::NoRepo,
+        Some(p) => PipelineRoute::Watch(p.repo.clone()),
+    }
 }
 
 /// Watches the CI pipeline after a release tag is pushed.
@@ -93,19 +116,8 @@ impl TaskBlock for WatchPipeline {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
 
-        // Distinguish: project absent vs. project present but no repo configured.
-        let lookup = match super::read_registry(&self.registry) {
-            Ok(guard) => match guard.find_project(&project) {
-                None => Err(None),
-                Some(p) => {
-                    let repo = p.repo.clone();
-                    if repo.is_empty() {
-                        Err(Some(())) // registered, but no repo
-                    } else {
-                        Ok(repo)
-                    }
-                }
-            },
+        let route = match super::read_registry(&self.registry) {
+            Ok(guard) => decide_pipeline_route(guard.find_project(&project)),
             Err(e) => return Box::pin(async move { Err(e) }),
         };
 
@@ -117,14 +129,12 @@ impl TaskBlock for WatchPipeline {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            match lookup {
-                Err(None) => {
-                    // Project not in registry — honest failure.
+            match route {
+                PipelineRoute::NotInRegistry => {
                     tracing::warn!(project = %project, "project not found in registry");
                     Ok(TaskBlockResult::project_not_found(&project))
                 }
-                Err(Some(())) => {
-                    // Registered but no repo — skip with an explicit status.
+                PipelineRoute::NoRepo => {
                     tracing::info!(project = %project, "no repo configured, skipping pipeline watch");
                     Ok(TaskBlockResult::success(
                         "Release pipeline skipped: no repo configured",
@@ -133,7 +143,7 @@ impl TaskBlock for WatchPipeline {
                         )],
                     ))
                 }
-                Ok(repo) => {
+                PipelineRoute::Watch(repo) => {
                     poll_pipeline(project, throttle, &repo, new_tag.as_deref(), shell.as_ref())
                         .await
                 }
@@ -951,5 +961,45 @@ mod tests {
         let t = trigger();
         let events = block.dry_run_events(&t);
         assert_eq!(events[0].event_type, EventType::ReleasePipelineCompleted);
+    }
+
+    // -- decide_pipeline_route pure function tests --
+
+    fn entry_with_repo(name: &str, repo: &str) -> ProjectEntry {
+        ProjectEntry {
+            name: name.to_string(),
+            path: String::new(),
+            stack: Stack::Rust,
+            agent: String::new(),
+            repo: repo.to_string(),
+            branch: "main".to_string(),
+            skip: None,
+            notes: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: None,
+            timeout_secs: None,
+            audit_exceptions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn decide_pipeline_route_none_returns_not_in_registry() {
+        assert_eq!(decide_pipeline_route(None), PipelineRoute::NotInRegistry);
+    }
+
+    #[test]
+    fn decide_pipeline_route_empty_repo_returns_no_repo() {
+        let entry = entry_with_repo("proj", "");
+        assert_eq!(decide_pipeline_route(Some(&entry)), PipelineRoute::NoRepo);
+    }
+
+    #[test]
+    fn decide_pipeline_route_populated_repo_returns_watch() {
+        let entry = entry_with_repo("proj", "owner/proj");
+        assert_eq!(
+            decide_pipeline_route(Some(&entry)),
+            PipelineRoute::Watch("owner/proj".to_string())
+        );
     }
 }
