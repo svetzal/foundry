@@ -280,9 +280,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cmx-core"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4e8fef9d105efe235e64b5067f0151a1871741df73bef3d9fed2b76182cafee"
+checksum = "bf1b0a506b6456b0848c48e27536b2aaf3053e7ac86cc7890c0f425a196202f0"
 dependencies = [
  "anyhow",
  "chrono",
