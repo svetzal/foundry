@@ -3,81 +3,22 @@ use std::time::Instant;
 
 use tokio::sync::broadcast;
 
-use foundry_sdk::event::{Event, EventType, mint_gather_id};
-use foundry_sdk::scatter::Scatter;
-use foundry_sdk::task_block::{RetryPolicy, TaskBlock, TaskBlockResult};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::task_block::TaskBlock;
 pub use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
 use crate::dispatch::{Dispatch, classify_dispatch, make_block_execution};
+use crate::emit::EventEmitter;
 use crate::event_writer::EventWriter;
-use crate::gather_store::{GatherGroup, GatherStore};
+use crate::propagation::{ProcessState, Propagator};
+use crate::retry::execute_with_retry;
+use crate::tracing_context::SpanStamper;
 
 /// The workflow engine routes events to task blocks and manages propagation.
 pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
-    event_writer: Option<Arc<EventWriter>>,
-    /// Optional broadcast channel for real-time event streaming to Watch clients.
-    event_tx: Option<broadcast::Sender<Event>>,
-    /// Contributor-registered span-opener event types, in addition to the
-    /// built-in openers ([`EventType::is_span_opener`]). Lets a custom workflow
-    /// declare that its root `*Requested`/`*Started` event opens a trace span,
-    /// without the SDK having to know about it.
-    span_openers: std::collections::HashSet<EventType>,
-}
-
-/// Mutable state threaded through a single [`Engine::process`] traversal.
-///
-/// Bundling these together keeps the per-traversal signatures small and
-/// names what they are: the running record of every event seen, the queue of
-/// events still to dispatch, and the open gather groups for in-flight
-/// scatters.
-struct ProcessState {
-    /// Every event seen this traversal, in production order — the basis of
-    /// the returned [`ProcessResult`].
-    all_events: Vec<Event>,
-    /// Events awaiting dispatch.
-    queue: Vec<Event>,
-    /// Open scatter/gather groups for the duration of this traversal.
-    gather_store: GatherStore,
-}
-
-/// Execute a block with retry logic, sleeping `policy.backoff` between attempts.
-///
-/// Returns the final `anyhow::Result<TaskBlockResult>` after all retry attempts
-/// are exhausted or a successful result is obtained.
-async fn execute_with_retry(
-    block: &dyn TaskBlock,
-    trigger: &Event,
-    policy: RetryPolicy,
-) -> anyhow::Result<TaskBlockResult> {
-    let mut last_result: Option<anyhow::Result<TaskBlockResult>> = None;
-
-    for attempt in 0..=policy.max_retries {
-        if attempt > 0 {
-            tracing::info!(attempt, max_retries = policy.max_retries, "retrying block");
-            tokio::time::sleep(policy.backoff).await;
-        }
-
-        match block.execute(trigger).await {
-            Ok(result) if result.success => {
-                return Ok(result);
-            }
-            Ok(result) => {
-                tracing::warn!(
-                    attempt,
-                    summary = %result.summary,
-                    "block reported failure, will retry if attempts remain"
-                );
-                last_result = Some(Ok(result));
-            }
-            Err(err) => {
-                tracing::error!(attempt, error = %err, "block execute error");
-                last_result = Some(Err(err));
-            }
-        }
-    }
-
-    last_result.expect("loop always sets last_result")
+    emitter: EventEmitter,
+    stamper: SpanStamper,
 }
 
 impl Default for Engine {
@@ -90,9 +31,8 @@ impl Engine {
     pub fn new() -> Self {
         Self {
             blocks: vec![],
-            event_writer: None,
-            event_tx: None,
-            span_openers: std::collections::HashSet::new(),
+            emitter: EventEmitter::new(),
+            stamper: SpanStamper::new(),
         }
     }
 
@@ -104,14 +44,15 @@ impl Engine {
     /// open a span, so the workflow shows up as a proper sub-tree in traces.
     #[must_use]
     pub fn with_span_openers(mut self, openers: impl IntoIterator<Item = EventType>) -> Self {
-        self.span_openers.extend(openers);
+        self.stamper = self.stamper.with_openers(openers);
         self
     }
 
     /// Whether an emitted event of this type should open a new workflow span —
     /// either a built-in opener or one registered via [`Engine::with_span_openers`].
+    #[allow(dead_code)] // called from test assertions only
     fn opens_span(&self, event_type: &EventType) -> bool {
-        event_type.is_span_opener() || self.span_openers.contains(event_type)
+        self.stamper.opens_span(event_type)
     }
 
     /// Attach an `EventWriter` so every event in a processing chain is
@@ -119,14 +60,14 @@ impl Engine {
     /// never interrupt event processing.
     #[must_use]
     pub fn with_event_writer(mut self, writer: Arc<EventWriter>) -> Self {
-        self.event_writer = Some(writer);
+        self.emitter = self.emitter.with_writer(writer);
         self
     }
 
     /// Attach a broadcast sender so events are pushed to Watch subscribers in real time.
     #[must_use]
     pub fn with_event_broadcaster(mut self, tx: broadcast::Sender<Event>) -> Self {
-        self.event_tx = Some(tx);
+        self.emitter = self.emitter.with_broadcaster(tx);
         self
     }
 
@@ -136,226 +77,8 @@ impl Engine {
         self.blocks.push(block);
     }
 
-    /// Persist an event to JSONL and broadcast it to Watch subscribers.
-    ///
-    /// Both are best-effort: write failures are logged, and a broadcast with
-    /// no receivers is normal. Neither ever interrupts event processing.
-    fn persist_one(&self, event: &Event) {
-        if let Some(writer) = &self.event_writer
-            && let Err(e) = writer.write(event)
-        {
-            tracing::warn!(error = %e, event_id = %event.id, "failed to write event to JSONL");
-        }
-        if let Some(tx) = &self.event_tx {
-            let _ = tx.send(event.clone());
-        }
-    }
-
-    /// Broadcast a transient progress message to Watch subscribers.
-    ///
-    /// Progress messages are intentionally not persisted to the event log and
-    /// are never delivered to downstream blocks. They exist only so interactive
-    /// clients can show that a long-running block is active.
-    fn broadcast_progress(&self, current: &Event, event_type: &str, payload: serde_json::Value) {
-        let Some(tx) = &self.event_tx else {
-            return;
-        };
-
-        let progress = Event::new(
-            EventType::Custom(event_type.to_string()),
-            current.project.clone(),
-            current.throttle,
-            payload,
-        )
-        .with_trace_id(current.trace_id.clone())
-        .with_span_ids(current.span_id.clone(), current.parent_span_id.clone());
-
-        let _ = tx.send(progress);
-    }
-
-    fn broadcast_block_started(&self, block: &dyn TaskBlock, current: &Event) {
-        self.broadcast_progress(
-            current,
-            "block_started",
-            serde_json::json!({
-                "block": block.name(),
-                "trigger_event_id": current.id,
-                "trigger_event_type": current.event_type.to_string(),
-                "status": "running",
-            }),
-        );
-    }
-
-    fn broadcast_block_completed(&self, execution: &BlockExecution, current: &Event) {
-        self.broadcast_progress(
-            current,
-            "block_completed",
-            serde_json::json!({
-                "block": execution.block_name,
-                "duration_ms": execution.duration_ms,
-                "status": if execution.success { "ok" } else { "failed" },
-                "success": execution.success,
-                "summary": execution.summary,
-                "trigger_event_id": execution.trigger_event_id,
-                "trigger_event_type": current.event_type.to_string(),
-            }),
-        );
-    }
-
-    /// Offer a delivered event to the gather store. If it satisfies a gather
-    /// group, persist, broadcast, and enqueue the synthesized reduce event —
-    /// then recurse, since a reduce event may itself satisfy an outer
-    /// (nested) group.
-    fn deliver_reduce_if_satisfied(&self, event: &Event, state: &mut ProcessState) {
-        let Some(reduce) = state.gather_store.record(event) else {
-            return;
-        };
-        tracing::info!(
-            gather_id = reduce.gather_id.as_deref().unwrap_or("-"),
-            reduce_event = %reduce.event_type,
-            "gather satisfied — synthesizing reduce event"
-        );
-        self.persist_one(&reduce);
-        state.all_events.push(reduce.clone());
-        state.queue.push(reduce.clone());
-        self.deliver_reduce_if_satisfied(&reduce, state);
-    }
-
-    /// Propagate trace IDs, stamp `OTel`-shaped span context, persist to JSONL,
-    /// broadcast to Watch subscribers, and optionally deliver to the processing
-    /// queue. Delivered events are offered to the gather store, which may
-    /// synthesize reduce events. Returns collected event IDs and payloads for
-    /// the [`BlockExecution`] record.
-    fn persist_and_broadcast_events(
-        &self,
-        events: Vec<Event>,
-        trigger: &Event,
-        block_span_id: &str,
-        state: &mut ProcessState,
-        deliver: bool,
-    ) -> (Vec<String>, Vec<serde_json::Value>) {
-        let mut emitted_ids = Vec::new();
-        let mut emitted_payloads = Vec::new();
-        for mut emitted in events {
-            self.stamp_context(&mut emitted, trigger, block_span_id);
-            self.persist_one(&emitted);
-            emitted_ids.push(emitted.id.clone());
-            emitted_payloads.push(emitted.payload.clone());
-            state.all_events.push(emitted.clone());
-            if deliver {
-                state.queue.push(emitted.clone());
-                self.deliver_reduce_if_satisfied(&emitted, state);
-            } else {
-                tracing::info!(event_type = %emitted.event_type, "event logged but delivery throttled");
-            }
-        }
-        (emitted_ids, emitted_payloads)
-    }
-
-    /// Open a gather group from a block's [`Scatter`] declaration: mint a
-    /// fresh `gather_id`, stamp every child with it, register the group, and
-    /// dispatch the children. Returns the child event IDs for the
-    /// [`BlockExecution`] record. An empty scatter satisfies its gather at
-    /// once and its reduce event is delivered immediately.
-    fn dispatch_scatter(
-        &self,
-        scatter: Scatter,
-        trigger: &Event,
-        block_span_id: &str,
-        state: &mut ProcessState,
-        deliver: bool,
-    ) -> Vec<String> {
-        let Scatter {
-            mut children,
-            gather,
-        } = scatter;
-        let gather_id = mint_gather_id();
-        // A scatter opens a NEW group: override any inherited gather_id so the
-        // children belong to this group rather than an enclosing one.
-        for child in &mut children {
-            child.gather_id = Some(gather_id.clone());
-        }
-        let group = GatherGroup::new(gather_id.clone(), children.len(), gather, trigger);
-        let immediate = state.gather_store.open(group);
-        let child_count = children.len();
-        let (child_ids, _payloads) =
-            self.persist_and_broadcast_events(children, trigger, block_span_id, state, deliver);
-        tracing::info!(gather_id = %gather_id, children = child_count, "scatter dispatched");
-        // An empty scatter is satisfied on registration — deliver its reduce.
-        if let Some(reduce) = immediate
-            && deliver
-        {
-            self.persist_one(&reduce);
-            state.all_events.push(reduce.clone());
-            state.queue.push(reduce.clone());
-            self.deliver_reduce_if_satisfied(&reduce, state);
-        }
-        child_ids
-    }
-
-    /// Apply causal and `OTel`-shaped tracing context to an emitted event.
-    ///
-    /// All stamping is "set if unset", so a block may emit an event with
-    /// explicit context and that context is preserved.
-    ///
-    /// # Causation
-    ///
-    /// The emitted event's `causation_id` is set to the triggering event's
-    /// `id` — recording the direct causal edge in the event graph,
-    /// independent of the observability span structure below.
-    ///
-    /// # Gather membership
-    ///
-    /// The emitted event inherits the trigger's `gather_id` verbatim — the
-    /// same propagation rule as `trace_id`. This carries fan-out group
-    /// membership all the way down a scattered child's sub-workflow so the
-    /// terminal completion event still identifies its gather.
-    ///
-    /// # Span rules
-    ///
-    /// - **Default** (non-opener events): the emitted event is a peer of the
-    ///   trigger — it inherits the trigger's `trace_id`, `span_id` (the active
-    ///   workflow span), and `parent_span_id`.
-    /// - **Span opener** (e.g. `ProjectIterationRequested`): the emitted event opens a
-    ///   new workflow span — it inherits the trigger's `trace_id`, receives a
-    ///   freshly minted `span_id`, and is parented to the emitting block's
-    ///   `block_span_id`.
-    fn stamp_context(&self, emitted: &mut Event, trigger: &Event, block_span_id: &str) {
-        use foundry_sdk::event::mint_span_id;
-
-        if emitted.causation_id.is_none() {
-            emitted.causation_id = Some(trigger.id.clone());
-        }
-
-        if emitted.trace_id.is_none() {
-            emitted.trace_id.clone_from(&trigger.trace_id);
-        }
-
-        if emitted.gather_id.is_none() {
-            emitted.gather_id.clone_from(&trigger.gather_id);
-        }
-
-        if self.opens_span(&emitted.event_type) {
-            // New workflow span: child of the emitting block's span.
-            if emitted.span_id.is_none() {
-                emitted.span_id = Some(mint_span_id());
-            }
-            if emitted.parent_span_id.is_none() {
-                emitted.parent_span_id = Some(block_span_id.to_string());
-            }
-        } else {
-            // Default: peer of trigger, attached to the same workflow span.
-            if emitted.span_id.is_none() {
-                emitted.span_id.clone_from(&trigger.span_id);
-            }
-            if emitted.parent_span_id.is_none() {
-                emitted.parent_span_id.clone_from(&trigger.parent_span_id);
-            }
-        }
-    }
-
     /// Run the `Execute` path: retry the block, emit events, handle scatter, and
-    /// return the resulting [`BlockExecution`].  Extracted from [`run_block`] to
+    /// return the resulting [`BlockExecution`].  Extracted from [`Engine::run_block`] to
     /// keep that method within the line budget.
     async fn execute_block(
         &self,
@@ -366,6 +89,7 @@ impl Engine {
         block_start: std::time::Instant,
         state: &mut ProcessState,
     ) -> BlockExecution {
+        let propagator = Propagator::new(&self.emitter, &self.stamper);
         // Scope SPAN_CONTEXT so subprocess spawners inside the block can inject TRACEPARENT.
         let exec_future = execute_with_retry(block, current, block.retry_policy());
         let result_or_err = if let Some(trace_id) = current.trace_id.clone() {
@@ -387,7 +111,7 @@ impl Engine {
                     "completed"
                 );
                 let deliver = block.should_emit(current.throttle);
-                let (mut emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                let (mut emitted_ids, emitted_payloads) = propagator.persist_and_broadcast_events(
                     result.events,
                     current,
                     &block_span_id,
@@ -395,8 +119,13 @@ impl Engine {
                     deliver,
                 );
                 if let Some(scatter) = result.scatter {
-                    let child_ids =
-                        self.dispatch_scatter(*scatter, current, &block_span_id, state, deliver);
+                    let child_ids = propagator.dispatch_scatter(
+                        *scatter,
+                        current,
+                        &block_span_id,
+                        state,
+                        deliver,
+                    );
                     emitted_ids.extend(child_ids);
                 }
                 let mut exec = make_block_execution(
@@ -443,8 +172,9 @@ impl Engine {
         let workflow_span_id = current.span_id.clone();
         let block_start = Instant::now();
 
-        self.broadcast_block_started(block, current);
+        self.emitter.broadcast_block_started(block, current);
 
+        let propagator = Propagator::new(&self.emitter, &self.stamper);
         let execution = match classify_dispatch(
             block.kind(),
             current.throttle,
@@ -453,7 +183,7 @@ impl Engine {
             Dispatch::DryRunSimulate => {
                 let simulated_events = block.dry_run_events(current);
                 tracing::info!(simulated = simulated_events.len(), "dry-run: simulating success");
-                let (emitted_ids, emitted_payloads) = self.persist_and_broadcast_events(
+                let (emitted_ids, emitted_payloads) = propagator.persist_and_broadcast_events(
                     simulated_events,
                     current,
                     &block_span_id,
@@ -499,7 +229,7 @@ impl Engine {
             }
         };
 
-        self.broadcast_block_completed(&execution, current);
+        self.emitter.broadcast_block_completed(&execution, current);
         execution
     }
 
@@ -517,23 +247,10 @@ impl Engine {
 
         // Persist the root event before processing begins so it is recorded
         // even if a downstream block panics.
-        if let Some(writer) = &self.event_writer
-            && let Err(e) = writer.write(&event)
-        {
-            tracing::warn!(error = %e, "failed to write root event to JSONL");
-        }
-
-        // Broadcast the root event immediately so Watch clients see it in real time.
-        if let Some(tx) = &self.event_tx {
-            let _ = tx.send(event.clone()); // No receivers is normal — not an error.
-        }
+        self.emitter.persist_one(&event);
 
         let mut block_executions = Vec::new();
-        let mut state = ProcessState {
-            all_events: vec![event.clone()],
-            queue: vec![event],
-            gather_store: GatherStore::new(),
-        };
+        let mut state = ProcessState::new(event);
 
         while let Some(current) = state.queue.pop() {
             let matching: Vec<&dyn TaskBlock> = self
@@ -577,6 +294,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foundry_sdk::scatter::Scatter;
     use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use std::pin::Pin;

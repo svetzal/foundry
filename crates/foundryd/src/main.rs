@@ -242,7 +242,97 @@ struct BlockPaths {
     supply_chain_dir: std::path::PathBuf,
 }
 
+/// Construct the agent gateway: resolve the default provider, load/seed the
+/// model config, build a backend gateway for each supported provider, and wrap
+/// them in a [`foundry_blocks::gateway::RoutingAgentGateway`].
+///
+/// All supported backends (claude, opencode, codex) are constructed up front.
+/// Each request may carry a per-request provider override (`agent_provider` in
+/// the request event), which propagates through the chain; absent an override,
+/// the router uses `FOUNDRY_AGENT_PROVIDER` (defaulting to `claude`).
+///
+/// The router also owns an in-memory provider circuit breaker: once a backend
+/// reports a terminal provider/account failure (hard spend-limit, revoked-auth),
+/// later requests for that provider are rejected for the lifetime of the daemon
+/// instead of spawning more doomed sessions. Breaker state is process-local;
+/// restarting `foundryd` clears it.
+fn build_agent_gateway(
+    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
+) -> Arc<dyn foundry_blocks::gateway::AgentGateway> {
+    use foundry_blocks::gateway::AgentProvider;
+    let make_shell = || -> Arc<dyn foundry_blocks::gateway::ShellGateway> {
+        Arc::new(foundry_blocks::gateway::ProcessShellGateway)
+    };
+    let make_runner = || Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner);
+    let sessions_dir = foundry_sdk::paths::agent_sessions_dir();
+
+    let default = match std::env::var("FOUNDRY_AGENT_PROVIDER") {
+        Ok(raw) => raw.parse::<AgentProvider>().unwrap_or_else(|_| {
+            tracing::warn!(
+                provider = %raw,
+                "unknown FOUNDRY_AGENT_PROVIDER; falling back to claude"
+            );
+            AgentProvider::Claude
+        }),
+        Err(_) => AgentProvider::Claude,
+    };
+
+    // Per-provider tier→model and effort→token maps. Defaults are baked in;
+    // ~/.foundry/agents.json overrides them (seed-merged on startup). A
+    // load/seed failure degrades to baked defaults rather than crashing.
+    let agent_config = load_or_seed_agent_config(&foundry_sdk::paths::agent_config_path())
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to load/seed agent config; using baked defaults");
+            AgentConfigStore::default_seed()
+        });
+    tracing::info!(default_provider = %default, "agent providers: claude, opencode, codex");
+
+    let mut gateways: std::collections::HashMap<
+        AgentProvider,
+        Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    > = std::collections::HashMap::new();
+    gateways.insert(
+        AgentProvider::Claude,
+        Arc::new(
+            foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
+                event_tx.clone(),
+            )
+            .with_models(agent_config.resolved(AgentProvider::Claude)),
+        ),
+    );
+    gateways.insert(
+        AgentProvider::Opencode,
+        Arc::new(
+            foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
+                event_tx.clone(),
+            )
+            .with_models(agent_config.resolved(AgentProvider::Opencode)),
+        ),
+    );
+    gateways.insert(
+        AgentProvider::Codex,
+        Arc::new(
+            foundry_blocks::gateway::CodexAgentGateway::new_with_streaming(
+                make_shell(),
+                make_runner(),
+                sessions_dir.clone(),
+                event_tx.clone(),
+            )
+            .with_models(agent_config.resolved(AgentProvider::Codex)),
+        ),
+    );
+    Arc::new(foundry_blocks::gateway::RoutingAgentGateway::new(gateways, default))
+}
+
 // Sequential block registration wiring — length is inherent, not a design smell.
+// All embedded logic (agent gateway construction) has been extracted into
+// `build_agent_gateway`; only sequential `engine.register(...)` calls remain.
 #[allow(clippy::too_many_lines)]
 fn register_blocks(
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
@@ -272,95 +362,7 @@ fn register_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(registry.clone())));
-    // Agent gateway for blocks that invoke an agentic CLI. All supported
-    // backends (claude, opencode, codex) are constructed up front and wired into
-    // a RoutingAgentGateway. Each request may carry a per-request provider
-    // override (`agent_provider` in the request event, e.g. `foundry iterate
-    // --agent codex`), which propagates through the chain; absent an override,
-    // the router uses FOUNDRY_AGENT_PROVIDER (defaulting to "claude").
-    //
-    // The router also owns an in-memory provider circuit breaker: once a
-    // backend reports a terminal provider/account failure (for example a hard
-    // spend-limit or revoked-auth condition), later requests for that provider
-    // are rejected for the lifetime of the daemon process instead of spawning
-    // more doomed sessions. This slice intentionally keeps breaker state
-    // process-local; restarting foundryd clears it.
-    //
-    // The Anthropic subscription stops covering hands-free agent work on
-    // 2026-06-15 — set FOUNDRY_AGENT_PROVIDER=opencode (or codex) to default
-    // unattended runs to an OpenAI backend. All backends implement the same
-    // AgentGateway trait, so every downstream block is provider-agnostic.
-    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> = {
-        use foundry_blocks::gateway::AgentProvider;
-        let make_shell = || -> Arc<dyn foundry_blocks::gateway::ShellGateway> {
-            Arc::new(foundry_blocks::gateway::ProcessShellGateway)
-        };
-        let make_runner = || Arc::new(foundry_blocks::agent_stream::ProcessAgentStreamRunner);
-        let sessions_dir = foundry_sdk::paths::agent_sessions_dir();
-
-        let default = match std::env::var("FOUNDRY_AGENT_PROVIDER") {
-            Ok(raw) => raw.parse::<AgentProvider>().unwrap_or_else(|_| {
-                tracing::warn!(
-                    provider = %raw,
-                    "unknown FOUNDRY_AGENT_PROVIDER; falling back to claude"
-                );
-                AgentProvider::Claude
-            }),
-            Err(_) => AgentProvider::Claude,
-        };
-
-        // Per-provider tier→model and effort→token maps. Defaults are baked in;
-        // ~/.foundry/agents.json overrides them (seed-merged on startup). A
-        // load/seed failure degrades to baked defaults rather than crashing.
-        let agent_config = load_or_seed_agent_config(&foundry_sdk::paths::agent_config_path())
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to load/seed agent config; using baked defaults");
-                AgentConfigStore::default_seed()
-            });
-        tracing::info!(default_provider = %default, "agent providers: claude, opencode, codex");
-
-        let mut gateways: std::collections::HashMap<
-            AgentProvider,
-            Arc<dyn foundry_blocks::gateway::AgentGateway>,
-        > = std::collections::HashMap::new();
-        gateways.insert(
-            AgentProvider::Claude,
-            Arc::new(
-                foundry_blocks::gateway::ClaudeAgentGateway::new_with_streaming(
-                    make_shell(),
-                    make_runner(),
-                    sessions_dir.clone(),
-                    event_tx.clone(),
-                )
-                .with_models(agent_config.resolved(AgentProvider::Claude)),
-            ),
-        );
-        gateways.insert(
-            AgentProvider::Opencode,
-            Arc::new(
-                foundry_blocks::gateway::OpencodeAgentGateway::new_with_streaming(
-                    make_shell(),
-                    make_runner(),
-                    sessions_dir.clone(),
-                    event_tx.clone(),
-                )
-                .with_models(agent_config.resolved(AgentProvider::Opencode)),
-            ),
-        );
-        gateways.insert(
-            AgentProvider::Codex,
-            Arc::new(
-                foundry_blocks::gateway::CodexAgentGateway::new_with_streaming(
-                    make_shell(),
-                    make_runner(),
-                    sessions_dir.clone(),
-                    event_tx.clone(),
-                )
-                .with_models(agent_config.resolved(AgentProvider::Codex)),
-            ),
-        );
-        Arc::new(foundry_blocks::gateway::RoutingAgentGateway::new(gateways, default))
-    };
+    let agent = build_agent_gateway(event_tx);
     engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
         agent.clone(),
         registry.clone(),
