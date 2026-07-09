@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::error::PayloadError;
 use crate::throttle::Throttle;
 
 /// A Foundry event — an immutable fact that something happened.
@@ -169,10 +170,14 @@ impl Event {
     ///
     /// # Errors
     ///
-    /// Returns `anyhow::Error` if deserialization fails.
-    pub fn parse_payload<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
-        serde_json::from_value(self.payload.clone()).map_err(|e| {
-            anyhow::anyhow!("failed to parse payload for event {:?}: {e}", self.event_type)
+    /// Returns [`PayloadError::Deserialize`] if deserialization fails, carrying
+    /// the event type and the underlying `serde_json` error so the caller can
+    /// match on the failure mode. Coerces into `anyhow::Error` via `?` in
+    /// contexts that return `anyhow::Result`.
+    pub fn parse_payload<T: DeserializeOwned>(&self) -> Result<T, PayloadError> {
+        serde_json::from_value(self.payload.clone()).map_err(|source| PayloadError::Deserialize {
+            event_type: self.event_type.clone(),
+            source,
         })
     }
 
@@ -182,10 +187,10 @@ impl Event {
     ///
     /// # Errors
     ///
-    /// Returns `anyhow::Error` if serialization fails (extremely rare in practice).
-    pub fn serialize_payload<T: Serialize>(payload: &T) -> anyhow::Result<serde_json::Value> {
-        serde_json::to_value(payload)
-            .map_err(|e| anyhow::anyhow!("failed to serialize payload: {e}"))
+    /// Returns [`PayloadError::Serialize`] if serialization fails (extremely rare
+    /// in practice). Coerces into `anyhow::Error` via `?`.
+    pub fn serialize_payload<T: Serialize>(payload: &T) -> Result<serde_json::Value, PayloadError> {
+        serde_json::to_value(payload).map_err(|source| PayloadError::Serialize { source })
     }
 
     /// Construct a new event derived from this event's `project` and `throttle`,
@@ -196,12 +201,13 @@ impl Event {
     ///
     /// # Errors
     ///
-    /// Returns `anyhow::Error` if serialization fails (extremely rare in practice).
+    /// Returns [`PayloadError::Serialize`] if serialization fails (extremely rare
+    /// in practice). Coerces into `anyhow::Error` via `?`.
     pub fn with_payload<T: Serialize>(
         &self,
         event_type: EventType,
         payload: &T,
-    ) -> anyhow::Result<Event> {
+    ) -> Result<Event, PayloadError> {
         let payload = Self::serialize_payload(payload)?;
         Ok(Event::new(event_type, self.project.clone(), self.throttle, payload))
     }

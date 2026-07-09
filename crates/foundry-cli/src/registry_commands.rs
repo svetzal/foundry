@@ -303,7 +303,7 @@ fn format_actions(actions: &ActionFlags) -> String {
 /// Load an existing registry or create a new empty one if the file doesn't exist.
 fn load_or_init(path: &Path) -> Result<Registry> {
     if path.exists() {
-        Registry::load(path)
+        Registry::load(path).map_err(Into::into)
     } else {
         Ok(Registry {
             version: 2,

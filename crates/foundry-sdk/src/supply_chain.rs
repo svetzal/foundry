@@ -19,9 +19,10 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+
+use crate::error::StoreError;
 
 /// The committed per-repo allowlist filename, read from a project's root.
 pub const SUPPLY_CHAIN_ALLOW_FILE: &str = ".supply-chain-allow.json";
@@ -124,16 +125,22 @@ impl SupplyChainAllowlist {
 ///
 /// # Errors
 ///
-/// Propagates an error when the file exists but cannot be read or parsed.
-pub fn read_allowlist(project_dir: &Path) -> Result<SupplyChainAllowlist> {
+/// Returns [`StoreError::Io`] when the file exists but cannot be read, and
+/// [`StoreError::Parse`] when the JSON is malformed. A missing file is not an
+/// error — it returns an empty allowlist.
+pub fn read_allowlist(project_dir: &Path) -> Result<SupplyChainAllowlist, StoreError> {
     let path = project_dir.join(SUPPLY_CHAIN_ALLOW_FILE);
     if !path.exists() {
         return Ok(SupplyChainAllowlist::default());
     }
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let allowlist = serde_json::from_str(&contents)
-        .with_context(|| format!("malformed JSON in {}", path.display()))?;
+    let contents = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let allowlist = serde_json::from_str(&contents).map_err(|source| StoreError::Parse {
+        path: path.clone(),
+        source,
+    })?;
     Ok(allowlist)
 }
 

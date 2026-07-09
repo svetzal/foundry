@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::error::StoreError;
 
 /// Deserialize `skip` as either a string reason, a boolean (`true` → `"skipped"`), or null.
 fn deserialize_skip<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
@@ -31,19 +32,51 @@ pub struct Registry {
 
 impl Registry {
     /// Deserialize a registry from a JSON file at the given path.
-    pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let registry = serde_json::from_str(&content)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] when the file does not exist,
+    /// [`StoreError::Io`] on read failure, and [`StoreError::Parse`] when
+    /// the file contains malformed JSON.
+    pub fn load(path: &Path) -> Result<Self, StoreError> {
+        if !path.exists() {
+            return Err(StoreError::NotFound {
+                path: path.to_owned(),
+            });
+        }
+        let content = std::fs::read_to_string(path).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let registry = serde_json::from_str(&content).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(registry)
     }
 
     /// Serialize the registry to a JSON file at the given path.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if parent directory creation or the file
+    /// write fails, or [`StoreError::Parse`] if serialization fails (extremely
+    /// rare in practice).
+    pub fn save(&self, path: &Path) -> Result<(), StoreError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
         }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        let content = serde_json::to_string_pretty(self).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+        std::fs::write(path, content).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(())
     }
 
@@ -233,36 +266,21 @@ pub fn parse_stack(s: &str) -> Result<Stack, RegistryMutationError> {
 }
 
 /// Errors that can occur when mutating the registry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryMutationError {
     /// A project with this name already exists.
+    #[error("project '{0}' already exists in registry")]
     DuplicateName(String),
     /// No project with this name exists.
+    #[error("project '{0}' not found in registry")]
     NotFound(String),
     /// The given stack name is not recognised.
+    #[error("invalid stack '{0}'; use: rust, python, typescript, elixir, cpp")]
     InvalidStack(String),
     /// Both `install_command` and `install_brew` were provided; only one is allowed.
+    #[error("provide at most one of install_command or install_brew")]
     ConflictingInstall,
 }
-
-impl std::fmt::Display for RegistryMutationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DuplicateName(name) => {
-                write!(f, "project '{name}' already exists in registry")
-            }
-            Self::NotFound(name) => write!(f, "project '{name}' not found in registry"),
-            Self::InvalidStack(s) => {
-                write!(f, "invalid stack '{s}'; use: rust, python, typescript, elixir, cpp")
-            }
-            Self::ConflictingInstall => {
-                write!(f, "provide at most one of install_command or install_brew")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RegistryMutationError {}
 
 /// All fields required when adding a new project.
 #[allow(clippy::struct_excessive_bools)]
@@ -673,6 +691,31 @@ mod tests {
         };
         registry.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn load_missing_file_returns_not_found() {
+        use crate::error::StoreError;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.json");
+        let err = Registry::load(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::NotFound { .. }),
+            "expected StoreError::NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn load_malformed_file_returns_parse_error() {
+        use crate::error::StoreError;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        std::fs::write(&path, "{ not valid json }").unwrap();
+        let err = Registry::load(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Parse { .. }),
+            "expected StoreError::Parse, got {err:?}"
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ impl TaskBlock for StrategicLoopController {
         let assessment_payload = if event_type == EventType::StrategicAssessmentCompleted {
             match trigger.parse_payload::<StrategicAssessmentCompletedPayload>() {
                 Ok(p) => Some(p),
-                Err(e) => return Box::pin(async move { Err(e) }),
+                Err(e) => return Box::pin(async move { Err(e.into()) }),
             }
         } else {
             None
@@ -56,7 +56,7 @@ impl TaskBlock for StrategicLoopController {
         let inner_payload = if event_type == EventType::InnerIterationCompleted {
             match trigger.parse_payload::<InnerIterationCompletedPayload>() {
                 Ok(p) => Some(p),
-                Err(e) => return Box::pin(async move { Err(e) }),
+                Err(e) => return Box::pin(async move { Err(e.into()) }),
             }
         } else {
             None

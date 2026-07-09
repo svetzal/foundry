@@ -14,9 +14,9 @@
 
 use std::path::Path;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::error::StoreError;
 use crate::event::EventType;
 use crate::throttle::Throttle;
 
@@ -35,20 +35,52 @@ pub struct SentinelStore {
 
 impl SentinelStore {
     /// Deserialize a sentinel store from a JSON file at the given path.
-    pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let store: Self = serde_json::from_str(&content)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] when the file does not exist,
+    /// [`StoreError::Io`] on read failure, and [`StoreError::Parse`] when
+    /// the file contains malformed JSON.
+    pub fn load(path: &Path) -> Result<Self, StoreError> {
+        if !path.exists() {
+            return Err(StoreError::NotFound {
+                path: path.to_owned(),
+            });
+        }
+        let content = std::fs::read_to_string(path).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let store: Self = serde_json::from_str(&content).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(store)
     }
 
     /// Serialize the store to a JSON file at the given path, creating
     /// parent directories as needed.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if parent directory creation or the file
+    /// write fails, or [`StoreError::Parse`] if serialization fails (extremely
+    /// rare in practice).
+    pub fn save(&self, path: &Path) -> Result<(), StoreError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
         }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        let content = serde_json::to_string_pretty(self).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+        std::fs::write(path, content).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(())
     }
 
@@ -232,21 +264,12 @@ pub struct EmitSpec {
 }
 
 /// Errors that can occur when mutating the sentinel store.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SentinelMutationError {
     /// No sentinel with this name exists.
+    #[error("sentinel '{0}' not found")]
     NotFound(String),
 }
-
-impl std::fmt::Display for SentinelMutationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(name) => write!(f, "sentinel '{name}' not found"),
-        }
-    }
-}
-
-impl std::error::Error for SentinelMutationError {}
 
 #[cfg(test)]
 mod tests {
@@ -463,10 +486,28 @@ mod tests {
     }
 
     #[test]
-    fn load_missing_file_returns_error() {
+    fn load_missing_file_returns_not_found() {
+        use crate::error::StoreError;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.json");
-        assert!(SentinelStore::load(&path).is_err());
+        let err = SentinelStore::load(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::NotFound { .. }),
+            "expected StoreError::NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn load_malformed_file_returns_parse_error() {
+        use crate::error::StoreError;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentinels.json");
+        std::fs::write(&path, "{ not valid json }").unwrap();
+        let err = SentinelStore::load(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Parse { .. }),
+            "expected StoreError::Parse, got {err:?}"
+        );
     }
 
     // ---------------------------------------------------------------------

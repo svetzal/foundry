@@ -42,12 +42,16 @@ async fn main() -> Result<()> {
             tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
             Arc::new(RwLock::new(r))
         }
-        Err(e) => {
-            tracing::warn!(path = %registry_path.display(), error = %e, "registry not found, using empty registry");
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
+            tracing::warn!(path = %registry_path.display(), "registry not found, using empty registry");
             Arc::new(RwLock::new(foundry_sdk::registry::Registry {
                 version: 2,
                 projects: vec![],
             }))
+        }
+        Err(e) => {
+            tracing::error!(path = %registry_path.display(), error = %e, "registry file is corrupt or unreadable — refusing to start with an empty registry to prevent data loss");
+            std::process::exit(2);
         }
     };
 
@@ -162,13 +166,10 @@ fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
             }
             Ok(s)
         }
-        Err(load_err) => {
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
             let seed = SentinelStore::default_seed();
             seed.save(path).map_err(|save_err| {
-                anyhow::anyhow!(
-                    "failed to seed sentinels at {}: {save_err} (original load error: {load_err})",
-                    path.display()
-                )
+                anyhow::anyhow!("failed to seed sentinels at {}: {save_err}", path.display())
             })?;
             tracing::info!(
                 path = %path.display(),
@@ -177,6 +178,10 @@ fn load_or_seed_sentinels(path: &std::path::Path) -> Result<SentinelStore> {
             );
             Ok(seed)
         }
+        Err(e) => Err(anyhow::anyhow!(
+            "sentinel file at {} is corrupt or unreadable: {e}",
+            path.display()
+        )),
     }
 }
 
@@ -202,17 +207,18 @@ fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore>
             }
             Ok(store)
         }
-        Err(load_err) => {
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
             let seed = AgentConfigStore::default_seed();
             seed.save(path).map_err(|save_err| {
-                anyhow::anyhow!(
-                    "failed to seed agent config at {}: {save_err} (original load error: {load_err})",
-                    path.display()
-                )
+                anyhow::anyhow!("failed to seed agent config at {}: {save_err}", path.display())
             })?;
             tracing::info!(path = %path.display(), "agent config seeded on first start");
             Ok(seed)
         }
+        Err(e) => Err(anyhow::anyhow!(
+            "agent config file at {} is corrupt or unreadable: {e}",
+            path.display()
+        )),
     }
 }
 

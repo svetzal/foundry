@@ -18,9 +18,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::error::StoreError;
 use crate::gateway::{AgentProvider, ModelTier, ReasoningEffort};
 
 /// Current agent-config store format version.
@@ -138,19 +138,51 @@ pub struct AgentConfigStore {
 
 impl AgentConfigStore {
     /// Deserialize a store from a JSON file at the given path.
-    pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let store: Self = serde_json::from_str(&content)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] when the file does not exist,
+    /// [`StoreError::Io`] on read failure, and [`StoreError::Parse`] when
+    /// the file contains malformed JSON.
+    pub fn load(path: &Path) -> Result<Self, StoreError> {
+        if !path.exists() {
+            return Err(StoreError::NotFound {
+                path: path.to_owned(),
+            });
+        }
+        let content = std::fs::read_to_string(path).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let store: Self = serde_json::from_str(&content).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(store)
     }
 
     /// Serialize the store to a JSON file, creating parent directories.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if parent directory creation or the file
+    /// write fails, or [`StoreError::Parse`] if serialization fails (extremely
+    /// rare in practice).
+    pub fn save(&self, path: &Path) -> Result<(), StoreError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
         }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        let content = serde_json::to_string_pretty(self).map_err(|source| StoreError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+        std::fs::write(path, content).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(())
     }
 

@@ -46,7 +46,7 @@ macro_rules! parse_payload {
     ($trigger:expr, $Payload:ty) => {
         match $trigger.parse_payload::<$Payload>() {
             Ok(p) => p,
-            Err(e) => return Box::pin(async move { Err(e) }),
+            Err(e) => return Box::pin(async move { Err(e.into()) }),
         }
     };
 }

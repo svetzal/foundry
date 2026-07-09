@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::error::StoreError;
 
 /// A single quality-gate definition read from `.hone-gates.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,18 +47,28 @@ struct RawGate {
 ///
 /// Returns an empty vec if the file does not exist.
 /// Returns an error if the file exists but contains malformed JSON.
-pub fn read_gates_file(project_dir: &Path) -> Result<Vec<GateDefinition>> {
+///
+/// # Errors
+///
+/// Returns [`StoreError::Io`] if the file exists but cannot be read, and
+/// [`StoreError::Parse`] if the JSON is malformed. A missing file is not an
+/// error — it returns an empty vec.
+pub fn read_gates_file(project_dir: &Path) -> Result<Vec<GateDefinition>, StoreError> {
     let path = project_dir.join(".hone-gates.json");
 
     if !path.exists() {
         return Ok(vec![]);
     }
 
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let contents = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
+        path: path.clone(),
+        source,
+    })?;
 
-    let file: GateFile = serde_json::from_str(&contents)
-        .with_context(|| format!("malformed JSON in {}", path.display()))?;
+    let file: GateFile = serde_json::from_str(&contents).map_err(|source| StoreError::Parse {
+        path: path.clone(),
+        source,
+    })?;
 
     Ok(file
         .gates
@@ -73,7 +84,12 @@ pub fn read_gates_file(project_dir: &Path) -> Result<Vec<GateDefinition>> {
 }
 
 /// Write gate definitions to `.hone-gates.json` in `project_dir`.
-pub fn write_gates_file(project_dir: &Path, gates: &[GateDefinition]) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns [`StoreError::Parse`] if serialization fails (extremely rare) and
+/// [`StoreError::Io`] if the write fails.
+pub fn write_gates_file(project_dir: &Path, gates: &[GateDefinition]) -> Result<(), StoreError> {
     let path = project_dir.join(".hone-gates.json");
 
     let file = GateFile {
@@ -89,9 +105,14 @@ pub fn write_gates_file(project_dir: &Path, gates: &[GateDefinition]) -> Result<
             .collect(),
     };
 
-    let json = serde_json::to_string_pretty(&file)?;
-    std::fs::write(&path, format!("{json}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    let json = serde_json::to_string_pretty(&file).map_err(|source| StoreError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    std::fs::write(&path, format!("{json}\n")).map_err(|source| StoreError::Io {
+        path: path.clone(),
+        source,
+    })?;
 
     Ok(())
 }
