@@ -15,7 +15,7 @@
 //! 2. For each enabled sentinel, compute its next firing in the local
 //!    timezone via the standard 5-field cron expression (auto-padded to the
 //!    6-field shape the `cron` crate expects).
-//! 3. Pick the soonest deadline.
+//! 3. Pick the soonest deadline and every sentinel due at that instant.
 //! 4. `tokio::select!` between sleeping until that deadline and a reload
 //!    `Notify`. On fire, hand the event to the configured emit callback.
 //!    On reload, re-compute deadlines.
@@ -84,18 +84,24 @@ impl Scheduler {
         info!("scheduler started");
         loop {
             let now = (self.clock)();
-            let next = compute_next_firing(&self.store, now);
+            let next = compute_next_firings(&self.store, now);
 
             match next {
                 None => {
                     // No enabled sentinels — block until a mutation reloads us.
                     self.reload.notified().await;
                 }
-                Some(NextFiring { entry, fire_at }) => {
+                Some(NextFirings { entries, fire_at }) => {
                     let wait =
                         (fire_at - now).to_std().unwrap_or(std::time::Duration::from_secs(0));
+                    let sentinel_names = entries
+                        .iter()
+                        .map(|entry| entry.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",");
                     info!(
-                        sentinel = %entry.name,
+                        sentinels = %sentinel_names,
+                        count = entries.len(),
                         fire_at = %fire_at,
                         wait_secs = wait.as_secs(),
                         wait_ms = %wait.as_millis(),
@@ -109,21 +115,23 @@ impl Scheduler {
                                 // tracks claimed scheduled instants explicitly instead of relying on
                                 // recomputing cron after a timer wake.
                                 warn!(
-                                    sentinel = %entry.name,
+                                    sentinels = %sentinel_names,
                                     fire_at = %fire_at,
                                     woke_at = %woke_at,
                                     "scheduler woke before scheduled boundary; rearming"
                                 );
                                 continue;
                             }
-                            let event = build_event(&entry);
-                            info!(
-                                sentinel = %entry.name,
-                                event_type = %event.event_type,
-                                project = %event.project,
-                                "sentinel firing",
-                            );
-                            (self.emit)(event);
+                            for entry in &entries {
+                                let event = build_event(entry);
+                                info!(
+                                    sentinel = %entry.name,
+                                    event_type = %event.event_type,
+                                    project = %event.project,
+                                    "sentinel firing",
+                                );
+                                (self.emit)(event);
+                            }
                         }
                         () = self.reload.notified() => {
                             info!("scheduler reload signal received");
@@ -135,38 +143,48 @@ impl Scheduler {
     }
 }
 
-/// The earliest pending firing across the store, returned together with the
-/// cloned entry so callers can release the read lock immediately.
+/// The earliest pending firing across the store, returned together with every
+/// cloned entry due then so callers can release the read lock immediately.
 #[derive(Debug, Clone)]
-struct NextFiring {
-    entry: SentinelEntry,
+struct NextFirings {
+    entries: Vec<SentinelEntry>,
     fire_at: DateTime<Local>,
 }
 
-fn compute_next_firing(
+fn compute_next_firings(
     store: &Arc<RwLock<SentinelStore>>,
     now: DateTime<Local>,
-) -> Option<NextFiring> {
+) -> Option<NextFirings> {
     let snapshot: Vec<SentinelEntry> = {
         let guard = store.read().expect("sentinel store lock poisoned");
         guard.sentinels.iter().filter(|s| s.enabled).cloned().collect()
     };
-    next_firing_among(&snapshot, now)
+    next_firings_among(&snapshot, now)
 }
 
-/// Pure helper: choose the soonest firing among a list of enabled entries.
-fn next_firing_among(entries: &[SentinelEntry], now: DateTime<Local>) -> Option<NextFiring> {
-    let mut best: Option<NextFiring> = None;
+/// Pure helper: choose every entry due at the soonest firing instant.
+fn next_firings_among(entries: &[SentinelEntry], now: DateTime<Local>) -> Option<NextFirings> {
+    let mut best: Option<NextFirings> = None;
     for entry in entries {
         match next_firing_for(&entry.schedule, now) {
-            Ok(fire_at) => {
-                if best.as_ref().is_none_or(|b| fire_at < b.fire_at) {
-                    best = Some(NextFiring {
-                        entry: entry.clone(),
+            Ok(fire_at) => match &mut best {
+                None => {
+                    best = Some(NextFirings {
+                        entries: vec![entry.clone()],
                         fire_at,
                     });
                 }
-            }
+                Some(current) if fire_at < current.fire_at => {
+                    *current = NextFirings {
+                        entries: vec![entry.clone()],
+                        fire_at,
+                    };
+                }
+                Some(current) if fire_at == current.fire_at => {
+                    current.entries.push(entry.clone());
+                }
+                Some(_) => {}
+            },
             Err(e) => {
                 warn!(
                     sentinel = %entry.name,
@@ -310,47 +328,60 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // next_firing_among
+    // next_firings_among
     // ---------------------------------------------------------------------
 
     #[test]
-    fn next_firing_among_returns_none_for_empty_input() {
+    fn next_firings_among_returns_none_for_empty_input() {
         let now = at(2026, 5, 27, 1, 0);
-        assert!(next_firing_among(&[], now).is_none());
+        assert!(next_firings_among(&[], now).is_none());
     }
 
     #[test]
-    fn next_firing_among_picks_soonest_of_two_entries() {
+    fn next_firings_among_picks_soonest_of_two_entries() {
         let now = at(2026, 5, 27, 1, 0);
         let earlier = entry("earlier", "0 2 * * *", true); // 02:00
         let later = entry("later", "0 9 * * *", true); // 09:00
-        let result = next_firing_among(&[later.clone(), earlier.clone()], now).unwrap();
-        assert_eq!(result.entry.name, "earlier");
+        let result = next_firings_among(&[later.clone(), earlier.clone()], now).unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "earlier");
         assert_eq!(result.fire_at, at(2026, 5, 27, 2, 0));
     }
 
     #[test]
-    fn next_firing_among_skips_invalid_schedules() {
+    fn next_firings_among_returns_every_entry_at_the_earliest_instant() {
+        let now = at(2026, 5, 27, 5, 59);
+        let first = entry("first", "0 6 * * *", true);
+        let second = entry("second", "0 */3 * * *", true);
+        let later = entry("later", "0 9 * * *", true);
+        let result = next_firings_among(&[first, later, second], now).unwrap();
+        let names = result.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(result.fire_at, at(2026, 5, 27, 6, 0));
+    }
+
+    #[test]
+    fn next_firings_among_skips_invalid_schedules() {
         let now = at(2026, 5, 27, 1, 0);
         let bad = entry("broken", "not a cron", true);
         let good = entry("good", "0 2 * * *", true);
-        let result = next_firing_among(&[bad, good], now).unwrap();
-        assert_eq!(result.entry.name, "good");
+        let result = next_firings_among(&[bad, good], now).unwrap();
+        assert_eq!(result.entries[0].name, "good");
     }
 
     #[test]
-    fn next_firing_among_returns_none_when_all_invalid() {
+    fn next_firings_among_returns_none_when_all_invalid() {
         let now = at(2026, 5, 27, 1, 0);
         let bad = entry("bad", "not a cron", true);
-        assert!(next_firing_among(&[bad], now).is_none());
+        assert!(next_firings_among(&[bad], now).is_none());
     }
 
     // ---------------------------------------------------------------------
-    // compute_next_firing (through the shared store)
+    // compute_next_firings (through the shared store)
     // ---------------------------------------------------------------------
 
     #[test]
-    fn compute_next_firing_skips_disabled_entries() {
+    fn compute_next_firings_skips_disabled_entries() {
         let store = SentinelStore {
             version: 1,
             sentinels: vec![
@@ -360,19 +391,19 @@ mod tests {
         };
         let store = Arc::new(RwLock::new(store));
         let now = at(2026, 5, 27, 1, 0);
-        let result = compute_next_firing(&store, now).unwrap();
-        assert_eq!(result.entry.name, "enabled-later");
+        let result = compute_next_firings(&store, now).unwrap();
+        assert_eq!(result.entries[0].name, "enabled-later");
     }
 
     #[test]
-    fn compute_next_firing_returns_none_when_all_disabled() {
+    fn compute_next_firings_returns_none_when_all_disabled() {
         let store = SentinelStore {
             version: 1,
             sentinels: vec![entry("off", "0 2 * * *", false)],
         };
         let store = Arc::new(RwLock::new(store));
         let now = at(2026, 5, 27, 1, 0);
-        assert!(compute_next_firing(&store, now).is_none());
+        assert!(compute_next_firings(&store, now).is_none());
     }
 
     // ---------------------------------------------------------------------
@@ -461,6 +492,44 @@ mod tests {
         assert_eq!(events.len(), 1, "exactly one sentinel firing expected");
         assert_eq!(events[0].event_type, EventType::MaintenanceCycleStarted);
         assert_eq!(events[0].project, "system");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_emits_every_sentinel_due_at_the_same_instant() {
+        let now = at(2026, 5, 27, 5, 59);
+        let mut supply_chain = entry("nightly-supply-chain", "0 6 * * *", true);
+        supply_chain.emit.event_type = EventType::SupplyChainScanStarted;
+        let mut ops_digest = entry("ops-digest", "0 */3 * * *", true);
+        ops_digest.emit.event_type = EventType::OpsDigestStarted;
+        let store = Arc::new(RwLock::new(SentinelStore {
+            version: 1,
+            sentinels: vec![ops_digest, supply_chain],
+        }));
+        let reload = Arc::new(Notify::new());
+        let (sink, captured) = recording_sink();
+        let (clock, clock_state) = mutable_clock(now);
+
+        let scheduler = Scheduler::new(store, Arc::clone(&reload), sink).with_clock(clock);
+        tokio::spawn(scheduler.run());
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        set_clock(&clock_state, at(2026, 5, 27, 6, 0));
+        tokio::task::yield_now().await;
+
+        let event_types = captured
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_types,
+            vec![
+                EventType::OpsDigestStarted,
+                EventType::SupplyChainScanStarted
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

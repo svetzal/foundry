@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Sentinels sharing a scheduled instant now all fire.** The scheduler
+  previously selected only one sentinel at the earliest deadline; after it
+  fired, recomputing from the boundary skipped every other sentinel due at the
+  same time. This starved `nightly-supply-chain` because its 06:00 schedule
+  coincides with `ops-digest`. The scheduler now claims and emits the complete
+  same-time cohort.
 - Claude agent invocations now pass `--agent <name>` instead of the resolved
   `~/.claude/agents/<name>.md` path, matching current Claude Code CLI
   behaviour and preventing maintenance retries from failing before execution.
