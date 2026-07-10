@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Supply-chain per-language auto-fixers (EXP-003 Slice 2b-2).** The dark,
+  explicitly gated remediation engine now supports Bun/npm lock updates,
+  TypeScript direct/override requirement rewrites, and uv/Python requirement
+  plus lock updates through the existing verify-and-rollback rail. npm's
+  `fixAvailable.name` is preserved as `fix_package`, preventing a transitive
+  package from being paired with its direct parent's fix version. Only touched
+  dependency files are committed locally; nothing is pushed.
 - Synchronous workflow commands now stream transient block progress messages
   such as `running block Run Verify Gates` and `finished block Run Verify Gates`
   while long-running blocks execute.

@@ -1,8 +1,9 @@
 # Supply-Chain Scan
 
 The supply-chain formation is a nightly, working-tree dependency-advisory scan
-across every managed project. It is **detection-only and advisory**: it never
-mutates a working tree and never fails a project run.
+across every managed project. It is **advisory** and never fails a project run.
+Its remediation engine is gated off by default; when explicitly enabled, it
+may apply verified dependency fixes and commit them locally without pushing.
 
 ## Why it is its own formation
 
@@ -39,10 +40,12 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
   stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`) against the
   working-tree lockfile, classifies each advisory against that repo's committed
   allowlist, and emits `SupplyChainScanned`. Each finding carries a **fix
-  version** when the audit tool reports one. Python is the exception to "global
-  tool": `pip-audit` is a project dependency, so it is run from the project's
-  own `.venv/bin/pip-audit` — a repo that hasn't installed it reports cleanly
-  under "Not scanned" rather than relying on a global PATH.
+  version** when the audit tool reports one and, where npm supplies it, the
+  direct **fix package** whose upgrade removes a vulnerable transitive package.
+  Python is the exception to "global tool": `pip-audit` is a project
+  dependency, so it is run from the project's own `.venv/bin/pip-audit` — a
+  repo that hasn't installed it reports cleanly under "Not scanned" rather than
+  relying on a global PATH.
 - **`RemediateSupplyChain`** triages every live finding by fix availability and
   emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
   version means the advisory is mechanically **auto-fixable**; an *empty* one
@@ -116,16 +119,22 @@ rail, and every change is **reversible — committed locally, never pushed**:
 
 1. **Refuse a dirty tree.** A project whose working tree carries uncommitted
    changes is skipped, so a rollback can always return to a known-clean `HEAD`.
-2. **Apply.** This increment ships one fixer — the in-range Rust bump
-   (`cargo update -p <pkg> --precise <fix>`). A version the manifest's range
-   forbids fails to apply and is reported `apply_failed` (the override-pin
-   rewrite case, a later increment). Non-Rust stacks report `no_fixer`.
+2. **Apply.** The fixer follows the project's stack and lockfile:
+   - Rust: `cargo update -p <pkg> --precise <fix>` updates `Cargo.lock`.
+   - TypeScript: Bun and npm projects update their native lockfile. A matching
+     direct dependency or override pin is rewritten in `package.json` first;
+     transitive advisories target npm's explicit `fixAvailable.name` package.
+   - Python: uv projects rewrite a matching `pyproject.toml` requirement and
+     run `uv lock --upgrade-package <pkg>==<fix>`.
+   Unsupported stacks or projects without a supported lockfile report a
+   visible `apply_failed`/`no_fixer` outcome rather than guessing.
 3. **Verify.** The repo's own `.hone-gates.json` gates are re-run. A repo with no
    gates is skipped — an unverifiable fix is never applied.
-4. **Commit or revert.** If the required gates pass, just the lockfile is
-   committed (`chore(deps): bump … (supply-chain auto-fix)`); otherwise the
-   lockfile is `git checkout`-reverted. Each applied fix commits immediately, so
-   a later finding's rollback can never clobber an earlier success.
+4. **Commit or revert.** If the required gates pass, only the dependency files
+   touched by that fixer are committed (`chore(deps): bump … (supply-chain
+   auto-fix)`); otherwise those files are unstaged and restored from `HEAD`.
+   Each applied fix commits immediately, so a later finding's rollback can
+   never clobber an earlier success.
 
 The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, and *Not
 auto-fixed (needs attention)* — only when the engine actually ran. Enable it by

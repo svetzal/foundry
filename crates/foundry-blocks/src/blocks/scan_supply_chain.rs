@@ -89,6 +89,7 @@ async fn scan_all(
                     severity: vuln.severity,
                     version: vuln.version,
                     fix_version: vuln.fix_version,
+                    fix_package: vuln.fix_package,
                 }),
                 AllowDecision::Active { reason } => suppressed.push(SuppressedFinding {
                     cve,
@@ -105,6 +106,7 @@ async fn scan_all(
                         severity: vuln.severity,
                         version: vuln.version,
                         fix_version: vuln.fix_version,
+                        fix_package: vuln.fix_package,
                     });
                     suppressed.push(SuppressedFinding {
                         cve,
@@ -180,6 +182,7 @@ mod tests {
             package: "vulnerable-pkg".to_string(),
             version: Some("0.1.0".to_string()),
             fix_version: None,
+            fix_package: None,
         }
     }
 
@@ -215,7 +218,10 @@ mod tests {
             "alpha",
             dir.path().to_str().unwrap(),
         )]);
-        let scanner = FakeScannerGateway::with_vulnerabilities(vec![vuln("CVE-2026-1234")]);
+        let mut vulnerability = vuln("CVE-2026-1234");
+        vulnerability.fix_version = Some("3.2.1".to_string());
+        vulnerability.fix_package = Some("direct-parent".to_string());
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![vulnerability]);
         let block = ScanSupplyChain::with_gateways(registry, scanner);
 
         let trigger = test_helpers::make_trigger(
@@ -230,6 +236,7 @@ mod tests {
         assert_eq!(p.finding_count, 1);
         assert_eq!(p.affected_project_count, 1);
         assert_eq!(p.projects[0].findings[0].cve, "CVE-2026-1234");
+        assert_eq!(p.projects[0].findings[0].fix_package.as_deref(), Some("direct-parent"));
         assert!(p.projects[0].suppressed.is_empty());
     }
 
@@ -327,6 +334,7 @@ mod tests {
             package: "mystery".to_string(),
             version: None,
             fix_version: None,
+            fix_package: None,
         }]);
         let block = ScanSupplyChain::with_gateways(registry, scanner);
 

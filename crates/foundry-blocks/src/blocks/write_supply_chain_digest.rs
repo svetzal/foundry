@@ -251,6 +251,13 @@ fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
     wln!(out, "| Advisory | Package | Severity | Version | Fix |");
     wln!(out, "|----------|---------|----------|---------|-----|");
     for f in &proj.findings {
+        let fix = match (&f.fix_package, &f.fix_version) {
+            (Some(package), Some(version)) if package != &f.package => {
+                format!("{package}@{version}")
+            }
+            (_, Some(version)) => version.clone(),
+            (_, None) => "policy call".to_string(),
+        };
         wln!(
             out,
             "| `{cve}` | {package} | {severity} | {version} | {fix} |",
@@ -258,7 +265,7 @@ fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
             package = f.package,
             severity = f.severity.as_deref().unwrap_or("—"),
             version = f.version.as_deref().unwrap_or("—"),
-            fix = f.fix_version.as_deref().unwrap_or("policy call"),
+            fix = fix,
         );
     }
     out.push('\n');
@@ -277,6 +284,7 @@ mod tests {
             severity: Some("high".to_string()),
             version: Some("0.1.0".to_string()),
             fix_version: Some("0.2.0".to_string()),
+            fix_package: None,
         }
     }
 
@@ -375,6 +383,18 @@ mod tests {
         assert!(doc.contains("| policy call |"), "no-fix finding marked as a policy call");
         assert!(!doc.contains("auto-fixed this run"), "nothing applied by the classifier");
         assert!(!doc.contains("## Remediation"), "no remediation section without outcomes");
+    }
+
+    #[test]
+    fn render_fix_names_different_upgrade_target() {
+        let mut transitive = finding("CVE-1");
+        transitive.fix_package = Some("direct-parent".to_string());
+        transitive.fix_version = Some("3.2.1".to_string());
+        let p = payload(vec![project_with_findings("alpha", vec![transitive])]);
+
+        let doc = render_document("2026-06-15", &p);
+
+        assert!(doc.contains("direct-parent@3.2.1"));
     }
 
     #[test]

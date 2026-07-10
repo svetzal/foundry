@@ -115,6 +115,7 @@ mod strategic_loop;
 mod summarize_commits;
 mod summarize_events;
 mod summarize_result;
+mod supply_chain_fixers;
 mod triage_assessment;
 pub mod triage_core;
 mod triage_maintenance;

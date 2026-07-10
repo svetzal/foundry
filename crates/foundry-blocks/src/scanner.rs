@@ -180,6 +180,7 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
                 package,
                 version,
                 fix_version,
+                fix_package: None,
             }
         })
         .collect();
@@ -264,6 +265,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
             // gives no version at this node), or an object `{name, version, …}`.
             // Only the object form yields a precise fix version.
             let fix_version = entry["fixAvailable"]["version"].as_str().and_then(bare_version);
+            let fix_package = entry["fixAvailable"]["name"].as_str().map(str::to_owned);
 
             Vulnerability {
                 cve,
@@ -271,6 +273,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
                 package,
                 version: None,
                 fix_version,
+                fix_package,
             }
         })
         .collect();
@@ -334,6 +337,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
                 package: package.clone(),
                 version: version.clone(),
                 fix_version,
+                fix_package: None,
             });
         }
     }
@@ -385,6 +389,7 @@ fn parse_generic_audit(output: &str) -> AuditResult {
                     package: package.clone(),
                     version: version.clone(),
                     fix_version,
+                    fix_package: None,
                 });
             }
         } else {
@@ -401,6 +406,7 @@ fn parse_generic_audit(output: &str) -> AuditResult {
                 package,
                 version,
                 fix_version,
+                fix_package: None,
             });
         }
     }
@@ -594,7 +600,7 @@ mod tests {
               "via": ["CVE-2021-23337"],
               "range": ">=0.0.1",
               "nodes": ["node_modules/lodash"],
-              "fixAvailable": {"name": "lodash", "version": "4.17.21", "isSemVerMajor": false}
+              "fixAvailable": {"name": "direct-parent", "version": "4.17.21", "isSemVerMajor": false}
             }
           }
         }"#;
@@ -611,6 +617,11 @@ mod tests {
             vuln.fix_version.as_deref(),
             Some("4.17.21"),
             "fixAvailable.version → fix_version"
+        );
+        assert_eq!(
+            vuln.fix_package.as_deref(),
+            Some("direct-parent"),
+            "fixAvailable.name → fix_package"
         );
     }
 
@@ -784,6 +795,7 @@ mod tests {
             package: "test-pkg".to_string(),
             version: None,
             fix_version: None,
+            fix_package: None,
         }
     }
 

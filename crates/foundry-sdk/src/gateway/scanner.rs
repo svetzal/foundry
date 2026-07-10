@@ -23,6 +23,11 @@ pub struct Vulnerability {
     /// triage anchor the remediation block branches on.
     #[serde(default)]
     pub fix_version: Option<String>,
+    /// Package the audit tool says must be upgraded to resolve the advisory.
+    /// Usually identical to `package`; npm may instead name a direct ancestor
+    /// whose upgrade removes a vulnerable transitive dependency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_package: Option<String>,
 }
 
 /// The aggregated result of running an audit scan.

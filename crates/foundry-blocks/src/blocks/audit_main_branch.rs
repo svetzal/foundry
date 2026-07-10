@@ -194,6 +194,7 @@ mod tests {
             package: "vulnerable-crate".to_string(),
             version: None,
             fix_version: None,
+            fix_package: None,
         }]);
         let block = AuditMainBranch::with_gateways(registry, scanner);
 

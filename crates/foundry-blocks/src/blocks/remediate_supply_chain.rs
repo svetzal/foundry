@@ -24,17 +24,16 @@
 //! Every fix runs the verify-and-rollback rail, all reversible (commit-only,
 //! never pushed):
 //! 1. refuse to touch a project whose working tree is not clean;
-//! 2. apply the fix (this increment: an in-range Rust bump,
-//!    `cargo update -p <pkg> --precise <fix>`);
+//! 2. apply the stack-specific fix (Cargo precise update, npm/bun lock update
+//!    or manifest rewrite, or uv requirement/lock update);
 //! 3. re-run the repo's own gates;
-//! 4. on a passing required-gate set → commit just the lockfile; otherwise
-//!    `git checkout` the lockfile, reverting the edit.
+//! 4. on a passing required-gate set → commit only the touched dependency
+//!    files; otherwise restore those files from HEAD.
 //!
 //! Committing each applied fix immediately means a later finding's rollback
-//! cannot clobber an earlier success. A fix whose version is out of the
-//! manifest's range fails to apply (`apply_failed`) — that is the override-pin
-//! rewrite case, handled in a later increment. Non-Rust stacks report
-//! `no_fixer` until their fixer lands.
+//! cannot clobber an earlier success. TypeScript and Python fixers rewrite a
+//! matching direct or override requirement before refreshing the lockfile;
+//! transitive fixes target the audit tool's explicit `fix_package` when present.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -48,9 +47,6 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::ShellGateway;
-
-/// The committed lockfile a Rust in-range bump touches.
-const RUST_LOCKFILE: &str = "Cargo.lock";
 
 /// Triages each live supply-chain finding and, when explicitly enabled, applies
 /// verified, reversible auto-fixes. Observer — it self-gates mutation on the
@@ -155,10 +151,10 @@ enum ProjectRemediationPlan {
     NothingFixable,
     /// The project has fixable findings but is not registered; skip.
     NotInRegistry,
-    /// The project's stack has no auto-fix mechanism yet.
+    /// The project's stack has no auto-fix mechanism.
     NoFixer { stack: String },
     /// All pre-I/O checks pass; proceed to gate-verify-and-apply at this path.
-    Proceed { path: PathBuf },
+    Proceed { path: PathBuf, stack: Stack },
 }
 
 /// Decide the pre-I/O remediation route for a single project scan.
@@ -180,7 +176,7 @@ fn plan_project_remediation(
         return ProjectRemediationPlan::NotInRegistry;
     };
 
-    if entry.stack != Stack::Rust {
+    if !super::supply_chain_fixers::supports(&entry.stack) {
         return ProjectRemediationPlan::NoFixer {
             stack: entry.stack.to_string(),
         };
@@ -188,6 +184,7 @@ fn plan_project_remediation(
 
     ProjectRemediationPlan::Proceed {
         path: PathBuf::from(&entry.path),
+        stack: entry.stack.clone(),
     }
 }
 
@@ -220,7 +217,7 @@ async fn remediate_project(
         proj.findings.iter().filter(|f| f.fix_version.is_some()).collect();
 
     // Consult the pure routing plan for all decisions that need no I/O.
-    let path = match plan_project_remediation(proj, entries) {
+    let (path, stack) = match plan_project_remediation(proj, entries) {
         ProjectRemediationPlan::NothingFixable => return,
         ProjectRemediationPlan::NotInRegistry => {
             push_each(outcomes, proj, &fixable, "skipped", Some("project not in registry"));
@@ -231,7 +228,7 @@ async fn remediate_project(
             push_each(outcomes, proj, &fixable, "no_fixer", Some(&detail));
             return;
         }
-        ProjectRemediationPlan::Proceed { path } => path,
+        ProjectRemediationPlan::Proceed { path, stack } => (path, stack),
     };
 
     // Verify-and-rollback is mandatory; a repo with no gates cannot be verified,
@@ -259,26 +256,27 @@ async fn remediate_project(
     for f in fixable {
         let fix_version = f.fix_version.as_deref().unwrap_or_default();
 
-        if !cargo_precise_update(shell, &path, &f.package, fix_version).await {
-            let detail = format!(
-                "cargo update -p {} --precise {fix_version} failed (version likely out of the manifest's range — override-pin rewrite case)",
-                f.package
-            );
-            outcomes.push(outcome(proj, f, "apply_failed", Some(&detail)));
-            continue;
-        }
+        let applied = match super::supply_chain_fixers::apply_fix(shell, &path, &stack, f).await {
+            Ok(applied) => applied,
+            Err(failure) => {
+                git_restore_files(shell, &path, &failure.files).await;
+                outcomes.push(outcome(proj, f, "apply_failed", Some(&failure.detail)));
+                continue;
+            }
+        };
 
         match crate::gate_runner::run_gates(&gates, &path, shell).await {
             Ok(r) if r.required_passed => {
+                let target = f.fix_package.as_deref().unwrap_or(&f.package);
                 let msg = format!(
                     "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
-                    f.package, f.cve
+                    target, f.cve
                 );
-                if git_commit_file(shell, &path, RUST_LOCKFILE, &msg).await {
-                    let detail = format!("verified by gates, committed {fix_version}");
+                if git_commit_files(shell, &path, &applied.files, &msg).await {
+                    let detail = format!("{}; verified by gates and committed", applied.detail);
                     outcomes.push(outcome(proj, f, "applied", Some(&detail)));
                 } else {
-                    git_restore(shell, &path, RUST_LOCKFILE).await;
+                    git_restore_files(shell, &path, &applied.files).await;
                     outcomes.push(outcome(
                         proj,
                         f,
@@ -288,7 +286,7 @@ async fn remediate_project(
                 }
             }
             Ok(_) => {
-                git_restore(shell, &path, RUST_LOCKFILE).await;
+                git_restore_files(shell, &path, &applied.files).await;
                 outcomes.push(outcome(
                     proj,
                     f,
@@ -297,7 +295,7 @@ async fn remediate_project(
                 ));
             }
             Err(e) => {
-                git_restore(shell, &path, RUST_LOCKFILE).await;
+                git_restore_files(shell, &path, &applied.files).await;
                 let detail = format!("gate run errored: {e}; reverted");
                 outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
             }
@@ -312,29 +310,28 @@ async fn git_tree_clean(shell: &dyn ShellGateway, path: &Path) -> bool {
     }
 }
 
-async fn cargo_precise_update(
+async fn git_restore_files(shell: &dyn ShellGateway, path: &Path, files: &[String]) {
+    if files.is_empty() {
+        return;
+    }
+    let mut reset_args = vec!["reset", "HEAD", "--"];
+    reset_args.extend(files.iter().map(String::as_str));
+    let _ = shell.run(path, "git", &reset_args, None, None).await;
+
+    let mut checkout_args = vec!["checkout", "--"];
+    checkout_args.extend(files.iter().map(String::as_str));
+    let _ = shell.run(path, "git", &checkout_args, None, None).await;
+}
+
+async fn git_commit_files(
     shell: &dyn ShellGateway,
     path: &Path,
-    package: &str,
-    version: &str,
+    files: &[String],
+    msg: &str,
 ) -> bool {
-    shell
-        .run(path, "cargo", &["update", "-p", package, "--precise", version], None, None)
-        .await
-        .is_ok_and(|r| r.success)
-}
-
-async fn git_restore(shell: &dyn ShellGateway, path: &Path, file: &str) {
-    // Best-effort revert; an error here only leaves the tree as the failed fix
-    // left it, which the next clean-tree guard will catch.
-    let _ = shell.run(path, "git", &["checkout", "--", file], None, None).await;
-}
-
-async fn git_commit_file(shell: &dyn ShellGateway, path: &Path, file: &str, msg: &str) -> bool {
-    let added = shell
-        .run(path, "git", &["add", file], None, None)
-        .await
-        .is_ok_and(|r| r.success);
+    let mut add_args = vec!["add"];
+    add_args.extend(files.iter().map(String::as_str));
+    let added = shell.run(path, "git", &add_args, None, None).await.is_ok_and(|r| r.success);
     if !added {
         return false;
     }
@@ -430,6 +427,7 @@ mod tests {
             severity: Some("high".to_string()),
             version: Some("0.1.0".to_string()),
             fix_version: fix.map(str::to_string),
+            fix_package: None,
         }
     }
 
@@ -476,6 +474,12 @@ mod tests {
 
     fn rust_entry(name: &str, path: &str) -> ProjectEntry {
         test_helpers::project_entry(name, path) // stack defaults to Rust
+    }
+
+    fn entry_for_stack(name: &str, path: &str, stack: Stack) -> ProjectEntry {
+        let mut entry = rust_entry(name, path);
+        entry.stack = stack;
+        entry
     }
 
     /// A project dir with a single required gate so verification has something
@@ -597,6 +601,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typescript_override_rewrite_verifies_and_commits_manifest_and_lockfile() {
+        let dir = project_dir_with_gate();
+        std::fs::write(
+            dir.path().join("package.json"),
+            "{\n  \"overrides\": { \"esbuild\": \"^0.28.0\" }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
+        let shell = FakeShellGateway::success();
+        let entry = entry_for_stack("alpha", dir.path().to_str().unwrap(), Stack::TypeScript);
+        let block =
+            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
+        let mut fix = finding("GHSA-esbuild", Some("0.28.1"));
+        fix.package = "esbuild".to_string();
+        let p = scanned(vec![project("alpha", "typescript", vec![fix])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 1);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let calls = shell.invocations();
+        assert!(calls.iter().any(|call| call.command == "bun"));
+        let add = calls
+            .iter()
+            .find(|call| call.command == "git" && call.args.first().is_some_and(|arg| arg == "add"))
+            .unwrap();
+        assert!(add.args.contains(&"package.json".to_string()));
+        assert!(add.args.contains(&"bun.lock".to_string()));
+    }
+
+    #[tokio::test]
+    async fn python_requirement_rewrite_verifies_and_commits_manifest_and_lockfile() {
+        let dir = project_dir_with_gate();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\ndependencies = [\"chromadb>=1.5.9\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "").unwrap();
+        let shell = FakeShellGateway::success();
+        let entry = entry_for_stack("alpha", dir.path().to_str().unwrap(), Stack::Python);
+        let block =
+            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
+        let mut fix = finding("PYSEC-1", Some("1.6.1"));
+        fix.package = "chromadb".to_string();
+        let p = scanned(vec![project("alpha", "python", vec![fix])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 1);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let calls = shell.invocations();
+        assert!(calls.iter().any(|call| call.command == "uv"));
+        let add = calls
+            .iter()
+            .find(|call| call.command == "git" && call.args.first().is_some_and(|arg| arg == "add"))
+            .unwrap();
+        assert!(add.args.contains(&"pyproject.toml".to_string()));
+        assert!(add.args.contains(&"uv.lock".to_string()));
+    }
+
+    #[tokio::test]
     async fn rolls_back_when_gates_fail() {
         let dir = project_dir_with_gate();
         // git status (clean) → cargo update (ok) → gate (FAIL) → git checkout
@@ -646,7 +714,7 @@ mod tests {
 
         let out = remediated(&result);
         assert_eq!(out.outcomes[0].status, "apply_failed");
-        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("override-pin"));
+        assert!(out.outcomes[0].detail.as_deref().unwrap().contains("manifest's range"));
     }
 
     #[tokio::test]
@@ -703,16 +771,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_rust_stack_reports_no_fixer() {
+    async fn unsupported_stack_reports_no_fixer() {
         let dir = project_dir_with_gate();
         let mut entry = rust_entry("alpha", dir.path().to_str().unwrap());
-        entry.stack = Stack::TypeScript;
+        entry.stack = Stack::Elixir;
         let shell = FakeShellGateway::success();
         let block =
             RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
         let p = scanned(vec![project(
             "alpha",
-            "typescript",
+            "elixir",
             vec![finding("CVE-1", Some("1.2.3"))],
         )]);
 
@@ -778,10 +846,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_returns_no_fixer_for_non_rust_stack() {
-        let proj = project("alpha", "typescript", vec![finding("CVE-1", Some("1.2.3"))]);
+    fn plan_returns_no_fixer_for_unsupported_stack() {
+        let proj = project("alpha", "elixir", vec![finding("CVE-1", Some("1.2.3"))]);
         let mut entry = rust_entry("alpha", "some/path");
-        entry.stack = Stack::TypeScript;
+        entry.stack = Stack::Elixir;
         assert!(matches!(
             plan_project_remediation(&proj, &[entry]),
             ProjectRemediationPlan::NoFixer { .. }
@@ -795,8 +863,25 @@ mod tests {
         assert_eq!(
             plan_project_remediation(&proj, &[entry]),
             ProjectRemediationPlan::Proceed {
-                path: std::path::PathBuf::from("some/path")
+                path: std::path::PathBuf::from("some/path"),
+                stack: Stack::Rust,
             }
         );
+    }
+
+    #[test]
+    fn plan_returns_proceed_for_typescript_and_python_projects() {
+        for stack in [Stack::TypeScript, Stack::Python] {
+            let proj = project("alpha", &stack.to_string(), vec![finding("CVE-1", Some("1.2.3"))]);
+            let mut entry = rust_entry("alpha", "some/path");
+            entry.stack = stack.clone();
+            assert_eq!(
+                plan_project_remediation(&proj, &[entry]),
+                ProjectRemediationPlan::Proceed {
+                    path: std::path::PathBuf::from("some/path"),
+                    stack,
+                }
+            );
+        }
     }
 }

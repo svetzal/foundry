@@ -22,6 +22,11 @@ pub struct SupplyChainFinding {
     /// `None` → no fix available, a human policy call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_version: Option<String>,
+    /// Package the scanner says should be upgraded. This differs from
+    /// `package` when a parent dependency must move to remove a vulnerable
+    /// transitive package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_package: Option<String>,
 }
 
 /// An advisory that the repo's `.supply-chain-allow.json` spoke to — either an
@@ -82,11 +87,10 @@ pub struct SupplyChainScannedPayload {
 ///
 /// `status` is an open string so new mechanisms can extend it without a wire
 /// break: `"applied"` (fix verified by gates and committed), `"rolled_back"`
-/// (applied but gates failed, reverted), `"apply_failed"` (the fix command
-/// itself failed — e.g. the fixed version is out of the manifest's range, the
-/// override-rewrite case), `"no_fixer"` (fixable but no mechanism for this stack
-/// yet), or `"skipped"` (project-level: not in registry, dirty tree, no gates to
-/// verify against — see `detail`).
+/// (applied but gates failed, reverted), `"apply_failed"` (the stack-specific
+/// fix or lock refresh failed), `"no_fixer"` (fixable but no mechanism for this
+/// stack), or `"skipped"` (project-level: not in registry, dirty tree, no gates
+/// to verify against — see `detail`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RemediationOutcome {
     /// Registry project the finding belongs to.
@@ -108,11 +112,10 @@ pub struct RemediationOutcome {
 /// Payload for `SupplyChainRemediated` — the formation's mid-chain remediation
 /// event, sitting between the scan and the digest.
 ///
-/// In the current (non-mutating) increment the remediation block is a *triage
-/// classifier*: it carries every project's scan through verbatim and adds a
-/// fixable-vs-policy-call split derived from each finding's `fix_version`.
-/// `remediated_count` is the number of findings actually auto-fixed and is `0`
-/// until the mutating half lands behind its env gate.
+/// The remediation block always carries every project's scan through verbatim
+/// and adds a fixable-vs-policy-call split derived from `fix_version`. When the
+/// explicit remediation gate is enabled under full throttle it also records
+/// each stack-specific apply/verify/commit-or-rollback outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SupplyChainRemediatedPayload {
     /// Per-project scan outcomes, carried through from `SupplyChainScanned` so
@@ -160,4 +163,35 @@ pub struct SupplyChainScanCompletedPayload {
     pub project_count: u64,
     #[serde(default)]
     pub finding_count: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SupplyChainFinding;
+
+    #[test]
+    fn finding_without_fix_package_remains_backward_compatible() {
+        let finding: SupplyChainFinding = serde_json::from_value(serde_json::json!({
+            "cve": "CVE-1",
+            "package": "transitive",
+            "fix_version": "3.2.1"
+        }))
+        .unwrap();
+
+        assert!(finding.fix_package.is_none());
+    }
+
+    #[test]
+    fn finding_serializes_explicit_fix_package() {
+        let finding = SupplyChainFinding {
+            cve: "CVE-1".to_string(),
+            package: "transitive".to_string(),
+            fix_version: Some("3.2.1".to_string()),
+            fix_package: Some("direct-parent".to_string()),
+            ..SupplyChainFinding::default()
+        };
+
+        let json = serde_json::to_value(finding).unwrap();
+        assert_eq!(json["fix_package"], "direct-parent");
+    }
 }
