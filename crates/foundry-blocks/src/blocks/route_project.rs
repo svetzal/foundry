@@ -48,6 +48,8 @@ impl TaskBlock for RouteProjectWorkflow {
             .unwrap_or(false);
 
         Box::pin(async move {
+            // Domain skip: stays in execute() because it emits ProjectRunCompleted { success: false }
+            // when in a cycle — a meaningful domain fact that the cycle gather must count.
             if status != "ok" {
                 tracing::info!(%project, %status, "skipping routing: validation did not succeed");
                 if in_cycle {

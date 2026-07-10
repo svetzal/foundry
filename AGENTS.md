@@ -228,11 +228,27 @@ The default implementation returns `true`, so blocks with no payload filter do n
 
 ### Leave in execute()
 
-Keep guards in `execute()` — with a `// Domain skip:` comment explaining why — when the skip emits a **meaningful domain event**:
+Two distinct kinds of guard belong in `execute()` rather than `accepts()`. Use the appropriate comment to distinguish them:
+
+**`// Domain skip:`** — the guard emits a meaningful domain event that downstream blocks consume. Must stay in `execute()` because `accepts()` cannot emit events. Examples:
 
 - `OpsDigestCompleted { skipped: true }` — tells the write block to short-circuit
 - `ProjectValidationCompleted { status: "skipped" }` — domain fact that validation was skipped
-- "project not in registry" halting a chain mid-execution
+- `PreflightCompleted { skipped: true }` — maintenance-workflow preflight bypass; downstream plan block reads this
+- `ProjectRunCompleted { success: false }` — cycle-gather terminal emitted when validation fails
+
+**`// Defensive:`** — the guard is unreachable in production because an `accepts()` predicate already filters the event, but is kept as a safety net. Does **not** emit a domain event. Example:
+
+```rust
+let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
+    // Defensive: accepts() filters SkipNestedLoop and SkipNoChanges before dispatch.
+    return skip!("Skipped: no commit needed");
+};
+```
+
+A future code audit must not re-flag `// Defensive:` guards as missing `// Domain skip:` comments — they are intentionally different.
+
+The "project not in registry" case (via `require_project!`) returns `TaskBlockResult::project_not_found` — a block-level failure, not a domain event — so it also stays in `execute()` but carries neither comment. See the `require_project!` macro doc for the rationale.
 
 The test naming convention reflects this split:
 

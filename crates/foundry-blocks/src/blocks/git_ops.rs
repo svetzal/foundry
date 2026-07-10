@@ -142,6 +142,10 @@ impl TaskBlock for CommitAndPush {
         sinks_on: [RemediationCompleted, ProjectIterationCompleted, ProjectMaintenanceCompleted, InnerIterationCompleted],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        matches!(decide_commit(trigger), CommitDecision::Proceed { .. })
+    }
+
     fn retry_policy(&self) -> RetryPolicy {
         RetryPolicy {
             max_retries: 2,
@@ -188,26 +192,16 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        match decide_commit(trigger) {
-            CommitDecision::SkipNestedLoop => {
-                let project = trigger.project.clone();
-                tracing::info!(%project, "inside nested loop, skipping commit on intermediate completion");
-                skip!("Skipped: inside nested loop (intermediate completion)")
-            }
-            CommitDecision::SkipNoChanges => {
-                let project = trigger.project.clone();
-                tracing::info!(%project, "payload indicates no changes, skipping commit");
-                skip!("No changes to commit")
-            }
-            CommitDecision::Proceed { cve } => {
-                let project = trigger.project.clone();
-                let throttle = trigger.throttle;
-                let event_type = trigger.event_type.clone();
-                let registry = Arc::clone(&self.registry);
-                let shell = Arc::clone(&self.shell);
-                Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
-            }
-        }
+        let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
+            // Defensive: accepts() filters SkipNestedLoop and SkipNoChanges before dispatch.
+            return skip!("Skipped: no commit needed");
+        };
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
+        let event_type = trigger.event_type.clone();
+        let registry = Arc::clone(&self.registry);
+        let shell = Arc::clone(&self.shell);
+        Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
     }
 }
 
@@ -572,20 +566,34 @@ mod tests {
         assert!(sinks.contains(&EventType::InnerIterationCompleted));
     }
 
-    #[tokio::test]
-    async fn skips_iteration_completion_with_loop_context() {
+    #[test]
+    fn accepts_returns_false_when_nested_loop() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
-        let trigger = test_event!(EventType::ProjectIterationCompleted, "my-project", {
-            "project": "my-project",
+        let trigger = test_event!(EventType::ProjectIterationCompleted, "proj", {
+            "project": "proj",
             "success": true,
             "loop_context": { "strategic": { "iteration": 1 } }
         });
+        assert!(!block.accepts(&trigger));
+    }
 
-        let result = block.execute(&trigger).await.unwrap();
+    #[test]
+    fn accepts_returns_false_when_no_changes() {
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
+        assert!(!block.accepts(&trigger));
+    }
 
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert!(result.summary.contains("nested loop"));
+    #[test]
+    fn accepts_returns_true_when_remediation_in_loop_context() {
+        // RemediationCompleted is not a completion event — loop_context does not trigger the
+        // nested-loop guard, so accepts() must return true.
+        let block = CommitAndPush::new(test_helpers::empty_registry());
+        let trigger = test_event!(EventType::RemediationCompleted, "proj", {
+            "cve": "CVE-2026-0001",
+            "loop_context": { "strategic": { "iteration": 1 } }
+        });
+        assert!(block.accepts(&trigger));
     }
 
     #[tokio::test]
@@ -641,18 +649,6 @@ mod tests {
         // Should NOT skip (no nested-loop guard) but returns failure: project not in registry.
         assert!(!result.success);
         assert!(result.events.is_empty());
-    }
-
-    #[tokio::test]
-    async fn payload_changes_false_self_filters_immediately() {
-        let block = CommitAndPush::new(test_helpers::empty_registry());
-        let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
-
-        let result = block.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert_eq!(result.summary, "No changes to commit");
     }
 
     #[tokio::test]
@@ -908,21 +904,23 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_execute_agree_on_skip_for_nested_loop() {
-        // Both dry_run_events and execute must produce no output for a nested loop trigger.
+    fn dry_run_and_accepts_agree_on_skip_for_nested_loop() {
+        // Both dry_run_events and accepts() must reject a nested loop trigger.
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = test_event!(EventType::ProjectIterationCompleted, "proj", {
             "project": "proj",
             "success": true,
             "loop_context": { "strategic": { "iteration": 1 } }
         });
+        assert!(!block.accepts(&trigger), "accepts() must reject nested loop");
         assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip nested loop");
     }
 
     #[test]
-    fn dry_run_and_execute_agree_on_skip_for_no_changes() {
+    fn dry_run_and_accepts_agree_on_skip_for_no_changes() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
+        assert!(!block.accepts(&trigger), "accepts() must reject no-changes trigger");
         assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when no changes");
     }
 }

@@ -60,6 +60,9 @@ impl TaskBlock for RunPreflightGates {
         Box::pin(async move {
             let chain = ChainContext::extract_from(&payload);
 
+            // Domain skip: stays in execute() because it emits PreflightCompleted { skipped: true },
+            // a domain event that downstream blocks (e.g. ExecutePlan) consume to distinguish
+            // a skipped preflight from a passed one.
             // Maintain workflows skip preflight; iterate and validate run gates
             if workflow != WorkflowType::Iterate && workflow != WorkflowType::Validate {
                 tracing::info!(project = %project, workflow = %workflow, "skipping preflight for non-iterate/validate workflow");
@@ -84,6 +87,8 @@ impl TaskBlock for RunPreflightGates {
             // Parse gate definitions from typed payload
             let gates = parse_gates_from_value(p.gates.as_array());
 
+            // Domain skip: stays in execute() because it emits PreflightCompleted { all_passed: true,
+            // results: [] }, a domain event downstream blocks rely on to advance the workflow.
             // No gates defined — emit success
             if gates.is_empty() {
                 tracing::info!(project = %project, "no gates defined, preflight passes");

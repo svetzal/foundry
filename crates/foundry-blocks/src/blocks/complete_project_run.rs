@@ -1,6 +1,6 @@
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{ProjectCompletedPayload, ProjectRunCompletedPayload};
-use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 /// Emits a uniform `ProjectRunCompleted` terminal for a per-project run that
 /// is part of a scattered maintenance cycle.
@@ -28,23 +28,17 @@ impl TaskBlock for CompleteProjectRun {
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        trigger.gather_id.is_some()
+    }
+
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let in_cycle = trigger.gather_id.is_some();
-        let event_type = trigger.event_type.clone();
 
         let p = parse_payload!(trigger, ProjectCompletedPayload);
 
         Box::pin(async move {
-            if !in_cycle {
-                return Ok(TaskBlockResult::success(
-                    format!(
-                        "{project}: {event_type} outside a maintenance cycle — no run terminal"
-                    ),
-                    vec![],
-                ));
-            }
             super::emit_result(
                 format!("{project}: project run completed (success={})", p.success),
                 EventType::ProjectRunCompleted,
@@ -86,6 +80,18 @@ mod tests {
         sinks_on: [ProjectIterationCompleted, ProjectMaintenanceCompleted],
     );
 
+    #[test]
+    fn accepts_returns_false_when_outside_cycle() {
+        let trigger = terminal(EventType::ProjectIterationCompleted, true, None);
+        assert!(!CompleteProjectRun.accepts(&trigger));
+    }
+
+    #[test]
+    fn accepts_returns_true_when_in_cycle() {
+        let trigger = terminal(EventType::ProjectIterationCompleted, true, Some("gth_x"));
+        assert!(CompleteProjectRun.accepts(&trigger));
+    }
+
     #[tokio::test]
     async fn emits_project_run_completed_when_in_a_cycle() {
         let trigger = terminal(EventType::ProjectIterationCompleted, true, Some("gth_x"));
@@ -108,15 +114,5 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         let payload: ProjectRunCompletedPayload = result.events[0].parse_payload().unwrap();
         assert!(!payload.success);
-    }
-
-    #[tokio::test]
-    async fn emits_nothing_outside_a_cycle() {
-        // No gather_id — a standalone iterate/maintain run, not a cycle.
-        let trigger = terminal(EventType::ProjectIterationCompleted, true, None);
-        let result = CompleteProjectRun.execute(&trigger).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
     }
 }

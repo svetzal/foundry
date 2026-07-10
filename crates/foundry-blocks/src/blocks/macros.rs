@@ -62,6 +62,15 @@ macro_rules! parse_payload {
 /// Requires `self.registry: Arc<RwLock<Registry>>` and that the calling module
 /// has `require_project` visible as `super::require_project`.
 ///
+/// **Design note — `execute()`-resident domain skip**: the "project not in registry" path
+/// returns `TaskBlockResult::project_not_found`, which is an honest block-level failure result
+/// rather than a domain event. Per AGENTS.md, this makes it the sanctioned
+/// `execute()`-resident guard for the not-found case: it does not emit a domain event that
+/// downstream blocks consume, so it does **not** carry a `// Domain skip:` comment and is
+/// not a candidate for promotion into `accepts()`. There is exactly one call site that needs
+/// this decision documented — here — rather than at the 16+ individual call sites across the
+/// codebase.
+///
 /// # Usage
 ///
 /// ```ignore
