@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Rust supply-chain findings are no longer discarded as scanner failures.**
+  `cargo audit` conventionally exits 1 when it finds vulnerabilities while
+  writing a valid JSON report to stdout, matching npm and pip-audit semantics.
+  Foundry now parses that report and surfaces the Rust advisories for triage and
+  remediation instead of marking the project not scanned.
 - **Sentinels sharing a scheduled instant now all fire.** The scheduler
   previously selected only one sentinel at the earliest deadline; after it
   fired, recomputing from the boundary skipped every other sentinel due at the

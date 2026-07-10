@@ -90,9 +90,10 @@ fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
 /// Return true when the given non-zero exit code is the tool's conventional way
 /// of signalling "vulnerabilities found" rather than "tool failed".
 fn is_audit_vuln_exit_code(stack: &Stack, exit_code: i32) -> bool {
-    // `npm audit` and `pip-audit` both exit 1 when vulnerabilities are present
-    // (the report still goes to stdout; stderr may carry unrelated warnings).
-    matches!(stack, Stack::TypeScript | Stack::Python) && exit_code == 1
+    // `cargo audit`, `npm audit`, and `pip-audit` exit 1 when vulnerabilities
+    // are present (the report still goes to stdout; stderr may carry unrelated
+    // warnings).
+    matches!(stack, Stack::Rust | Stack::TypeScript | Stack::Python) && exit_code == 1
 }
 
 /// Dispatch JSON parsing to the stack-specific parser.
@@ -505,8 +506,15 @@ mod tests {
     }
 
     #[test]
-    fn rust_non_zero_is_always_failure() {
-        assert!(!is_audit_vuln_exit_code(&Stack::Rust, 1));
+    fn cargo_audit_exit_code_1_is_not_failure() {
+        // cargo-audit exits 1 when vulnerabilities are found; its valid JSON
+        // report must still reach the Rust parser.
+        assert!(is_audit_vuln_exit_code(&Stack::Rust, 1));
+    }
+
+    #[test]
+    fn rust_exit_code_2_is_failure() {
+        assert!(!is_audit_vuln_exit_code(&Stack::Rust, 2));
     }
 
     // --- cargo audit JSON parsing ---
