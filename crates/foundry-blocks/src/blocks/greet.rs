@@ -5,7 +5,7 @@ use foundry_sdk::payload::{
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 use foundry_sdk::throttle::Throttle;
 
-use super::TriggerContext;
+use super::{SimulatedSuccess, TriggerContext};
 
 /// Build a single `GreetingDelivered` event.
 ///
@@ -56,12 +56,42 @@ impl TaskBlock for ComposeGreeting {
 /// Mutator — simulated success at `dry_run`.
 pub struct DeliverGreeting;
 
+/// Outcome of a deliver-greeting dry-run simulation.
+pub(crate) struct GreetingOutcome {
+    greeting: String,
+}
+
+impl SimulatedSuccess for DeliverGreeting {
+    type Outcome = GreetingOutcome;
+
+    fn simulate(&self, trigger: &Event) -> GreetingOutcome {
+        let greeting = trigger
+            .parse_payload::<GreetingComposedPayload>()
+            .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
+        GreetingOutcome { greeting }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &GreetingOutcome) -> Vec<Event> {
+        vec![greeting_delivered_event(
+            &trigger.project,
+            trigger.throttle,
+            &GreetingDeliveredPayload {
+                delivered: true,
+                greeting: outcome.greeting.clone(),
+                dry_run: Some(true),
+            },
+        )]
+    }
+}
+
 impl TaskBlock for DeliverGreeting {
     task_block_meta! {
         name: "Deliver Greeting",
         kind: Mutator,
         sinks_on: [GreetingComposed],
     }
+
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
@@ -86,21 +116,6 @@ impl TaskBlock for DeliverGreeting {
                 vec![event],
             ))
         })
-    }
-
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let greeting = trigger
-            .parse_payload::<GreetingComposedPayload>()
-            .map_or_else(|_| "(no greeting)".to_string(), |p| p.greeting);
-        vec![greeting_delivered_event(
-            &trigger.project,
-            trigger.throttle,
-            &GreetingDeliveredPayload {
-                delivered: true,
-                greeting,
-                dry_run: Some(true),
-            },
-        )]
     }
 }
 

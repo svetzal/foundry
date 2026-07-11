@@ -9,7 +9,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
 use crate::gateway::{AgentGateway, AgentProvider};
 
-use super::TriggerContext;
+use super::{SimulatedSuccess, TriggerContext};
 
 /// Decision outcome for a remediate-pipeline trigger.
 ///
@@ -49,6 +49,30 @@ impl RemediatePipeline {
     const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
 }
 
+impl SimulatedSuccess for RemediatePipeline {
+    type Outcome = Option<()>;
+
+    fn simulate(&self, trigger: &Event) -> Option<()> {
+        match decide_pipeline_remediate(trigger) {
+            PipelineRemediateDecision::InvalidPayload => {
+                tracing::warn!(
+                    "simulate: invalid PipelineChecked payload; will emit no dry-run events"
+                );
+                None
+            }
+            PipelineRemediateDecision::SkipPassing => None,
+            PipelineRemediateDecision::Proceed => Some(()),
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &Option<()>) -> Vec<Event> {
+        match outcome {
+            None => vec![],
+            Some(()) => super::dry_run_remediation_event(trigger, None, Some(true)),
+        }
+    }
+}
+
 impl TaskBlock for RemediatePipeline {
     task_block_meta! {
         name: "Remediate Pipeline",
@@ -60,20 +84,7 @@ impl TaskBlock for RemediatePipeline {
         matches!(decide_pipeline_remediate(trigger), PipelineRemediateDecision::Proceed)
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        match decide_pipeline_remediate(trigger) {
-            PipelineRemediateDecision::InvalidPayload => {
-                tracing::warn!(
-                    "dry_run_events: invalid PipelineChecked payload; emitting no events"
-                );
-                vec![]
-            }
-            PipelineRemediateDecision::SkipPassing => vec![],
-            PipelineRemediateDecision::Proceed => {
-                super::dry_run_remediation_event(trigger, None, Some(true))
-            }
-        }
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {

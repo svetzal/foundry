@@ -46,6 +46,11 @@ The key design question for every task block: is it an Observer or a Mutator?
 At `dry_run`, Mutators don't execute at all — they simulate success via
 `dry_run_events()`, and the simulated events carry `dry_run: true`.
 
+Mutator blocks implement the `SimulatedSuccess` trait — `dry_run_events()` is generated
+by `dry_run_via_simulation!()` and must never be hand-written. The `simulate()` method
+produces a synthetic outcome, and `success_events()` is the single source of truth for
+the event shape.
+
 ## CLI Usage
 
 ```bash

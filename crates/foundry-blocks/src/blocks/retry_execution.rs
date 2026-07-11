@@ -8,7 +8,7 @@ use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{ExecutionContext, TriggerContext};
+use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
 agent_execution_block! {
     /// Retries the execution phase with context about which gates failed.
@@ -19,6 +19,37 @@ agent_execution_block! {
     pub struct RetryExecution
 }
 
+/// Outcome of a retry-execution dry-run simulation.
+pub(crate) enum RetryOutcome {
+    /// Payload could not be parsed — emit no events.
+    InvalidPayload,
+    /// Valid retry request — emit a dry-run execution event.
+    Valid { retry_count: u64 },
+}
+
+impl SimulatedSuccess for RetryExecution {
+    type Outcome = RetryOutcome;
+
+    fn simulate(&self, trigger: &Event) -> RetryOutcome {
+        match trigger.parse_payload::<RetryRequestedPayload>() {
+            Ok(p) => RetryOutcome::Valid {
+                retry_count: p.retry_count,
+            },
+            Err(_) => RetryOutcome::InvalidPayload,
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &RetryOutcome) -> Vec<Event> {
+        match outcome {
+            RetryOutcome::InvalidPayload => vec![],
+            RetryOutcome::Valid { retry_count } => {
+                let workflow = WorkflowType::from_payload(&trigger.payload);
+                super::dry_run_execution_event(trigger, workflow, Some(*retry_count))
+            }
+        }
+    }
+}
+
 impl TaskBlock for RetryExecution {
     task_block_meta! {
         name: "Retry Execution",
@@ -26,13 +57,7 @@ impl TaskBlock for RetryExecution {
         sinks_on: [RetryRequested],
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let Some(p) = trigger.parse_payload::<RetryRequestedPayload>().ok() else {
-            return vec![];
-        };
-        let workflow = WorkflowType::from_payload(&trigger.payload);
-        super::dry_run_execution_event(trigger, workflow, Some(p.retry_count))
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {

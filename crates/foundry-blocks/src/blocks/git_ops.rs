@@ -13,6 +13,8 @@ use foundry_sdk::loop_context::has_loop_context;
 
 use crate::gateway::ShellGateway;
 
+use super::SimulatedSuccess;
+
 task_block_new! {
     /// Commits staged changes and pushes to the remote.
     /// Mutator — simulated success at `dry_run`.
@@ -36,7 +38,31 @@ task_block_new! {
     }
 }
 
+/// Outcome of a commit-and-push dry-run simulation.
+pub(crate) struct CommitDryRunOutcome {
+    cve: String,
+    push_enabled: bool,
+}
+
 impl CommitAndPush {
+    /// Look up whether push is enabled for a project in the registry.
+    ///
+    /// Returns `true` when the project is not found (unknown → optimistic default) or
+    /// when `entry.actions.push` is `true`.  Returns `true` on lock-poison as well
+    /// (defensive default keeps the dry-run chain intact).
+    fn push_enabled_for(&self, project: &str) -> bool {
+        match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(project).is_none_or(|e| e.actions.push),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "registry lock poisoned in push_enabled_for; defaulting push_enabled=true"
+                );
+                true
+            }
+        }
+    }
+
     async fn commit_and_push(
         registry: Arc<RwLock<Registry>>,
         shell: Arc<dyn ShellGateway>,
@@ -135,6 +161,44 @@ fn decide_commit(trigger: &Event) -> CommitDecision {
     CommitDecision::Proceed { cve }
 }
 
+impl SimulatedSuccess for CommitAndPush {
+    type Outcome = Option<CommitDryRunOutcome>;
+
+    fn simulate(&self, trigger: &Event) -> Option<CommitDryRunOutcome> {
+        match decide_commit(trigger) {
+            CommitDecision::SkipNestedLoop | CommitDecision::SkipNoChanges => None,
+            CommitDecision::Proceed { cve } => {
+                let push_enabled = self.push_enabled_for(&trigger.project);
+                Some(CommitDryRunOutcome { cve, push_enabled })
+            }
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &Option<CommitDryRunOutcome>) -> Vec<Event> {
+        let Some(ref data) = *outcome else {
+            return vec![];
+        };
+        let push_payload = data.push_enabled.then(|| ProjectChangesPushedPayload {
+            project: trigger.project.clone(),
+            cve: data.cve.clone(),
+            message: None,
+            dry_run: Some(true),
+        });
+        build_commit_push_events(
+            &trigger.project,
+            trigger.throttle,
+            &ProjectChangesCommittedPayload {
+                project: trigger.project.clone(),
+                cve: data.cve.clone(),
+                message: commit_message(&trigger.event_type, &trigger.project),
+                dry_run: Some(true),
+            },
+            push_payload.as_ref(),
+        )
+        .expect("commit and push event payloads are infallibly serializable")
+    }
+}
+
 impl TaskBlock for CommitAndPush {
     task_block_meta! {
         name: "Commit and Push",
@@ -153,43 +217,7 @@ impl TaskBlock for CommitAndPush {
         }
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
-            return vec![];
-        };
-
-        let project = trigger.project.clone();
-        let throttle = trigger.throttle;
-
-        // Simulate push if the project has push enabled, or if unknown (stub path).
-        let push_enabled = match super::read_registry(&self.registry) {
-            Ok(guard) => guard.find_project(&project).is_none_or(|e| e.actions.push),
-            Err(e) => {
-                tracing::error!(error = %e, "registry lock poisoned in dry_run_events; defaulting push_enabled=true");
-                true
-            }
-        };
-
-        let push_payload = push_enabled.then(|| ProjectChangesPushedPayload {
-            project: project.clone(),
-            cve: cve.clone(),
-            message: None,
-            dry_run: Some(true),
-        });
-
-        build_commit_push_events(
-            &project,
-            throttle,
-            &ProjectChangesCommittedPayload {
-                project: project.clone(),
-                cve: cve.clone(),
-                message: commit_message(&trigger.event_type, &project),
-                dry_run: Some(true),
-            },
-            push_payload.as_ref(),
-        )
-        .expect("commit and push event payloads are infallibly serializable")
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
@@ -922,5 +950,23 @@ mod tests {
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
         assert!(!block.accepts(&trigger), "accepts() must reject no-changes trigger");
         assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when no changes");
+    }
+
+    #[test]
+    fn dry_run_omits_push_when_push_disabled() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false); // push=false
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger("my-project", "CVE-2026-0001");
+        let events = block.dry_run_events(&trigger);
+        let types: Vec<String> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(
+            types.iter().any(|t| t == "project_changes_committed"),
+            "commit event must always be present"
+        );
+        assert!(
+            !types.iter().any(|t| t == "project_changes_pushed"),
+            "push event must be omitted when push is disabled"
+        );
     }
 }

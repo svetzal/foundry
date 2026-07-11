@@ -118,10 +118,7 @@ impl OutputMapper<ReleaseOutput> for VulnReleaseMapper {
     }
 
     fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        // Respect the self-filter: skip when dirty.
-        let dirty =
-            trigger.parse_payload::<MainBranchAuditedPayload>().ok().is_none_or(|p| p.dirty);
-        if dirty {
+        if super::skips_when_dirty(trigger) {
             return vec![];
         }
         self.inner.dry_run_events(trigger)
@@ -288,6 +285,21 @@ mod tests {
         let trigger = make_trigger(serde_json::json!({ "dirty": true, "cve": "CVE-2026-1234" }));
         let events = mapper.dry_run_events(&trigger);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn adapter_filter_and_dry_run_events_both_skip_for_dirty_trigger() {
+        let dirty_trigger =
+            make_trigger(serde_json::json!({ "dirty": true, "cve": "CVE-2026-0001" }));
+        assert!(
+            super::super::skips_when_dirty(&dirty_trigger),
+            "skips_when_dirty must return true for dirty trigger"
+        );
+        let mapper = VulnReleaseMapper::new();
+        assert!(
+            mapper.dry_run_events(&dirty_trigger).is_empty(),
+            "dry_run_events must skip for dirty trigger"
+        );
     }
 
     #[test]

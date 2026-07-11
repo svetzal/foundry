@@ -188,9 +188,13 @@ pub trait TaskBlock: Send + Sync {
     /// with `dry_run: true` in the payload. These events are persisted,
     /// broadcast, and delivered so the full chain shape is visible.
     ///
-    /// Default: empty (block contributes no events in dry-run).
-    /// Override for Mutator blocks that need to propagate the chain.
+    /// Default: asserts in debug builds that the block is an Observer (Mutator
+    /// blocks must override via `dry_run_via_simulation!()`), then returns empty.
     fn dry_run_events(&self, _trigger: &Event) -> Vec<Event> {
+        debug_assert!(
+            matches!(self.kind(), BlockKind::Observer),
+            "Mutator blocks must override dry_run_events() — use dry_run_via_simulation!() from foundry-blocks"
+        );
         vec![]
     }
 }
@@ -287,10 +291,16 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_events_default_is_empty() {
+    fn dry_run_events_default_is_empty_for_observer() {
         let event = make_event();
         assert!(StubObserver.dry_run_events(&event).is_empty());
-        assert!(StubMutator.dry_run_events(&event).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Mutator blocks must override dry_run_events")]
+    fn dry_run_events_default_panics_for_mutator_without_override() {
+        let event = make_event();
+        StubMutator.dry_run_events(&event);
     }
 
     #[test]

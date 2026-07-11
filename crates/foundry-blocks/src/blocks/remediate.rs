@@ -8,7 +8,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::AgentGateway;
 
-use super::TriggerContext;
+use super::{SimulatedSuccess, TriggerContext};
 
 /// Decision outcome for a remediate-vulnerability trigger.
 ///
@@ -43,6 +43,24 @@ agent_block_new!(
     pub struct RemediateVulnerability
 );
 
+impl SimulatedSuccess for RemediateVulnerability {
+    type Outcome = Option<String>;
+
+    fn simulate(&self, trigger: &Event) -> Option<String> {
+        match decide_remediate(trigger) {
+            RemediateDecision::SkipClean => None,
+            RemediateDecision::Proceed { cve } => Some(cve),
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &Option<String>) -> Vec<Event> {
+        match outcome {
+            None => vec![],
+            Some(cve) => super::dry_run_remediation_event(trigger, Some(cve.clone()), None),
+        }
+    }
+}
+
 impl TaskBlock for RemediateVulnerability {
     task_block_meta! {
         name: "Remediate Vulnerability",
@@ -54,14 +72,7 @@ impl TaskBlock for RemediateVulnerability {
         matches!(decide_remediate(trigger), RemediateDecision::Proceed { .. })
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        match decide_remediate(trigger) {
-            RemediateDecision::SkipClean => vec![],
-            RemediateDecision::Proceed { cve } => {
-                super::dry_run_remediation_event(trigger, Some(cve), None)
-            }
-        }
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {

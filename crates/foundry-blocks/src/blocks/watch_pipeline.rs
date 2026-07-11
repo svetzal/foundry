@@ -9,6 +9,8 @@ use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::ShellGateway;
 
+use super::SimulatedSuccess;
+
 /// Build a single `ReleasePipelineCompleted` event.
 ///
 /// Single source of truth for the `EventType::ReleasePipelineCompleted`
@@ -95,14 +97,12 @@ impl WatchPipeline {
     }
 }
 
-impl TaskBlock for WatchPipeline {
-    task_block_meta! {
-        name: "Watch Pipeline",
-        kind: Mutator,
-        sinks_on: [ReleaseCompleted],
-    }
+impl SimulatedSuccess for WatchPipeline {
+    type Outcome = ();
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
+    fn simulate(&self, _trigger: &Event) {}
+
+    fn success_events(&self, trigger: &Event, _outcome: &()) -> Vec<Event> {
         vec![release_pipeline_completed_event(
             &trigger.project,
             trigger.throttle,
@@ -111,6 +111,16 @@ impl TaskBlock for WatchPipeline {
             Some(true),
         )]
     }
+}
+
+impl TaskBlock for WatchPipeline {
+    task_block_meta! {
+        name: "Watch Pipeline",
+        kind: Mutator,
+        sinks_on: [ReleaseCompleted],
+    }
+
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let project = trigger.project.clone();

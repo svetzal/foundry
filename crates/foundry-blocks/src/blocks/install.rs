@@ -11,7 +11,7 @@ use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult
 
 use crate::gateway::ShellGateway;
 
-use super::TriggerContext;
+use super::{SimulatedSuccess, TriggerContext};
 
 /// Build a single `LocalInstallCompleted` event.
 ///
@@ -47,6 +47,30 @@ task_block_new! {
     }
 }
 
+impl SimulatedSuccess for InstallLocally {
+    type Outcome = LocalInstallCompletedPayload;
+
+    fn simulate(&self, _trigger: &Event) -> LocalInstallCompletedPayload {
+        LocalInstallCompletedPayload {
+            success: true,
+            dry_run: Some(true),
+            ..Default::default()
+        }
+    }
+
+    fn success_events(
+        &self,
+        trigger: &Event,
+        outcome: &LocalInstallCompletedPayload,
+    ) -> Vec<Event> {
+        vec![local_install_completed_event(
+            &trigger.project,
+            trigger.throttle,
+            outcome,
+        )]
+    }
+}
+
 impl TaskBlock for InstallLocally {
     task_block_meta! {
         name: "Install Locally",
@@ -61,17 +85,7 @@ impl TaskBlock for InstallLocally {
         }
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        vec![local_install_completed_event(
-            &trigger.project,
-            trigger.throttle,
-            &LocalInstallCompletedPayload {
-                success: true,
-                dry_run: Some(true),
-                ..Default::default()
-            },
-        )]
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {

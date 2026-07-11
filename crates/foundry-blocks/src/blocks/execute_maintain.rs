@@ -8,7 +8,7 @@ use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{ExecutionContext, TriggerContext};
+use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
 agent_execution_block! {
     /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
@@ -40,6 +40,24 @@ fn decide_maintain(trigger: &Event) -> MaintainDecision {
     }
 }
 
+impl SimulatedSuccess for ExecuteMaintain {
+    type Outcome = Option<()>;
+
+    fn simulate(&self, trigger: &Event) -> Option<()> {
+        match decide_maintain(trigger) {
+            MaintainDecision::SkipNonMaintain => None,
+            MaintainDecision::Proceed => Some(()),
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &Option<()>) -> Vec<Event> {
+        match outcome {
+            None => vec![],
+            Some(()) => super::dry_run_execution_event(trigger, WorkflowType::Maintain, None),
+        }
+    }
+}
+
 impl TaskBlock for ExecuteMaintain {
     task_block_meta! {
         name: "Execute Maintain",
@@ -51,14 +69,7 @@ impl TaskBlock for ExecuteMaintain {
         decide_maintain(trigger) == MaintainDecision::Proceed
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        match decide_maintain(trigger) {
-            MaintainDecision::SkipNonMaintain => vec![],
-            MaintainDecision::Proceed => {
-                super::dry_run_execution_event(trigger, WorkflowType::Maintain, None)
-            }
-        }
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {

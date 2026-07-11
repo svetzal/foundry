@@ -147,6 +147,18 @@ pub type CutReleaseStep = ComposedStep<AgentRelease, VulnReleaseAdapter, VulnRel
 /// The composed `TaskBlock` type for the manual release path.
 pub type ExecuteReleaseStep = ComposedStep<AgentRelease, ManualReleaseAdapter, ReleaseOutputMapper>;
 
+/// Returns `true` when the trigger's `MainBranchAuditedPayload` has `dirty: true`
+/// (or when the payload cannot be parsed — conservative: treat unknown as dirty).
+///
+/// Single source of truth used by both `VulnReleaseAdapter` (which skips execution)
+/// and `VulnReleaseMapper` (which suppresses dry-run events) when the branch is dirty.
+pub(super) fn skips_when_dirty(trigger: &foundry_sdk::event::Event) -> bool {
+    trigger
+        .parse_payload::<foundry_sdk::payload::MainBranchAuditedPayload>()
+        .ok()
+        .is_none_or(|p| p.dirty)
+}
+
 /// Build the composed "Cut Release" step (vulnerability flow).
 pub fn cut_release_step(registry: Arc<RwLock<Registry>>) -> CutReleaseStep {
     let shell: Arc<dyn ShellGateway> = Arc::new(crate::gateway::ProcessShellGateway);

@@ -1,5 +1,7 @@
 #[macro_use]
 mod macros;
+#[macro_use]
+mod dry_run;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
@@ -10,6 +12,8 @@ mod change_detection;
 mod digest_io;
 mod event_builders;
 mod execution;
+
+pub(crate) use dry_run::SimulatedSuccess;
 
 pub(super) use agent_helpers::{
     AgentBlockSpec, CodingAgentSpec, ReadOnlyAgentSpec, chain_agent_provider, extract_json,

@@ -24,11 +24,11 @@ impl VulnReleaseAdapter {
 
 impl EventAdapter<ReleaseInput> for VulnReleaseAdapter {
     fn adapt(&self, trigger: &Event) -> Option<ReleaseInput> {
-        let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok()?;
-        if p.dirty {
-            tracing::info!("main branch is dirty, skipping release");
+        if super::skips_when_dirty(trigger) {
+            tracing::info!("main branch is dirty or payload invalid, skipping release");
             return None;
         }
+        let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok()?;
 
         let project = &trigger.project;
         let cve = p.cve.clone();

@@ -9,7 +9,7 @@ use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{ExecutionContext, TriggerContext};
+use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
 agent_execution_block! {
     /// Applies the correction plan to the project.
@@ -20,6 +20,57 @@ agent_execution_block! {
     pub struct ExecutePlan
 }
 
+/// Outcome of an execute-plan dry-run simulation.
+pub(crate) enum ExecutePlanOutcome {
+    /// Plan decided no correction is needed — emit no-correction `ExecutionCompleted`.
+    NoCorrection,
+    /// Plan requires execution — emit standard dry-run `ExecutionCompleted`.
+    Executed,
+}
+
+impl SimulatedSuccess for ExecutePlan {
+    type Outcome = ExecutePlanOutcome;
+
+    fn simulate(&self, trigger: &Event) -> ExecutePlanOutcome {
+        let correction_needed = trigger
+            .parse_payload::<PlanCompletedPayload>()
+            .map_or(true, |p| p.correction_needed);
+        if correction_needed {
+            ExecutePlanOutcome::Executed
+        } else {
+            ExecutePlanOutcome::NoCorrection
+        }
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &ExecutePlanOutcome) -> Vec<Event> {
+        let workflow = foundry_sdk::workflow::WorkflowType::from_payload(&trigger.payload);
+        match outcome {
+            ExecutePlanOutcome::Executed => super::dry_run_execution_event(trigger, workflow, None),
+            ExecutePlanOutcome::NoCorrection => {
+                let workflow_str = workflow.to_string();
+                let context = LoopContext::extract_from(&trigger.payload);
+                vec![super::execution_completed_event(
+                    &trigger.project,
+                    trigger.throttle,
+                    &ExecutionCompletedPayload {
+                        project: trigger.project.clone(),
+                        workflow: workflow_str,
+                        success: true,
+                        summary: String::new(),
+                        execution_output: None,
+                        dry_run: Some(true),
+                        retry_count: None,
+                        changes_detected: Some(false),
+                        files_changed: vec![],
+                        failure: AgentFailureMetadata::default(),
+                        context,
+                    },
+                )]
+            }
+        }
+    }
+}
+
 impl TaskBlock for ExecutePlan {
     task_block_meta! {
         name: "Execute Plan",
@@ -27,9 +78,7 @@ impl TaskBlock for ExecutePlan {
         sinks_on: [PlanCompleted],
     }
 
-    fn dry_run_events(&self, trigger: &Event) -> Vec<Event> {
-        super::dry_run_execution_event(trigger, WorkflowType::Iterate, None)
-    }
+    dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
@@ -266,6 +315,37 @@ mod tests {
         assert_eq!(events[0].event_type, EventType::ExecutionCompleted);
         assert_eq!(events[0].payload["dry_run"], true);
         assert_eq!(events[0].payload["success"], true);
+        assert_eq!(events[0].payload["workflow"], "iterate");
+    }
+
+    #[test]
+    fn dry_run_matches_execute_for_no_correction_plan() {
+        let agent = FakeAgentGateway::success();
+        let block = ExecutePlan::new(
+            agent,
+            Arc::new(RwLock::new(Registry {
+                version: 2,
+                projects: vec![],
+            })),
+        );
+        let trigger = test_event!(EventType::PlanCompleted, "my-project", {
+            "project": "my-project",
+            "plan": "No changes needed.",
+            "principle": "DRY",
+            "workflow": "iterate",
+            "correction_needed": false,
+        });
+
+        let events = block.dry_run_events(&trigger);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::ExecutionCompleted);
+        assert_eq!(events[0].payload["dry_run"], true);
+        assert_eq!(events[0].payload["success"], true);
+        assert_eq!(
+            events[0].payload["changes_detected"], false,
+            "no-correction path must set changes_detected=false"
+        );
         assert_eq!(events[0].payload["workflow"], "iterate");
     }
 

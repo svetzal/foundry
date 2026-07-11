@@ -253,8 +253,16 @@ The "project not in registry" case (via `require_project!`) returns `TaskBlockRe
 The test naming convention reflects this split:
 
 - `accepts_returns_false_when_*` / `accepts_returns_true_when_*` — sync unit tests for the `accepts()` predicate
-- `dry_run_and_accepts_agree_on_skip_for_*` — verifies that `dry_run_events` and `accepts()` agree (replaces old `dry_run_and_execute_agree_on_skip_for_*`)
+- `dry_run_and_accepts_agree_on_skip_for_*` — verifies that `dry_run_events` and `accepts()` agree, and also verifies the `simulate()` mirror (replaces old `dry_run_and_execute_agree_on_skip_for_*`)
 - Domain-skip tests remain async and test `execute()` behavior directly
+
+### Dry-run simulation convention
+
+Mutator blocks implement `SimulatedSuccess` (from `foundry-blocks::blocks::dry_run`) and use `dry_run_via_simulation!()` to generate `dry_run_events`. Hand-written `dry_run_events` overrides are prohibited.
+
+- `simulate(&self, trigger)` — produces a synthetic success outcome from the trigger (no I/O). Returns `Option<T>` where `None` means skip (same condition as `accepts()`).
+- `success_events(&self, trigger, outcome)` — SINGLE source of truth for event construction; called by the generated `dry_run_events`.
+- Skip conditions live in `accepts()` (routing) and are mirrored in `simulate()`'s `Option<T>` return; the `dry_run_and_accepts_agree_on_skip_for_*` tests are regression guards over this structural invariant.
 
 ## Branching Workflow
 
