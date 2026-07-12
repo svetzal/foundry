@@ -104,7 +104,10 @@ fn vuln_engine() -> Engine {
         Arc::clone(&registry),
     )));
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(Arc::clone(&registry))));
-    engine.register(Box::new(foundry_blocks::blocks::cut_release_step(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::CutRelease::new(
+        foundry_sdk::gateway::fakes::FakeAgentGateway::success(),
+        Arc::clone(&registry),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::new(Arc::clone(&registry))));
     engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(Arc::clone(&registry))));
     engine

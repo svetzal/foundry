@@ -374,8 +374,11 @@ fn register_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::cut_release_step(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::execute_release_step(
+    engine.register(Box::new(foundry_blocks::blocks::CutRelease::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::ExecuteRelease::new(
         agent.clone(),
         registry.clone(),
     )));

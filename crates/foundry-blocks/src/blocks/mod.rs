@@ -147,7 +147,7 @@ pub use greet::{ComposeGreeting, DeliverGreeting};
 pub use install::InstallLocally;
 pub use observe_commits::ObserveCommits;
 pub use observe_events::ObserveEvents;
-pub use release::{cut_release_step, execute_release_step};
+pub use release::{CutRelease, ExecuteRelease};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
 pub use remediate_supply_chain::RemediateSupplyChain;

@@ -264,6 +264,8 @@ Mutator blocks implement `SimulatedSuccess` (from `foundry-blocks::blocks::dry_r
 - `success_events(&self, trigger, outcome)` — SINGLE source of truth for event construction; called by the generated `dry_run_events`.
 - Skip conditions live in `accepts()` (routing) and are mirrored in `simulate()`'s `Option<T>` return; the `dry_run_and_accepts_agree_on_skip_for_*` tests are regression guards over this structural invariant.
 
+This is now universal — every Mutator block in the workspace composes via `TaskBlock` + `SimulatedSuccess` + `dry_run_via_simulation!()`. There is no second composition mechanism.
+
 ## Branching Workflow
 
 This project follows trunk-based development. `main` is the only long-lived branch. All work lands on `main` via direct commit. Feature branches are not pushed to `origin` and pull requests are not used. Short-lived local working branches (e.g. from hopper worktrees) are merged to `main` and deleted locally before work is considered complete.

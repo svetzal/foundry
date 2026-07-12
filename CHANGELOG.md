@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Release blocks (`CutRelease`, `ExecuteRelease`) now use the canonical `TaskBlock` + `SimulatedSuccess` + `dry_run_via_simulation!()` composition, eliminating the parallel `WorkBlock`/`EventAdapter`/`OutputMapper`/`ComposedStep` abstraction.
+- Dirty-branch release triggers are now filtered at dispatch (via `accepts()`) rather than skipped inside `execute()`.
+- Dry-run no longer fabricates `ReleaseCompleted` for projects with `release: false` in their action flags.
 - `foundry init` now installs on cmx-core 0.2, which reconciles the skill's
   `metadata.version` to the foundry binary version at install time. foundry's
   `SKILL.md` previously carried no version, so `cmx doctor` saw the installed
