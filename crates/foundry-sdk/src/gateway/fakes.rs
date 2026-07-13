@@ -148,6 +148,14 @@ impl FakeScannerGateway {
             }),
         })
     }
+
+    /// Always return an `Err` from `run_audit`, simulating a gateway-level
+    /// failure (e.g. I/O error or process spawn failure).
+    pub fn gateway_error(msg: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            result: Err(msg.into()),
+        })
+    }
 }
 
 impl ScannerGateway for FakeScannerGateway {

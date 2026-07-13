@@ -144,12 +144,10 @@ pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
 }
 
 pub(crate) fn extract_json(s: &str) -> String {
-    if let Some(start) = s.find('{')
-        && let Some(end) = s.rfind('}')
-    {
-        return s[start..=end].to_string();
+    match (s.find('{'), s.rfind('}')) {
+        (Some(start), Some(end)) if start <= end => s[start..=end].to_string(),
+        _ => s.to_string(),
     }
-    s.to_string()
 }
 
 /// Parameters for a read-only observer agent invocation.
@@ -309,6 +307,35 @@ pub(crate) fn match_agent_text_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_json_returns_input_when_close_brace_precedes_open_brace() {
+        // Input where `}` comes before `{`: must return verbatim without panic.
+        let input = "} oops {";
+        let result = extract_json(input);
+        assert_eq!(result, input, "inverted braces should return input verbatim");
+    }
+
+    #[test]
+    fn extract_json_extracts_object_from_surrounding_prose() {
+        let input = "some text {\"key\": \"value\"} trailing";
+        let result = extract_json(input);
+        assert_eq!(result, "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn parse_agent_json_returns_none_for_inverted_braces() {
+        // Inverted brace order must return verbatim from extract_json and then
+        // fail JSON parsing gracefully — no panic, returns None.
+        let result = parse_agent_json("} then {");
+        assert!(result.is_none(), "inverted braces should yield None");
+    }
+
+    #[test]
+    fn parse_agent_json_returns_none_for_non_json_prose() {
+        let result = parse_agent_json("no json here at all");
+        assert!(result.is_none());
+    }
 
     #[test]
     fn json_output_prompt_appends_envelope() {

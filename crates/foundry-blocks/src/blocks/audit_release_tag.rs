@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::VulnerabilityDetectedPayload;
+use foundry_sdk::payload::{ReleaseTagAuditedPayload, VulnerabilityDetectedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
@@ -100,7 +100,33 @@ impl AuditReleaseTag {
 
         Box::pin(async move {
             let path = std::path::Path::new(&entry.path);
-            let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
+            let audit_result =
+                match crate::scanner::audit_outcome(scanner.run_audit(path, &entry.stack).await) {
+                    Err(msg) => {
+                        tracing::warn!(
+                            project = %project,
+                            error = %msg,
+                            "post-push audit scanner failed"
+                        );
+                        let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
+                            project: project.clone(),
+                            cve: "none".to_string(),
+                            tag: String::new(),
+                            vulnerable: false,
+                            dirty: Some(false),
+                            scan_error: Some(msg),
+                        })
+                        .expect("ReleaseTagAuditedPayload is infallibly serializable");
+                        return Ok(single_event_result(
+                            "Post-push audit: scanner failed".to_string(),
+                            EventType::ReleaseTagAudited,
+                            project,
+                            throttle,
+                            event_payload,
+                        ));
+                    }
+                    Ok(result) => result,
+                };
             let reported =
                 crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
             let vulnerable = !reported.is_empty();
@@ -109,16 +135,21 @@ impl AuditReleaseTag {
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());
 
-            Ok(super::single_event_result(
+            let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
+                project: project.clone(),
+                cve: cve.clone(),
+                tag: String::new(),
+                vulnerable,
+                dirty: Some(false),
+                scan_error: None,
+            })
+            .expect("ReleaseTagAuditedPayload is infallibly serializable");
+            Ok(single_event_result(
                 format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
                 EventType::ReleaseTagAudited,
                 project,
                 throttle,
-                serde_json::json!({
-                    "cve": cve,
-                    "vulnerable": vulnerable,
-                    "dirty": false,
-                }),
+                event_payload,
             ))
         })
     }
@@ -163,6 +194,7 @@ impl AuditReleaseTag {
                     &payload_cve,
                     payload_vulnerable,
                     payload_dirty,
+                    None,
                 ));
             };
 
@@ -188,6 +220,7 @@ impl AuditReleaseTag {
                         &payload_cve,
                         payload_vulnerable,
                         payload_dirty,
+                        None,
                     ));
                 }
             };
@@ -266,7 +299,34 @@ async fn perform_tag_checkout_and_scan(
 
     let vulnerabilities = if let Some(ref tag) = latest_tag {
         // Check out the release tag.
-        let _ = shell.run(path, "git", &["checkout", tag], None, None).await;
+        let checkout_result = shell.run(path, "git", &["checkout", tag], None, None).await;
+        let checkout_success = checkout_result.as_ref().is_ok_and(|r| r.success);
+        let checkout_stderr = match &checkout_result {
+            Ok(r) => r.stderr.clone(),
+            Err(e) => e.to_string(),
+        };
+        if !checkout_success {
+            tracing::warn!(
+                project = %project,
+                tag = %tag,
+                stderr = %checkout_stderr,
+                "git checkout tag failed"
+            );
+            // Run cleanup even though we may not have moved.
+            let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
+            if cleanup1.is_err() {
+                let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
+            }
+            let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
+            return Ok(emit_payload_result(
+                project.to_string(),
+                throttle,
+                &fallback.cve,
+                fallback.vulnerable,
+                fallback.dirty,
+                Some(format!("git checkout {tag} failed: {checkout_stderr}")),
+            ));
+        }
 
         // Run the audit scanner.
         let audit = scanner.run_audit(path, stack).await;
@@ -279,7 +339,24 @@ async fn perform_tag_checkout_and_scan(
         // Last-resort fallback.
         let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
 
-        audit.unwrap_or_default().vulnerabilities
+        match crate::scanner::audit_outcome(audit) {
+            Err(msg) => {
+                tracing::warn!(
+                    project = %project,
+                    error = %msg,
+                    "release tag scanner failed"
+                );
+                return Ok(emit_payload_result(
+                    project.to_string(),
+                    throttle,
+                    &fallback.cve,
+                    fallback.vulnerable,
+                    fallback.dirty,
+                    Some(msg),
+                ));
+            }
+            Ok(result) => result.vulnerabilities,
+        }
     } else {
         tracing::info!(project = %project, "no release tags found, falling back to payload");
         return Ok(emit_payload_result(
@@ -288,6 +365,7 @@ async fn perform_tag_checkout_and_scan(
             &fallback.cve,
             fallback.vulnerable,
             fallback.dirty,
+            None,
         ));
     }; // vulnerabilities assigned above
 
@@ -300,41 +378,54 @@ async fn perform_tag_checkout_and_scan(
 
     tracing::info!(%cve, %vulnerable, "audited release tag");
 
-    let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
-    // Preserve dirty flag from upstream payload for downstream blocks.
-    if let Some(dirty) = fallback.dirty {
-        payload["dirty"] = serde_json::Value::Bool(dirty);
-    }
+    let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
+        project: project.to_string(),
+        cve: cve.clone(),
+        tag: String::new(),
+        vulnerable,
+        dirty: fallback.dirty,
+        scan_error: None,
+    })
+    .expect("ReleaseTagAuditedPayload is infallibly serializable");
 
     Ok(single_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         EventType::ReleaseTagAudited,
         project.to_string(),
         throttle,
-        payload,
+        event_payload,
     ))
 }
 
 /// Build a `TaskBlockResult` that forwards the payload-based vulnerability
 /// state without performing any real git operations.
+///
+/// When `scan_error` is `Some`, the caller knows the scan did not run;
+/// `vulnerable` is the upstream value rather than a fresh scan result.
 fn emit_payload_result(
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
     cve: &str,
     vulnerable: bool,
     dirty: Option<bool>,
+    scan_error: Option<String>,
 ) -> TaskBlockResult {
     tracing::info!(%cve, %vulnerable, "audited release tag");
-    let mut payload = serde_json::json!({ "cve": cve, "vulnerable": vulnerable });
-    if let Some(d) = dirty {
-        payload["dirty"] = serde_json::Value::Bool(d);
-    }
+    let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
+        project: project.clone(),
+        cve: cve.to_string(),
+        tag: String::new(),
+        vulnerable,
+        dirty,
+        scan_error,
+    })
+    .expect("ReleaseTagAuditedPayload is infallibly serializable");
     single_event_result(
         format!("Release tag audited: {cve} vulnerable={vulnerable}"),
         EventType::ReleaseTagAudited,
         project,
         throttle,
-        payload,
+        event_payload,
     )
 }
 
@@ -550,5 +641,283 @@ mod tests {
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
         assert_eq!(emitted.payload["vulnerable"], false);
         assert_eq!(emitted.payload["dirty"], false);
+    }
+
+    #[tokio::test]
+    async fn project_changes_pushed_scanner_error_emits_scan_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+        let scanner = FakeScannerGateway::with_error("audit tool not installed");
+        let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::ProjectChangesPushed,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-1234"}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        assert_eq!(emitted.payload["vulnerable"], false);
+        assert_eq!(emitted.payload["dirty"], false);
+        assert!(
+            emitted.payload["scan_error"].as_str().is_some(),
+            "scan_error must be set when scanner fails"
+        );
+        assert!(
+            emitted.payload["scan_error"]
+                .as_str()
+                .unwrap()
+                .contains("audit tool not installed"),
+            "scan_error should contain the error message"
+        );
+    }
+
+    // -- VulnerabilityDetected path: git checkout failure --
+
+    #[tokio::test]
+    async fn tag_scan_checkout_failure_does_not_scan_and_reports_scan_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+
+        // Sequence: rev-parse → fetch → tag list ("v1.0.0") → checkout tag (FAIL) →
+        //           cleanup checkout_original → cleanup checkout HEAD
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                // rev-parse
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                // fetch --tags
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                // tag list
+                stdout: "v1.0.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                // checkout v1.0.0 — FAIL
+                stdout: String::new(),
+                stderr: "pathspec 'v1.0.0' did not match any file".to_string(),
+                exit_code: 1,
+                success: false,
+            },
+            CommandResult {
+                // cleanup: checkout main
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                // cleanup: checkout HEAD
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        // Scanner must NOT be called when checkout fails.
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::VulnerabilityDetected,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        // Upstream payload values are forwarded.
+        assert_eq!(emitted.payload["cve"], "CVE-2026-1234");
+        assert_eq!(emitted.payload["vulnerable"], true);
+        // scan_error must be set.
+        assert!(
+            emitted.payload["scan_error"].as_str().is_some(),
+            "scan_error must be set on checkout failure"
+        );
+        assert!(
+            emitted.payload["scan_error"]
+                .as_str()
+                .unwrap()
+                .contains("git checkout v1.0.0 failed"),
+            "scan_error should mention the checkout failure"
+        );
+    }
+
+    // -- VulnerabilityDetected path: scanner errors after successful checkout --
+
+    #[tokio::test]
+    async fn tag_scan_scanner_error_falls_back_to_payload_with_scan_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "v1.0.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout tag
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // restore branch
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout HEAD
+        ]);
+        // Scanner returns a tool-level error (e.g. not installed).
+        let scanner = FakeScannerGateway::with_error("cargo audit not found");
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::VulnerabilityDetected,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": true, "dirty": false}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        // Upstream payload values are preserved.
+        assert_eq!(emitted.payload["cve"], "CVE-2026-9999");
+        assert_eq!(emitted.payload["vulnerable"], true);
+        assert!(
+            emitted.payload["scan_error"].as_str().is_some(),
+            "scan_error must be set when scanner has tool error"
+        );
+        assert!(
+            emitted.payload["scan_error"]
+                .as_str()
+                .unwrap()
+                .contains("cargo audit not found"),
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_scan_scanner_gateway_failure_falls_back_to_payload_with_scan_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "v1.0.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout tag
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // restore branch
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }, // checkout HEAD
+        ]);
+        // Scanner gateway itself returns an Err (e.g. I/O failure).
+        let scanner = FakeScannerGateway::gateway_error("I/O error spawning audit tool");
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::VulnerabilityDetected,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": true, "dirty": false}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        // Upstream payload values are preserved.
+        assert_eq!(emitted.payload["cve"], "CVE-2026-9999");
+        assert_eq!(emitted.payload["vulnerable"], true);
+        assert!(
+            emitted.payload["scan_error"].as_str().is_some(),
+            "scan_error must be set when gateway returns Err"
+        );
+        assert!(
+            emitted.payload["scan_error"]
+                .as_str()
+                .unwrap()
+                .contains("I/O error spawning audit tool"),
+        );
     }
 }

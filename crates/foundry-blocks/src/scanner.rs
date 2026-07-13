@@ -418,6 +418,29 @@ fn parse_generic_audit(output: &str) -> AuditResult {
     }
 }
 
+/// Collapse a scanner gateway call into either a usable result or the reason
+/// it failed.
+///
+/// A scan that did not run is never reported as a clean scan:
+/// - `Err(e)` from the gateway (spawn failure, I/O error) → `Err(e.to_string())`
+/// - `Ok(result)` where `result.error.is_some()` (tool not installed, etc.) → `Err(error)`
+/// - `Ok(result)` with no error → `Ok(result)`
+pub(crate) fn audit_outcome(audit: anyhow::Result<AuditResult>) -> Result<AuditResult, String> {
+    match audit {
+        Err(e) => Err(e.to_string()),
+        Ok(result) => {
+            if let Some(err_msg) = result.error {
+                Err(err_msg)
+            } else {
+                Ok(AuditResult {
+                    vulnerabilities: result.vulnerabilities,
+                    error: None,
+                })
+            }
+        }
+    }
+}
+
 /// Return the vulnerabilities in `result` that are NOT covered by a
 /// project-declared audit exception. Match is case-insensitive against
 /// `Vulnerability.cve`; vulnerabilities with no CVE are always retained.
@@ -854,5 +877,33 @@ mod tests {
         let exceptions = vec!["CVE-2026-45829".to_string()];
         let reported = super::filter_audit_exceptions(&result, &exceptions);
         assert_eq!(reported.len(), 1, "vuln with no CVE should always be retained");
+    }
+
+    // --- audit_outcome ---
+
+    #[test]
+    fn audit_outcome_err_returns_err() {
+        let result = super::audit_outcome(Err(anyhow::anyhow!("spawn failed")));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("spawn failed"));
+    }
+
+    #[test]
+    fn audit_outcome_audit_result_with_error_returns_err() {
+        let audit = Ok(AuditResult {
+            vulnerabilities: vec![],
+            error: Some("tool not installed".to_string()),
+        });
+        let result = super::audit_outcome(audit);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "tool not installed");
+    }
+
+    #[test]
+    fn audit_outcome_clean_result_returns_ok() {
+        let audit = Ok(AuditResult::default());
+        let result = super::audit_outcome(audit);
+        assert!(result.is_ok());
+        assert!(result.unwrap().vulnerabilities.is_empty());
     }
 }

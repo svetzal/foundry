@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`AuditReleaseTag` no longer reports a failed or mis-targeted scan as `vulnerable: false`.**
+  Git checkout failures and scanner errors now propagate via
+  `ReleaseTagAuditedPayload::scan_error` (an optional field, absent when the
+  scan ran cleanly). Upstream `vulnerable` and `cve` payload values are
+  forwarded unchanged when the scan cannot run, so the chain continues with the
+  last known state rather than silently resetting it to "clean".
+- **`extract_json` no longer panics on inverted brace order** (e.g. `"} then
+  {"`). The helper previously indexed into the string with `start..=end` without
+  verifying `start <= end`, which would panic as an out-of-order slice on inputs
+  where `}` appears before `{`.
 - **Rust supply-chain findings are no longer discarded as scanner failures.**
   `cargo audit` conventionally exits 1 when it finds vulnerabilities while
   writing a valid JSON report to stdout, matching npm and pip-audit semantics.

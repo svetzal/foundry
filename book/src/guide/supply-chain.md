@@ -140,6 +140,28 @@ The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, and *No
 auto-fixed (needs attention)* — only when the engine actually ran. Enable it by
 adding the env var to the daemon's launch environment; disable by removing it.
 
+## Release-tag audit scan errors
+
+The `ReleaseTagAudited` event carries an optional `scan_error` field
+(`Option<String>` in the SDK; absent from the JSON wire format when `None`).
+
+**Invariant:** a scan that could not run is reported as *unknown*, never as a
+clean result. When `scan_error` is set:
+
+- `vulnerable` reflects the upstream payload value (the last known state),
+  **not** a fresh clean reading.
+- The `cve` field is likewise forwarded from upstream unchanged.
+- Downstream blocks that branch on `vulnerable: false` should check for a
+  non-`null` `scan_error` before treating a result as authoritative.
+
+`scan_error` is populated in three situations:
+
+| Cause | Example message |
+|-------|-----------------|
+| `git checkout <tag>` returns non-zero | `"git checkout v1.2.3 failed: ..."` |
+| Scanner tool returned a tool-level error | `"cargo audit not found"` |
+| Scanner gateway itself returned `Err` | `"I/O error spawning audit tool"` |
+
 ## Environment variables
 
 | Variable | Default | Purpose |

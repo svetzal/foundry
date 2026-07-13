@@ -30,6 +30,47 @@ pub struct ReleaseTagAuditedPayload {
     /// cannot run (project not in registry, no lockfile, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dirty: Option<bool>,
+    /// Set when the audit tool could not run. When `Some`, `vulnerable: false`
+    /// means "unknown", not "clean".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_error: Option<String>,
+}
+
+#[cfg(test)]
+mod release_payload_tests {
+    use super::*;
+
+    #[test]
+    fn release_tag_audited_payload_omits_scan_error_key_when_none() {
+        let p = ReleaseTagAuditedPayload {
+            project: "proj".to_string(),
+            cve: "none".to_string(),
+            tag: String::new(),
+            vulnerable: false,
+            dirty: None,
+            scan_error: None,
+        };
+        let v = serde_json::to_value(&p).expect("serializable");
+        assert!(
+            !v.as_object().unwrap().contains_key("scan_error"),
+            "scan_error key must be absent when None"
+        );
+    }
+
+    #[test]
+    fn release_tag_audited_payload_scan_error_round_trips() {
+        let p = ReleaseTagAuditedPayload {
+            project: "proj".to_string(),
+            cve: "CVE-2026-1".to_string(),
+            tag: String::new(),
+            vulnerable: false,
+            dirty: None,
+            scan_error: Some("boom".to_string()),
+        };
+        let json = serde_json::to_string(&p).expect("serializable");
+        let p2: ReleaseTagAuditedPayload = serde_json::from_str(&json).expect("deserializable");
+        assert_eq!(p2.scan_error.as_deref(), Some("boom"));
+    }
 }
 
 /// Payload for `ReleaseRequested`.
