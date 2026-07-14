@@ -9,10 +9,10 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use comfy_table::{ContentArrangement, Table};
-use foundry_sdk::sentinel::{Schedule, SentinelStore};
+use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{SentinelDisableRequest, SentinelEnableRequest, foundry_client::FoundryClient};
+use crate::render;
 
 pub fn list(sentinels_path: &Path) -> Result<()> {
     let store = SentinelStore::load(sentinels_path)?;
@@ -22,23 +22,7 @@ pub fn list(sentinels_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let mut table = Table::new();
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Name", "Schedule", "Emits", "Project", "Enabled"]);
-
-    for s in &store.sentinels {
-        let schedule = schedule_summary(&s.schedule);
-        let event_type = s.emit.event_type.as_str();
-        table.add_row(vec![
-            s.name.as_str(),
-            schedule.as_str(),
-            event_type.as_str(),
-            s.emit.project.as_str(),
-            if s.enabled { "yes" } else { "no" },
-        ]);
-    }
-
-    println!("{table}");
+    print!("{}", render::sentinel::sentinel_table(&store.sentinels));
     Ok(())
 }
 
@@ -48,13 +32,7 @@ pub fn show(sentinels_path: &Path, name: &str) -> Result<()> {
         bail!("Sentinel '{name}' not found");
     };
 
-    println!("Name:      {}", entry.name);
-    println!("Schedule:  {}", schedule_summary(&entry.schedule));
-    println!("Enabled:   {}", if entry.enabled { "yes" } else { "no" });
-    println!("Emits:     {}", entry.emit.event_type.as_str());
-    println!("Project:   {}", entry.emit.project);
-    println!("Throttle:  {}", entry.emit.throttle);
-    println!("Payload:   {}", entry.emit.payload);
+    print!("{}", render::sentinel::sentinel_detail(entry));
     Ok(())
 }
 
@@ -120,12 +98,6 @@ fn disable_offline(sentinels_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn schedule_summary(schedule: &Schedule) -> String {
-    match schedule {
-        Schedule::Cron(expr) => format!("cron: {expr}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use foundry_sdk::sentinel::SentinelStore;
@@ -137,12 +109,6 @@ mod tests {
         let tmp = NamedTempFile::new().expect("tempfile");
         SentinelStore::default_seed().save(tmp.path()).unwrap();
         tmp
-    }
-
-    #[test]
-    fn schedule_summary_renders_cron_prefix() {
-        let s = Schedule::Cron("0 2 * * *".to_string());
-        assert_eq!(schedule_summary(&s), "cron: 0 2 * * *");
     }
 
     #[test]

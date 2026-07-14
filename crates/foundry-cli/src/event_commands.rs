@@ -1,8 +1,6 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use comfy_table::{ContentArrangement, Table};
 
 use foundry_sdk::trace::{ProcessResult, TraceIndex};
 
@@ -11,6 +9,7 @@ use crate::proto::{
     EmitRequest, SpanRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest,
     WorkflowStatus, foundry_client::FoundryClient,
 };
+use crate::render;
 
 pub async fn emit(
     addr: &str,
@@ -46,7 +45,7 @@ pub async fn emit(
             };
             let trace_resp = client.trace(trace_req).await?.into_inner();
             if trace_resp.found {
-                render_trace(&trace_resp, false);
+                print!("{}", render::event::flat_trace(&trace_resp, false));
                 let block_sum: u64 =
                     trace_resp.block_executions.iter().map(|b| b.duration_ms).sum();
                 println!("---");
@@ -90,19 +89,9 @@ pub async fn status(addr: &str, workflow_id: Option<String>, span: Option<String
         filter_workflows_by_trace(response.workflows, target_trace_id.as_deref());
 
     if workflows.is_empty() {
-        if target_trace_id.is_some() {
-            println!("No active workflows in span's trace.");
-        } else {
-            println!("No active workflows.");
-        }
+        println!("{}", render::event::no_workflows_message(target_trace_id.as_deref()));
     } else {
-        for wf in &workflows {
-            println!("{} [{}] {} — {}", wf.workflow_id, wf.workflow_type, wf.project, wf.state);
-            for tb in &wf.task_blocks {
-                let throttled = if tb.throttled { " (throttled)" } else { "" };
-                println!("  {} — {}{}", tb.name, tb.state, throttled);
-            }
-        }
+        print!("{}", render::event::workflow_status_block(&workflows));
     }
 
     Ok(())
@@ -129,18 +118,7 @@ pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
     let mut stream = client.watch(request).await?.into_inner();
 
     while let Some(event) = stream.message().await? {
-        let trace_suffix = if event.trace_id.is_empty() {
-            String::new()
-        } else {
-            format!(" trace={}", event.trace_id)
-        };
-        println!(
-            "{} {} project={}{}",
-            event.event_id, event.event_type, event.project, trace_suffix
-        );
-        if !event.payload_json.is_empty() && event.payload_json != "{}" {
-            println!("  payload: {}", event.payload_json);
-        }
+        print!("{}", render::event::watch_line(&event));
     }
 
     Ok(())
@@ -167,14 +145,14 @@ pub async fn trace(addr: &str, event_id: &str, verbose: bool, flat: bool) -> Res
         if legacy && !flat {
             eprintln!("(legacy trace: rendering flat)");
         }
-        render_trace(&response, verbose);
+        print!("{}", render::event::flat_trace(&response, verbose));
     } else {
-        let forest = crate::trace_tree::build_forest(
+        let forest = crate::render::trace_tree::build_forest(
             response.events.clone(),
             response.block_executions.clone(),
         );
         let mut out = String::new();
-        crate::trace_tree::render(&forest, &mut out);
+        crate::render::trace_tree::render(&forest, &mut out);
         print!("{out}");
     }
 
@@ -190,124 +168,9 @@ fn is_legacy_trace_response(response: &TraceResponse) -> bool {
     !response.events.is_empty() && response.events.iter().all(|e| e.span_id.is_empty())
 }
 
+/// Render a flat trace — used by `workflow_commands` after a workflow run.
 pub(crate) fn render_trace(response: &TraceResponse, verbose: bool) {
-    // Build a lookup: event_id -> event
-    let events: HashMap<&str, _> =
-        response.events.iter().map(|e| (e.event_id.as_str(), e)).collect();
-
-    // Build a lookup: trigger_event_id -> vec of block executions
-    let mut blocks_by_trigger: HashMap<&str, Vec<_>> = HashMap::new();
-    for block in &response.block_executions {
-        blocks_by_trigger
-            .entry(block.trigger_event_id.as_str())
-            .or_default()
-            .push(block);
-    }
-
-    // Build a lookup: emitted_event_id -> payload_json (index-correlated from block executions).
-    let mut event_payloads: HashMap<&str, &str> = HashMap::new();
-    for block in &response.block_executions {
-        for (i, event_id) in block.emitted_event_ids.iter().enumerate() {
-            if let Some(payload) = block.emitted_payload_jsons.get(i) {
-                event_payloads.insert(event_id.as_str(), payload.as_str());
-            }
-        }
-    }
-
-    // Start with the root event (first in the list)
-    if let Some(root) = response.events.first() {
-        if !root.trace_id.is_empty() {
-            println!("trace: {}", root.trace_id);
-        }
-        print_event_tree(root, &events, &blocks_by_trigger, &event_payloads, 0, verbose);
-    }
-}
-
-fn print_event_tree(
-    event: &crate::proto::TraceEvent,
-    events: &HashMap<&str, &crate::proto::TraceEvent>,
-    blocks_by_trigger: &HashMap<&str, Vec<&crate::proto::TraceBlockExecution>>,
-    event_payloads: &HashMap<&str, &str>,
-    depth: usize,
-    verbose: bool,
-) {
-    let indent = "  ".repeat(depth);
-
-    // Special rendering for skill-install results: compact inline format.
-    if event.event_type == "local_skill_install_completed" {
-        let payload = event_payloads.get(event.event_id.as_str()).copied().unwrap_or("{}");
-        print_skill_install_event(payload, &indent);
-        return;
-    }
-
-    println!("{}{} ({}) project={}", indent, event.event_type, event.event_id, event.project);
-
-    if let Some(blocks) = blocks_by_trigger.get(event.event_id.as_str()) {
-        for block in blocks {
-            let status = if block.success { "ok" } else { "FAILED" };
-            println!(
-                "{}  \u{2192} {} ({}ms): {} \u{2014} {}",
-                indent, block.block_name, block.duration_ms, status, block.summary
-            );
-
-            if verbose {
-                if !block.trigger_payload_json.is_empty() && block.trigger_payload_json != "{}" {
-                    println!("{indent}    trigger: {}", block.trigger_payload_json);
-                }
-                for (i, payload) in block.emitted_payload_jsons.iter().enumerate() {
-                    println!("{indent}    emitted[{i}]: {payload}");
-                }
-                if !block.raw_output.is_empty() {
-                    println!("{indent}    output:");
-                    for line in block.raw_output.lines() {
-                        println!("{indent}      {line}");
-                    }
-                }
-                if !block.audit_artifacts.is_empty() {
-                    println!("{indent}    artifacts:");
-                    for path in &block.audit_artifacts {
-                        println!("{indent}      {path}");
-                    }
-                }
-            }
-
-            // Recurse into emitted events
-            for emitted_id in &block.emitted_event_ids {
-                if let Some(emitted_event) = events.get(emitted_id.as_str()) {
-                    print_event_tree(
-                        emitted_event,
-                        events,
-                        blocks_by_trigger,
-                        event_payloads,
-                        depth + 2,
-                        verbose,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Render a `local_skill_install_completed` event in compact inline format.
-fn print_skill_install_event(payload_json: &str, indent: &str) {
-    use foundry_sdk::event::PayloadExt;
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
-        let success = v.bool_or("success", false);
-        let command = v.str_or("command", "(unknown command)");
-        if success {
-            println!("{indent}  \u{2192} Install Skill: ok \u{2014} {command}");
-        } else {
-            let stderr = v.str_or("stderr_tail", "(no output)");
-            let detail = if stderr.is_empty() {
-                "(no output)"
-            } else {
-                stderr
-            };
-            println!("{indent}  \u{2192} Install Skill: warn \u{2014} command failed: {detail}");
-        }
-    } else {
-        println!("{indent}  \u{2192} Install Skill: (unparseable payload)");
-    }
+    print!("{}", render::event::flat_trace(response, verbose));
 }
 
 /// Read all trace index entries from a single date directory.
@@ -352,28 +215,6 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
     indices
 }
 
-fn print_trace_table(date: &str, indices: &[TraceIndex]) {
-    println!("{date}");
-    let mut table = Table::new();
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Event ID", "Trace", "Status", "Duration", "Type", "Project"]);
-
-    for idx in indices {
-        let status = if idx.success { "ok" } else { "FAILED" };
-        let trace = idx.trace_id.as_deref().unwrap_or("-");
-        table.add_row(vec![
-            &idx.event_id,
-            trace,
-            status,
-            &format!("{}ms", idx.total_duration_ms),
-            &idx.event_type,
-            &idx.project,
-        ]);
-    }
-
-    println!("{table}");
-}
-
 // The Result return type is consistent with the other command functions even
 // though this function's current body never fails.
 #[allow(clippy::unnecessary_wraps)]
@@ -386,7 +227,7 @@ pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
         if indices.is_empty() {
             println!("No traces found for {date_str}.");
         } else {
-            print_trace_table(date_str, &indices);
+            print!("{}", render::event::trace_table(date_str, &indices));
         }
     } else {
         // List recent 7 days
@@ -398,7 +239,7 @@ pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
             let dir = base_dir.join(&date_str);
             let indices = read_index_from_dir(&dir, project);
             if !indices.is_empty() {
-                print_trace_table(&date_str, &indices);
+                print!("{}", render::event::trace_table(&date_str, &indices));
                 found_any = true;
             }
         }

@@ -1,14 +1,13 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use foundry_sdk::registry::{ProjectEdits, ProjectSpec, parse_stack};
 
 mod commands;
 mod event_commands;
 mod gates_commands;
 mod init_commands;
 mod registry_commands;
+mod render;
 mod sentinel_commands;
-mod trace_tree;
 mod workflow_commands;
 
 pub mod proto {
@@ -425,10 +424,9 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let stack = parse_stack(&stack).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let spec = ProjectSpec {
+            let spec = registry_commands::spec_from_args(
                 name,
-                path: project_path,
+                project_path,
                 stack,
                 agent,
                 repo,
@@ -442,7 +440,7 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-            };
+            )?;
             registry_commands::add(path, addr, offline, spec).await
         }
         RegistryCommands::Remove { name } => {
@@ -466,14 +464,8 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let stack = stack
-                .as_deref()
-                .map(parse_stack)
-                .transpose()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let skip = skip.map(|s| if s.is_empty() { None } else { Some(s) });
-            let edits = ProjectEdits {
-                path: project_path,
+            let edits = registry_commands::edits_from_args(
+                project_path,
                 stack,
                 agent,
                 repo,
@@ -488,8 +480,7 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-                ..Default::default()
-            };
+            )?;
             registry_commands::edit(path, addr, offline, &name, edits).await
         }
     }

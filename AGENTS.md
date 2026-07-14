@@ -314,6 +314,26 @@ brew tap svetzal/tap
 brew install foundry
 ```
 
+## CLI Rendering Convention
+
+`foundry-cli` follows a **functional core, imperative shell** pattern for all display output.
+
+- **`crates/foundry-cli/src/render/`** is the pure functional core.  Every function takes data (proto types, SDK types, parsed payloads) and returns a `String`.  No `println!`, no I/O, no gRPC, no filesystem.  The `#![deny(clippy::print_stdout, clippy::print_stderr)]` lint in `render/mod.rs` enforces this.
+- **Command modules** (`event_commands.rs`, `workflow_commands.rs`, etc.) are the imperative shell: they fetch data, call render functions, and call `print!` or `println!` exactly once per logical output.
+- The exemplar is `render/trace_tree.rs` (moved from `trace_tree.rs`): `build_forest()` + `render(&[SpanNode], out: &mut String)` — pure, zero `println!`, with tests.
+
+**Submodules:**
+
+| Module | Renders |
+|--------|---------|
+| `render::workflow` | Watch event lines, scout results, validation results |
+| `render::event` | Flat traces, history tables, live watch lines, workflow status |
+| `render::registry` | Project detail and table views |
+| `render::sentinel` | Sentinel detail and table views |
+| `render::trace_tree` | OTel-shaped span tree (moved from top-level) |
+
+**Adding new display output:** write a pure function in the appropriate render submodule, test it with unit tests, then call it from the command module with a single `print!("{}", render::...)`.
+
 ## Documentation
 
 mdBook documentation lives in `book/`. Build with:

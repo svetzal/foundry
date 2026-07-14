@@ -6,6 +6,7 @@ use foundry_sdk::event::PayloadExt;
 
 use crate::commands::parse_throttle;
 use crate::proto::{EmitRequest, WatchRequest, WatchResponse, foundry_client::FoundryClient};
+use crate::render;
 
 /// Connect, emit, and stream watch events until `is_terminal` returns true.
 struct WorkflowRunner {
@@ -62,7 +63,7 @@ impl WorkflowRunner {
         let mut events = Vec::new();
         while let Some(event) = stream.message().await? {
             let done = is_terminal(&event.event_type, &event.payload_json);
-            print_watch_event(&event);
+            print!("{}", render::workflow::watch_event_line(&event));
             events.push(event);
             if done {
                 break;
@@ -88,77 +89,6 @@ impl WorkflowRunner {
         }
         Ok(())
     }
-}
-
-fn print_watch_event(event: &WatchResponse) {
-    match event.event_type.as_str() {
-        "block_started" => print_block_started(event),
-        "block_completed" => print_block_completed(event),
-        _ => {
-            let status = extract_status(&event.payload_json);
-            println!("[{}] {} {}", event.project, event.event_type, status);
-        }
-    }
-}
-
-fn print_block_started(event: &WatchResponse) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
-        println!("[{}] block started", event.project);
-        return;
-    };
-    let block = v.str_or("block", "unknown block");
-    let trigger = v.str_or("trigger_event_type", "unknown trigger");
-    println!("[{}] running block {block} (from {trigger})", event.project);
-}
-
-fn print_block_completed(event: &WatchResponse) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
-        println!("[{}] block completed", event.project);
-        return;
-    };
-    let block = v.str_or("block", "unknown block");
-    let status = v.str_or("status", "done");
-    let duration = v
-        .get("duration_ms")
-        .and_then(serde_json::Value::as_u64)
-        .map(format_duration)
-        .unwrap_or_default();
-    let suffix = if duration.is_empty() {
-        format!("({status})")
-    } else {
-        format!("({status}, {duration})")
-    };
-    println!("[{}] finished block {block} {suffix}", event.project);
-}
-
-fn format_duration(duration_ms: u64) -> String {
-    if duration_ms < 1_000 {
-        format!("{duration_ms}ms")
-    } else {
-        let seconds = duration_ms / 1_000;
-        let tenths = (duration_ms % 1_000) / 100;
-        format!("{seconds}.{tenths}s")
-    }
-}
-
-/// Extract a compact status hint from the event payload JSON.
-pub(crate) fn extract_status(payload_json: &str) -> String {
-    if payload_json.is_empty() || payload_json == "{}" {
-        return String::new();
-    }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
-        if let Some(success) = v.get("success").and_then(serde_json::Value::as_bool) {
-            return if success {
-                "(ok)".to_string()
-            } else {
-                "(FAILED)".to_string()
-            };
-        }
-        if let Some(status) = v.get("status").and_then(serde_json::Value::as_str) {
-            return format!("({status})");
-        }
-    }
-    String::new()
 }
 
 pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<()> {
@@ -200,7 +130,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
 
     // Stream progress events until the maintenance run completes.
     while let Some(event) = stream.message().await? {
-        print_watch_event(&event);
+        print!("{}", render::workflow::watch_event_line(&event));
 
         if is_run_complete(&event.event_type, &event.payload_json, is_system_run) {
             break;
@@ -322,7 +252,7 @@ pub async fn scout(addr: &str, project: &str, agent: Option<&str>) -> Result<()>
         .await?;
 
     if let Some(terminal) = events.iter().find(|e| e.event_type == "drift_assessment_completed") {
-        print_scout_result(project, &terminal.payload_json);
+        print!("{}", render::workflow::scout_result(project, &terminal.payload_json));
     }
 
     runner.show_trace(&event_id).await?;
@@ -348,56 +278,6 @@ pub async fn pipeline(addr: &str, project: &str, agent: Option<&str>) -> Result<
 
     runner.show_trace(&event_id).await?;
     Ok(())
-}
-
-/// Print drift scout results in a human-readable format.
-fn print_scout_result(project: &str, payload_json: &str) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) else {
-        println!("  {project}: could not parse result");
-        return;
-    };
-
-    let candidate_count = v.u64_or("candidate_count", 0);
-    let high_value_count = v.u64_or("high_value_count", 0);
-
-    println!("{project}: {candidate_count} candidates found, {high_value_count} high-value");
-    println!();
-
-    if let Some(err) = v.get("parse_error").and_then(serde_json::Value::as_str) {
-        println!("  Parse error: {err}");
-        return;
-    }
-
-    if let Some(candidates) = v.get("candidates").and_then(serde_json::Value::as_array) {
-        for candidate in candidates {
-            let rank = candidate.u64_or("rank", 0);
-            let summary = candidate.str_or("summary", "(no summary)");
-            let divergence = candidate.str_or("divergence_type", "unknown");
-            let high_value = candidate.bool_or("high_value", false);
-            let confidence = candidate.str_or("confidence", "unknown");
-            let next_step = candidate.str_or("suggested_next_step", "unknown");
-
-            let marker = if high_value { " ***" } else { "" };
-            println!("  #{rank} [{divergence}] {summary}{marker}");
-
-            if let Some(impact) = candidate.get("impact") {
-                let severity = impact.str_or("severity", "?");
-                let frequency = impact.str_or("frequency", "?");
-                let risk_type = impact.str_or("risk_type", "?");
-                println!("     severity={severity} frequency={frequency} risk={risk_type}");
-            }
-
-            println!("     confidence={confidence} next={next_step}");
-
-            if let Some(explanation) =
-                candidate.get("explanation").and_then(serde_json::Value::as_str)
-            {
-                println!("     {explanation}");
-            }
-
-            println!();
-        }
-    }
 }
 
 pub async fn validate(
@@ -432,10 +312,8 @@ pub async fn validate(
             .await?;
 
         if let Some(terminal) = events.iter().find(|e| e.event_type == "validation_completed") {
-            print_validation_result(project_name, &terminal.payload_json);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&terminal.payload_json)
-                && !v.bool_or("success", false)
-            {
+            print!("{}", render::workflow::validation_result(project_name, &terminal.payload_json));
+            if render::workflow::validation_failed(&terminal.payload_json) {
                 any_failed = true;
             }
         }
@@ -449,37 +327,6 @@ pub async fn validate(
     }
 
     Ok(())
-}
-
-/// Print per-gate pass/fail results for a validation.
-fn print_validation_result(project: &str, payload_json: &str) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) else {
-        println!("  {project}: could not parse result");
-        return;
-    };
-
-    let success = v.bool_or("success", false);
-    let status = if success { "PASS" } else { "FAIL" };
-    println!("  {project}: {status}");
-
-    if let Some(results) = v.get("results").and_then(serde_json::Value::as_array) {
-        for gate in results {
-            let name = gate.str_or("name", "unknown");
-            let passed = gate.bool_or("passed", false);
-            let required = gate.bool_or("required", true);
-            let marker = if passed { "ok" } else { "FAILED" };
-            let req = if required { "required" } else { "optional" };
-            print!("    {name}: {marker} ({req})");
-            if !passed
-                && let Some(output) = gate.get("output").and_then(serde_json::Value::as_str)
-                && !output.is_empty()
-            {
-                let snippet: String = output.chars().take(200).collect();
-                print!(" — {snippet}");
-            }
-            println!();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -533,35 +380,5 @@ mod tests {
     fn system_run_does_not_exit_on_empty_payload() {
         assert!(!is_run_complete("maintenance_summary_requested", "{}", true));
         assert!(!is_run_complete("maintenance_summary_requested", "", true));
-    }
-
-    // -- extract_status tests --
-
-    #[test]
-    fn extract_status_success() {
-        assert_eq!(extract_status(r#"{"success":true}"#), "(ok)");
-    }
-
-    #[test]
-    fn extract_status_failure() {
-        assert_eq!(extract_status(r#"{"success":false}"#), "(FAILED)");
-    }
-
-    #[test]
-    fn extract_status_string() {
-        assert_eq!(extract_status(r#"{"status":"skipped"}"#), "(skipped)");
-    }
-
-    #[test]
-    fn extract_status_empty() {
-        assert_eq!(extract_status("{}"), String::new());
-        assert_eq!(extract_status(""), String::new());
-    }
-
-    #[test]
-    fn format_duration_uses_ms_below_one_second_and_tenths_after() {
-        assert_eq!(format_duration(999), "999ms");
-        assert_eq!(format_duration(1_000), "1.0s");
-        assert_eq!(format_duration(143_967), "143.9s");
     }
 }

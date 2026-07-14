@@ -1,15 +1,12 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use comfy_table::{ContentArrangement, Table};
-use foundry_sdk::registry::{
-    ActionFlags, InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry,
-    derive_default_skill_install_command,
-};
+use foundry_sdk::registry::{ProjectEdits, ProjectSpec, Registry, parse_stack};
 
 use crate::proto::{
     RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_client::FoundryClient,
 };
+use crate::render;
 
 pub fn init(registry_path: &Path) -> Result<()> {
     if registry_path.exists() {
@@ -34,22 +31,7 @@ pub fn list(registry_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let mut table = Table::new();
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Name", "Stack", "Skip", "Actions", "Skill"]);
-
-    for p in &registry.projects {
-        let skip = if p.skip.is_some() { "yes" } else { "no" };
-        table.add_row(vec![
-            p.name.as_str(),
-            p.stack.to_string().as_str(),
-            skip,
-            format_actions(&p.actions).as_str(),
-            format_installs_skill_cell(p.installs_skill.as_ref()),
-        ]);
-    }
-
-    println!("{table}");
+    print!("{}", render::registry::project_table(&registry.projects));
 
     Ok(())
 }
@@ -61,37 +43,7 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
         bail!("Project '{name}' not found in registry");
     };
 
-    println!("Name:      {}", project.name);
-    println!("Path:      {}", project.path);
-    println!("Stack:     {}", project.stack);
-    println!("Agent:     {}", project.agent);
-    println!("Repo:      {}", project.repo);
-    println!("Branch:    {}", project.branch);
-    if let Some(ref reason) = project.skip {
-        println!("Skip:      {reason}");
-    } else {
-        println!("Skip:      no");
-    }
-    println!("Actions:   {}", format_actions(&project.actions));
-
-    if let Some(ref notes) = project.notes {
-        println!("Notes:     {notes}");
-    }
-    if let Some(ref install) = project.install {
-        match install {
-            InstallConfig::Command(cmd) => println!("Install:   command: {cmd}"),
-            InstallConfig::Brew(formula) => println!("Install:   brew: {formula}"),
-        }
-    }
-    if let Some(ref is) = project.installs_skill {
-        println!("{}", format_installs_skill_line(is, project.install.as_ref(), &project.name));
-    }
-
-    if let Some(timeout) = project.timeout_secs {
-        println!("Timeout:   {timeout}s");
-    } else {
-        println!("Timeout:   3600s (default)");
-    }
+    print!("{}", render::registry::project_detail(project));
 
     Ok(())
 }
@@ -189,40 +141,7 @@ pub async fn edit(
     if !offline {
         match FoundryClient::connect(addr.to_string()).await {
             Ok(mut client) => {
-                let (skip_str, clear_skip) = match &edits.skip {
-                    None => (String::new(), false),
-                    Some(None) => (String::new(), true),
-                    Some(Some(reason)) => (reason.clone(), false),
-                };
-                let notes_str = edits.notes.as_deref().unwrap_or("").to_string();
-                let clear_notes = edits.notes.as_deref().is_some_and(str::is_empty);
-                let req = RegistryEditRequest {
-                    name: name.to_string(),
-                    path: edits.path.unwrap_or_default(),
-                    stack: edits.stack.map(|s| s.to_string()).unwrap_or_default(),
-                    agent: edits.agent.unwrap_or_default(),
-                    repo: edits.repo.unwrap_or_default(),
-                    branch: edits.branch.unwrap_or_default(),
-                    skip: skip_str,
-                    clear_skip,
-                    iterate: edits.iterate.unwrap_or(false),
-                    clear_iterate: edits.iterate.is_some_and(|v| !v),
-                    maintain: edits.maintain.unwrap_or(false),
-                    clear_maintain: edits.maintain.is_some_and(|v| !v),
-                    push: edits.push.unwrap_or(false),
-                    clear_push: edits.push.is_some_and(|v| !v),
-                    audit: edits.audit.unwrap_or(false),
-                    clear_audit: edits.audit.is_some_and(|v| !v),
-                    release: edits.release.unwrap_or(false),
-                    clear_release: edits.release.is_some_and(|v| !v),
-                    install_command: edits.install_command.unwrap_or_default(),
-                    install_brew: edits.install_brew.unwrap_or_default(),
-                    clear_install: edits.clear_install,
-                    notes: notes_str,
-                    clear_notes,
-                    timeout_secs: edits.timeout_secs.unwrap_or(0),
-                    clear_timeout: edits.clear_timeout,
-                };
+                let req = edit_request(name, &edits);
                 client
                     .registry_edit(req)
                     .await
@@ -240,6 +159,44 @@ pub async fn edit(
     edit_offline(registry_path, name, edits)
 }
 
+/// Build a `RegistryEditRequest` from a project name and its edit set.
+fn edit_request(name: &str, edits: &ProjectEdits) -> RegistryEditRequest {
+    let (skip_str, clear_skip) = match &edits.skip {
+        None => (String::new(), false),
+        Some(None) => (String::new(), true),
+        Some(Some(reason)) => (reason.clone(), false),
+    };
+    let notes_str = edits.notes.as_deref().unwrap_or("").to_string();
+    let clear_notes = edits.notes.as_deref().is_some_and(str::is_empty);
+    RegistryEditRequest {
+        name: name.to_string(),
+        path: edits.path.clone().unwrap_or_default(),
+        stack: edits.stack.as_ref().map(ToString::to_string).unwrap_or_default(),
+        agent: edits.agent.clone().unwrap_or_default(),
+        repo: edits.repo.clone().unwrap_or_default(),
+        branch: edits.branch.clone().unwrap_or_default(),
+        skip: skip_str,
+        clear_skip,
+        iterate: edits.iterate.unwrap_or(false),
+        clear_iterate: edits.iterate.is_some_and(|v| !v),
+        maintain: edits.maintain.unwrap_or(false),
+        clear_maintain: edits.maintain.is_some_and(|v| !v),
+        push: edits.push.unwrap_or(false),
+        clear_push: edits.push.is_some_and(|v| !v),
+        audit: edits.audit.unwrap_or(false),
+        clear_audit: edits.audit.is_some_and(|v| !v),
+        release: edits.release.unwrap_or(false),
+        clear_release: edits.release.is_some_and(|v| !v),
+        install_command: edits.install_command.clone().unwrap_or_default(),
+        install_brew: edits.install_brew.clone().unwrap_or_default(),
+        clear_install: edits.clear_install,
+        notes: notes_str,
+        clear_notes,
+        timeout_secs: edits.timeout_secs.unwrap_or(0),
+        clear_timeout: edits.clear_timeout,
+    }
+}
+
 fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result<()> {
     let mut registry = Registry::load(registry_path)?;
     registry.edit_project(name, edits).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -248,56 +205,92 @@ fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result
     Ok(())
 }
 
-/// Format the full "Installs skill: ..." display line for `foundry registry show`.
-fn format_installs_skill_line(
-    installs_skill: &InstallsSkill,
-    install: Option<&InstallConfig>,
-    project_name: &str,
-) -> String {
-    match installs_skill {
-        InstallsSkill::Default(true) => {
-            let cmd = derive_default_skill_install_command(install, project_name);
-            format!("Installs skill: yes (default -- runs {cmd})")
-        }
-        InstallsSkill::Default(false) => "Installs skill: no (explicitly disabled)".to_string(),
-        InstallsSkill::Custom { command } => format!("Installs skill: command: {command}"),
-    }
+/// Build a `ProjectSpec` from clap-parsed arguments.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::needless_pass_by_value
+)]
+pub fn spec_from_args(
+    name: String,
+    path: String,
+    stack: String,
+    agent: String,
+    repo: String,
+    branch: String,
+    iterate: bool,
+    maintain: bool,
+    push: bool,
+    audit: bool,
+    release: bool,
+    install_command: Option<String>,
+    install_brew: Option<String>,
+    notes: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<ProjectSpec> {
+    let stack = parse_stack(&stack).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(ProjectSpec {
+        name,
+        path,
+        stack,
+        agent,
+        repo,
+        branch,
+        iterate,
+        maintain,
+        push,
+        audit,
+        release,
+        install_command,
+        install_brew,
+        notes,
+        timeout_secs,
+    })
 }
 
-/// Format the short cell label for the "Skill" column in `foundry registry list`.
-///
-/// Returns `"auto"`, `"cmd"`, `"off"`, or `""`.
-fn format_installs_skill_cell(installs_skill: Option<&InstallsSkill>) -> &'static str {
-    match installs_skill {
-        Some(InstallsSkill::Default(true)) => "auto",
-        Some(InstallsSkill::Custom { .. }) => "cmd",
-        Some(InstallsSkill::Default(false)) => "off",
-        None => "",
-    }
-}
-
-fn format_actions(actions: &ActionFlags) -> String {
-    let mut flags = vec![];
-    if actions.iterate {
-        flags.push("iterate");
-    }
-    if actions.maintain {
-        flags.push("maintain");
-    }
-    if actions.push {
-        flags.push("push");
-    }
-    if actions.audit {
-        flags.push("audit");
-    }
-    if actions.release {
-        flags.push("release");
-    }
-    if flags.is_empty() {
-        "none".to_string()
-    } else {
-        flags.join(", ")
-    }
+/// Build `ProjectEdits` from clap-parsed arguments.
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub fn edits_from_args(
+    path: Option<String>,
+    stack: Option<String>,
+    agent: Option<String>,
+    repo: Option<String>,
+    branch: Option<String>,
+    skip: Option<String>,
+    iterate: Option<bool>,
+    maintain: Option<bool>,
+    push: Option<bool>,
+    audit: Option<bool>,
+    release: Option<bool>,
+    install_command: Option<String>,
+    install_brew: Option<String>,
+    notes: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<ProjectEdits> {
+    let stack = stack
+        .as_deref()
+        .map(parse_stack)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let skip = skip.map(|s| if s.is_empty() { None } else { Some(s) });
+    Ok(ProjectEdits {
+        path,
+        stack,
+        agent,
+        repo,
+        branch,
+        skip,
+        iterate,
+        maintain,
+        push,
+        audit,
+        release,
+        install_command,
+        install_brew,
+        notes,
+        timeout_secs,
+        ..Default::default()
+    })
 }
 
 /// Load an existing registry or create a new empty one if the file doesn't exist.
@@ -314,70 +307,214 @@ fn load_or_init(path: &Path) -> Result<Registry> {
 
 #[cfg(test)]
 mod tests {
-    use foundry_sdk::registry::{InstallConfig, InstallsSkill};
+    use super::{edit_request, edits_from_args, spec_from_args};
+    use foundry_sdk::registry::ProjectEdits;
 
-    use super::{format_installs_skill_cell, format_installs_skill_line};
-
-    // --- format_installs_skill_line ---
-
-    #[test]
-    fn line_default_true_with_brew_formula() {
-        let line = format_installs_skill_line(
-            &InstallsSkill::Default(true),
-            Some(&InstallConfig::Brew("gilt".to_string())),
-            "my-project",
-        );
-        assert_eq!(line, "Installs skill: yes (default -- runs gilt init --global --force)");
-    }
+    // --- spec_from_args ---
 
     #[test]
-    fn line_default_true_with_no_install_falls_back_to_project_name() {
-        let line = format_installs_skill_line(&InstallsSkill::Default(true), None, "my-project");
-        assert_eq!(line, "Installs skill: yes (default -- runs my-project init --global --force)");
-    }
-
-    #[test]
-    fn line_default_false() {
-        let line = format_installs_skill_line(&InstallsSkill::Default(false), None, "my-project");
-        assert_eq!(line, "Installs skill: no (explicitly disabled)");
-    }
-
-    #[test]
-    fn line_custom_command() {
-        let line = format_installs_skill_line(
-            &InstallsSkill::Custom {
-                command: "gilt skill-init --global --force".to_string(),
-            },
+    fn spec_from_args_parses_valid_stack() {
+        let spec = spec_from_args(
+            "proj".to_string(),
+            "/tmp/proj".to_string(),
+            "rust".to_string(),
+            "claude".to_string(),
+            "o/proj".to_string(),
+            "main".to_string(),
+            false,
+            false,
+            false,
+            false,
+            false,
             None,
-            "my-project",
+            None,
+            None,
+            None,
+        )
+        .expect("valid stack");
+        assert_eq!(spec.stack.to_string(), "rust");
+        assert_eq!(spec.name, "proj");
+    }
+
+    #[test]
+    fn spec_from_args_returns_err_for_invalid_stack() {
+        let result = spec_from_args(
+            "proj".to_string(),
+            "/tmp/proj".to_string(),
+            "cobol".to_string(),
+            "claude".to_string(),
+            "o/proj".to_string(),
+            "main".to_string(),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
         );
-        assert_eq!(line, "Installs skill: command: gilt skill-init --global --force");
+        assert!(result.is_err());
     }
 
-    // --- format_installs_skill_cell ---
+    // --- edits_from_args ---
 
     #[test]
-    fn cell_default_true_returns_auto() {
-        assert_eq!(format_installs_skill_cell(Some(&InstallsSkill::Default(true))), "auto");
+    fn edits_from_args_skip_none_yields_none() {
+        let edits = edits_from_args(
+            None, None, None, None, None, None, // skip=None
+            None, None, None, None, None, None, None, None, None,
+        )
+        .expect("ok");
+        assert!(edits.skip.is_none());
     }
 
     #[test]
-    fn cell_custom_returns_cmd() {
-        assert_eq!(
-            format_installs_skill_cell(Some(&InstallsSkill::Custom {
-                command: "anything".to_string()
-            })),
-            "cmd"
+    fn edits_from_args_skip_empty_string_clears() {
+        let edits = edits_from_args(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(String::new()), // skip=""
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(edits.skip, Some(None));
+    }
+
+    #[test]
+    fn edits_from_args_skip_reason_sets_value() {
+        let edits = edits_from_args(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("reason".to_string()), // skip="reason"
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(edits.skip, Some(Some("reason".to_string())));
+    }
+
+    #[test]
+    fn edits_from_args_invalid_stack_returns_err() {
+        let result = edits_from_args(
+            None,
+            Some("cobol".to_string()), // invalid stack
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
+        assert!(result.is_err());
     }
 
     #[test]
-    fn cell_default_false_returns_off() {
-        assert_eq!(format_installs_skill_cell(Some(&InstallsSkill::Default(false))), "off");
+    fn edits_from_args_valid_stack_parses() {
+        let edits = edits_from_args(
+            None,
+            Some("python".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid stack");
+        assert!(edits.stack.is_some());
+    }
+
+    // --- edit_request ---
+
+    #[test]
+    fn edit_request_skip_none_yields_empty_and_no_clear() {
+        let edits = ProjectEdits {
+            skip: None,
+            ..Default::default()
+        };
+        let req = edit_request("p", &edits);
+        assert_eq!(req.skip, "");
+        assert!(!req.clear_skip);
     }
 
     #[test]
-    fn cell_none_returns_empty_string() {
-        assert_eq!(format_installs_skill_cell(None), "");
+    fn edit_request_skip_some_none_sets_clear() {
+        let edits = ProjectEdits {
+            skip: Some(None),
+            ..Default::default()
+        };
+        let req = edit_request("p", &edits);
+        assert_eq!(req.skip, "");
+        assert!(req.clear_skip);
+    }
+
+    #[test]
+    fn edit_request_skip_some_reason_sets_value() {
+        let edits = ProjectEdits {
+            skip: Some(Some("archived".to_string())),
+            ..Default::default()
+        };
+        let req = edit_request("p", &edits);
+        assert_eq!(req.skip, "archived");
+        assert!(!req.clear_skip);
+    }
+
+    #[test]
+    fn edit_request_iterate_false_sets_clear_iterate() {
+        let edits = ProjectEdits {
+            iterate: Some(false),
+            ..Default::default()
+        };
+        let req = edit_request("p", &edits);
+        assert!(!req.iterate);
+        assert!(req.clear_iterate);
+    }
+
+    #[test]
+    fn edit_request_iterate_true_sets_field_not_clear() {
+        let edits = ProjectEdits {
+            iterate: Some(true),
+            ..Default::default()
+        };
+        let req = edit_request("p", &edits);
+        assert!(req.iterate);
+        assert!(!req.clear_iterate);
     }
 }
