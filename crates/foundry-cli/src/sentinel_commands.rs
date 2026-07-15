@@ -1,17 +1,18 @@
 //! CLI handlers for the `foundry sentinel` subcommands.
 //!
 //! Inspection commands (`list`, `show`) always read `sentinels.json` directly
-//! — they never need the daemon. Mutation commands (`enable`, `disable`) try
-//! the gRPC path first so the running daemon updates its in-memory store and
-//! wakes the scheduler; if the daemon is unreachable they fall back to direct
-//! file mutation (matching `foundry registry add | edit | remove`).
+//! — they never need the daemon. Mutation commands (`enable`, `disable`) use
+//! [`crate::daemon::with_daemon_or_offline`] as the single source of the
+//! fallback protocol: try gRPC first; warn and fall back to direct file
+//! mutation when the daemon is unreachable.
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use foundry_sdk::sentinel::SentinelStore;
 
-use crate::proto::{SentinelDisableRequest, SentinelEnableRequest, foundry_client::FoundryClient};
+use crate::daemon::{status_to_anyhow, with_daemon_or_offline};
+use crate::proto::{SentinelDisableRequest, SentinelEnableRequest};
 use crate::render;
 
 pub fn list(sentinels_path: &Path) -> Result<()> {
@@ -37,56 +38,41 @@ pub fn show(sentinels_path: &Path, name: &str) -> Result<()> {
 }
 
 pub async fn enable(sentinels_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = SentinelEnableRequest {
-                    name: name.to_string(),
-                };
-                client
-                    .sentinel_enable(req)
-                    .await
-                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
-                println!("Enabled sentinel '{name}'.");
-                return Ok(());
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
-
-    enable_offline(sentinels_path, name)
+    with_daemon_or_offline(
+        addr,
+        offline,
+        &format!("Enabled sentinel '{name}'."),
+        |mut client| async move {
+            let req = SentinelEnableRequest {
+                name: name.to_string(),
+            };
+            client.sentinel_enable(req).await.map(|_| ()).map_err(status_to_anyhow)
+        },
+        || enable_offline(sentinels_path, name),
+    )
+    .await
 }
 
 pub async fn disable(sentinels_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = SentinelDisableRequest {
-                    name: name.to_string(),
-                };
-                client
-                    .sentinel_disable(req)
-                    .await
-                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
-                println!("Disabled sentinel '{name}'.");
-                return Ok(());
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
-
-    disable_offline(sentinels_path, name)
+    with_daemon_or_offline(
+        addr,
+        offline,
+        &format!("Disabled sentinel '{name}'."),
+        |mut client| async move {
+            let req = SentinelDisableRequest {
+                name: name.to_string(),
+            };
+            client.sentinel_disable(req).await.map(|_| ()).map_err(status_to_anyhow)
+        },
+        || disable_offline(sentinels_path, name),
+    )
+    .await
 }
 
 fn enable_offline(sentinels_path: &Path, name: &str) -> Result<()> {
     let mut store = SentinelStore::load(sentinels_path)?;
     store.enable(name).map_err(|e| anyhow::anyhow!("{e}"))?;
     store.save(sentinels_path)?;
-    println!("Enabled sentinel '{name}'.");
     Ok(())
 }
 
@@ -94,7 +80,6 @@ fn disable_offline(sentinels_path: &Path, name: &str) -> Result<()> {
     let mut store = SentinelStore::load(sentinels_path)?;
     store.disable(name).map_err(|e| anyhow::anyhow!("{e}"))?;
     store.save(sentinels_path)?;
-    println!("Disabled sentinel '{name}'.");
     Ok(())
 }
 

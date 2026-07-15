@@ -3,9 +3,8 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use foundry_sdk::registry::{ProjectEdits, ProjectSpec, Registry, parse_stack};
 
-use crate::proto::{
-    RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_client::FoundryClient,
-};
+use crate::daemon::{status_to_anyhow, with_daemon_or_offline};
+use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
 use crate::render;
 
 pub fn init(registry_path: &Path) -> Result<()> {
@@ -50,84 +49,67 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
 
 pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectSpec) -> Result<()> {
     let name = spec.name.clone();
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = RegistryAddRequest {
-                    name: spec.name,
-                    path: spec.path,
-                    stack: spec.stack.to_string(),
-                    agent: spec.agent,
-                    repo: spec.repo,
-                    branch: spec.branch,
-                    iterate: spec.iterate,
-                    maintain: spec.maintain,
-                    push: spec.push,
-                    audit: spec.audit,
-                    release: spec.release,
-                    install_command: spec.install_command.unwrap_or_default(),
-                    install_brew: spec.install_brew.unwrap_or_default(),
-                    notes: spec.notes.unwrap_or_default(),
-                    timeout_secs: spec.timeout_secs.unwrap_or(0),
-                };
-                client
-                    .registry_add(req)
-                    .await
-                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
-                println!("Added project '{name}' to registry.");
-                return Ok(());
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
-
-    // Offline path — mutate registry.json directly.
-    add_offline(registry_path, spec)
+    let spec_for_offline = spec.clone();
+    with_daemon_or_offline(
+        addr,
+        offline,
+        &format!("Added project '{name}' to registry."),
+        |mut client| async move {
+            let req = RegistryAddRequest {
+                name: spec.name,
+                path: spec.path,
+                stack: spec.stack.to_string(),
+                agent: spec.agent,
+                repo: spec.repo,
+                branch: spec.branch,
+                iterate: spec.iterate,
+                maintain: spec.maintain,
+                push: spec.push,
+                audit: spec.audit,
+                release: spec.release,
+                install_command: spec.install_command.unwrap_or_default(),
+                install_brew: spec.install_brew.unwrap_or_default(),
+                notes: spec.notes.unwrap_or_default(),
+                timeout_secs: spec.timeout_secs.unwrap_or(0),
+            };
+            client.registry_add(req).await.map(|_| ()).map_err(status_to_anyhow)
+        },
+        || add_offline(registry_path, spec_for_offline),
+    )
+    .await
 }
 
 fn add_offline(registry_path: &Path, spec: ProjectSpec) -> Result<()> {
-    let name = spec.name.clone();
     let mut registry = load_or_init(registry_path)?;
     registry.add_project(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
     registry.save(registry_path)?;
-    println!("Added project '{name}' to registry.");
     Ok(())
 }
 
 pub async fn remove(registry_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = RegistryRemoveRequest {
-                    name: name.to_string(),
-                };
-                client
-                    .registry_remove(req)
-                    .await
-                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
-                println!("Removed project '{name}' from registry.");
-                return Ok(());
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
+    with_daemon_or_offline(
+        addr,
+        offline,
+        &format!("Removed project '{name}' from registry."),
+        |mut client| async move {
+            let req = RegistryRemoveRequest {
+                name: name.to_string(),
+            };
+            client.registry_remove(req).await.map(|_| ()).map_err(status_to_anyhow)
+        },
+        || remove_offline(registry_path, name),
+    )
+    .await
+}
 
-    // Offline path — mutate registry.json directly.
+fn remove_offline(registry_path: &Path, name: &str) -> Result<()> {
     let mut registry = Registry::load(registry_path)?;
-
     let before = registry.projects.len();
     registry.projects.retain(|p| p.name != name);
-
     if registry.projects.len() == before {
         bail!("Project '{name}' not found in registry");
     }
-
     registry.save(registry_path)?;
-    println!("Removed project '{name}' from registry.");
     Ok(())
 }
 
@@ -138,25 +120,17 @@ pub async fn edit(
     name: &str,
     edits: ProjectEdits,
 ) -> Result<()> {
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = edit_request(name, &edits);
-                client
-                    .registry_edit(req)
-                    .await
-                    .map_err(|s| anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message()))?;
-                println!("Updated project '{name}'.");
-                return Ok(());
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
-
-    // Offline path — mutate registry.json directly.
-    edit_offline(registry_path, name, edits)
+    let req = edit_request(name, &edits);
+    with_daemon_or_offline(
+        addr,
+        offline,
+        &format!("Updated project '{name}'."),
+        |mut client| async move {
+            client.registry_edit(req).await.map(|_| ()).map_err(status_to_anyhow)
+        },
+        || edit_offline(registry_path, name, edits),
+    )
+    .await
 }
 
 /// Build a `RegistryEditRequest` from a project name and its edit set.
@@ -201,7 +175,6 @@ fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result
     let mut registry = Registry::load(registry_path)?;
     registry.edit_project(name, edits).map_err(|e| anyhow::anyhow!("{e}"))?;
     registry.save(registry_path)?;
-    println!("Updated project '{name}'.");
     Ok(())
 }
 

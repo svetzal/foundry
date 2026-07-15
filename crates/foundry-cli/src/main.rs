@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod commands;
+mod daemon;
 mod event_commands;
 mod gates_commands;
 mod init_commands;

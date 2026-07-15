@@ -4,6 +4,7 @@
 //! solely to expose internal types for integration testing.  Application code
 //! should not depend on this crate as a library in production.
 
+pub mod daemon;
 pub mod registry_commands;
 pub mod render;
 
