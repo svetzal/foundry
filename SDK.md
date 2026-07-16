@@ -43,11 +43,13 @@ blocks chained by which events they sink and source.
 2. **Block registration is hardcoded** in `register_blocks()` (`main.rs:224`) —
    a static list of `engine.register(Box::new(...))`. No block can be added
    without editing that function. No dynamic loading.
-3. **Two hidden couplings blocks depend on:** the hardcoded `is_span_opener()`
-   `matches!` list (`event.rs:406`) — a custom `*Requested` event silently
-   won't open a trace span — and the gateway traits (`ShellGateway`,
-   `ScannerGateway`, `AgentGateway` in `gateway.rs`), the I/O shell blocks need
-   but which lives inside `foundryd`, not in the published contract.
+3. **One remaining hidden coupling blocks depend on:** the gateway traits
+   (`ShellGateway`, `ScannerGateway`, `AgentGateway` in `gateway.rs`), which
+   the I/O shell blocks need but which live inside `foundryd`, not in the
+   published contract. (The `is_span_opener()` coupling is resolved: it is now
+   an exhaustive compiler-checked `match` — a custom `*Requested` event that
+   is not classified there will fail to compile, and custom runtime openers
+   register via `Engine::with_span_openers` instead.)
 
 ## Proposed layering
 
@@ -196,10 +198,13 @@ against the SDK alone.
 2. **Open `EventType`.** Add `Custom(String)` backed by the existing snake_case
    wire format (or a string newtype with `const` built-ins). Non-breaking. Add a
    round-trip test: `Custom("foo_happened")` ⇄ `"foo_happened"`.
-3. **Make span-openers declarative.** Delete the hardcoded `is_span_opener()`
-   `matches!`. The host builds the span-opener set at startup from each
-   registered block's `opens_span` flag. Custom `*Requested` events open spans
-   for free.
+3. **Make span-openers declarative (partially done).** `is_span_opener()` is
+   now an exhaustive compiler-checked `match` — the hardcoded `matches!` is
+   gone. Built-in classification is compiler-enforced at the single authoring
+   site. Custom `*Requested` events register at runtime via
+   `Engine::with_span_openers`. A future step could make the `opens_span` flag
+   part of each block's descriptor so the host builds the set from
+   `register_blocks()` entirely.
 4. **Extract `foundry-engine`.** Move `engine.rs` + scatter/gather/retry/tracing
    stamper into its own crate depending only on `foundry-sdk`. Mostly a file
    move — the engine already has no `EventType` match.

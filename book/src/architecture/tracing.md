@@ -179,7 +179,7 @@ and an event outside any fan-out simply carries `None`.
 
 ## Span-Opener Registry
 
-The span-opener registry is defined as `EventType::is_span_opener` in
+The span-opener registry is implemented as `EventType::is_span_opener` in
 `foundry-sdk`. The current openers are:
 
 - **Cycle and project-run openers**
@@ -188,25 +188,42 @@ The span-opener registry is defined as `EventType::is_span_opener` in
 - **Workflow request openers**
   - `ProjectIterationRequested`
   - `ProjectMaintenanceRequested`
+  - `ExecutionRequested`
   - `ValidationRequested`
   - `DriftAssessmentRequested`
   - `ReleaseRequested`
   - `PipelineCheckRequested`
   - `GreetingRequested`
+  - `MaintenanceSummaryRequested`
 - **Explicit lifecycle openers**
   - `RemediationStarted`
   - `StrategicCycleStarted`
   - `InnerIterationStarted`
+  - `CommitDigestStarted`
+  - `OpsDigestStarted`
+  - `SupplyChainScanStarted`
 
-The registry is additive. Adding a new opener is a one-line change to
-`is_span_opener` and does not require touching any other tracing code —
-the engine reads the registry at emit time, so any new opener
-immediately participates in span-parenting.
+### Compiler-enforced exhaustiveness
 
-To decide whether a new event type belongs in the registry, ask: *does
+`is_span_opener` is an exhaustive `match` with **no wildcard arm**. Every
+`EventType` variant is classified as opener (`true`) or non-opener (`false`)
+at this single authoritative site. Adding a new `EventType` variant without
+classifying it here is a **compile error** — the compiler, not discipline,
+keeps the classification complete.
+
+To add a new opener, edit the `match` in `is_span_opener` and move the
+new variant from the `false` arm group to the `true` arm group. No other
+tracing code needs to change — the engine reads the result at emit time.
+
+[`EventType::Custom`] is always `false` here; third-party workflows that
+need a custom root event to open a span can register it at runtime via
+`Engine::with_span_openers`.
+
+To decide whether a new event type belongs in the opener set, ask: *does
 this event represent the start of a logically distinct unit of work
-whose internal events should be grouped together?* If yes, register it.
-If the event is just one step in an existing workflow, leave it out.
+whose internal events should be grouped together?* If yes, add it to the
+`true` arm. If the event is just one step in an existing workflow, leave it
+in the `false` arm.
 
 ## Subprocess Propagation
 

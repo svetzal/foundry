@@ -484,29 +484,94 @@ impl EventType {
     /// engine's stamping pass should mint a fresh `span_id` for this event
     /// and parent it to the emitting block's `span_id`.
     ///
-    /// See the `OTel` nested tracing design spec; this list is expected to
-    /// grow as additional openers are registered.
+    /// See the `OTel` nested tracing design spec for the full model.
+    ///
+    /// # Compiler-enforced exhaustiveness
+    ///
+    /// This method is an intentionally exhaustive `match` with **no wildcard
+    /// arm**. Every `EventType` variant must be classified here as opener
+    /// (`true`) or non-opener (`false`). Adding a new `EventType` variant
+    /// without classifying it in this `match` is a **compile error** — the
+    /// compiler, not discipline, keeps the list complete. The single
+    /// authoritative site for the span-opener decision is this function.
+    ///
+    /// [`EventType::Custom`] is always `false`; custom third-party workflow
+    /// root events can register as span openers at runtime via
+    /// `Engine::with_span_openers`.
     pub fn is_span_opener(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            // Span openers — cycle roots, workflow triggers, and explicit
+            // lifecycle-start events that open a logically distinct unit of
+            // work whose internal events should be grouped together.
             EventType::MaintenanceCycleStarted
-                | EventType::ProjectRunStarted
-                | EventType::ProjectIterationRequested
-                | EventType::ProjectMaintenanceRequested
-                | EventType::ExecutionRequested
-                | EventType::ValidationRequested
-                | EventType::DriftAssessmentRequested
-                | EventType::ReleaseRequested
-                | EventType::PipelineCheckRequested
-                | EventType::GreetingRequested
-                | EventType::RemediationStarted
-                | EventType::StrategicCycleStarted
-                | EventType::InnerIterationStarted
-                | EventType::MaintenanceSummaryRequested
-                | EventType::CommitDigestStarted
-                | EventType::OpsDigestStarted
-                | EventType::SupplyChainScanStarted
-        )
+            | EventType::ProjectRunStarted
+            | EventType::ProjectIterationRequested
+            | EventType::ProjectMaintenanceRequested
+            | EventType::ExecutionRequested
+            | EventType::ValidationRequested
+            | EventType::DriftAssessmentRequested
+            | EventType::ReleaseRequested
+            | EventType::PipelineCheckRequested
+            | EventType::GreetingRequested
+            | EventType::RemediationStarted
+            | EventType::StrategicCycleStarted
+            | EventType::InnerIterationStarted
+            | EventType::MaintenanceSummaryRequested
+            | EventType::CommitDigestStarted
+            | EventType::OpsDigestStarted
+            | EventType::SupplyChainScanStarted => true,
+
+            // Non-openers — domain facts, lifecycle ends, and intermediate
+            // steps that belong to an already-open span.
+            EventType::ScanRequested
+            | EventType::VulnerabilityDetected
+            | EventType::MainBranchAudited
+            | EventType::RemediationCompleted
+            | EventType::ReleaseCompleted
+            | EventType::ReleasePipelineCompleted
+            | EventType::LocalInstallCompleted
+            | EventType::LocalSkillInstallCompleted
+            | EventType::ProjectValidationCompleted
+            | EventType::ProjectIterationCompleted
+            | EventType::ProjectMaintenanceCompleted
+            | EventType::ProjectChangesCommitted
+            | EventType::ProjectChangesPushed
+            | EventType::ValidationCompleted
+            | EventType::MaintenanceCycleCompleted
+            | EventType::ProjectRunCompleted
+            | EventType::ReleaseTagAudited
+            | EventType::GateResolutionCompleted
+            | EventType::PreflightCompleted
+            | EventType::ExecutionCompleted
+            | EventType::GateVerificationCompleted
+            | EventType::RetryRequested
+            | EventType::SummarizeCompleted
+            | EventType::CharterCheckCompleted
+            | EventType::AssessmentCompleted
+            | EventType::TriageCompleted
+            | EventType::PlanCompleted
+            | EventType::StrategicAssessmentCompleted
+            | EventType::StrategicCycleCompleted
+            | EventType::InnerIterationCompleted
+            | EventType::DriftAssessmentCompleted
+            | EventType::PipelineChecked
+            | EventType::CommitsObserved
+            | EventType::CommitSummaryCompleted
+            | EventType::CommitDigestCompleted
+            | EventType::OpsObserved
+            | EventType::OpsSummaryCompleted
+            | EventType::OpsDigestCompleted
+            | EventType::MaintenanceTriageCompleted
+            | EventType::MaintenanceTriageDigestWritten
+            | EventType::SupplyChainScanned
+            | EventType::SupplyChainRemediated
+            | EventType::SupplyChainScanCompleted
+            | EventType::GreetingComposed
+            | EventType::GreetingDelivered
+            | EventType::AgentSessionStarted
+            | EventType::AgentSessionEnded
+            | EventType::Custom(_) => false,
+        }
     }
 }
 
@@ -1092,6 +1157,27 @@ mod tests {
         assert!(!EventType::OpsObserved.is_span_opener());
         assert!(!EventType::OpsSummaryCompleted.is_span_opener());
         assert!(!EventType::OpsDigestCompleted.is_span_opener());
+
+        // Supply-chain workflow openers and non-openers
+        assert!(EventType::SupplyChainScanStarted.is_span_opener());
+        assert!(!EventType::SupplyChainScanned.is_span_opener());
+        assert!(!EventType::SupplyChainRemediated.is_span_opener());
+        assert!(!EventType::SupplyChainScanCompleted.is_span_opener());
+    }
+
+    #[test]
+    fn is_span_opener_is_exhaustive_no_wildcard() {
+        // The real guard for exhaustiveness is the compiler: `is_span_opener`
+        // is an explicit `match` with no `_` wildcard, so adding a new
+        // `EventType` variant without classifying it here is a compile error.
+        //
+        // This test anchors that intent for future readers who might be
+        // tempted to "simplify" the implementation back to `matches!`, and
+        // also documents that `Custom` is unconditionally a non-opener
+        // (third-party workflows register at runtime via
+        // `Engine::with_span_openers` instead).
+        assert!(!EventType::Custom("x_requested".to_string()).is_span_opener());
+        assert!(!EventType::Custom("maintenance_cycle_started".to_string()).is_span_opener());
     }
 
     #[test]
