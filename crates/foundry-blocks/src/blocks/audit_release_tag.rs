@@ -273,6 +273,30 @@ struct ScanGateways<'a> {
     scanner: &'a dyn ScannerGateway,
 }
 
+/// Restores the working tree to `original_branch` after a tag checkout.
+///
+/// This is the single source of truth for the three-layer git branch-recovery
+/// strategy used by [`perform_tag_checkout_and_scan`]:
+///
+/// 1. Try `git checkout <original_branch>` (nominal path).
+/// 2. On failure, fall back to `git checkout -` (previous HEAD shorthand).
+/// 3. Always run `git checkout HEAD` as a last-resort detach-guard.
+///
+/// All operations are best-effort; errors are silently discarded because the
+/// caller has already collected its scan result and any failure here is
+/// non-fatal.
+async fn restore_original_branch(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    original_branch: &str,
+) {
+    let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
+    if cleanup1.is_err() {
+        let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
+    }
+    let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
+}
+
 /// Checks out the latest release tag, runs the scanner, restores the original
 /// branch, and returns a `TaskBlockResult` with a `ReleaseTagAudited` event.
 ///
@@ -313,11 +337,7 @@ async fn perform_tag_checkout_and_scan(
                 "git checkout tag failed"
             );
             // Run cleanup even though we may not have moved.
-            let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
-            if cleanup1.is_err() {
-                let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
-            }
-            let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
+            restore_original_branch(shell, path, original_branch).await;
             return Ok(emit_payload_result(
                 project.to_string(),
                 throttle,
@@ -331,13 +351,8 @@ async fn perform_tag_checkout_and_scan(
         // Run the audit scanner.
         let audit = scanner.run_audit(path, stack).await;
 
-        // Three-layer cleanup: always restore original branch.
-        let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
-        if cleanup1.is_err() {
-            let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
-        }
-        // Last-resort fallback.
-        let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
+        // Always restore the original branch after scanning.
+        restore_original_branch(shell, path, original_branch).await;
 
         match crate::scanner::audit_outcome(audit) {
             Err(msg) => {
