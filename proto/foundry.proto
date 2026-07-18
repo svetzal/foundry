@@ -252,6 +252,46 @@ message ListCampaignsResponse {
     repeated Campaign campaigns = 1;
 }
 
+// One done-evidence item from a campaign definition. The kind field is either
+// "gate" (command + required) or "review" (statement).
+message DoneEvidence {
+    // "gate" or "review"
+    string kind = 1;
+    // Gate variant: the shell command to evaluate.
+    string command = 2;
+    // Gate variant: whether this gate is required for completion.
+    bool required = 3;
+    // Review variant: the human-readable completion statement.
+    string statement = 4;
+}
+
+// Full durable definition of a campaign, as returned by GetCampaign.
+// Carries all fields that Campaign (the summary form) intentionally omits.
+message CampaignDetail {
+    string name = 1;
+    string project = 2;
+    string mission = 3;
+    string status = 4;
+    uint64 cycles_completed = 5;
+    uint64 cycles_landed = 6;
+    uint64 max_cycles = 7;
+    string authorized_by = 8;
+    string agent_provider = 9;
+    string last_run_event_id = 10;
+    repeated string intent_refs = 11;
+    repeated string context_paths = 12;
+    repeated DoneEvidence done_evidence = 13;
+    repeated string escalation = 14;
+}
+
+message GetCampaignRequest {
+    string name = 1;
+}
+
+message GetCampaignResponse {
+    CampaignDetail campaign = 1;
+}
+
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.
 message Sentinel {
     string name = 1;
@@ -315,6 +355,9 @@ service Foundry {
 
     // List durable campaigns from the configured campaign store.
     rpc ListCampaigns(ListCampaignsRequest) returns (ListCampaignsResponse);
+
+    // Retrieve the complete durable definition of one campaign by exact name.
+    rpc GetCampaign(GetCampaignRequest) returns (GetCampaignResponse);
 
     // Mark a sentinel as enabled. Persists to disk and wakes the scheduler.
     rpc SentinelEnable(SentinelEnableRequest) returns (SentinelEnableResponse);

@@ -11,11 +11,12 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    EmitRequest, EmitResponse, ListCampaignsRequest, ListCampaignsResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
-    RegistryRemoveResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
-    SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
-    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
+    EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
+    ListCampaignsResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
+    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, SentinelDisableRequest,
+    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
+    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
+    WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -158,6 +159,13 @@ impl Foundry for FoundryService {
         request: Request<ListCampaignsRequest>,
     ) -> Result<Response<ListCampaignsResponse>, Status> {
         campaign_ops::list(&self.campaigns_path, request)
+    }
+
+    async fn get_campaign(
+        &self,
+        request: Request<GetCampaignRequest>,
+    ) -> Result<Response<GetCampaignResponse>, Status> {
+        campaign_ops::get(&self.campaigns_path, request)
     }
 
     async fn sentinel_enable(
@@ -818,5 +826,187 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    // ── get_campaign service-level tests ─────────────────────────────────────
+
+    /// Build a service backed by a specific campaigns store path.
+    fn test_service_with_campaigns_path(campaigns_path: std::path::PathBuf) -> FoundryService {
+        let (event_tx, _rx) = broadcast::channel(64);
+        let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+        let trace_store = Arc::new(TraceStore::new(Duration::from_secs(60)));
+        let workflow_tracker = Arc::new(WorkflowTracker::new());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trace_writer = Arc::new(TraceWriter::new(tmp.path().to_str().unwrap()));
+        let registry = Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let tmp_registry = tempfile::NamedTempFile::new().expect("tempfile");
+        let registry_path = tmp_registry.path().to_path_buf();
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+        let tmp_sentinels = tempfile::NamedTempFile::new().expect("tempfile");
+        let sentinels_path = tmp_sentinels.path().to_path_buf();
+        let scheduler_reload = Arc::new(Notify::new());
+        let ctx = RuntimeContext {
+            engine,
+            trace_store,
+            workflow_tracker,
+            trace_writer,
+            event_tx,
+            registry,
+        };
+        let stores = StoreConfig {
+            campaigns_path,
+            registry_path,
+            sentinels,
+            sentinels_path,
+            scheduler_reload,
+        };
+        FoundryService::new(ctx, stores)
+    }
+
+    #[tokio::test]
+    async fn get_campaign_returns_full_detail_with_gate_and_review_evidence() {
+        use foundry_sdk::campaign::{
+            Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence,
+        };
+
+        // Write an on-disk campaign store with one campaign carrying both a
+        // Gate and a Review done-evidence entry.
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let campaign = Campaign {
+            name: "service-campaign".to_string(),
+            project: "service-project".to_string(),
+            mission: "Prove the service detail path works end-to-end.".to_string(),
+            intent_refs: vec!["intent.alpha".to_string(), "intent.beta".to_string()],
+            context_paths: vec!["docs/service.md".to_string()],
+            done_evidence: vec![
+                DoneEvidence::Gate {
+                    command: "cargo test --workspace".to_string(),
+                    required: true,
+                },
+                DoneEvidence::Review {
+                    statement: "Human reviewer signed off.".to_string(),
+                },
+            ],
+            budget: CampaignBudget { max_cycles: 10 },
+            escalation: vec!["Escalate to team lead.".to_string()],
+            status: CampaignStatus::Active,
+            cycles_completed: 4,
+            cycles_landed: 3,
+            authorized_by: Some("bob".to_string()),
+            agent_provider: Some("opus".to_string()),
+            last_run_event_id: Some("evt-service-42".to_string()),
+        };
+        let store = CampaignStore {
+            version: 1,
+            campaigns: vec![campaign],
+        };
+        store.save(tmp.path()).expect("save store");
+
+        let service = test_service_with_campaigns_path(tmp.path().to_path_buf());
+        let response = service
+            .get_campaign(Request::new(GetCampaignRequest {
+                name: "service-campaign".to_string(),
+            }))
+            .await
+            .expect("get_campaign should succeed");
+        let detail = response.into_inner().campaign.expect("campaign present");
+
+        assert_eq!(detail.name, "service-campaign");
+        assert_eq!(detail.project, "service-project");
+        assert_eq!(detail.mission, "Prove the service detail path works end-to-end.");
+        assert_eq!(detail.status, "active");
+        assert_eq!(detail.cycles_completed, 4);
+        assert_eq!(detail.cycles_landed, 3);
+        assert_eq!(detail.max_cycles, 10);
+        assert_eq!(detail.authorized_by, "bob");
+        assert_eq!(detail.agent_provider, "opus");
+        assert_eq!(detail.last_run_event_id, "evt-service-42");
+        assert_eq!(detail.intent_refs, vec!["intent.alpha", "intent.beta"]);
+        assert_eq!(detail.context_paths, vec!["docs/service.md"]);
+        assert_eq!(detail.escalation, vec!["Escalate to team lead."]);
+        assert_eq!(detail.done_evidence.len(), 2);
+
+        // Gate: assert command AND required flag.
+        let gate = &detail.done_evidence[0];
+        assert_eq!(gate.kind, "gate");
+        assert_eq!(gate.command, "cargo test --workspace");
+        assert!(gate.required, "gate.required must be true");
+
+        // Review: assert statement.
+        let review = &detail.done_evidence[1];
+        assert_eq!(review.kind, "review");
+        assert_eq!(review.statement, "Human reviewer signed off.");
+    }
+
+    #[tokio::test]
+    async fn get_campaign_returns_not_found_for_absent_name_in_non_empty_store() {
+        use foundry_sdk::campaign::{
+            Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence,
+        };
+
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let store = CampaignStore {
+            version: 1,
+            campaigns: vec![Campaign {
+                name: "present".to_string(),
+                project: "p".to_string(),
+                mission: "m".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "ok".to_string(),
+                }],
+                budget: CampaignBudget { max_cycles: 3 },
+                escalation: vec![],
+                status: CampaignStatus::Staged,
+                cycles_completed: 0,
+                cycles_landed: 0,
+                authorized_by: None,
+                agent_provider: None,
+                last_run_event_id: None,
+            }],
+        };
+        store.save(tmp.path()).expect("save");
+
+        let service = test_service_with_campaigns_path(tmp.path().to_path_buf());
+        let err = service
+            .get_campaign(Request::new(GetCampaignRequest {
+                name: "absent".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn get_campaign_returns_failed_precondition_on_malformed_store() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), b"}{bad json}").expect("write");
+
+        let service = test_service_with_campaigns_path(tmp.path().to_path_buf());
+        let err = service
+            .get_campaign(Request::new(GetCampaignRequest {
+                name: "any".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn get_campaign_returns_internal_on_unreadable_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Pass the directory path — reading a directory as a file produces an Io error.
+        let service = test_service_with_campaigns_path(tmp.path().to_path_buf());
+        let err = service
+            .get_campaign(Request::new(GetCampaignRequest {
+                name: "any".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
     }
 }
