@@ -22,6 +22,23 @@ use foundry_blocks::gateway::{AgentGateway, ShellGateway};
 use foundry_engine::engine::Engine;
 use foundry_sdk::gateway::fakes::FakeAgentGateway;
 
+fn git_ok(cwd: Option<&std::path::Path>, args: &[&str]) -> bool {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .args(args);
+    for index in 0..8 {
+        command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
+        command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
+    }
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command.status().unwrap().success()
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
@@ -223,75 +240,30 @@ async fn prompt_workflow_happy_path() {
 async fn task_workflow_happy_path() {
     let dir = tempfile::tempdir().unwrap();
     let remote = dir.path().join("remote.git");
+    let remote_url = format!("file://{}", remote.display());
     let checkout = dir.path().join("checkout");
-    assert!(
-        Command::new("git")
-            .args(["init", "--bare", remote.to_str().unwrap()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .args(["init", "-b", "main", checkout.to_str().unwrap()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["config", "user.email", "foundry-test@example.com"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["config", "user.name", "Foundry Test"])
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(git_ok(None, &["init", "--bare", remote.to_str().unwrap()]));
+    assert!(git_ok(None, &["init", "-b", "main", checkout.to_str().unwrap()]));
+    assert!(git_ok(Some(&checkout), &["config", "user.email", "foundry-test@example.com"]));
+    assert!(git_ok(Some(&checkout), &["config", "user.name", "Foundry Test"]));
     std::fs::write(checkout.join("CHARTER.md"), "a".repeat(100)).unwrap();
     std::fs::write(
         checkout.join(".hone-gates.json"),
         r#"{"gates":[{"name":"fmt","command":"true","required":true}]}"#,
     )
     .unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["add", "CHARTER.md", ".hone-gates.json"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["commit", "-m", "initial"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["remote", "add", "origin", remote.to_str().unwrap()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&checkout)
-            .args(["push", "-u", "origin", "main"])
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(git_ok(Some(&checkout), &["add", "CHARTER.md", ".hone-gates.json"]));
+    assert!(git_ok(Some(&checkout), &["commit", "-m", "initial"]));
+    assert!(git_ok(Some(&checkout), &["remote", "add", "origin", &remote_url]));
+    let _ = Command::new("git")
+        .current_dir(&checkout)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .args(["config", "--unset-all", "remote.origin.pushurl"])
+        .status();
+    assert!(git_ok(Some(&checkout), &["remote", "set-url", "--push", "origin", &remote_url],));
+    assert!(git_ok(Some(&checkout), &["push", "-u", "origin", "main"]));
 
     let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
 

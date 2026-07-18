@@ -191,6 +191,10 @@ fn terminal_result(
     )
 }
 
+async fn landed_commit_ref(shell: &dyn ShellGateway, checkout: &Path) -> Result<String> {
+    checked(shell, checkout, &["rev-parse", "HEAD"]).await
+}
+
 async fn commit_and_preserve_if_needed(
     shell: &dyn ShellGateway,
     checkout: &Path,
@@ -338,6 +342,11 @@ impl TaskBlock for FinalizeTask {
             } else {
                 false
             };
+            let preservation_ref = if landed {
+                Some(landed_commit_ref(&*shell, checkout).await?)
+            } else {
+                preservation_ref
+            };
 
             if success_needs_cleanup(&verdict) {
                 cleanup_landed_branch(&*shell, checkout, &worktree, branch).await;
@@ -356,16 +365,60 @@ fn success_needs_cleanup(verdict: &TaskVerdict) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::pin::Pin;
     use std::process::Command;
+    use std::time::Duration;
 
+    use anyhow::Result;
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::gates::GateResult;
+    use foundry_sdk::gateway::{CommandResult, ShellGateway};
     use foundry_sdk::payload::{LoopContext, TaskReviewedPayload, TaskVerdict};
     use foundry_sdk::registry::{ActionFlags, ProjectEntry, Stack};
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
 
     use super::{FinalizeTask, enforce_gate_truth};
+
+    fn clean_git_env(command: &mut Command) {
+        command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+        command.env_remove("GIT_CONFIG_COUNT");
+        command.env_remove("GIT_CONFIG_PARAMETERS");
+        for index in 0..8 {
+            command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
+            command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
+        }
+    }
+
+    struct CleanProcessShellGateway;
+
+    impl ShellGateway for CleanProcessShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            _timeout: Option<Duration>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+            Box::pin(async move {
+                let mut child = Command::new(command);
+                child.current_dir(working_dir).args(args);
+                clean_git_env(&mut child);
+                if let Some(env) = env {
+                    child.envs(env.iter().map(|(k, v)| (k, v)));
+                }
+                let output = child.output()?;
+                Ok(CommandResult {
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                    exit_code: output.status.code().unwrap_or(1),
+                    success: output.status.success(),
+                })
+            })
+        }
+    }
 
     #[test]
     fn complete_verdict_cannot_override_failed_required_gate() {
@@ -390,7 +443,10 @@ mod tests {
     }
 
     fn git(cwd: &std::path::Path, args: &[&str]) -> String {
-        let output = Command::new("git").current_dir(cwd).args(args).output().unwrap();
+        let mut command = Command::new("git");
+        command.current_dir(cwd).args(args);
+        clean_git_env(&mut command);
+        let output = command.output().unwrap();
         assert!(
             output.status.success(),
             "git {} failed: {}",
@@ -443,6 +499,7 @@ mod tests {
     async fn noncomplete_task_commits_and_pushes_before_removing_worktree() {
         let dir = tempfile::tempdir().unwrap();
         let remote = dir.path().join("remote.git");
+        let remote_url = format!("file://{}", remote.display());
         let checkout = dir.path().join("checkout");
         let worktree = dir.path().join("worktree");
         git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
@@ -452,7 +509,13 @@ mod tests {
         std::fs::write(checkout.join("README.md"), "base\n").unwrap();
         git(&checkout, &["add", "README.md"]);
         git(&checkout, &["commit", "-m", "initial"]);
-        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["remote", "add", "origin", &remote_url]);
+        let _ = Command::new("git")
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["config", "--unset-all", "remote.origin.pushurl"])
+            .status();
+        git(&checkout, &["remote", "set-url", "--push", "origin", &remote_url]);
         git(&checkout, &["push", "-u", "origin", "main"]);
         git(
             &checkout,
@@ -468,7 +531,8 @@ mod tests {
         std::fs::write(worktree.join("remainder.txt"), "valuable work\n").unwrap();
 
         let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
-        let block = FinalizeTask::new(registry);
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
         let trigger = task_trigger(
             &worktree,
             "foundry-task/preserve-test",
@@ -501,6 +565,7 @@ mod tests {
     async fn complete_task_lands_clean_branch_that_is_ahead_of_trunk() {
         let dir = tempfile::tempdir().unwrap();
         let remote = dir.path().join("remote.git");
+        let remote_url = format!("file://{}", remote.display());
         let checkout = dir.path().join("checkout");
         let worktree = dir.path().join("worktree");
         git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
@@ -510,7 +575,13 @@ mod tests {
         std::fs::write(checkout.join("README.md"), "base\n").unwrap();
         git(&checkout, &["add", "README.md"]);
         git(&checkout, &["commit", "-m", "initial"]);
-        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["remote", "add", "origin", &remote_url]);
+        let _ = Command::new("git")
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["config", "--unset-all", "remote.origin.pushurl"])
+            .status();
+        git(&checkout, &["remote", "set-url", "--push", "origin", &remote_url]);
         git(&checkout, &["push", "-u", "origin", "main"]);
         git(
             &checkout,
@@ -529,7 +600,8 @@ mod tests {
         let branch_head = git(&worktree, &["rev-parse", "HEAD"]);
 
         let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
-        let block = FinalizeTask::new(registry);
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
         let trigger = task_trigger(&worktree, "foundry-task/landed-test", TaskVerdict::Complete);
 
         let result = block.execute(&trigger).await.unwrap();
@@ -537,8 +609,14 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.events[0].payload["landed"], true);
         assert_eq!(result.events[0].payload["summary"], "task completed, reviewed, and landed");
+        assert_eq!(result.events[0].payload["preservation_ref"], branch_head);
         assert!(!worktree.exists(), "landed worktree should be removed");
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
+        assert!(
+            git(&checkout, &["ls-remote", "--heads", "origin", "foundry-task/landed-test"])
+                .is_empty(),
+            "landed task branch should be deleted from origin"
+        );
         assert!(checkout.join("README.md").exists());
         assert!(
             std::fs::read_to_string(checkout.join("README.md"))
@@ -551,6 +629,7 @@ mod tests {
     async fn complete_task_with_no_deliverable_reports_no_landing() {
         let dir = tempfile::tempdir().unwrap();
         let remote = dir.path().join("remote.git");
+        let remote_url = format!("file://{}", remote.display());
         let checkout = dir.path().join("checkout");
         let worktree = dir.path().join("worktree");
         git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
@@ -560,7 +639,13 @@ mod tests {
         std::fs::write(checkout.join("README.md"), "base\n").unwrap();
         git(&checkout, &["add", "README.md"]);
         git(&checkout, &["commit", "-m", "initial"]);
-        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["remote", "add", "origin", &remote_url]);
+        let _ = Command::new("git")
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["config", "--unset-all", "remote.origin.pushurl"])
+            .status();
+        git(&checkout, &["remote", "set-url", "--push", "origin", &remote_url]);
         git(&checkout, &["push", "-u", "origin", "main"]);
         git(
             &checkout,
@@ -576,7 +661,8 @@ mod tests {
 
         let head_before = git(&checkout, &["rev-parse", "HEAD"]);
         let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
-        let block = FinalizeTask::new(registry);
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
         let trigger = task_trigger(&worktree, "foundry-task/noop-test", TaskVerdict::Complete);
 
         let result = block.execute(&trigger).await.unwrap();
@@ -595,6 +681,7 @@ mod tests {
     async fn complete_task_that_cannot_land_is_preserved_and_reported_truthfully() {
         let dir = tempfile::tempdir().unwrap();
         let remote = dir.path().join("remote.git");
+        let remote_url = format!("file://{}", remote.display());
         let checkout = dir.path().join("checkout");
         let worktree = dir.path().join("worktree");
         git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
@@ -604,7 +691,13 @@ mod tests {
         std::fs::write(checkout.join("README.md"), "base\n").unwrap();
         git(&checkout, &["add", "README.md"]);
         git(&checkout, &["commit", "-m", "initial"]);
-        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["remote", "add", "origin", &remote_url]);
+        let _ = Command::new("git")
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["config", "--unset-all", "remote.origin.pushurl"])
+            .status();
+        git(&checkout, &["remote", "set-url", "--push", "origin", &remote_url]);
         git(&checkout, &["push", "-u", "origin", "main"]);
         git(
             &checkout,
@@ -623,7 +716,8 @@ mod tests {
         std::fs::write(checkout.join("unrelated.txt"), "dirty\n").unwrap();
 
         let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
-        let block = FinalizeTask::new(registry);
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
         let trigger = task_trigger(&worktree, "foundry-task/fail-land-test", TaskVerdict::Complete);
 
         let result = block.execute(&trigger).await.unwrap();

@@ -181,7 +181,7 @@ Every event carries these common fields:
 | `landed` | bool | `true` only when complete work was actually fast-forwarded onto trunk |
 | `summary` | string | Human-readable terminal summary |
 | `verdict` | string | `complete`, `remainder`, `defect`, `blocked_on_decision`, or `runner_error` |
-| `preservation_ref` | string (optional) | Remote branch or `bundle:<path>` for preserved work |
+| `preservation_ref` | string (optional) | Continuation ref: landed commit SHA, or remote branch / `bundle:<path>` for preserved work |
 | `campaign` | string (optional) | Campaign that dispatched the task |
 
 Verdict-specific fields are `gaps[]`, `diagnosis`, `finding` plus `options[]`,

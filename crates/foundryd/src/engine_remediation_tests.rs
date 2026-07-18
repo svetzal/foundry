@@ -8,11 +8,63 @@
 //! `foundry_sdk::gateway::fakes`) by living here as a `#[cfg(test)]` module.
 #![cfg(test)]
 
+use std::path::Path;
+use std::pin::Pin;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::Result;
 use foundry_engine::engine::Engine;
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gateway::{CommandResult, ShellGateway};
 use foundry_sdk::throttle::Throttle;
+
+fn clean_git_env(command: &mut Command) {
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    command.env_remove("GIT_CONFIG_COUNT");
+    command.env_remove("GIT_CONFIG_PARAMETERS");
+    for index in 0..8 {
+        command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
+        command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
+    }
+}
+
+fn git_ok(cwd: &Path, args: &[&str]) -> bool {
+    let mut command = Command::new("git");
+    command.current_dir(cwd).args(args);
+    clean_git_env(&mut command);
+    command.status().unwrap().success()
+}
+
+struct CleanProcessShellGateway;
+
+impl ShellGateway for CleanProcessShellGateway {
+    fn run<'a>(
+        &'a self,
+        working_dir: &'a Path,
+        command: &'a str,
+        args: &'a [&'a str],
+        env: Option<&'a [(String, String)]>,
+        _timeout: Option<Duration>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut child = Command::new(command);
+            child.current_dir(working_dir).args(args);
+            clean_git_env(&mut child);
+            if let Some(env) = env {
+                child.envs(env.iter().map(|(k, v)| (k, v)));
+            }
+            let output = child.output()?;
+            Ok(CommandResult {
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: output.status.code().unwrap_or(1),
+                success: output.status.success(),
+            })
+        })
+    }
+}
 
 // -- Vulnerability remediation integration tests --
 
@@ -25,43 +77,19 @@ fn vuln_engine() -> Engine {
     let dir = tempfile::TempDir::new().unwrap();
     let project_path = dir.path().to_str().unwrap().to_string();
     // Initialize a git repo with an uncommitted change so CommitAndPush has work to do.
-    let _ = std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(&project_path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(&project_path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(&project_path)
-        .output();
+    let _ = git_ok(dir.path(), &["init", "-b", "main"]);
+    let _ = git_ok(dir.path(), &["config", "user.email", "test@example.com"]);
+    let _ = git_ok(dir.path(), &["config", "user.name", "Test"]);
     // Create an initial commit so there's a HEAD reference
     std::fs::write(dir.path().join("AGENTS.md"), "# test").unwrap();
-    let _ = std::process::Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(&project_path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(&project_path)
-        .output();
+    let _ = git_ok(dir.path(), &["add", "-A"]);
+    let _ = git_ok(dir.path(), &["commit", "-m", "init"]);
     // Set up a local bare repo as remote so git push succeeds
     let remote_dir = tempfile::TempDir::new().unwrap();
-    let remote_path = remote_dir.path().to_str().unwrap().to_string();
-    let _ = std::process::Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(&remote_path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["remote", "add", "origin", &remote_path])
-        .current_dir(&project_path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["push", "-u", "origin", "main"])
-        .current_dir(&project_path)
-        .output();
+    let remote_url = format!("file://{}", remote_dir.path().display());
+    let _ = git_ok(remote_dir.path(), &["init", "--bare"]);
+    let _ = git_ok(dir.path(), &["remote", "add", "origin", &remote_url]);
+    let _ = git_ok(dir.path(), &["push", "-u", "origin", "main"]);
     // Create an uncommitted change so CommitAndPush triggers
     std::fs::write(dir.path().join("CHANGES.md"), "changes").unwrap();
     std::mem::forget(dir);
@@ -103,13 +131,20 @@ fn vuln_engine() -> Engine {
         agent,
         Arc::clone(&registry),
     )));
-    engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(Arc::clone(&registry))));
+    let shell: Arc<dyn ShellGateway> = Arc::new(CleanProcessShellGateway);
+    engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::with_gateways(
+        Arc::clone(&registry),
+        Arc::clone(&shell),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::CutRelease::new(
         foundry_sdk::gateway::fakes::FakeAgentGateway::success(),
         Arc::clone(&registry),
     )));
     engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::new(Arc::clone(&registry))));
-    engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(Arc::clone(&registry))));
+    engine.register(Box::new(foundry_blocks::blocks::InstallLocally::with_gateways(
+        Arc::clone(&registry),
+        shell,
+    )));
     engine
 }
 

@@ -163,7 +163,8 @@ The terminal event contains one structural verdict:
 
 Task execution has no retry route. All task work is committed before terminal
 state. Non-complete work is preserved on a remote branch or, if push fails, in
-a Git bundle. The `preservation_ref` field identifies that artifact.
+a Git bundle. For landed work, `preservation_ref` carries the landed commit SHA;
+otherwise it identifies the preserved branch or bundle artifact.
 
 ## `foundry campaign`
 

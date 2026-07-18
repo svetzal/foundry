@@ -1036,7 +1036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumed_campaign_forms_from_pending_result_and_preservation_ref() {
+    async fn resumed_campaign_forms_from_pending_result_and_landed_commit_ref() {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("campaigns.json");
         let pending = TaskRunCompletedPayload {
@@ -1044,7 +1044,7 @@ mod tests {
             success: true,
             landed: true,
             summary: "first slice landed with one boundary test gap".to_string(),
-            preservation_ref: Some("foundry-task/preserved-boundary".to_string()),
+            preservation_ref: Some("4a855db".to_string()),
             verdict: TaskVerdict::Remainder {
                 gaps: vec!["exercise the generated gRPC boundary".to_string()],
             },
@@ -1127,7 +1127,7 @@ mod tests {
             .expect("next task dispatched");
         assert_eq!(
             execution.payload.get("base_ref").and_then(serde_json::Value::as_str),
-            Some("foundry-task/preserved-boundary")
+            Some("4a855db")
         );
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);
