@@ -11,12 +11,13 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
-    ListCampaignsResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
-    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, SentinelDisableRequest,
-    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
-    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
-    WatchResponse, foundry_server::Foundry,
+    AdvanceCampaignRequest, AdvanceCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest,
+    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest,
+    PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
+    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, ResumeCampaignRequest,
+    ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
+    SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
+    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -166,6 +167,27 @@ impl Foundry for FoundryService {
         request: Request<GetCampaignRequest>,
     ) -> Result<Response<GetCampaignResponse>, Status> {
         campaign_ops::get(&self.campaigns_path, request)
+    }
+
+    async fn pause_campaign(
+        &self,
+        request: Request<PauseCampaignRequest>,
+    ) -> Result<Response<PauseCampaignResponse>, Status> {
+        campaign_ops::pause(&self.campaigns_path, request)
+    }
+
+    async fn resume_campaign(
+        &self,
+        request: Request<ResumeCampaignRequest>,
+    ) -> Result<Response<ResumeCampaignResponse>, Status> {
+        campaign_ops::resume(&self.campaigns_path, request)
+    }
+
+    async fn advance_campaign(
+        &self,
+        request: Request<AdvanceCampaignRequest>,
+    ) -> Result<Response<AdvanceCampaignResponse>, Status> {
+        campaign_ops::advance(&self.campaigns_path, &self.ctx, request)
     }
 
     async fn sentinel_enable(

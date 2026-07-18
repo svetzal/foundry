@@ -295,6 +295,47 @@ message GetCampaignResponse {
     CampaignDetail campaign = 1;
 }
 
+// Pause a campaign. Idempotent on the status field; never clears pending_run_result.
+message PauseCampaignRequest {
+    string name = 1;
+}
+
+message PauseCampaignResponse {
+    // Full campaign detail reflecting the state after the pause is applied.
+    CampaignDetail campaign = 1;
+}
+
+// Resume a paused campaign, optionally extending its cycle budget.
+// `add_cycles` is applied to `budget.max_cycles` exactly once via checked
+// addition (overflow → FAILED_PRECONDITION). Pass 0 to resume without
+// extending the budget.
+// Requires `authorized_by` to be set; returns FAILED_PRECONDITION otherwise.
+// Only valid when the campaign is in `paused` status.
+message ResumeCampaignRequest {
+    string name = 1;
+    // Non-negative number of additional cycles to add to `max_cycles`.
+    uint64 add_cycles = 2;
+}
+
+message ResumeCampaignResponse {
+    // Full campaign detail reflecting the state after the resume is applied.
+    CampaignDetail campaign = 1;
+}
+
+// Manually dispatch one advance iteration for an active campaign.
+// Valid only when the campaign is `active` or `staged`; returns
+// FAILED_PRECONDITION for `paused`, `escalated`, or `completed` campaigns.
+message AdvanceCampaignRequest {
+    string name = 1;
+}
+
+message AdvanceCampaignResponse {
+    // Current campaign detail at the time the advance was dispatched.
+    // The advance itself is asynchronous; poll GetCampaign to observe the
+    // outcome.
+    CampaignDetail campaign = 1;
+}
+
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.
 message Sentinel {
     string name = 1;
@@ -361,6 +402,15 @@ service Foundry {
 
     // Retrieve the complete durable definition of one campaign by exact name.
     rpc GetCampaign(GetCampaignRequest) returns (GetCampaignResponse);
+
+    // Pause an active campaign. Preserves pending_run_result.
+    rpc PauseCampaign(PauseCampaignRequest) returns (PauseCampaignResponse);
+
+    // Resume a paused campaign, optionally extending its cycle budget.
+    rpc ResumeCampaign(ResumeCampaignRequest) returns (ResumeCampaignResponse);
+
+    // Manually dispatch one advance iteration for an active campaign.
+    rpc AdvanceCampaign(AdvanceCampaignRequest) returns (AdvanceCampaignResponse);
 
     // Mark a sentinel as enabled. Persists to disk and wakes the scheduler.
     rpc SentinelEnable(SentinelEnableRequest) returns (SentinelEnableResponse);

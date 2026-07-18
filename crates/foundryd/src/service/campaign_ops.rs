@@ -2,12 +2,17 @@ use std::path::Path;
 
 use tonic::{Request, Response, Status};
 
-use foundry_sdk::campaign::{CampaignStatus, CampaignStore, DoneEvidence};
+use foundry_sdk::campaign::{CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence};
 use foundry_sdk::error::StoreError;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::CampaignAdvanceRequestedPayload;
+use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
-    Campaign as ProtoCampaign, CampaignDetail, DoneEvidence as ProtoDoneEvidence,
-    GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    AdvanceCampaignRequest, AdvanceCampaignResponse, Campaign as ProtoCampaign, CampaignDetail,
+    DoneEvidence as ProtoDoneEvidence, GetCampaignRequest, GetCampaignResponse,
+    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    ResumeCampaignRequest, ResumeCampaignResponse,
 };
 
 fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaign {
@@ -25,8 +30,8 @@ fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaig
     }
 }
 
-fn load_store(path: &Path) -> Result<CampaignStore, Status> {
-    CampaignStore::load(path).map_err(|error| match error {
+fn map_store_error(error: StoreError) -> Status {
+    match error {
         StoreError::Parse { source, .. } => {
             Status::failed_precondition(format!("campaign store is malformed: {source}"))
         }
@@ -34,7 +39,27 @@ fn load_store(path: &Path) -> Result<CampaignStore, Status> {
             Status::internal(format!("campaign store is unreadable: {source}"))
         }
         StoreError::NotFound { .. } => unreachable!("campaign store treats missing files as empty"),
-    })
+    }
+}
+
+fn map_save_error(error: StoreError) -> Status {
+    match error {
+        StoreError::Parse { source, .. } => {
+            Status::internal(format!("campaign store serialization failed: {source}"))
+        }
+        StoreError::Io { source, .. } => {
+            Status::internal(format!("campaign store save failed: {source}"))
+        }
+        StoreError::NotFound { .. } => unreachable!("save never returns NotFound"),
+    }
+}
+
+fn load_store(path: &Path) -> Result<CampaignStore, Status> {
+    CampaignStore::load(path).map_err(map_store_error)
+}
+
+fn lock_store_exclusive(path: &Path) -> Result<CampaignStoreGuard, Status> {
+    CampaignStore::lock_exclusive(path).map_err(map_store_error)
 }
 
 fn status_str(status: CampaignStatus) -> String {
@@ -102,6 +127,128 @@ pub(super) fn get(
         })),
         None => Err(Status::not_found(format!("campaign '{name}' not found"))),
     }
+}
+
+/// Pause a campaign, preserving any stored `pending_run_result`.
+///
+/// Status is unconditionally set to `Paused`; `pending_run_result` is never
+/// cleared or overwritten by this operation.
+pub(super) fn pause(
+    campaigns_path: &Path,
+    request: Request<PauseCampaignRequest>,
+) -> Result<Response<PauseCampaignResponse>, Status> {
+    let name = request.into_inner().name;
+    let mut guard = lock_store_exclusive(campaigns_path)?;
+    let campaign = guard
+        .store
+        .find_mut(&name)
+        .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+    campaign.status = CampaignStatus::Paused;
+    // pending_run_result is intentionally left untouched.
+    let detail = campaign_to_detail(campaign);
+    guard.save().map_err(map_save_error)?;
+    Ok(Response::new(PauseCampaignResponse {
+        campaign: Some(detail),
+    }))
+}
+
+/// Resume a paused campaign, optionally extending its cycle budget.
+///
+/// Requires `authorized_by` to be set (`FAILED_PRECONDITION` otherwise).
+/// Valid only when the campaign status is `Paused` (`FAILED_PRECONDITION` for
+/// other statuses).  `add_cycles` is applied to `budget.max_cycles` via
+/// checked addition; overflow returns `FAILED_PRECONDITION`.
+pub(super) fn resume(
+    campaigns_path: &Path,
+    request: Request<ResumeCampaignRequest>,
+) -> Result<Response<ResumeCampaignResponse>, Status> {
+    let req = request.into_inner();
+    let name = req.name;
+    let add_cycles = req.add_cycles;
+
+    let mut guard = lock_store_exclusive(campaigns_path)?;
+    let campaign = guard
+        .store
+        .find_mut(&name)
+        .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+
+    if campaign.authorized_by.is_none() {
+        return Err(Status::failed_precondition(format!(
+            "campaign '{name}' has not been authorized; resume requires an authorized_by owner"
+        )));
+    }
+    if campaign.status != CampaignStatus::Paused {
+        return Err(Status::failed_precondition(format!(
+            "campaign '{name}' is '{}'; resume requires Paused status",
+            campaign.status
+        )));
+    }
+    if add_cycles > 0 {
+        campaign.budget.max_cycles =
+            campaign.budget.max_cycles.checked_add(add_cycles).ok_or_else(|| {
+                Status::failed_precondition(format!(
+                    "add_cycles ({add_cycles}) would overflow max_cycles for campaign '{name}'"
+                ))
+            })?;
+    }
+    campaign.status = CampaignStatus::Active;
+    let detail = campaign_to_detail(campaign);
+    guard.save().map_err(map_save_error)?;
+    Ok(Response::new(ResumeCampaignResponse {
+        campaign: Some(detail),
+    }))
+}
+
+/// Dispatch one manual advance iteration for an active (or staged) campaign.
+///
+/// Validates campaign existence and status under the exclusive lock, releases
+/// the lock, then emits `CampaignAdvanceRequested` through the engine.
+/// Returns `FAILED_PRECONDITION` for `paused`, `escalated`, or `completed`
+/// campaigns.
+pub(super) fn advance(
+    campaigns_path: &Path,
+    ctx: &super::RuntimeContext,
+    request: Request<AdvanceCampaignRequest>,
+) -> Result<Response<AdvanceCampaignResponse>, Status> {
+    let name = request.into_inner().name;
+
+    // Validate under the exclusive lock; release before emitting to avoid a
+    // deadlock with the AdvanceCampaign block which also acquires the lock.
+    let (detail, project) = {
+        let guard = lock_store_exclusive(campaigns_path)?;
+        let campaign = guard
+            .store
+            .find(&name)
+            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+
+        match campaign.status {
+            CampaignStatus::Active | CampaignStatus::Staged => {}
+            status => {
+                return Err(Status::failed_precondition(format!(
+                    "campaign '{name}' is '{status}'; advance requires Active or Staged status"
+                )));
+            }
+        }
+
+        (campaign_to_detail(campaign), campaign.project.clone())
+        // guard drops here, releasing the exclusive lock before the event is emitted.
+    };
+
+    // Emit CampaignAdvanceRequested through the existing engine path.
+    let payload = Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+        campaign: name,
+        run_event_id: None,
+        run_result: None,
+    })
+    .map_err(|e| Status::internal(format!("failed to serialize advance payload: {e}")))?;
+
+    let event = Event::new(EventType::CampaignAdvanceRequested, project, Throttle::Full, payload);
+
+    super::spawn_workflow(event, ctx);
+
+    Ok(Response::new(AdvanceCampaignResponse {
+        campaign: Some(detail),
+    }))
 }
 
 pub(super) fn list(
