@@ -195,6 +195,11 @@ async fn list_campaigns_reports_malformed_store() {
 
     assert_eq!(err.code(), Code::FailedPrecondition);
     assert!(err.message().contains("campaign store is malformed"));
+    assert!(
+        !err.message().contains(&tmp_campaigns.path().display().to_string()),
+        "error message must not expose store path: {}",
+        err.message()
+    );
 }
 
 #[tokio::test]
@@ -212,6 +217,11 @@ async fn list_campaigns_reports_unreadable_store() {
 
     assert_eq!(err.code(), Code::Internal);
     assert!(err.message().contains("campaign store is unreadable"));
+    assert!(
+        !err.message().contains(&tmp_campaigns.path().display().to_string()),
+        "error message must not expose store path: {}",
+        err.message()
+    );
 }
 
 #[tokio::test]

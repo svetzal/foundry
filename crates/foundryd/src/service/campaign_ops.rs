@@ -30,10 +30,12 @@ fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaig
 
 fn load_store(path: &Path) -> Result<CampaignStore, Status> {
     CampaignStore::load(path).map_err(|error| match error {
-        StoreError::Parse { .. } => {
-            Status::failed_precondition(format!("campaign store is malformed: {error}"))
+        StoreError::Parse { source, .. } => {
+            Status::failed_precondition(format!("campaign store is malformed: {source}"))
         }
-        StoreError::Io { .. } => Status::internal(format!("campaign store is unreadable: {error}")),
+        StoreError::Io { source, .. } => {
+            Status::internal(format!("campaign store is unreadable: {source}"))
+        }
         StoreError::NotFound { .. } => unreachable!("campaign store treats missing files as empty"),
     })
 }

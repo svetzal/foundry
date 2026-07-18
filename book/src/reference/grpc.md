@@ -154,6 +154,29 @@ fields (e.g. `clear_skip = true` to un-skip a project).
 **Errors:** `NOT_FOUND`; `INVALID_ARGUMENT` for conflicting install fields or
 unknown stack.
 
+### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
+
+List the durable campaign inventory from the daemon's configured campaign
+store. This is a read-only query: it loads the store at request time, returns
+records in deterministic campaign-name order, and exposes summary/status fields
+only.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Optional exact project-name filter; empty string returns all campaigns |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaigns` | repeated Campaign | Durable inventory records sorted by campaign name |
+
+**Errors:** `FAILED_PRECONDITION` when the campaign store is malformed;
+`INTERNAL` when the campaign store is unreadable. Missing or empty stores
+return an empty list.
+
 ### `Trace(TraceRequest) → TraceResponse`
 
 Retrieve the trace of a completed event chain. Returns all events produced
@@ -210,6 +233,21 @@ and survive daemon restarts. The `Trace` RPC checks the in-memory store first
 | `project` | string | Target project |
 | `occurred_at` | string | ISO 8601 timestamp |
 | `throttle` | Throttle enum | Throttle level for this event |
+
+### `Campaign`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Campaign name |
+| `project` | string | Registered project name |
+| `mission` | string | Campaign mission statement |
+| `status` | string | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
+| `cycles_completed` | uint64 | Number of dispatched task cycles |
+| `cycles_landed` | uint64 | Number of complete task results that landed |
+| `max_cycles` | uint64 | Configured campaign cycle budget |
+| `authorized_by` | string | Owner authorization identity, or empty when absent |
+| `agent_provider` | string | Preferred agent provider, or empty when absent |
+| `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent |
 
 ### `TraceBlockExecution`
 
