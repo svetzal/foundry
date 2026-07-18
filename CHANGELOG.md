@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-07-18
+
+### Fixed
+
+- Structured agent output extraction now prefers the final fenced JSON object
+  and falls back to the last structurally valid object. Typed verdicts from
+  providers such as Claude are no longer rejected when preceding review prose
+  contains brace notation.
+
 ## [0.29.0] - 2026-07-18
 
 ### Added
