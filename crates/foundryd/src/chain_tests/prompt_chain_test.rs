@@ -6,6 +6,7 @@
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
 
+use std::process::Command;
 use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
@@ -36,6 +37,11 @@ fn prompt_engine(
     )));
     // Direct prompt (sinks on PreflightCompleted, workflow=prompt only)
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry.clone())));
     // Assessment blocks — should NOT fire for prompt workflow
     engine.register(Box::new(foundry_blocks::blocks::AssessProject::new(
         agent.clone(),
@@ -170,22 +176,85 @@ async fn prompt_workflow_happy_path() {
 // skipping assessment/triage/plan blocks.
 async fn task_workflow_happy_path() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("CHARTER.md"), "a".repeat(100)).unwrap();
+    let remote = dir.path().join("remote.git");
+    let checkout = dir.path().join("checkout");
+    assert!(
+        Command::new("git")
+            .args(["init", "--bare", remote.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main", checkout.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["config", "user.email", "foundry-test@example.com"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["config", "user.name", "Foundry Test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(checkout.join("CHARTER.md"), "a".repeat(100)).unwrap();
     std::fs::write(
-        dir.path().join(".hone-gates.json"),
+        checkout.join(".hone-gates.json"),
         r#"{"gates":[{"name":"fmt","command":"true","required":true}]}"#,
     )
     .unwrap();
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["add", "CHARTER.md", ".hone-gates.json"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["commit", "-m", "initial"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["remote", "add", "origin", remote.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&checkout)
+            .args(["push", "-u", "origin", "main"])
+            .status()
+            .unwrap()
+            .success()
+    );
 
-    let registry =
-        test_helpers::registry_with_project("test-project", dir.path().to_str().unwrap());
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
 
-    let agent = test_helpers::sequenced_agent(vec![
-        "Done, implemented the task",
-        "HEADLINE: Implement task\nSUMMARY: Implemented the requested task.",
+    let agent = FakeAgentGateway::sequence(vec![
+        foundry_blocks::gateway::AgentResponse::success("Done, implemented the task"),
+        foundry_blocks::gateway::AgentResponse::success("```json\n{\"verdict\":\"complete\"}\n```"),
     ]);
 
-    let engine = prompt_engine(test_helpers::passing_shell(), agent, registry);
+    let engine = prompt_engine(test_helpers::passing_shell(), agent.clone(), registry);
 
     let trigger = Event::new(
         EventType::ExecutionRequested,
@@ -203,9 +272,13 @@ async fn task_workflow_happy_path() {
     let event_types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
 
     assert!(event_types.iter().any(|t| t == "plan_completed"));
+    assert!(event_types.iter().any(|t| t == "task_run_started"));
     assert!(event_types.iter().any(|t| t == "execution_completed"));
     assert!(event_types.iter().any(|t| t == "gate_verification_completed"));
-    assert!(event_types.iter().any(|t| t == "project_iteration_completed"));
+    assert!(event_types.iter().any(|t| t == "task_reviewed"));
+    assert!(event_types.iter().any(|t| t == "task_run_completed"));
+    assert!(!event_types.iter().any(|t| t == "retry_requested"));
+    assert!(!event_types.iter().any(|t| t == "project_iteration_completed"));
     assert!(!event_types.iter().any(|t| t == "assessment_completed"));
     assert!(!event_types.iter().any(|t| t == "triage_completed"));
 
@@ -217,10 +290,20 @@ async fn task_workflow_happy_path() {
     let terminal_event = result
         .events
         .iter()
-        .find(|e| e.event_type == EventType::ProjectIterationCompleted)
+        .find(|e| e.event_type == EventType::TaskRunCompleted)
         .unwrap();
-    assert_eq!(terminal_event.payload["workflow"], "task");
     assert_eq!(terminal_event.payload["success"], true);
+    assert_eq!(terminal_event.payload["verdict"], "complete");
+
+    let invocations = agent.invocations();
+    assert_eq!(invocations.len(), 2);
+    assert_ne!(invocations[0].working_dir, checkout);
+    assert_eq!(invocations[0].working_dir, invocations[1].working_dir);
+    assert!(
+        invocations[0].working_dir.contains(".foundry/worktrees"),
+        "executor escaped isolated worktree: {}",
+        invocations[0].working_dir
+    );
 }
 
 #[tokio::test]

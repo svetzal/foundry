@@ -12,6 +12,7 @@ mod change_detection;
 mod digest_io;
 mod event_builders;
 mod execution;
+mod task_workspace;
 
 pub(crate) use dry_run::SimulatedSuccess;
 
@@ -83,6 +84,7 @@ fn read_registry(
     })
 }
 
+mod advance_campaign;
 mod assess_project;
 mod audit_main_branch;
 mod audit_release_tag;
@@ -94,6 +96,7 @@ mod create_plan;
 mod direct_prompt;
 mod execute_maintain;
 mod execute_plan;
+mod finalize_task;
 mod generate_summary;
 mod git_ops;
 mod greet;
@@ -104,8 +107,10 @@ mod release;
 mod remediate;
 mod remediate_pipeline;
 mod remediate_supply_chain;
+mod request_campaign_advance;
 mod resolve_gates;
 mod retry_execution;
+mod review_task;
 mod route_gate_result;
 mod route_project;
 mod route_validation_result;
@@ -120,6 +125,7 @@ mod summarize_commits;
 mod summarize_events;
 mod summarize_result;
 mod supply_chain_fixers;
+mod surface_campaign_terminal;
 mod triage_assessment;
 pub mod triage_core;
 mod triage_maintenance;
@@ -130,6 +136,7 @@ mod write_ops_digest;
 mod write_supply_chain_digest;
 mod write_triage_digest;
 
+pub use advance_campaign::AdvanceCampaign;
 pub use assess_project::AssessProject;
 pub use audit_main_branch::AuditMainBranch;
 pub use audit_release_tag::AuditReleaseTag;
@@ -141,6 +148,7 @@ pub use create_plan::CreatePlan;
 pub use direct_prompt::DirectPrompt;
 pub use execute_maintain::ExecuteMaintain;
 pub use execute_plan::ExecutePlan;
+pub use finalize_task::FinalizeTask;
 pub use generate_summary::GenerateSummary;
 pub use git_ops::CommitAndPush;
 pub use greet::{ComposeGreeting, DeliverGreeting};
@@ -151,8 +159,10 @@ pub use release::{CutRelease, ExecuteRelease};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
 pub use remediate_supply_chain::RemediateSupplyChain;
+pub use request_campaign_advance::RequestCampaignAdvance;
 pub use resolve_gates::ResolveGates;
 pub use retry_execution::RetryExecution;
+pub use review_task::ReviewTask;
 pub use route_gate_result::RouteGateResult;
 pub use route_project::RouteProjectWorkflow;
 pub use route_validation_result::RouteValidationResult;
@@ -166,6 +176,7 @@ pub use strategic_loop::StrategicLoopController;
 pub use summarize_commits::SummarizeCommits;
 pub use summarize_events::SummarizeEvents;
 pub use summarize_result::SummarizeResult;
+pub use surface_campaign_terminal::SurfaceCampaignTerminal;
 pub use triage_assessment::TriageAssessment;
 pub use triage_maintenance::TriageMaintenance;
 pub use validate::ValidateProject;

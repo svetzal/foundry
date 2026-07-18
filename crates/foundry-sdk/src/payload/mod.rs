@@ -19,6 +19,7 @@
 //! ```
 
 pub mod agent_session;
+pub mod campaign;
 pub mod commit_digest;
 pub mod context;
 pub mod drift;
@@ -34,10 +35,12 @@ pub mod project_lifecycle;
 pub mod release;
 pub mod strategic;
 pub mod supply_chain;
+pub mod task;
 pub mod validation;
 pub mod vulnerability;
 
 pub use agent_session::*;
+pub use campaign::*;
 pub use commit_digest::*;
 pub use context::*;
 pub use drift::*;
@@ -53,6 +56,7 @@ pub use project_lifecycle::*;
 pub use release::*;
 pub use strategic::*;
 pub use supply_chain::*;
+pub use task::*;
 pub use validation::*;
 pub use vulnerability::*;
 
@@ -135,19 +139,29 @@ mod tests {
     }
 
     #[test]
-    fn loop_context_extract_only_copies_loop_context_and_actions() {
+    fn loop_context_extract_copies_task_execution_context() {
         let source = serde_json::json!({
             "loop_context": {"strategic": {"iteration": 1}},
             "actions": {"maintain": true},
-            "prompt": "ignored",
+            "prompt": "task objective",
             "gates": "ignored",
+            "campaign": "campaign-a",
+            "task_worktree": "/tmp/worktree",
+            "task_branch": "foundry-task/a",
+            "base_ref": "preserved-a",
+            "agent_provider": "codex",
         });
         let lc = LoopContext::extract_from(&source);
         assert!(lc.loop_context.is_some());
         assert!(lc.actions.is_some());
 
         let json = serde_json::to_value(&lc).unwrap();
-        assert!(json.get("prompt").is_none());
+        assert_eq!(json["prompt"], "task objective");
+        assert_eq!(json["campaign"], "campaign-a");
+        assert_eq!(json["task_worktree"], "/tmp/worktree");
+        assert_eq!(json["task_branch"], "foundry-task/a");
+        assert_eq!(json["base_ref"], "preserved-a");
+        assert_eq!(json["agent_provider"], "codex");
         assert!(json.get("gates").is_none());
     }
 
@@ -177,6 +191,7 @@ mod tests {
         let context = LoopContext {
             loop_context: Some(serde_json::json!({"strategic": {"iteration": 1}})),
             actions: Some(serde_json::json!({"maintain": true})),
+            ..LoopContext::default()
         };
         let p = ExecutionCompletedPayload {
             project: "test".to_string(),

@@ -37,6 +37,37 @@ pub fn sentinels_path() -> PathBuf {
     }
 }
 
+/// Returns the durable campaign store path.
+///
+/// Override with `FOUNDRY_CAMPAIGNS_PATH`.
+pub fn campaigns_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_CAMPAIGNS_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("campaigns.json")
+    }
+}
+
+/// Returns the root used for isolated one-shot task worktrees.
+///
+/// Override with `FOUNDRY_WORKTREES_DIR`.
+pub fn worktrees_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_WORKTREES_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("worktrees")
+    }
+}
+
+/// Returns the root used for preservation bundles when a branch cannot be pushed.
+pub fn preserved_dir() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_PRESERVED_DIR") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("preserved")
+    }
+}
+
 /// Returns the agent model configuration file path.
 ///
 /// This JSON store maps each provider's abstract model tiers and reasoning

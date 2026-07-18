@@ -1,0 +1,620 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, DoneEvidence};
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gates::GateDefinition;
+use foundry_sdk::payload::{
+    CampaignAdvanceCompletedPayload, CampaignAdvanceRequestedPayload, CampaignDecision,
+    CampaignTerminalPayload, TaskVerdict,
+};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+
+use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort, ShellGateway};
+
+use super::{AgentBlockSpec, SimulatedSuccess, invoke_agent};
+
+pub struct AdvanceCampaign {
+    agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
+    registry: Arc<std::sync::RwLock<Registry>>,
+    store_path: PathBuf,
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl AdvanceCampaign {
+    pub fn new(
+        agent: Arc<dyn AgentGateway>,
+        shell: Arc<dyn ShellGateway>,
+        registry: Arc<std::sync::RwLock<Registry>>,
+        store_path: PathBuf,
+    ) -> Self {
+        Self {
+            agent,
+            shell,
+            registry,
+            store_path,
+            lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
+    let repo = repo.canonicalize()?;
+    let mut sections = Vec::new();
+    for relative in paths {
+        let path = repo.join(relative).canonicalize()?;
+        if !path.starts_with(&repo) {
+            anyhow::bail!("campaign context path escapes project: {relative}");
+        }
+        sections.push(format!("## {relative}\n{}", std::fs::read_to_string(&path)?));
+    }
+    Ok(sections.join("\n\n"))
+}
+
+async fn repo_snapshot(shell: &dyn ShellGateway, repo: &Path) -> String {
+    let status = shell.run(repo, "git", &["status", "--short", "--branch"], None, None).await;
+    let log = shell.run(repo, "git", &["log", "-8", "--oneline"], None, None).await;
+    format!(
+        "STATUS:\n{}\n\nRECENT COMMITS:\n{}",
+        status.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
+        log.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))
+    )
+}
+
+async fn run_done_gates(
+    shell: &dyn ShellGateway,
+    repo: &Path,
+    evidence: &[DoneEvidence],
+) -> anyhow::Result<Vec<foundry_sdk::gates::GateResult>> {
+    let gates = evidence
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            DoneEvidence::Gate { command, required } => Some(GateDefinition {
+                name: format!("campaign_done_{}", index + 1),
+                command: command.clone(),
+                required: *required,
+                timeout: None,
+                fix_command: None,
+            }),
+            DoneEvidence::Review { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    Ok(crate::gate_runner::run_gates(&gates, repo, shell).await?.results)
+}
+
+fn decision_prompt(
+    campaign: &Campaign,
+    context: &str,
+    snapshot: &str,
+    gate_results: &[foundry_sdk::gates::GateResult],
+    request: &CampaignAdvanceRequestedPayload,
+) -> String {
+    let review_evidence = campaign
+        .done_evidence
+        .iter()
+        .filter_map(|item| match item {
+            DoneEvidence::Review { statement } => Some(format!("- {statement}")),
+            DoneEvidence::Gate { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let gates = serde_json::to_string_pretty(gate_results).unwrap_or_default();
+    let last_result = request.run_result.as_ref().map_or_else(
+        || "none (initial/manual advance)".to_string(),
+        |result| serde_json::to_string_pretty(result).unwrap_or_default(),
+    );
+    format!(
+        "You are advancing a durable engineering campaign. Inspect the live repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
+         CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
+         REQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         DONE only when every required gate passes and every review statement is true against the repo itself. ADVANCE must cut exactly ONE objective from mission minus current state. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
+         End with exactly one fenced JSON object:\n\
+         {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
+         {{\"decision\":\"advance\",\"objective\":\"single objective plus gates/forbidden moves/evidence\",\"reason\":\"gap from mission minus state\"}}\n\
+         {{\"decision\":\"escalate\",\"reason\":\"owner decision required\"}}",
+        campaign.name,
+        campaign.mission,
+        campaign.intent_refs.join(", "),
+        campaign.cycles_completed,
+        campaign.cycles_landed,
+        campaign.budget.max_cycles,
+        campaign.escalation.join("\n- "),
+        review_evidence,
+        gates,
+        last_result,
+        snapshot,
+        context,
+    )
+}
+
+fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
+    serde_json::from_str(&super::extract_json(output))
+        .map_err(|e| anyhow::anyhow!("campaign agent returned no valid decision: {e}"))
+}
+
+fn completed_event(
+    campaign: &Campaign,
+    throttle: foundry_sdk::throttle::Throttle,
+    outcome: CampaignDecision,
+) -> Event {
+    super::event_from_infallible_payload(
+        EventType::CampaignAdvanceCompleted,
+        &campaign.project,
+        throttle,
+        &CampaignAdvanceCompletedPayload {
+            campaign: campaign.name.clone(),
+            project: campaign.project.clone(),
+            cycles_completed: campaign.cycles_completed,
+            cycles_landed: campaign.cycles_landed,
+            outcome,
+        },
+    )
+}
+
+fn terminal_event(
+    ty: EventType,
+    campaign: &Campaign,
+    throttle: foundry_sdk::throttle::Throttle,
+    reason: String,
+) -> Event {
+    super::event_from_infallible_payload(
+        ty,
+        &campaign.project,
+        throttle,
+        &CampaignTerminalPayload {
+            campaign: campaign.name.clone(),
+            project: campaign.project.clone(),
+            reason,
+            cycles_completed: campaign.cycles_completed,
+            cycles_landed: campaign.cycles_landed,
+        },
+    )
+}
+
+fn execution_event(
+    campaign: &Campaign,
+    throttle: foundry_sdk::throttle::Throttle,
+    objective: &str,
+    base_ref: Option<String>,
+) -> Event {
+    let mut payload = serde_json::json!({
+        "project": campaign.project,
+        "workflow": "task",
+        "prompt": objective,
+        "campaign": campaign.name,
+    });
+    if let Some(agent) = &campaign.agent_provider {
+        payload["agent_provider"] = serde_json::json!(agent);
+    }
+    if let Some(reference) = base_ref {
+        payload["base_ref"] = serde_json::json!(reference);
+    }
+    Event::new(EventType::ExecutionRequested, campaign.project.clone(), throttle, payload)
+}
+
+fn update_run_and_forced_decision(
+    campaign: &mut Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+) -> Option<CampaignDecision> {
+    if request.run_event_id.as_ref() != campaign.last_run_event_id.as_ref() {
+        if request.run_result.as_ref().is_some_and(|result| result.verdict.is_complete()) {
+            campaign.cycles_landed += 1;
+        }
+        campaign.last_run_event_id.clone_from(&request.run_event_id);
+    }
+
+    if campaign.authorized_by.is_none() {
+        return Some(CampaignDecision::Escalate {
+            reason: "campaign has not been authorized by its owner".to_string(),
+        });
+    }
+    if campaign.status == CampaignStatus::Completed {
+        return Some(CampaignDecision::Done {
+            reason: "campaign is already completed".to_string(),
+        });
+    }
+    if campaign.status == CampaignStatus::Escalated {
+        return Some(CampaignDecision::Escalate {
+            reason: format!("campaign is {} and requires owner resumption", campaign.status),
+        });
+    }
+    if let Some(result) = &request.run_result {
+        match &result.verdict {
+            TaskVerdict::BlockedOnDecision { finding, options } => {
+                return Some(CampaignDecision::Escalate {
+                    reason: format!("{finding}; options: {}", options.join(" | ")),
+                });
+            }
+            TaskVerdict::RunnerError { detail } => {
+                return Some(CampaignDecision::Escalate {
+                    reason: format!("runner/provider unavailable: {detail}"),
+                });
+            }
+            TaskVerdict::Complete | TaskVerdict::Remainder { .. } | TaskVerdict::Defect { .. } => {}
+        }
+    }
+    (campaign.cycles_completed >= campaign.budget.max_cycles).then(|| CampaignDecision::Escalate {
+        reason: format!("campaign cycle budget exhausted ({})", campaign.budget.max_cycles),
+    })
+}
+
+fn enforce_done_gate_truth(
+    decision: CampaignDecision,
+    gate_results: &[foundry_sdk::gates::GateResult],
+) -> CampaignDecision {
+    let required_pass = gate_results.iter().filter(|gate| gate.required).all(|gate| gate.passed);
+    if !matches!(decision, CampaignDecision::Done { .. }) || required_pass {
+        return decision;
+    }
+    let failed = gate_results
+        .iter()
+        .filter(|gate| gate.required && !gate.passed)
+        .map(|gate| gate.command.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    CampaignDecision::Advance {
+        objective: format!("Restore the required campaign done-evidence gates: {failed}"),
+        reason: "review proposed done while required mechanical evidence was failing".to_string(),
+    }
+}
+
+async fn derive_campaign_decision(
+    agent: &dyn AgentGateway,
+    shell: &dyn ShellGateway,
+    entry: &foundry_sdk::registry::ProjectEntry,
+    campaign: &Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+) -> anyhow::Result<CampaignDecision> {
+    let repo = Path::new(&entry.path);
+    let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
+    let context = read_context_files(repo, &campaign.context_paths)?;
+    let snapshot = repo_snapshot(shell, repo).await;
+    let prompt = decision_prompt(campaign, &context, &snapshot, &gate_results, request);
+    let outcome = invoke_agent(
+        agent,
+        AgentBlockSpec {
+            prompt,
+            working_dir: repo.to_path_buf(),
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
+            agent_file: super::resolve_agent_file(&entry.agent),
+            provider: campaign
+                .agent_provider
+                .as_deref()
+                .and_then(|provider| super::parse_agent_provider(Some(provider))),
+            timeout: entry.timeout(),
+        },
+        "campaign advance",
+        &campaign.project,
+    )
+    .await;
+    let decision = match outcome {
+        crate::gateway::AgentOutcome::Success { stdout } => parse_decision(&stdout)?,
+        crate::gateway::AgentOutcome::AgentFailed { stderr, .. } => {
+            CampaignDecision::Escalate { reason: stderr }
+        }
+        crate::gateway::AgentOutcome::Unavailable { error } => {
+            CampaignDecision::Escalate { reason: error }
+        }
+    };
+    Ok(enforce_done_gate_truth(decision, &gate_results))
+}
+
+fn apply_campaign_decision(
+    campaign: &mut Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+    throttle: foundry_sdk::throttle::Throttle,
+    decision: CampaignDecision,
+) -> Vec<Event> {
+    match decision {
+        CampaignDecision::Done { reason } => {
+            campaign.status = CampaignStatus::Completed;
+            vec![
+                completed_event(
+                    campaign,
+                    throttle,
+                    CampaignDecision::Done {
+                        reason: reason.clone(),
+                    },
+                ),
+                terminal_event(EventType::CampaignCompleted, campaign, throttle, reason),
+            ]
+        }
+        CampaignDecision::Escalate { reason } => {
+            campaign.status = CampaignStatus::Escalated;
+            vec![
+                completed_event(
+                    campaign,
+                    throttle,
+                    CampaignDecision::Escalate {
+                        reason: reason.clone(),
+                    },
+                ),
+                terminal_event(EventType::CampaignEscalated, campaign, throttle, reason),
+            ]
+        }
+        CampaignDecision::Advance { objective, reason } => {
+            campaign.status = CampaignStatus::Active;
+            campaign.cycles_completed += 1;
+            let base_ref =
+                request.run_result.as_ref().and_then(|result| result.preservation_ref.clone());
+            vec![
+                completed_event(
+                    campaign,
+                    throttle,
+                    CampaignDecision::Advance {
+                        objective: objective.clone(),
+                        reason,
+                    },
+                ),
+                execution_event(campaign, throttle, &objective, base_ref),
+            ]
+        }
+    }
+}
+
+impl SimulatedSuccess for AdvanceCampaign {
+    type Outcome = Vec<Event>;
+
+    fn simulate(&self, trigger: &Event) -> Vec<Event> {
+        let request = trigger.parse_payload::<CampaignAdvanceRequestedPayload>().unwrap_or(
+            CampaignAdvanceRequestedPayload {
+                campaign: "unknown".to_string(),
+                run_event_id: None,
+                run_result: None,
+            },
+        );
+        let campaign = CampaignStore::load(&self.store_path)
+            .ok()
+            .and_then(|store| store.find(&request.campaign).cloned());
+        let Some(campaign) = campaign else {
+            return vec![];
+        };
+        let outcome = CampaignDecision::Advance {
+            objective: format!("Dry-run next objective for campaign '{}'.", campaign.name),
+            reason: "dry-run formation".to_string(),
+        };
+        vec![
+            completed_event(&campaign, trigger.throttle, outcome),
+            execution_event(
+                &campaign,
+                foundry_sdk::throttle::Throttle::DryRun,
+                &format!("Dry-run next objective for campaign '{}'.", campaign.name),
+                None,
+            ),
+        ]
+    }
+
+    fn success_events(&self, _trigger: &Event, outcome: &Vec<Event>) -> Vec<Event> {
+        outcome.clone()
+    }
+}
+
+impl TaskBlock for AdvanceCampaign {
+    task_block_meta! {
+        name: "Advance Campaign",
+        kind: Mutator,
+        sinks_on: [CampaignAdvanceRequested],
+    }
+
+    dry_run_via_simulation!();
+
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+        let request = parse_payload!(trigger, CampaignAdvanceRequestedPayload);
+        let throttle = trigger.throttle;
+        let agent = Arc::clone(&self.agent);
+        let shell = Arc::clone(&self.shell);
+        let registry = Arc::clone(&self.registry);
+        let store_path = self.store_path.clone();
+        let lock = Arc::clone(&self.lock);
+
+        Box::pin(async move {
+            let _guard = lock.lock().await;
+            let mut store = CampaignStore::load(&store_path)?;
+            let campaign = store
+                .find_mut(&request.campaign)
+                .ok_or_else(|| anyhow::anyhow!("campaign '{}' not found", request.campaign))?;
+            campaign.validate()?;
+            let forced = update_run_and_forced_decision(campaign, &request);
+            if campaign.status == CampaignStatus::Paused {
+                store.save(&store_path)?;
+                return Ok(TaskBlockResult::success(
+                    format!(
+                        "campaign '{}' is paused; run recorded without advancing",
+                        request.campaign
+                    ),
+                    vec![],
+                ));
+            }
+            let decision = if let Some(decision) = forced {
+                decision
+            } else {
+                let entry = super::read_registry(&registry)?
+                    .find_project(&campaign.project)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("project '{}' not found", campaign.project))?;
+                derive_campaign_decision(&*agent, &*shell, &entry, campaign, &request).await?
+            };
+            let events = apply_campaign_decision(campaign, &request, throttle, decision);
+            store.save(&store_path)?;
+            Ok(TaskBlockResult::success(
+                format!("campaign '{}' advanced", request.campaign),
+                events,
+            ))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use foundry_sdk::campaign::{
+        Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence,
+    };
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::payload::{
+        CampaignAdvanceRequestedPayload, CampaignDecision, LoopContext, TaskRunCompletedPayload,
+        TaskVerdict,
+    };
+    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::throttle::Throttle;
+
+    use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
+
+    use super::{AdvanceCampaign, parse_decision};
+
+    #[test]
+    fn parses_structural_advance_decision() {
+        let output = "```json\n{\"decision\":\"advance\",\"objective\":\"one thing\",\"reason\":\"gap\"}\n```";
+        assert_eq!(
+            parse_decision(output).unwrap(),
+            CampaignDecision::Advance {
+                objective: "one thing".to_string(),
+                reason: "gap".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_on_decision_escalates_without_asking_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: CampaignBudget::default(),
+                escalation: vec![],
+                status: CampaignStatus::Active,
+                cycles_completed: 1,
+                cycles_landed: 0,
+                authorized_by: Some("owner".to_string()),
+                agent_provider: None,
+                last_run_event_id: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success();
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let run_result = TaskRunCompletedPayload {
+            project: "p".to_string(),
+            success: false,
+            summary: "decision needed".to_string(),
+            preservation_ref: Some("foundry-task/preserved".to_string()),
+            verdict: TaskVerdict::BlockedOnDecision {
+                finding: "boundaries differ".to_string(),
+                options: vec!["A".to_string(), "B".to_string()],
+            },
+            context: LoopContext {
+                campaign: Some("c".to_string()),
+                ..LoopContext::default()
+            },
+        };
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(run_result),
+            })
+            .unwrap(),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.events.iter().any(|e| e.event_type == EventType::CampaignEscalated));
+        assert!(agent.invocations().is_empty());
+        assert_eq!(
+            CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
+            CampaignStatus::Escalated
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_campaign_records_run_without_escalating_or_advancing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: CampaignBudget::default(),
+                escalation: vec![],
+                status: CampaignStatus::Paused,
+                cycles_completed: 1,
+                cycles_landed: 0,
+                authorized_by: Some("owner".to_string()),
+                agent_provider: None,
+                last_run_event_id: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success();
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(TaskRunCompletedPayload {
+                    project: "p".to_string(),
+                    success: true,
+                    summary: "landed".to_string(),
+                    preservation_ref: None,
+                    verdict: TaskVerdict::Complete,
+                    context: LoopContext {
+                        campaign: Some("c".to_string()),
+                        ..LoopContext::default()
+                    },
+                }),
+            })
+            .unwrap(),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.events.is_empty());
+        assert!(agent.invocations().is_empty());
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Paused);
+        assert_eq!(campaign.cycles_landed, 1);
+        assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
+    }
+}

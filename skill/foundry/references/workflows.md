@@ -4,7 +4,7 @@
 
 Triggered by `foundry iterate <project>` or routed from a maintenance run when `actions.iterate=true`.
 
-```
+```text
 ProjectIterationRequested
   └─ CheckCharter (Observer)
        └─ CharterCheckCompleted {success: true}
@@ -43,7 +43,7 @@ ProjectIterationRequested
 
 Triggered by `foundry emit project_maintenance_requested` or chained from iterate.
 
-```
+```text
 ProjectMaintenanceRequested
   └─ ResolveGates (Observer)
        └─ GateResolutionCompleted {workflow: "maintain", gates: [...]}
@@ -63,7 +63,7 @@ ProjectMaintenanceRequested
 
 Triggered by `foundry validate <project>`. Read-only — no mutations.
 
-```
+```text
 ValidationRequested
   └─ ResolveGates (Observer)
        └─ GateResolutionCompleted {workflow: "validate", gates: [...]}
@@ -75,8 +75,9 @@ ValidationRequested
 
 ## Task Workflow
 
-Triggered by `foundry task <project> "<description>"`. Mutating, but not queued.
-The user-provided description is the plan.
+Triggered by `foundry task <project> "<description>"`. Mutating, immediate,
+isolated, and intentionally not retried. The user-provided description is the
+single objective.
 
 ```text
 ExecutionRequested {workflow: "task", prompt: "..."}
@@ -87,27 +88,59 @@ ExecutionRequested {workflow: "task", prompt: "..."}
                       └─ RunPreflightGates (Observer) — skips for task
                            └─ PreflightCompleted {workflow: "task", skipped: true}
                                 └─ DirectPrompt (Observer)
+                                     ├─ TaskRunStarted
                                      └─ PlanCompleted {workflow: "task", plan: prompt}
-                                          └─ ExecutePlan (Mutator, AI Coding)
+                                          └─ ExecutePlan (Mutator, isolated worktree)
                                                └─ ExecutionCompleted {workflow: "task"}
-                                                    └─ RunVerifyGates (Observer)
+                                                    └─ RunVerifyGates (Observer, same worktree)
                                                          └─ GateVerificationCompleted
-                                                              └─ RouteGateResult (Observer)
-                                                                   ├─ [passed] ProjectIterationCompleted {workflow: "task"}
-                                                                   │    └─ SummarizeResult → CommitAndPush
-                                                                   └─ [failed, retries < 3] RetryRequested
-                                                                        └─ RetryExecution → loops back
+                                                              └─ ReviewTask (Observer, AI Reasoning)
+                                                                   └─ TaskReviewed {verdict, gate_results}
+                                                                        └─ FinalizeTask (Mutator)
+                                                                             └─ TaskRunCompleted {verdict, preservation_ref?}
 ```
 
-This first slice reuses the existing project completion event with
-`workflow="task"` rather than introducing a durable work-item queue or a
-dedicated `TaskCompleted` event.
+`ReviewTask` emits one structural verdict: `complete`, `remainder`, `defect`,
+`blocked_on_decision`, or `runner_error`. A reviewer cannot override a failed
+required mechanical gate with `complete`. `FinalizeTask` commits all work,
+lands only complete work on trunk, and preserves every non-complete result on a
+named remote branch or Git bundle. `RouteGateResult` rejects task workflows, so
+the generic retry loop cannot claim them.
+
+## Campaign Formation
+
+Triggered manually by `foundry campaign advance <name>` or automatically by a
+campaign task result. The campaign record is reloaded from
+`~/.foundry/campaigns.json` under a process lock before every decision.
+
+```text
+CampaignAdvanceRequested {campaign, run_event_id?, run_result?}
+  └─ AdvanceCampaign (Mutator, AI Reasoning)
+       ├─ [done] CampaignAdvanceCompleted {decision: "done"}
+       │    └─ CampaignCompleted
+       │         └─ SurfaceCampaignTerminal → OpsDigestStarted {forced_event}
+       ├─ [advance] CampaignAdvanceCompleted {decision: "advance", objective}
+       │    └─ ExecutionRequested {workflow: "task", campaign, base_ref?}
+       │         └─ Task Workflow
+       │              └─ TaskRunCompleted
+       │                   └─ RequestCampaignAdvance
+       │                        └─ CampaignAdvanceRequested
+       └─ [escalate] CampaignAdvanceCompleted {decision: "escalate"}
+            └─ CampaignEscalated
+                 └─ SurfaceCampaignTerminal → OpsDigestStarted {forced_event}
+```
+
+The decision block checks live repository state, neutral context files, typed
+task results, and required done evidence. It cuts exactly one next objective.
+Campaign budget is spent only on dispatched tasks. Paused campaigns record an
+in-flight result without advancing; `blocked_on_decision`, `runner_error`,
+budget exhaustion, and owner-judgment findings escalate.
 
 ## Drift Scout Workflow
 
 Triggered by `foundry scout <project>`. Read-only observation.
 
-```
+```text
 DriftAssessmentRequested
   └─ ScoutDrift (Observer, AI Reasoning)
        └─ DriftAssessmentCompleted {candidate_count, high_value_count, candidates: [...]}
@@ -117,7 +150,7 @@ DriftAssessmentRequested
 
 Triggered automatically every night at 02:00 local time by the in-daemon `nightly-maintenance` sentinel (see `~/.foundry/sentinels.json`), or on demand by `foundry run`. Fan-out across all active projects.
 
-```
+```text
 MaintenanceCycleStarted {project: "system"}
   └─ FanOutMaintenance (Observer)
        ├─ ProjectRunStarted {project: "alpha"}
@@ -137,7 +170,7 @@ For single-project runs (`foundry run --project alpha`), there's no fan-out — 
 
 Fired every day at 17:00 local time by the in-daemon `daily-commit-digest` sentinel, or on demand by `foundry emit commit_digest_started --project system`. Linear chain — no fan-out — across all active registered projects.
 
-```
+```text
 CommitDigestStarted {project: "system"}
   └─ ObserveCommits (Observer)
        └─ CommitsObserved {window_hours: 24, projects: [{name, branch, commits, error?}, ...]}
@@ -154,7 +187,7 @@ Per-project `git log` failures are captured inline on the `ProjectCommits.error`
 
 Fired every three hours by the in-daemon `ops-digest` sentinel (`0 */3 * * *`), or on demand by `foundry emit ops_digest_started --project system`. Linear chain — reads MBOS JSONL events from the intake directory, applies a pressure gate, then summarises.
 
-```
+```text
 OpsDigestStarted {project: "system"}
   └─ ObserveEvents (Observer)
        ├─ [gate not satisfied] OpsDigestCompleted {success: true, skipped: true}
@@ -175,7 +208,7 @@ OpsDigestStarted {project: "system"}
 
 Triggered by `foundry emit scan_requested --project <name>`.
 
-```
+```text
 ScanRequested
   └─ ScanDependencies (Observer)
        └─ VulnerabilityDetected (one per CVE)
@@ -198,7 +231,7 @@ If the main branch is clean (not dirty), the automatic release path fires — se
 
 Triggered by `foundry pipeline <project>`. Checks GitHub Actions CI status and auto-remediates failures.
 
-```
+```text
 PipelineCheckRequested
   └─ CheckPipeline (Observer)
        └─ PipelineChecked {passing: bool, logs: Option<String>}
@@ -219,7 +252,7 @@ Triggered by `foundry release <project>` (manual) or automatically after vulnera
 
 ### Manual Release (via CLI)
 
-```
+```text
 ReleaseRequested
   └─ ExecuteRelease (Mutator, AI Coding)
        └─ ReleaseCompleted {success, new_tag, release: "manual"}
@@ -233,7 +266,7 @@ ReleaseRequested
 
 ### Automatic Release (vulnerability path)
 
-```
+```text
 MainBranchAudited {dirty: false}
   └─ CutRelease (Mutator, AI Coding)
        └─ ReleaseCompleted {success, new_tag, release: "patch", cve: "..."}

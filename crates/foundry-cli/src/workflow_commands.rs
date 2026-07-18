@@ -9,13 +9,13 @@ use crate::proto::{EmitRequest, WatchRequest, WatchResponse, foundry_client::Fou
 use crate::render;
 
 /// Connect, emit, and stream watch events until `is_terminal` returns true.
-struct WorkflowRunner {
+pub(crate) struct WorkflowRunner {
     addr: String,
     project: String,
 }
 
 impl WorkflowRunner {
-    fn new(addr: &str, project: &str) -> Self {
+    pub(crate) fn new(addr: &str, project: &str) -> Self {
         Self {
             addr: addr.to_string(),
             project: project.to_string(),
@@ -24,7 +24,7 @@ impl WorkflowRunner {
 
     /// Subscribe to the watch stream, emit `event_type` with `payload`, then
     /// stream events until `is_terminal` returns `true`.
-    async fn run_workflow(
+    pub(crate) async fn run_workflow(
         &self,
         event_type: &str,
         payload: serde_json::Value,
@@ -74,7 +74,7 @@ impl WorkflowRunner {
     }
 
     /// Fetch and render the trace for `event_id` after a 1-second delay.
-    async fn show_trace(&self, event_id: &str) -> Result<()> {
+    pub(crate) async fn show_trace(&self, event_id: &str) -> Result<()> {
         let mut trace_client = FoundryClient::connect(self.addr.clone()).await?;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let trace_resp = trace_client
@@ -206,11 +206,7 @@ pub async fn task(addr: &str, project: &str, description: &str, agent: Option<&s
     let runner = WorkflowRunner::new(addr, project);
     println!("Running task for {project}...");
     let (event_id, _events) = runner
-        .run_workflow("execution_requested", payload, |t, p| {
-            t == "project_iteration_completed"
-                && serde_json::from_str::<serde_json::Value>(p)
-                    .is_ok_and(|v| v.str_or("workflow", "") == "task")
-        })
+        .run_workflow("execution_requested", payload, |t, _| t == "task_run_completed")
         .await?;
 
     runner.show_trace(&event_id).await?;

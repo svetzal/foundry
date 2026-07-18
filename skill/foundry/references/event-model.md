@@ -81,6 +81,23 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `DriftAssessmentRequested` | Command |
 | `PipelineCheckRequested` | Command |
 
+### Task Lifecycle
+
+| Event | Category |
+|-------|----------|
+| `TaskRunStarted` | Lifecycle start |
+| `TaskReviewed` | Domain fact |
+| `TaskRunCompleted` | Lifecycle end |
+
+### Campaign Formation
+
+| Event | Category |
+|-------|----------|
+| `CampaignAdvanceRequested` | Command |
+| `CampaignAdvanceCompleted` | Lifecycle end |
+| `CampaignEscalated` | Domain fact |
+| `CampaignCompleted` | Lifecycle end |
+
 ### Run Lifecycle
 
 | Event | Category |
@@ -154,3 +171,9 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `OpsObserved` | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
 | `OpsSummaryCompleted` | `markdown`, `event_count`, `new_watermark?` |
 | `OpsDigestCompleted` | `success`, `skipped`, `digest_path?`, `event_count` |
+| `TaskReviewed` | `objective`, `review`, `gate_results[]`, structural verdict fields, `campaign?` |
+| `TaskRunCompleted` | `success`, `summary`, `preservation_ref?`, structural verdict fields, `campaign?` |
+| `CampaignAdvanceRequested` | `campaign`, `run_event_id?`, `run_result?` |
+| `CampaignAdvanceCompleted` | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason` |
+| `CampaignEscalated` | `campaign`, `reason`, `cycles_completed`, `cycles_landed` |
+| `CampaignCompleted` | `campaign`, `reason`, `cycles_completed`, `cycles_landed` |

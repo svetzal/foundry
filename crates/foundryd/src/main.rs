@@ -361,10 +361,27 @@ fn register_blocks(
     register_gate_blocks(&mut engine, &shell, registry);
     register_maintain_blocks(&mut engine, &agent, registry);
     register_iterate_blocks(&mut engine, &agent, registry);
+    register_campaign_blocks(&mut engine, &agent, &shell, registry);
     register_pipeline_blocks(&mut engine, &agent, registry, trace_writer, paths.audits_dir);
     register_digest_blocks(&mut engine, &agent, &shell, registry, paths.digest);
 
     engine
+}
+
+fn register_campaign_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    shell: &Arc<dyn foundry_blocks::gateway::ShellGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
+    engine.register(Box::new(foundry_blocks::blocks::RequestCampaignAdvance));
+    engine.register(Box::new(foundry_blocks::blocks::SurfaceCampaignTerminal));
+    engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
+        agent.clone(),
+        shell.clone(),
+        registry.clone(),
+        foundry_sdk::paths::campaigns_path(),
+    )));
 }
 
 /// Core maintenance routing: project fan-out, validation, audit, greeting, and routing.
@@ -468,6 +485,11 @@ fn register_iterate_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::StrategicAssessor::new(
         agent.clone(),
         registry.clone(),

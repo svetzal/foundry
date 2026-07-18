@@ -21,6 +21,7 @@
 - [Iteration Workflow](guide/iteration-workflow.md)
 - [Strategic Iteration](guide/strategic-iteration.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)
+- [Tasks and Campaigns](guide/campaigns.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
 - [Commit Digest](guide/commit-digest.md)
 - [Ops Digest](guide/ops-digest.md)

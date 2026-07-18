@@ -4,7 +4,7 @@ description: >
   How to use the Foundry workflow engine for engineering automation.
   Use this skill whenever the user mentions foundry, foundryd, foundry iterate,
   foundry scout, foundry validate, foundry run, foundry pipeline, foundry release,
-  foundry gates, foundry registry, foundry sentinel, sentinels, scheduled triggers,
+  foundry gates, foundry campaign, campaigns, foundry registry, foundry sentinel, sentinels, scheduled triggers,
   quality gates, maintenance runs, drift assessment,
   pipeline health, CI remediation, release automation, or wants to automate code
   quality workflows across projects. Also use when the user asks about .foundry
@@ -115,23 +115,48 @@ foundry task <project-name> "Add a --quiet flag to the CLI and cover it with tes
 foundry task <project-name> "Fix the failing parser regression" --agent codex
 ```
 
-This is the first narrow Foundry-native replacement slice for Hopper-style
-dispatch. It is not a durable queue yet: the CLI emits an `execution_requested`
-event with `workflow="task"`, watches it to completion, and renders the trace.
-The task formation checks the project charter, resolves gates, forwards your
-description directly to the coding agent, verifies gates, then summarizes and
-commits through the existing Foundry blocks.
+The task runs inside an isolated Git worktree, checks the project charter,
+resolves and verifies gates, and performs a skeptical read-only review. It ends
+with one structural verdict: `complete`, `remainder`, `defect`,
+`blocked_on_decision`, or `runner_error`.
+
+Only complete work with passing required gates lands on trunk. Every
+non-complete result is committed and preserved on a named remote branch, with a
+Git bundle fallback when push is unavailable. The task formation never retries.
 
 While the command is waiting, it streams both workflow events and transient
 block progress messages such as `running block Run Verify Gates` and
 `finished block Run Verify Gates (ok, 143.0s)`. Progress messages are not
 persisted to the event log.
 
-Use this for small, concrete, immediately executable coding work. Keep using
-Hopper for queued/scheduled/background work until Foundry grows a durable work
-item store and worker lifecycle.
+Use this for small, concrete, immediately executable coding work.
 
-### 6. Manage Sentinels
+### 6. Manage Durable Campaigns
+
+Use a campaign when the mission is broader than one task and the next objective
+should be derived from the latest repository state:
+
+```bash
+foundry campaign add ./campaign.json
+foundry campaign list
+foundry campaign show <name>
+foundry campaign advance <name>
+foundry campaign pause <name>
+foundry campaign resume <name>
+```
+
+Campaign definitions live in `~/.foundry/campaigns.json`. They carry a mission,
+neutral context artifact paths, required done evidence, escalation rules, an
+owner authorization, an optional agent provider, and a campaign-level cycle
+budget. The formation chooses exactly one of done, one next objective, or
+escalation. A task result automatically requests the next advance; remainders
+and defects continue from preserved work, while human decisions and runner
+errors escalate. Completion and escalation are forced into the ops digest.
+
+Read `references/workflows.md` for the event chain and the campaign definition
+example in `book/src/guide/campaigns.md` when preparing a new campaign.
+
+### 7. Manage Sentinels
 
 Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit an event when their schedule fires. They replace the per-machine launchd plist that used to drive the nightly maintenance run.
 
@@ -157,7 +182,7 @@ foundry sentinel enable nightly-maintenance
 - `daily-commit-digest` (`0 17 * * *`) — emits `commit_digest_started`. Renders a markdown digest of every active project's commits in the last 24 hours and writes it to `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md` (default `~/.foundry/digests/`). See `book/src/guide/commit-digest.md` for the full chain.
 - `ops-digest` (`0 */3 * * *`) — emits `ops_digest_started`. Reads MBOS JSONL events from `{FOUNDRY_OPS_EVENTS_DIR}` (default `~/Work/Operations/Events/intake`), applies a pressure gate (≥25 new events or any anomaly), summarises via agent, and writes `{FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md` (default `~/.foundry/ops-digests/`). Anomalies include P0 events, CI failures, unresolved maintenance interventions, high/critical vulnerability alerts, and maintenance runs with failed repos. See `book/src/guide/ops-digest.md` for the full chain.
 
-### 7. Derive Quality Gates
+### 8. Derive Quality Gates
 
 Auto-discover quality gates for a project using AI inspection.
 
@@ -172,7 +197,7 @@ foundry gates --dir /path/to/project
 foundry gates --init <project-name>
 ```
 
-### 8. Check Pipeline Health
+### 9. Check Pipeline Health
 
 Check GitHub Actions pipeline status for a project and auto-remediate failures.
 
@@ -189,7 +214,7 @@ What happens:
 - Invokes Claude with Coding capability and Full access to diagnose and fix CI failures
 - Commits and pushes the fix
 
-### 9. Release a Project
+### 10. Release a Project
 
 Run an agent-driven release workflow: quality gates, changelog, version bump, tag, push, pipeline watch, local install.
 
@@ -216,8 +241,9 @@ The release chain also fires automatically during vulnerability remediation when
 
 ### Prefer convenience commands over raw emit
 
-Always use the convenience commands above (`task`, `iterate`, `scout`,
-`validate`, `run`, `gates`, `pipeline`, `release`) rather than `foundry emit`.
+Always use the convenience commands above (`task`, `campaign`, `iterate`,
+`scout`, `validate`, `run`, `gates`, `pipeline`, `release`) rather than
+`foundry emit`.
 The convenience commands handle watch-stream setup, block progress display, and
 trace rendering automatically.
 

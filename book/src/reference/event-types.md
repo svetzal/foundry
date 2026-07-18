@@ -164,6 +164,57 @@ Every event carries these common fields:
 | `iteration_requested` | `{ project }` | Triggers the iterate sub-workflow for a validated project |
 | `maintenance_requested` | `{ project }` | Triggers the maintain sub-workflow for a validated project |
 
+## Task Lifecycle
+
+| Type | Description |
+|------|-------------|
+| `task_run_started` | Isolated one-shot task execution began |
+| `task_reviewed` | Skeptical review produced a structural verdict |
+| `task_run_completed` | Task work was landed or durably preserved |
+
+**`task_run_completed` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | string | Registered project name |
+| `success` | bool | `true` only for a `complete` verdict |
+| `summary` | string | Human-readable terminal summary |
+| `verdict` | string | `complete`, `remainder`, `defect`, `blocked_on_decision`, or `runner_error` |
+| `preservation_ref` | string (optional) | Remote branch or `bundle:<path>` for preserved work |
+| `campaign` | string (optional) | Campaign that dispatched the task |
+
+Verdict-specific fields are `gaps[]`, `diagnosis`, `finding` plus `options[]`,
+or `detail`.
+
+## Campaign Formation
+
+| Type | Description |
+|------|-------------|
+| `campaign_advance_requested` | Request to re-evaluate a durable campaign |
+| `campaign_advance_completed` | Formation chose done, one next objective, or escalation |
+| `campaign_escalated` | Campaign halted for budget, failure, rule, or owner judgment |
+| `campaign_completed` | Required done evidence proved the mission complete |
+
+**`campaign_advance_requested` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | string | Campaign name |
+| `run_event_id` | string (optional) | Typed task result that triggered the advance |
+| `run_result` | object (optional) | Full `task_run_completed` payload |
+
+**`campaign_advance_completed` payload**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | string | Campaign name |
+| `project` | string | Registered project name |
+| `cycles_completed` | integer | Tasks dispatched by the campaign |
+| `cycles_landed` | integer | Task results completed and landed |
+| `decision` | string | `done`, `advance`, or `escalate` |
+| `objective` | string (advance only) | Exactly one next task objective |
+| `reason` | string | Evidence or gap supporting the decision |
+
 ## Gate Orchestration
 
 | Type | Description |

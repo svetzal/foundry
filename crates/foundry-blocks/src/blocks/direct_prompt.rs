@@ -1,5 +1,8 @@
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{ChainContext, PlanCompletedPayload, PreflightCompletedPayload};
+use foundry_sdk::payload::{
+    ChainContext, LoopContext, PlanCompletedPayload, PreflightCompletedPayload,
+    TaskRunStartedPayload,
+};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::workflow::WorkflowType;
 
@@ -73,8 +76,7 @@ impl TaskBlock for DirectPrompt {
             );
 
             let chain = ChainContext::extract_from(&payload);
-            super::emit_result(
-                format!("{project}: prompt forwarded to execution"),
+            let plan = super::event_from_infallible_payload(
                 EventType::PlanCompleted,
                 &project,
                 throttle,
@@ -91,7 +93,27 @@ impl TaskBlock for DirectPrompt {
                     correction_reason: String::new(),
                     chain,
                 },
-            )
+            );
+            let mut events = vec![plan];
+            if workflow == WorkflowType::Task {
+                events.insert(
+                    0,
+                    super::event_from_infallible_payload(
+                        EventType::TaskRunStarted,
+                        &project,
+                        throttle,
+                        &TaskRunStartedPayload {
+                            project: project.clone(),
+                            objective: prompt,
+                            context: LoopContext::extract_from(&payload),
+                        },
+                    ),
+                );
+            }
+            Ok(TaskBlockResult::success(
+                format!("{project}: prompt forwarded to execution"),
+                events,
+            ))
         })
     }
 }
@@ -262,9 +284,14 @@ mod tests {
         let result = DirectPrompt.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert_eq!(result.events[0].event_type, EventType::PlanCompleted);
-        assert_eq!(result.events[0].payload["plan"], "Add a --quiet flag.");
-        assert_eq!(result.events[0].payload["workflow"], "task");
+        assert_eq!(result.events[0].event_type, EventType::TaskRunStarted);
+        let plan = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::PlanCompleted)
+            .unwrap();
+        assert_eq!(plan.payload["plan"], "Add a --quiet flag.");
+        assert_eq!(plan.payload["workflow"], "task");
     }
 
     #[tokio::test]

@@ -30,6 +30,18 @@ pub struct ChainContext {
     /// means "use the daemon's default provider".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_provider: Option<String>,
+    /// Campaign that owns this task run, when dispatched by a campaign.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    /// Isolated task worktree prepared by the executor. Absent before execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_worktree: Option<String>,
+    /// Durable branch associated with the isolated task worktree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_branch: Option<String>,
+    /// Git ref from which a continuation task should start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
 }
 
 impl ChainContext {
@@ -46,6 +58,22 @@ impl ChainContext {
             loop_context: payload.get("loop_context").cloned(),
             agent_provider: payload
                 .get("agent_provider")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            campaign: payload
+                .get("campaign")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            task_worktree: payload
+                .get("task_worktree")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            task_branch: payload
+                .get("task_branch")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            base_ref: payload
+                .get("base_ref")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         }
@@ -73,6 +101,18 @@ impl ChainContext {
         if let Some(v) = &self.agent_provider {
             target["agent_provider"] = serde_json::json!(v);
         }
+        if let Some(v) = &self.campaign {
+            target["campaign"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.task_worktree {
+            target["task_worktree"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.task_branch {
+            target["task_branch"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.base_ref {
+            target["base_ref"] = serde_json::json!(v);
+        }
     }
 }
 
@@ -86,6 +126,18 @@ pub struct LoopContext {
     pub loop_context: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_worktree: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
 }
 
 impl LoopContext {
@@ -94,6 +146,27 @@ impl LoopContext {
         Self {
             loop_context: payload.get("loop_context").cloned(),
             actions: payload.get("actions").cloned(),
+            prompt: payload.get("prompt").cloned(),
+            agent_provider: payload
+                .get("agent_provider")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            campaign: payload
+                .get("campaign")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            task_worktree: payload
+                .get("task_worktree")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            task_branch: payload
+                .get("task_branch")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            base_ref: payload
+                .get("base_ref")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         }
     }
 }

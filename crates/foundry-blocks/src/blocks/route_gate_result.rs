@@ -36,6 +36,10 @@ impl TaskBlock for RouteGateResult {
         sinks_on: [GateVerificationCompleted],
     }
 
+    fn accepts(&self, trigger: &Event) -> bool {
+        WorkflowType::from_payload(&trigger.payload) != WorkflowType::Task
+    }
+
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
             project,

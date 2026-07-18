@@ -1,4 +1,5 @@
 pub mod agent_config;
+pub mod campaign;
 pub mod error;
 pub mod event;
 pub mod gates;

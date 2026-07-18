@@ -59,7 +59,9 @@ impl TaskBlock for RunVerifyGates {
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let project_path = std::path::Path::new(&entry.path);
+            let task_worktree = payload.get("task_worktree").and_then(serde_json::Value::as_str);
+            let project_path = task_worktree
+                .map_or_else(|| std::path::Path::new(&entry.path), std::path::Path::new);
 
             // Short-circuit: if the upstream execution block already failed (e.g. a
             // silent no-op override), skip running the real gates and emit a synthetic

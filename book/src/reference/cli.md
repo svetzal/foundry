@@ -135,6 +135,64 @@ Event: evt_47fcb603e1b18c8435b8cc3b
 
 Use `foundry trace <event_id>` to inspect the full trace after the run completes.
 
+## `foundry task`
+
+Run one concrete coding objective against a registered project.
+
+```bash
+foundry task <project> "<description>" [--agent <provider>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `project` | Yes | Registered project name |
+| `description` | Yes | One concrete objective, supplied as a positional string |
+| `--agent` | No | Override the registered agent provider for this task |
+
+The command waits for `task_run_completed`, streams block progress, and renders
+the full trace. Execution and verification occur in an isolated Git worktree.
+The terminal event contains one structural verdict:
+
+| Verdict | Meaning |
+|---------|---------|
+| `complete` | Required gates and skeptical review passed; changes landed on trunk |
+| `remainder` | The objective is incomplete; `gaps[]` names what remains |
+| `defect` | The implementation or evidence is wrong; `diagnosis` explains why |
+| `blocked_on_decision` | A human choice is required; `finding` and `options[]` carry it |
+| `runner_error` | The agent, workspace, Git, or provider failed |
+
+Task execution has no retry route. All task work is committed before terminal
+state. Non-complete work is preserved on a remote branch or, if push fails, in
+a Git bundle. The `preservation_ref` field identifies that artifact.
+
+## `foundry campaign`
+
+Manage durable, evidence-terminated engineering objectives.
+
+```bash
+foundry campaign add <definition.json>
+foundry campaign list
+foundry campaign show <name>
+foundry campaign advance <name>
+foundry campaign pause <name>
+foundry campaign resume <name>
+```
+
+| Subcommand | Daemon required? | Description |
+|------------|------------------|-------------|
+| `add` | No | Validate and atomically add one JSON definition |
+| `list` | No | Show campaign status and cycle counts |
+| `show` | No | Show the complete stored campaign record |
+| `advance` | Yes | Re-evaluate done evidence and dispatch one next task, complete, or escalate |
+| `pause` | No | Halt future automatic and manual advancement |
+| `resume` | No | Return an authorized paused or escalated campaign to active state |
+
+The store defaults to `~/.foundry/campaigns.json` and can be overridden with
+`FOUNDRY_CAMPAIGNS_PATH`. A definition requires non-empty `name`, `project`, and
+`mission` fields plus at least one `done_evidence` item. `authorized_by` is
+required before resume. See [Tasks and Campaigns](../guide/campaigns.md) for the
+definition schema and lifecycle.
+
 ## `foundry validate`
 
 Validate quality gates for one or more projects without running iterate or

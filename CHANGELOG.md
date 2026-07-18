@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Durable campaign formation.** `foundry campaign add|list|show|advance|pause|resume`
+  manages evidence-terminated objectives in `~/.foundry/campaigns.json`.
+  Each advance inspects current repository state and neutral context artifacts,
+  then chooses exactly one of done, one next task, or escalation. Campaigns
+  enforce a cycle budget, auto-advance from typed task results, and surface
+  completion or escalation through the existing ops-digest anomaly path.
+- **Hardened one-shot task lifecycle.** `foundry task` now runs in an isolated
+  worktree, performs a skeptical agent review after mechanical gates, and ends
+  with a structural `complete`, `remainder`, `defect`, `blocked_on_decision`, or
+  `runner_error` verdict. Non-complete work is committed and preserved on a
+  named remote branch, falling back to a Git bundle; only complete work can
+  fast-forward the registered trunk checkout. Task retry routing is disabled.
 - **Supply-chain per-language auto-fixers (EXP-003 Slice 2b-2).** The dark,
   explicitly gated remediation engine now supports Bun/npm lock updates,
   TypeScript direct/override requirement rewrites, and uv/Python requirement
@@ -30,9 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Synchronous workflow commands now stream transient block progress messages
   such as `running block Run Verify Gates` and `finished block Run Verify Gates`
   while long-running blocks execute.
-- `foundry task <project> "<description>"` runs one user-provided coding task
-  through the lightweight task formation, backed by `ExecutionRequested` and
-  the existing plan, execute, verify, summarize, and commit chain.
 
 ### Fixed
 

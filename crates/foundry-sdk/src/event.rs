@@ -339,6 +339,17 @@ pub enum EventType {
     ProjectMaintenanceRequested,
     ExecutionRequested,
 
+    // Hardened one-shot task lifecycle
+    TaskRunStarted,
+    TaskReviewed,
+    TaskRunCompleted,
+
+    // Durable campaign formation
+    CampaignAdvanceRequested,
+    CampaignAdvanceCompleted,
+    CampaignEscalated,
+    CampaignCompleted,
+
     // Validation workflow
     ValidationRequested,
     /// Emitted by the standalone validation workflow (`ValidationRequested` →
@@ -508,6 +519,8 @@ impl EventType {
             | EventType::ProjectIterationRequested
             | EventType::ProjectMaintenanceRequested
             | EventType::ExecutionRequested
+            | EventType::TaskRunStarted
+            | EventType::CampaignAdvanceRequested
             | EventType::ValidationRequested
             | EventType::DriftAssessmentRequested
             | EventType::ReleaseRequested
@@ -536,6 +549,11 @@ impl EventType {
             | EventType::ProjectMaintenanceCompleted
             | EventType::ProjectChangesCommitted
             | EventType::ProjectChangesPushed
+            | EventType::TaskReviewed
+            | EventType::TaskRunCompleted
+            | EventType::CampaignAdvanceCompleted
+            | EventType::CampaignEscalated
+            | EventType::CampaignCompleted
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
             | EventType::ProjectRunCompleted
@@ -652,6 +670,13 @@ mod tests {
             (EventType::ProjectIterationRequested, "project_iteration_requested"),
             (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
             (EventType::ExecutionRequested, "execution_requested"),
+            (EventType::TaskRunStarted, "task_run_started"),
+            (EventType::TaskReviewed, "task_reviewed"),
+            (EventType::TaskRunCompleted, "task_run_completed"),
+            (EventType::CampaignAdvanceRequested, "campaign_advance_requested"),
+            (EventType::CampaignAdvanceCompleted, "campaign_advance_completed"),
+            (EventType::CampaignEscalated, "campaign_escalated"),
+            (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -729,6 +754,13 @@ mod tests {
             (EventType::ProjectIterationRequested, "project_iteration_requested"),
             (EventType::ProjectMaintenanceRequested, "project_maintenance_requested"),
             (EventType::ExecutionRequested, "execution_requested"),
+            (EventType::TaskRunStarted, "task_run_started"),
+            (EventType::TaskReviewed, "task_reviewed"),
+            (EventType::TaskRunCompleted, "task_run_completed"),
+            (EventType::CampaignAdvanceRequested, "campaign_advance_requested"),
+            (EventType::CampaignAdvanceCompleted, "campaign_advance_completed"),
+            (EventType::CampaignEscalated, "campaign_escalated"),
+            (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),

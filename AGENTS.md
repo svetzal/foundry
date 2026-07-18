@@ -106,7 +106,8 @@ Rules:
 | Command | Purpose |
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
-| `foundry task <project> "<description>"` | Run one user-provided coding task |
+| `foundry task <project> "<description>" [--agent <provider>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict |
+| `foundry campaign add\|list\|show\|advance\|pause\|resume` | Manage durable objectives that derive one task at a time from live state |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
 | `foundry run` | Full maintenance across registered projects (the nightly schedule is now driven by the `nightly-maintenance` sentinel inside `foundryd`) |
@@ -360,6 +361,9 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
+- `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; written atomically by the CLI and campaign formation
+- `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
+- `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
 - `~/.foundry/traces/YYYY-MM-DD/` — persistent trace files (survive daemon restarts)
 - `~/.foundry/audits/{project}/` — centralized audit logs
@@ -379,6 +383,9 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
+| `FOUNDRY_CAMPAIGNS_PATH` | `~/.foundry/campaigns.json` | Durable campaign store |
+| `FOUNDRY_WORKTREES_DIR` | `~/.foundry/worktrees` | Isolated task worktrees |
+| `FOUNDRY_PRESERVED_DIR` | `~/.foundry/preserved` | Fallback preserved-work bundles |
 | `FOUNDRY_SENTINELS_PATH` | `~/.foundry/sentinels.json` | Sentinel store file |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
@@ -388,4 +395,4 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |
 | `FOUNDRY_TRIAGE_DIR` | `~/.foundry/triage` | Post-maintenance triage digest output directory |
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Nightly supply-chain advisory digest output directory |
-| `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | _(unset → off)_ | Truthy (`1`/`true`/`yes`/`on`) enables the supply-chain auto-fix engine (verified, commit-only Rust in-range bumps). Off by default — the formation only classifies until this is set. |
+| `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | *(unset → off)* | Truthy (`1`/`true`/`yes`/`on`) enables the supply-chain auto-fix engine (verified, commit-only Rust in-range bumps). Off by default — the formation only classifies until this is set. |

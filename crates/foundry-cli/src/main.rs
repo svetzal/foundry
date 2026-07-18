@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod campaign_commands;
 mod commands;
 mod daemon;
 mod event_commands;
@@ -222,6 +223,26 @@ enum Commands {
     /// Manage scheduled sentinels (proactive workflow triggers)
     #[command(subcommand)]
     Sentinel(SentinelCommands),
+
+    /// Manage durable objective campaigns
+    #[command(subcommand)]
+    Campaign(CampaignCommands),
+}
+
+#[derive(Subcommand)]
+enum CampaignCommands {
+    /// Add a campaign from a JSON definition file
+    Add { file: std::path::PathBuf },
+    /// List campaigns
+    List,
+    /// Show one campaign
+    Show { name: String },
+    /// Derive and dispatch one next objective from live state
+    Advance { name: String },
+    /// Pause automatic advancement
+    Pause { name: String },
+    /// Resume an authorized paused or escalated campaign
+    Resume { name: String },
 }
 
 #[derive(Subcommand)]
@@ -505,6 +526,23 @@ async fn handle_sentinel_command(
     }
 }
 
+async fn handle_campaign_command(
+    command: CampaignCommands,
+    campaigns_path: &std::path::Path,
+    addr: &str,
+) -> Result<()> {
+    match command {
+        CampaignCommands::Add { file } => campaign_commands::add(campaigns_path, &file),
+        CampaignCommands::List => campaign_commands::list(campaigns_path),
+        CampaignCommands::Show { name } => campaign_commands::show(campaigns_path, &name),
+        CampaignCommands::Advance { name } => {
+            campaign_commands::advance(addr, campaigns_path, &name).await
+        }
+        CampaignCommands::Pause { name } => campaign_commands::pause(campaigns_path, &name),
+        CampaignCommands::Resume { name } => campaign_commands::resume(campaigns_path, &name),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -591,6 +629,9 @@ async fn main() -> Result<()> {
                 cli.offline,
             )
             .await
+        }
+        Commands::Campaign(sub) => {
+            handle_campaign_command(sub, &foundry_sdk::paths::campaigns_path(), &cli.addr).await
         }
         Commands::Sentinel(sub) => {
             handle_sentinel_command(

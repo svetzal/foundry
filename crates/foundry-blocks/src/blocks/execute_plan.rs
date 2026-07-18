@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gateway::AgentFailureMetadata;
-use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, PlanCompletedPayload};
+use foundry_sdk::payload::{
+    ExecutionCompletedPayload, LoopContext, PlanCompletedPayload, TaskRunCompletedPayload,
+    TaskVerdict,
+};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::workflow::WorkflowType;
@@ -107,8 +110,51 @@ impl TaskBlock for ExecutePlan {
         // (e.g. the prompt workflow) receive the correct WorkflowType.  This is
         // important because the silent no-op override only fires for WorkflowType::Iterate.
         let workflow = WorkflowType::from_payload(&payload);
+        let run_id = trigger.id.clone();
 
         Box::pin(async move {
+            let mut execution_payload = payload;
+            let project_path = if workflow == WorkflowType::Task {
+                let base_ref =
+                    execution_payload.get("base_ref").and_then(serde_json::Value::as_str);
+                match super::task_workspace::prepare_task_workspace(
+                    &*shell, &entry, &run_id, base_ref,
+                )
+                .await
+                {
+                    Ok(workspace) => {
+                        execution_payload["task_worktree"] =
+                            serde_json::json!(workspace.path.to_string_lossy());
+                        execution_payload["task_branch"] = serde_json::json!(workspace.branch);
+                        workspace.path
+                    }
+                    Err(error) => {
+                        let context = LoopContext::extract_from(&execution_payload);
+                        return super::emit_event_result(
+                            format!("{project}: task workspace preparation failed"),
+                            false,
+                            EventType::TaskRunCompleted,
+                            &project,
+                            throttle,
+                            &TaskRunCompletedPayload {
+                                project: project.clone(),
+                                success: false,
+                                summary: error.to_string(),
+                                preservation_ref: None,
+                                verdict: TaskVerdict::RunnerError {
+                                    detail: error.to_string(),
+                                },
+                                context,
+                            },
+                        );
+                    }
+                }
+            } else {
+                std::path::PathBuf::from(&entry.path)
+            };
+
+            let mut execution_entry = entry.clone();
+            execution_entry.path = project_path.to_string_lossy().to_string();
             let plan = &plan_payload.plan;
             let principle = &plan_payload.principle;
             let gates = plan_payload.chain.gates.as_ref();
@@ -116,14 +162,14 @@ impl TaskBlock for ExecutePlan {
             let ctx = ExecutionContext {
                 project: &project,
                 workflow,
-                payload: &payload,
+                payload: &execution_payload,
                 throttle,
                 label: "plan execution",
                 retry_count: None,
                 correction_needed: plan_payload.correction_needed,
             };
 
-            Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
+            Ok(super::execute_agent_block(&*agent, &*shell, &execution_entry, &ctx, prompt).await)
         })
     }
 }

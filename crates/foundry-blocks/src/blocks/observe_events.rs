@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{OpsDigestCompletedPayload, OpsEventDigest, OpsObservedPayload};
+use foundry_sdk::payload::{
+    OpsDigestCompletedPayload, OpsDigestStartedPayload, OpsEventDigest, OpsObservedPayload,
+};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use serde::Deserialize;
 
@@ -55,8 +57,14 @@ impl TaskBlock for ObserveEvents {
         } = TriggerContext::from_trigger(trigger);
         let intake_dir = self.intake_dir.clone();
         let watermark_path = self.watermark_path.clone();
+        let forced_event = trigger
+            .parse_payload::<OpsDigestStartedPayload>()
+            .ok()
+            .and_then(|payload| payload.forced_event);
 
-        Box::pin(async move { observe(&project, throttle, &intake_dir, &watermark_path) })
+        Box::pin(
+            async move { observe(&project, throttle, &intake_dir, &watermark_path, forced_event) },
+        )
     }
 }
 
@@ -65,12 +73,13 @@ fn observe(
     throttle: foundry_sdk::throttle::Throttle,
     intake_dir: &Path,
     watermark_path: &Path,
+    forced_event: Option<OpsEventDigest>,
 ) -> anyhow::Result<TaskBlockResult> {
     let cutoff = read_cutoff(watermark_path);
     let events = read_events_since(intake_dir, cutoff);
 
-    let new_event_count = events.len() as u64;
-    let anomaly_present = events.iter().any(is_anomaly);
+    let new_event_count = events.len() as u64 + u64::from(forced_event.is_some());
+    let anomaly_present = forced_event.is_some() || events.iter().any(is_anomaly);
 
     if !should_proceed(new_event_count, anomaly_present) {
         tracing::info!(
@@ -98,7 +107,7 @@ fn observe(
 
     let new_watermark = events.iter().map(|e| e.occurred_at.clone()).max();
 
-    let digests: Vec<OpsEventDigest> = events
+    let mut digests: Vec<OpsEventDigest> = events
         .into_iter()
         .map(|e| {
             let client = e.client.as_ref().and_then(|c| c.name.clone());
@@ -114,6 +123,9 @@ fn observe(
             }
         })
         .collect();
+    if let Some(event) = forced_event {
+        digests.push(event);
+    }
 
     tracing::info!(
         new_event_count,

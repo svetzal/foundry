@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 pub struct OpsDigestStartedPayload {
     #[serde(default)]
     pub event_count: u64,
+    /// Optional Foundry-native anomaly injected by another formation (for
+    /// example a campaign completion/escalation). The normal sentinel payload
+    /// omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forced_event: Option<OpsEventDigest>,
 }
 
 /// A lean per-event summary carried in the `OpsObserved` payload.
