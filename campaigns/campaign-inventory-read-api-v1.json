@@ -1,0 +1,56 @@
+{
+  "name": "foundry-campaign-inventory-read-api-v1",
+  "project": "foundry",
+  "mission": "Expose Foundry's durable campaign inventory through one typed, read-only ListCampaigns gRPC query so operational clients can observe current campaign state without reading Foundry-owned storage.",
+  "intent_refs": [
+    "foundry.intent.campaign-inventory-read-api-v1"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "campaigns/campaign-inventory-read-api-v1.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo clippy --workspace -- -D warnings",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo test --workspace",
+      "required": true
+    },
+    {
+      "kind": "review",
+      "statement": "foundryd exposes one typed ListCampaigns gRPC query whose wire records include campaign identity, mission, status, cycle counts and budget, authorization, agent provider, and last run event identifier."
+    },
+    {
+      "kind": "review",
+      "statement": "ListCampaigns loads the configured CampaignStore at request time, returns deterministic name order, supports an optional exact project filter, and reports missing or empty stores as an empty list while surfacing malformed or unreadable stores as gRPC errors."
+    },
+    {
+      "kind": "review",
+      "statement": "Focused service-boundary tests use temporary stores to prove empty, populated, filtered, and malformed-store behavior without reading or mutating the operator's real campaign store."
+    },
+    {
+      "kind": "review",
+      "statement": "The slice is read-only: it adds no campaign mutation RPC, cache, second source of truth, lifecycle behavior change, or ops-visualizer modification, and the public proto plus campaign guide document the query."
+    }
+  ],
+  "budget": {
+    "max_cycles": 2
+  },
+  "escalation": [
+    "A safe read-only query requires changing campaign storage ownership or introducing a second source of truth.",
+    "The public wire contract requires an owner product decision beyond the fields named in the completion boundary.",
+    "The second dispatched cycle does not satisfy all required evidence."
+  ],
+  "authorized_by": "Stacey",
+  "agent_provider": "codex"
+}
