@@ -418,6 +418,10 @@ pub struct AgentRequest {
     /// default provider". The production [`AgentGateway`] is a router that reads
     /// this field and dispatches to the matching CLI backend.
     pub provider: Option<AgentProvider>,
+    /// Environment entries applied only to this agent process and its children.
+    /// Workflow blocks use this for execution-scoped safety controls that must
+    /// not affect the daemon or the registered checkout.
+    pub env: Vec<(String, String)>,
     /// Maximum duration for the invocation.
     pub timeout: std::time::Duration,
 }

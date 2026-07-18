@@ -173,6 +173,7 @@ async fn run_remediation(
             prompt,
             agent_file,
             provider,
+            env: Vec::new(),
             timeout: RemediatePipeline::CLAUDE_TIMEOUT,
         },
         "remediate pipeline",

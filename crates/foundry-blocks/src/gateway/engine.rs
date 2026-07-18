@@ -74,6 +74,11 @@ pub(crate) struct Invocation {
     pub(crate) last_message_path: Option<PathBuf>,
 }
 
+fn with_request_environment(mut invocation: Invocation, request: &AgentRequest) -> Invocation {
+    invocation.env.extend(request.env.iter().cloned());
+    invocation
+}
+
 /// Provider-specific result produced by `CliAgentAdapter::interpret`.
 pub(crate) struct Interpreted {
     pub(crate) success: bool,
@@ -139,19 +144,18 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
             let model = self.models.model(request.tier, provider);
             let effort = self.models.effort_token(request.effort, provider);
 
-            let inv = self.adapter.build_invocation(
+            let inv = with_request_environment(
+                self.adapter.build_invocation(
+                    request,
+                    &model,
+                    &effort,
+                    &session_id,
+                    &self.session_log_dir,
+                ),
                 request,
-                &model,
-                &effort,
-                &session_id,
-                &self.session_log_dir,
             );
             let arg_refs: Vec<&str> = inv.args.iter().map(String::as_str).collect();
-            let env_opt = if inv.env.is_empty() {
-                None
-            } else {
-                Some(inv.env.as_slice())
-            };
+            let env_opt = (!inv.env.is_empty()).then_some(inv.env.as_slice());
 
             emit_session_started(
                 &self.event_tx,
@@ -330,6 +334,7 @@ mod tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 
@@ -386,6 +391,7 @@ mod tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 

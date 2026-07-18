@@ -181,12 +181,32 @@ pub(crate) async fn execute_agent_block(
             prompt,
             agent_file,
             provider,
+            env: execution_environment(ctx.workflow),
             timeout: entry.timeout(),
         },
         ctx.label,
     )
     .await;
     build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await
+}
+
+/// Prevent an isolated task executor from pushing through the checkout's
+/// configured `origin`. The environment is inherited by shell commands spawned
+/// by every supported CLI agent, while Foundry's reviewer and finalizer run
+/// outside it and retain normal Git access.
+fn execution_environment(workflow: WorkflowType) -> Vec<(String, String)> {
+    if workflow != WorkflowType::Task {
+        return Vec::new();
+    }
+
+    vec![
+        ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+        ("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string()),
+        (
+            "GIT_CONFIG_VALUE_0".to_string(),
+            "foundry://task-executor-push-disabled".to_string(),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -200,10 +220,34 @@ mod tests {
     use crate::gateway::{AgentFailureKind, AgentFailureMetadata, AgentOutcome, AgentProvider};
     use crate::shell::CommandResult;
 
-    use super::{ExecutionContext, build_agent_execution_result, build_execution_outcome};
+    use super::{
+        ExecutionContext, build_agent_execution_result, build_execution_outcome,
+        execution_environment,
+    };
 
     fn trigger_payload() -> serde_json::Value {
         serde_json::json!({ "project": "p", "workflow": "iterate" })
+    }
+
+    #[test]
+    fn task_execution_disables_origin_push_for_agent_process() {
+        let env = execution_environment(WorkflowType::Task);
+
+        assert_eq!(env.len(), 3);
+        assert!(env.contains(&("GIT_CONFIG_COUNT".to_string(), "1".to_string())));
+        assert!(
+            env.contains(&("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string()))
+        );
+        assert!(env.contains(&(
+            "GIT_CONFIG_VALUE_0".to_string(),
+            "foundry://task-executor-push-disabled".to_string()
+        )));
+    }
+
+    #[test]
+    fn non_task_execution_does_not_override_git_remote() {
+        assert!(execution_environment(WorkflowType::Iterate).is_empty());
+        assert!(execution_environment(WorkflowType::Maintain).is_empty());
     }
 
     // --- iterate: clean tree → failure override ---

@@ -418,6 +418,7 @@ mod claude_agent_gateway_streaming_tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(60),
         };
 
@@ -488,6 +489,7 @@ mod claude_agent_gateway_streaming_tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 
@@ -534,6 +536,7 @@ mod claude_agent_gateway_streaming_tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 
@@ -626,6 +629,7 @@ mod claude_agent_gateway_streaming_tests {
                 "/Users/svetzal/.claude/agents/typescript-bun-cli-craftsperson.md",
             )),
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
         let _ = gateway.invoke(&request).await.unwrap();

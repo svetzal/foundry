@@ -111,6 +111,7 @@ impl TaskBlock for CreatePlan {
                     effort: ReasoningEffort::High,
                     agent_file,
                     provider,
+                    env: Vec::new(),
                     timeout: entry.timeout(),
                 },
                 "create plan",

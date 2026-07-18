@@ -113,6 +113,7 @@ pub(super) async fn run_release(
         effort: ReasoningEffort::Medium,
         agent_file: None,
         provider: None,
+        env: Vec::new(),
         timeout: CLAUDE_TIMEOUT,
     };
 

@@ -118,6 +118,7 @@ impl TaskBlock for ReviewTask {
                     effort: ReasoningEffort::High,
                     agent_file: super::resolve_agent_file(&entry.agent),
                     provider,
+                    env: Vec::new(),
                     timeout: entry.timeout(),
                 },
                 "task review",

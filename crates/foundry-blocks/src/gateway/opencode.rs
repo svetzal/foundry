@@ -493,6 +493,7 @@ mod tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 
@@ -539,6 +540,7 @@ mod tests {
             effort: ReasoningEffort::Low,
             agent_file: None,
             provider: None,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         };
 

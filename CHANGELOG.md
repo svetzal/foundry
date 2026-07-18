@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-07-18
+
+### Fixed
+
+- Isolated task executors can no longer push through the checkout's configured
+  `origin`. Foundry now applies a provider-neutral, process-scoped Git guard and
+  explicitly reserves commits, pushes, merges, rebases, tags, and ref updates
+  for its post-review finalizer.
+
 ## [0.29.2] - 2026-07-18
 
 ### Added

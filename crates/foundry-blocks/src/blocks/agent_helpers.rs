@@ -55,6 +55,8 @@ pub(crate) struct AgentBlockSpec {
     /// Per-request provider override (from the run's chain context). `None`
     /// means the routing gateway uses the daemon default.
     pub provider: Option<AgentProvider>,
+    /// Environment applied only to the invoked agent process.
+    pub env: Vec<(String, String)>,
     pub timeout: Duration,
 }
 
@@ -77,6 +79,7 @@ pub(crate) async fn invoke_agent(
         effort: spec.effort,
         agent_file: spec.agent_file,
         provider: spec.provider,
+        env: spec.env,
         timeout: spec.timeout,
     };
     tracing::info!(project = %project, "{trace_label}: invoking agent");
@@ -97,6 +100,7 @@ pub(crate) struct CodingAgentSpec {
     pub prompt: String,
     pub agent_file: Option<PathBuf>,
     pub provider: Option<AgentProvider>,
+    pub env: Vec<(String, String)>,
     pub timeout: Duration,
 }
 
@@ -121,6 +125,7 @@ pub(crate) async fn invoke_coding_agent(
             effort: ReasoningEffort::Medium,
             agent_file: spec.agent_file,
             provider: spec.provider,
+            env: spec.env,
             timeout: spec.timeout,
         },
         trace_label,
@@ -259,6 +264,7 @@ pub(crate) async fn invoke_reasoning_agent(
             effort: ReasoningEffort::High,
             agent_file: spec.agent_file,
             provider: spec.provider,
+            env: Vec::new(),
             timeout: spec.timeout,
         },
         trace_label,
@@ -289,6 +295,7 @@ pub(crate) async fn invoke_summary_agent(
             effort: ReasoningEffort::Low,
             agent_file: spec.agent_file,
             provider: spec.provider,
+            env: Vec::new(),
             timeout: spec.timeout,
         },
         trace_label,

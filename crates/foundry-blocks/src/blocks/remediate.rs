@@ -114,6 +114,7 @@ impl TaskBlock for RemediateVulnerability {
                     prompt,
                     agent_file,
                     provider,
+                    env: Vec::new(),
                     timeout: entry.timeout(),
                 },
                 &format!("remediate {cve}"),

@@ -276,6 +276,7 @@ async fn assess_continue(
             effort: ReasoningEffort::Low,
             agent_file,
             provider,
+            env: Vec::new(),
             timeout: std::time::Duration::from_secs(120),
         },
         "strategic continue assessment",

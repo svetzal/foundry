@@ -373,6 +373,7 @@ async fn derive_campaign_decision(
                 .agent_provider
                 .as_deref()
                 .and_then(|provider| super::parse_agent_provider(Some(provider))),
+            env: Vec::new(),
             timeout: entry.timeout(),
         },
         "campaign advance",

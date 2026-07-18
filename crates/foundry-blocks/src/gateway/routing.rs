@@ -143,6 +143,7 @@ mod tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider,
+            env: Vec::new(),
             timeout: Duration::from_secs(5),
         }
     }
