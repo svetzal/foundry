@@ -226,6 +226,32 @@ message RegistryEditResponse {
     Project project = 1;
 }
 
+// Request the durable campaign inventory. When project is non-empty, the
+// result contains only campaigns whose project exactly matches that value.
+message ListCampaignsRequest {
+    string project = 1;
+}
+
+// Read-only wire form of a campaign. This exposes summary/status fields only;
+// it intentionally omits context paths, done evidence internals, escalation
+// rules, and filesystem details.
+message Campaign {
+    string name = 1;
+    string project = 2;
+    string mission = 3;
+    string status = 4;
+    uint64 cycles_completed = 5;
+    uint64 cycles_landed = 6;
+    uint64 max_cycles = 7;
+    string authorized_by = 8;
+    string agent_provider = 9;
+    string last_run_event_id = 10;
+}
+
+message ListCampaignsResponse {
+    repeated Campaign campaigns = 1;
+}
+
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.
 message Sentinel {
     string name = 1;
@@ -286,6 +312,9 @@ service Foundry {
 
     // Edit a project in the registry.
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
+
+    // List durable campaigns from the configured campaign store.
+    rpc ListCampaigns(ListCampaignsRequest) returns (ListCampaignsResponse);
 
     // Mark a sentinel as enabled. Persists to disk and wakes the scheduler.
     rpc SentinelEnable(SentinelEnableRequest) returns (SentinelEnableResponse);

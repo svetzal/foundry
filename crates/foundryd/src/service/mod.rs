@@ -11,17 +11,18 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    EmitRequest, EmitResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
-    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, SentinelDisableRequest,
-    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
-    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
-    WatchResponse, foundry_server::Foundry,
+    EmitRequest, EmitResponse, ListCampaignsRequest, ListCampaignsResponse, RegistryAddRequest,
+    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
+    RegistryRemoveResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
+    SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
+    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 
+mod campaign_ops;
 mod eventing_ops;
 mod registry_ops;
 mod sentinel_ops;
@@ -43,6 +44,7 @@ pub struct RuntimeContext {
 /// Store-level configuration for `FoundryService` that is not part of the
 /// runtime event-processing cluster.
 pub struct StoreConfig {
+    pub campaigns_path: PathBuf,
     pub registry_path: PathBuf,
     pub sentinels: Arc<RwLock<SentinelStore>>,
     pub sentinels_path: PathBuf,
@@ -50,6 +52,7 @@ pub struct StoreConfig {
 }
 
 pub struct FoundryService {
+    campaigns_path: PathBuf,
     ctx: RuntimeContext,
     registry_path: PathBuf,
     sentinels: Arc<RwLock<SentinelStore>>,
@@ -60,6 +63,7 @@ pub struct FoundryService {
 impl FoundryService {
     pub fn new(ctx: RuntimeContext, stores: StoreConfig) -> Self {
         Self {
+            campaigns_path: stores.campaigns_path,
             ctx,
             registry_path: stores.registry_path,
             sentinels: stores.sentinels,
@@ -149,6 +153,13 @@ impl Foundry for FoundryService {
         registry_ops::edit(&self.ctx.registry, &self.registry_path, request)
     }
 
+    async fn list_campaigns(
+        &self,
+        request: Request<ListCampaignsRequest>,
+    ) -> Result<Response<ListCampaignsResponse>, Status> {
+        campaign_ops::list(&self.campaigns_path, request)
+    }
+
     async fn sentinel_enable(
         &self,
         request: Request<SentinelEnableRequest>,
@@ -200,6 +211,8 @@ mod tests {
         }));
         let tmp_registry = tempfile::NamedTempFile::new().expect("tempfile");
         let registry_path = tmp_registry.path().to_path_buf();
+        let tmp_campaigns = tempfile::NamedTempFile::new().expect("tempfile");
+        let campaigns_path = tmp_campaigns.path().to_path_buf();
         let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
         let tmp_sentinels = tempfile::NamedTempFile::new().expect("tempfile");
         let sentinels_path = tmp_sentinels.path().to_path_buf();
@@ -213,6 +226,7 @@ mod tests {
             registry,
         };
         let stores = StoreConfig {
+            campaigns_path,
             registry_path,
             sentinels,
             sentinels_path,

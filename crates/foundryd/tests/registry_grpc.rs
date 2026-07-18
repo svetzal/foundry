@@ -49,6 +49,8 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 
     let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
     let registry_path = tmp_registry.path().to_path_buf();
+    let tmp_campaigns = NamedTempFile::new().expect("tempfile for campaigns");
+    let campaigns_path = tmp_campaigns.path().to_path_buf();
 
     let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
     let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
@@ -64,6 +66,7 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
         registry,
     };
     let stores = StoreConfig {
+        campaigns_path,
         registry_path,
         sentinels,
         sentinels_path,

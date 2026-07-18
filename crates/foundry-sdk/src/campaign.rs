@@ -40,6 +40,9 @@ impl CampaignStore {
             path: path.to_owned(),
             source,
         })?;
+        if content.trim().is_empty() {
+            return Ok(Self::default());
+        }
         serde_json::from_str(&content).map_err(|source| StoreError::Parse {
             path: path.to_owned(),
             source,
@@ -284,6 +287,16 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().campaigns.len(), 1);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn empty_file_loads_as_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.json");
+        std::fs::write(&path, "").unwrap();
+
+        let store = CampaignStore::load(&path).unwrap();
+        assert!(store.campaigns.is_empty());
     }
 
     #[test]

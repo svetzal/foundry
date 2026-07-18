@@ -121,6 +121,7 @@ async fn main() -> Result<()> {
     let service = service::FoundryService::new(
         ctx,
         service::StoreConfig {
+            campaigns_path: foundry_sdk::paths::campaigns_path(),
             registry_path,
             sentinels,
             sentinels_path,

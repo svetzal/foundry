@@ -10,6 +10,12 @@ Campaigns do not contain a pre-cut queue. The next objective is created only
 when the preceding task has a typed result, so stale downstream inventory and
 per-item retry loops are unnecessary.
 
+The daemon also exposes the durable inventory through the read-only
+`ListCampaigns` gRPC query. It returns summary/status records only, sorted by
+campaign name, with an optional exact `project` filter. Missing or empty stores
+return an empty list; malformed or unreadable stores return a gRPC error rather
+than an implicit empty inventory.
+
 ## One-Shot Tasks
 
 ```bash
