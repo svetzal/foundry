@@ -149,7 +149,7 @@ fn build_verification_result(
     throttle: foundry_sdk::throttle::Throttle,
     failure: &foundry_sdk::gateway::AgentFailureMetadata,
 ) -> TaskBlockResult {
-    let success = run_result.all_passed;
+    let success = run_result.required_passed;
 
     tracing::info!(
         project = %project,
@@ -190,14 +190,17 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::gates::{GateResult, GatesRunResult};
+    use foundry_sdk::gateway::AgentFailureMetadata;
     use foundry_sdk::registry::Registry;
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::workflow::WorkflowType;
 
     use crate::gateway::fakes::FakeShellGateway;
 
     use super::super::test_helpers;
-    use super::RunVerifyGates;
+    use super::{RunVerifyGates, build_verification_result};
 
     fn execution_completed_event(project: &str, retry_count: u64, workflow: &str) -> Event {
         Event::new(
@@ -301,6 +304,38 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.events[0].payload["all_passed"], false);
         assert_eq!(result.events[0].payload["retry_count"], 1);
+    }
+
+    #[test]
+    fn optional_gate_failure_preserves_observability_without_failing_verification() {
+        let run_result = GatesRunResult {
+            all_passed: false,
+            required_passed: true,
+            results: vec![GateResult {
+                name: "dialyzer".to_string(),
+                command: "mix dialyzer".to_string(),
+                passed: false,
+                required: false,
+                output: "pre-existing warnings".to_string(),
+                exit_code: 2,
+                duration_ms: Some(100),
+                fix_applied: false,
+            }],
+        };
+
+        let result = build_verification_result(
+            "my-project",
+            WorkflowType::Task,
+            0,
+            &run_result,
+            &serde_json::json!({}),
+            Throttle::DryRun,
+            &AgentFailureMetadata::default(),
+        );
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["all_passed"], false);
+        assert_eq!(result.events[0].payload["required_passed"], true);
     }
 
     #[tokio::test]

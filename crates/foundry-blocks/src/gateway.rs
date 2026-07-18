@@ -644,7 +644,12 @@ mod claude_agent_gateway_streaming_tests {
             captured.get(agent_flag + 1).map(String::as_str),
             Some("typescript-bun-cli-craftsperson")
         );
-        assert!(!captured.iter().any(|a| a.ends_with(".md")), "args: {captured:?}");
+        assert!(
+            !captured.iter().any(|a| std::path::Path::new(a)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))),
+            "args: {captured:?}"
+        );
     }
 }
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-07-18
+
+### Fixed
+
+- Post-execution verification now treats failed optional gates as advisory at
+  the block-result boundary. Required gates remain the landing criterion while
+  `all_passed: false` and the optional failure details remain visible in the
+  emitted gate event.
+
 ## [0.28.0] - 2026-07-18
 
 ### Changed

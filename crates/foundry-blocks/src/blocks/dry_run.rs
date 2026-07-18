@@ -55,7 +55,7 @@ mod tests {
 
     use super::SimulatedSuccess;
 
-    /// Minimal Mutator block that implements SimulatedSuccess for testing the macro.
+    /// Minimal Mutator block that implements `SimulatedSuccess` for testing the macro.
     struct FakeSimulated;
 
     impl SimulatedSuccess for FakeSimulated {

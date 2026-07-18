@@ -601,8 +601,8 @@ mod tests {
         assert_eq!(event.payload["dry_run"], true);
     }
 
-    /// Verify that dry_run_execution_event and the real-execution path both agree
-    /// on emitting EventType::ExecutionCompleted — structural guarantee from the
+    /// Verify that `dry_run_execution_event` and the real-execution path both agree
+    /// on emitting `EventType::ExecutionCompleted` — structural guarantee from the
     /// single `execution_completed_event` builder.
     #[test]
     fn dry_run_execution_event_and_execution_completed_event_agree_on_type() {
@@ -632,8 +632,8 @@ mod tests {
         assert_eq!(dry_run_events[0].event_type, real_event.event_type);
     }
 
-    /// Verify that dry_run_remediation_event and build_agent_remediation_result both
-    /// agree on emitting EventType::RemediationCompleted — structural guarantee from
+    /// Verify that `dry_run_remediation_event` and `build_agent_remediation_result` both
+    /// agree on emitting `EventType::RemediationCompleted` — structural guarantee from
     /// the single `remediation_completed_event` builder.
     #[test]
     fn dry_run_and_build_agent_remediation_agree_on_event_type() {

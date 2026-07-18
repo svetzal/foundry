@@ -215,6 +215,7 @@ async fn prompt_workflow_happy_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 // The `task` workflow reuses the direct prompt formation: `ExecutionRequested` with
 // `workflow: "task"` routes through `DirectPrompt` exactly like `workflow: "prompt"`,
 // skipping assessment/triage/plan blocks.

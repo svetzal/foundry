@@ -73,6 +73,8 @@ pub enum StoreError {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::*;
 
     #[test]
@@ -91,7 +93,6 @@ mod tests {
             "expected Deserialize variant, got {err:?}"
         );
         // source must be populated so context chains survive
-        use std::error::Error;
         assert!(
             err.source().is_some(),
             "PayloadError::Deserialize must carry a source serde_json::Error"
@@ -109,8 +110,6 @@ mod tests {
 
     #[test]
     fn store_error_parse_preserves_source() {
-        use std::error::Error;
-
         let parse_err: serde_json::Error =
             serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
         let err = StoreError::Parse {
