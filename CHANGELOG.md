@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-07-18
+
+### Added
+
+- `GetCampaign` exposes one campaign's complete durable definition and runtime
+  state through a typed, read-only gRPC query. The detail contract preserves
+  typed done evidence and returns explicit `NOT_FOUND` for absent campaigns.
+
+### Fixed
+
+- Task finalization now detects commits already authored on the task branch,
+  lands them on trunk, and reports a typed `landed` result. Campaign accounting
+  no longer treats reviewed but unintegrated work as landed or repeats the same
+  objective against an unchanged trunk.
+- Complete tasks with no deliverable changes now report that no landing was
+  required, while failed landings remain preserved and non-complete.
+
 ## [0.29.1] - 2026-07-18
 
 ### Fixed
