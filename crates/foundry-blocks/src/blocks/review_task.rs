@@ -178,6 +178,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_terminal_fenced_complete_after_brace_notation_prose() {
+        let output = "The earlier gate{command,required} example is explanatory prose.\n```json\n{\"verdict\":\"complete\"}\n```";
+        assert_eq!(parse_verdict(output).unwrap(), TaskVerdict::Complete);
+    }
+
+    #[test]
     fn rejects_prose_pass_without_typed_verdict() {
         assert!(parse_verdict("VALIDATE: PASS").is_err());
     }

@@ -129,10 +129,11 @@ pub(crate) async fn invoke_coding_agent(
     .await
 }
 
-/// Extract and parse the first JSON object from agent output.
+/// Extract and parse a JSON object from agent output.
 ///
-/// Returns `None` if no valid JSON object is found. Handles agent responses
-/// that include surrounding prose by locating the first `{` and last `}`.
+/// Returns `None` if no valid JSON object is found. Prefers the final fenced
+/// JSON object when present, then falls back to the last structurally valid
+/// bare JSON object embedded in surrounding prose.
 pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
     match serde_json::from_str::<serde_json::Value>(&extract_json(output)) {
         Ok(v) => Some(v),
@@ -144,10 +145,84 @@ pub(crate) fn parse_agent_json(output: &str) -> Option<serde_json::Value> {
 }
 
 pub(crate) fn extract_json(s: &str) -> String {
-    match (s.find('{'), s.rfind('}')) {
-        (Some(start), Some(end)) if start <= end => s[start..=end].to_string(),
-        _ => s.to_string(),
+    extract_last_fenced_json_object(s)
+        .or_else(|| extract_last_structural_json_object(s))
+        .unwrap_or_else(|| s.to_string())
+}
+
+fn extract_last_fenced_json_object(s: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    let mut remaining = s;
+
+    while let Some(open) = remaining.find("```") {
+        let after_open = &remaining[open + 3..];
+        let content_start = after_open.find('\n').map_or(0, |newline| newline + 1);
+        let content = &after_open[content_start..];
+        let Some(close) = content.find("```") else {
+            break;
+        };
+        candidates.push(content[..close].trim().to_string());
+        remaining = &content[close + 3..];
     }
+
+    candidates.into_iter().rev().find(|candidate| {
+        serde_json::from_str::<serde_json::Value>(candidate)
+            .ok()
+            .is_some_and(|value| value.is_object())
+    })
+}
+
+fn extract_last_structural_json_object(s: &str) -> Option<String> {
+    let mut last_valid = None;
+    let mut object_start = None;
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in s.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    object_start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0
+                    && let Some(start) = object_start.take()
+                {
+                    let candidate = &s[start..=idx];
+                    if serde_json::from_str::<serde_json::Value>(candidate)
+                        .ok()
+                        .is_some_and(|value| value.is_object())
+                    {
+                        last_valid = Some(candidate.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    last_valid
 }
 
 /// Parameters for a read-only observer agent invocation.
@@ -321,6 +396,21 @@ mod tests {
         let input = "some text {\"key\": \"value\"} trailing";
         let result = extract_json(input);
         assert_eq!(result, "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn extract_json_prefers_terminal_fenced_object_over_earlier_brace_prose() {
+        let input = "Gate schema uses gate{command,required} notation.\n```json\n{\"verdict\":\"complete\"}\n```";
+        let result = extract_json(input);
+        assert_eq!(result, "{\"verdict\":\"complete\"}");
+    }
+
+    #[test]
+    fn parse_agent_json_prefers_terminal_fenced_object_over_invalid_brace_example() {
+        let input = "Discuss gate{command,required} before the actual answer.\n```json\n{\"accepted\":true,\"reason\":\"ok\"}\n```";
+        let result = parse_agent_json(input).expect("fenced JSON object should parse");
+        assert_eq!(result["accepted"], true);
+        assert_eq!(result["reason"], "ok");
     }
 
     #[test]
