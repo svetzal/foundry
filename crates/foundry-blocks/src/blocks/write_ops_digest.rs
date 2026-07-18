@@ -57,12 +57,14 @@ fn write(
     let (date, _) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
     super::write_digest_and_emit(
-        "ops",
-        EventType::OpsDigestCompleted,
-        project,
-        throttle,
-        digests_dir,
-        &rendered,
+        super::DigestWrite {
+            noun: "ops",
+            event_type: EventType::OpsDigestCompleted,
+            project,
+            throttle,
+            dir: digests_dir,
+            rendered: &rendered,
+        },
         |success, digest_path| OpsDigestCompletedPayload {
             success,
             skipped: false,

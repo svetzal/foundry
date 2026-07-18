@@ -7,6 +7,46 @@ use crate::daemon::{status_to_anyhow, with_daemon_or_offline};
 use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
 use crate::render;
 
+/// Parameters for constructing a `ProjectSpec` from CLI arguments.
+// Five action booleans (iterate/maintain/push/audit/release) are inherent to the domain model.
+#[allow(clippy::struct_excessive_bools)]
+pub struct SpecArgs {
+    pub name: String,
+    pub path: String,
+    pub stack: String,
+    pub agent: String,
+    pub repo: String,
+    pub branch: String,
+    pub iterate: bool,
+    pub maintain: bool,
+    pub push: bool,
+    pub audit: bool,
+    pub release: bool,
+    pub install_command: Option<String>,
+    pub install_brew: Option<String>,
+    pub notes: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Parameters for constructing `ProjectEdits` from CLI arguments.
+pub struct EditArgs {
+    pub path: Option<String>,
+    pub stack: Option<String>,
+    pub agent: Option<String>,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub skip: Option<String>,
+    pub iterate: Option<bool>,
+    pub maintain: Option<bool>,
+    pub push: Option<bool>,
+    pub audit: Option<bool>,
+    pub release: Option<bool>,
+    pub install_command: Option<String>,
+    pub install_brew: Option<String>,
+    pub notes: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
 pub fn init(registry_path: &Path) -> Result<()> {
     if registry_path.exists() {
         println!("Registry already exists at {}", registry_path.display());
@@ -179,89 +219,52 @@ fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result
 }
 
 /// Build a `ProjectSpec` from clap-parsed arguments.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools,
-    clippy::needless_pass_by_value
-)]
-pub fn spec_from_args(
-    name: String,
-    path: String,
-    stack: String,
-    agent: String,
-    repo: String,
-    branch: String,
-    iterate: bool,
-    maintain: bool,
-    push: bool,
-    audit: bool,
-    release: bool,
-    install_command: Option<String>,
-    install_brew: Option<String>,
-    notes: Option<String>,
-    timeout_secs: Option<u64>,
-) -> Result<ProjectSpec> {
-    let stack = parse_stack(&stack).map_err(|e| anyhow::anyhow!("{e}"))?;
+pub fn spec_from_args(args: SpecArgs) -> Result<ProjectSpec> {
+    let stack = parse_stack(&args.stack).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(ProjectSpec {
-        name,
-        path,
+        name: args.name,
+        path: args.path,
         stack,
-        agent,
-        repo,
-        branch,
-        iterate,
-        maintain,
-        push,
-        audit,
-        release,
-        install_command,
-        install_brew,
-        notes,
-        timeout_secs,
+        agent: args.agent,
+        repo: args.repo,
+        branch: args.branch,
+        iterate: args.iterate,
+        maintain: args.maintain,
+        push: args.push,
+        audit: args.audit,
+        release: args.release,
+        install_command: args.install_command,
+        install_brew: args.install_brew,
+        notes: args.notes,
+        timeout_secs: args.timeout_secs,
     })
 }
 
 /// Build `ProjectEdits` from clap-parsed arguments.
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-pub fn edits_from_args(
-    path: Option<String>,
-    stack: Option<String>,
-    agent: Option<String>,
-    repo: Option<String>,
-    branch: Option<String>,
-    skip: Option<String>,
-    iterate: Option<bool>,
-    maintain: Option<bool>,
-    push: Option<bool>,
-    audit: Option<bool>,
-    release: Option<bool>,
-    install_command: Option<String>,
-    install_brew: Option<String>,
-    notes: Option<String>,
-    timeout_secs: Option<u64>,
-) -> Result<ProjectEdits> {
-    let stack = stack
+pub fn edits_from_args(args: EditArgs) -> Result<ProjectEdits> {
+    let stack = args
+        .stack
         .as_deref()
         .map(parse_stack)
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let skip = skip.map(|s| if s.is_empty() { None } else { Some(s) });
+    let skip = args.skip.map(|s| if s.is_empty() { None } else { Some(s) });
     Ok(ProjectEdits {
-        path,
+        path: args.path,
         stack,
-        agent,
-        repo,
-        branch,
+        agent: args.agent,
+        repo: args.repo,
+        branch: args.branch,
         skip,
-        iterate,
-        maintain,
-        push,
-        audit,
-        release,
-        install_command,
-        install_brew,
-        notes,
-        timeout_secs,
+        iterate: args.iterate,
+        maintain: args.maintain,
+        push: args.push,
+        audit: args.audit,
+        release: args.release,
+        install_command: args.install_command,
+        install_brew: args.install_brew,
+        notes: args.notes,
+        timeout_secs: args.timeout_secs,
         ..Default::default()
     })
 }
@@ -280,30 +283,30 @@ fn load_or_init(path: &Path) -> Result<Registry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{edit_request, edits_from_args, spec_from_args};
+    use super::{EditArgs, SpecArgs, edit_request, edits_from_args, spec_from_args};
     use foundry_sdk::registry::ProjectEdits;
 
     // --- spec_from_args ---
 
     #[test]
     fn spec_from_args_parses_valid_stack() {
-        let spec = spec_from_args(
-            "proj".to_string(),
-            "/tmp/proj".to_string(),
-            "rust".to_string(),
-            "claude".to_string(),
-            "o/proj".to_string(),
-            "main".to_string(),
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-        )
+        let spec = spec_from_args(SpecArgs {
+            name: "proj".to_string(),
+            path: "/tmp/proj".to_string(),
+            stack: "rust".to_string(),
+            agent: "claude".to_string(),
+            repo: "o/proj".to_string(),
+            branch: "main".to_string(),
+            iterate: false,
+            maintain: false,
+            push: false,
+            audit: false,
+            release: false,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        })
         .expect("valid stack");
         assert_eq!(spec.stack.to_string(), "rust");
         assert_eq!(spec.name, "proj");
@@ -311,23 +314,23 @@ mod tests {
 
     #[test]
     fn spec_from_args_returns_err_for_invalid_stack() {
-        let result = spec_from_args(
-            "proj".to_string(),
-            "/tmp/proj".to_string(),
-            "cobol".to_string(),
-            "claude".to_string(),
-            "o/proj".to_string(),
-            "main".to_string(),
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = spec_from_args(SpecArgs {
+            name: "proj".to_string(),
+            path: "/tmp/proj".to_string(),
+            stack: "cobol".to_string(),
+            agent: "claude".to_string(),
+            repo: "o/proj".to_string(),
+            branch: "main".to_string(),
+            iterate: false,
+            maintain: false,
+            push: false,
+            audit: false,
+            release: false,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        });
         assert!(result.is_err());
     }
 
@@ -335,101 +338,114 @@ mod tests {
 
     #[test]
     fn edits_from_args_skip_none_yields_none() {
-        let edits = edits_from_args(
-            None, None, None, None, None, None, // skip=None
-            None, None, None, None, None, None, None, None, None,
-        )
+        let edits = edits_from_args(EditArgs {
+            path: None,
+            stack: None,
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: None,
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        })
         .expect("ok");
         assert!(edits.skip.is_none());
     }
 
     #[test]
     fn edits_from_args_skip_empty_string_clears() {
-        let edits = edits_from_args(
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(String::new()), // skip=""
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let edits = edits_from_args(EditArgs {
+            path: None,
+            stack: None,
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: Some(String::new()),
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        })
         .expect("ok");
         assert_eq!(edits.skip, Some(None));
     }
 
     #[test]
     fn edits_from_args_skip_reason_sets_value() {
-        let edits = edits_from_args(
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("reason".to_string()), // skip="reason"
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let edits = edits_from_args(EditArgs {
+            path: None,
+            stack: None,
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: Some("reason".to_string()),
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        })
         .expect("ok");
         assert_eq!(edits.skip, Some(Some("reason".to_string())));
     }
 
     #[test]
     fn edits_from_args_invalid_stack_returns_err() {
-        let result = edits_from_args(
-            None,
-            Some("cobol".to_string()), // invalid stack
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = edits_from_args(EditArgs {
+            path: None,
+            stack: Some("cobol".to_string()),
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: None,
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        });
         assert!(result.is_err());
     }
 
     #[test]
     fn edits_from_args_valid_stack_parses() {
-        let edits = edits_from_args(
-            None,
-            Some("python".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let edits = edits_from_args(EditArgs {
+            path: None,
+            stack: Some("python".to_string()),
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: None,
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            notes: None,
+            timeout_secs: None,
+        })
         .expect("valid stack");
         assert!(edits.stack.is_some());
     }

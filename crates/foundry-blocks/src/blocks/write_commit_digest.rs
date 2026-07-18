@@ -47,12 +47,14 @@ fn write(
     let (date, _) = super::today_dated_path(digests_dir);
     let rendered = render_full_document(&date, composed);
     super::write_digest_and_emit(
-        "commit",
-        EventType::CommitDigestCompleted,
-        project,
-        throttle,
-        digests_dir,
-        &rendered,
+        super::DigestWrite {
+            noun: "commit",
+            event_type: EventType::CommitDigestCompleted,
+            project,
+            throttle,
+            dir: digests_dir,
+            rendered: &rendered,
+        },
         |success, digest_path| CommitDigestCompletedPayload {
             success,
             digest_path,

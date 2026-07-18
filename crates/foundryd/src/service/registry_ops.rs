@@ -157,15 +157,9 @@ pub(super) fn remove(
     Ok(Response::new(RegistryRemoveResponse {}))
 }
 
-// Sequential field mapping from protobuf request to domain struct — length reflects field count.
-#[allow(clippy::too_many_lines)]
-pub(super) fn edit(
-    registry: &Arc<RwLock<Registry>>,
-    registry_path: &Path,
-    request: Request<RegistryEditRequest>,
-) -> Result<Response<RegistryEditResponse>, Status> {
-    let req = request.into_inner();
-
+/// Maps every proto field to its domain counterpart, validates mutual exclusivity, and
+/// constructs the `ProjectEdits` struct used by the registry's `edit_project` method.
+fn edits_from_request(req: &RegistryEditRequest) -> Result<ProjectEdits, Status> {
     let stack = if req.stack.is_empty() {
         None
     } else {
@@ -185,7 +179,7 @@ pub(super) fn edit(
         Some(Some(req.skip.clone()))
     };
 
-    let edits = ProjectEdits {
+    Ok(ProjectEdits {
         path: if req.path.is_empty() {
             None
         } else {
@@ -268,7 +262,16 @@ pub(super) fn edit(
             Some(req.timeout_secs)
         },
         clear_timeout: req.clear_timeout,
-    };
+    })
+}
+
+pub(super) fn edit(
+    registry: &Arc<RwLock<Registry>>,
+    registry_path: &Path,
+    request: Request<RegistryEditRequest>,
+) -> Result<Response<RegistryEditResponse>, Status> {
+    let req = request.into_inner();
+    let edits = edits_from_request(&req)?;
 
     let entry_proto = {
         let mut reg = registry.write().expect("registry lock poisoned");
@@ -299,7 +302,9 @@ mod tests {
 
     use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
 
-    use super::{add, edit, mutation_error_to_status, project_to_proto, remove};
+    use super::{
+        add, edit, edits_from_request, mutation_error_to_status, project_to_proto, remove,
+    };
 
     fn empty_registry() -> Arc<RwLock<Registry>> {
         Arc::new(RwLock::new(Registry {
@@ -579,5 +584,83 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn edits_from_request_conflicting_install_returns_invalid_argument() {
+        let req = RegistryEditRequest {
+            name: "x".to_string(),
+            path: String::new(),
+            stack: String::new(),
+            agent: String::new(),
+            repo: String::new(),
+            branch: String::new(),
+            skip: String::new(),
+            clear_skip: false,
+            iterate: false,
+            clear_iterate: false,
+            maintain: false,
+            clear_maintain: false,
+            push: false,
+            clear_push: false,
+            audit: false,
+            clear_audit: false,
+            release: false,
+            clear_release: false,
+            install_command: "cmd".to_string(),
+            install_brew: "brew".to_string(),
+            clear_install: false,
+            notes: String::new(),
+            clear_notes: false,
+            timeout_secs: 0,
+            clear_timeout: false,
+        };
+        let err = edits_from_request(&req).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn edits_from_request_tri_state_flags_iterate() {
+        // iterate=true, clear_iterate=false → Some(true)
+        let mut req = RegistryEditRequest {
+            name: "x".to_string(),
+            path: String::new(),
+            stack: String::new(),
+            agent: String::new(),
+            repo: String::new(),
+            branch: String::new(),
+            skip: String::new(),
+            clear_skip: false,
+            iterate: true,
+            clear_iterate: false,
+            maintain: false,
+            clear_maintain: false,
+            push: false,
+            clear_push: false,
+            audit: false,
+            clear_audit: false,
+            release: false,
+            clear_release: false,
+            install_command: String::new(),
+            install_brew: String::new(),
+            clear_install: false,
+            notes: String::new(),
+            clear_notes: false,
+            timeout_secs: 0,
+            clear_timeout: false,
+        };
+        let edits = edits_from_request(&req).unwrap();
+        assert_eq!(edits.iterate, Some(true));
+
+        // clear_iterate=true → Some(false), regardless of iterate flag
+        req.iterate = false;
+        req.clear_iterate = true;
+        let edits = edits_from_request(&req).unwrap();
+        assert_eq!(edits.iterate, Some(false));
+
+        // both false → None (no change)
+        req.clear_iterate = false;
+        let edits = edits_from_request(&req).unwrap();
+        assert_eq!(edits.iterate, None);
     }
 }

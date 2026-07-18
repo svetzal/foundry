@@ -425,9 +425,9 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let spec = registry_commands::spec_from_args(
+            let spec = registry_commands::spec_from_args(registry_commands::SpecArgs {
                 name,
-                project_path,
+                path: project_path,
                 stack,
                 agent,
                 repo,
@@ -441,7 +441,7 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-            )?;
+            })?;
             registry_commands::add(path, addr, offline, spec).await
         }
         RegistryCommands::Remove { name } => {
@@ -465,8 +465,8 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let edits = registry_commands::edits_from_args(
-                project_path,
+            let edits = registry_commands::edits_from_args(registry_commands::EditArgs {
+                path: project_path,
                 stack,
                 agent,
                 repo,
@@ -481,7 +481,7 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-            )?;
+            })?;
             registry_commands::edit(path, addr, offline, &name, edits).await
         }
     }

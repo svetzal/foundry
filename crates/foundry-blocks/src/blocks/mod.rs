@@ -22,7 +22,7 @@ pub(super) use agent_helpers::{
     parse_agent_provider, resolve_agent_file,
 };
 pub(super) use digest_io::{
-    plural, render_agent_body_digest, today_dated_path, write_digest_and_emit,
+    DigestWrite, plural, render_agent_body_digest, today_dated_path, write_digest_and_emit,
 };
 pub(super) use event_builders::{
     build_agent_remediation_result, build_gate_result_from_payload, dry_run_execution_event,

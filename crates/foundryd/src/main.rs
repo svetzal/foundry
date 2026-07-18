@@ -83,12 +83,14 @@ async fn main() -> Result<()> {
         trace_writer.clone(),
         BlockPaths {
             audits_dir,
-            digests_dir,
-            ops_digests_dir,
-            ops_events_intake_dir,
-            ops_watermark_path,
-            triage_dir,
-            supply_chain_dir,
+            digest: DigestPaths {
+                digests_dir,
+                ops_digests_dir,
+                ops_events_intake_dir,
+                ops_watermark_path,
+                triage_dir,
+                supply_chain_dir,
+            },
         },
     );
 
@@ -238,14 +240,18 @@ fn spawn_scheduler(
     tokio::spawn(scheduler.run());
 }
 
-struct BlockPaths {
-    audits_dir: String,
+struct DigestPaths {
     digests_dir: std::path::PathBuf,
     ops_digests_dir: std::path::PathBuf,
     ops_events_intake_dir: std::path::PathBuf,
     ops_watermark_path: std::path::PathBuf,
     triage_dir: std::path::PathBuf,
     supply_chain_dir: std::path::PathBuf,
+}
+
+struct BlockPaths {
+    audits_dir: String,
+    digest: DigestPaths,
 }
 
 /// Construct the agent gateway: resolve the default provider, load/seed the
@@ -336,10 +342,6 @@ fn build_agent_gateway(
     Arc::new(foundry_blocks::gateway::RoutingAgentGateway::new(gateways, default))
 }
 
-// Sequential block registration wiring — length is inherent, not a design smell.
-// All embedded logic (agent gateway construction) has been extracted into
-// `build_agent_gateway`; only sequential `engine.register(...)` calls remain.
-#[allow(clippy::too_many_lines)]
 fn register_blocks(
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
     event_writer: Arc<foundry_engine::event_writer::EventWriter>,
@@ -347,18 +349,29 @@ fn register_blocks(
     trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
     paths: BlockPaths,
 ) -> foundry_engine::engine::Engine {
-    let BlockPaths {
-        audits_dir,
-        digests_dir,
-        ops_digests_dir,
-        ops_events_intake_dir,
-        ops_watermark_path,
-        triage_dir,
-        supply_chain_dir,
-    } = paths;
     let mut engine = foundry_engine::engine::Engine::new()
         .with_event_writer(event_writer)
         .with_event_broadcaster(event_tx.clone());
+    let agent = build_agent_gateway(event_tx);
+    let shell: Arc<dyn foundry_blocks::gateway::ShellGateway> =
+        Arc::new(foundry_blocks::gateway::ProcessShellGateway);
+
+    register_core_blocks(&mut engine, registry);
+    register_release_blocks(&mut engine, &agent, registry);
+    register_gate_blocks(&mut engine, &shell, registry);
+    register_maintain_blocks(&mut engine, &agent, registry);
+    register_iterate_blocks(&mut engine, &agent, registry);
+    register_pipeline_blocks(&mut engine, &agent, registry, trace_writer, paths.audits_dir);
+    register_digest_blocks(&mut engine, &agent, &shell, registry, paths.digest);
+
+    engine
+}
+
+/// Core maintenance routing: project fan-out, validation, audit, greeting, and routing.
+fn register_core_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
     engine.register(Box::new(orchestrator::FanOutMaintenance::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::ValidateProject::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::ComposeGreeting));
@@ -368,7 +381,17 @@ fn register_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(registry.clone())));
-    let agent = build_agent_gateway(event_tx);
+    engine.register(Box::new(foundry_blocks::blocks::CleanupBranches::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::RouteProjectWorkflow));
+    engine.register(Box::new(foundry_blocks::blocks::CompleteProjectRun));
+}
+
+/// Release workflow: vulnerability remediation, commit, cut, execute, watch, install.
+fn register_release_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
     engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
         agent.clone(),
         registry.clone(),
@@ -384,14 +407,14 @@ fn register_blocks(
     )));
     engine.register(Box::new(foundry_blocks::blocks::WatchPipeline::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::InstallLocally::new(registry.clone())));
-    // Maintenance workflow: RouteProjectWorkflow routes validated projects to the
-    // correct sub-workflow via ProjectIterationRequested or ProjectMaintenanceRequested.
-    engine.register(Box::new(foundry_blocks::blocks::CleanupBranches::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::RouteProjectWorkflow));
-    engine.register(Box::new(foundry_blocks::blocks::CompleteProjectRun));
-    // Native gate orchestration blocks
-    let shell: Arc<dyn foundry_blocks::gateway::ShellGateway> =
-        Arc::new(foundry_blocks::gateway::ProcessShellGateway);
+}
+
+/// Native gate orchestration: resolve, preflight, verify, route.
+fn register_gate_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    shell: &Arc<dyn foundry_blocks::gateway::ShellGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
     engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
         shell.clone(),
@@ -403,7 +426,14 @@ fn register_blocks(
     )));
     engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
     engine.register(Box::new(foundry_blocks::blocks::RouteValidationResult));
-    // Native maintain workflow blocks (Phase 2)
+}
+
+/// Native maintain workflow (Phase 2): execute, retry, summarise.
+fn register_maintain_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
     engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
         agent.clone(),
         registry.clone(),
@@ -416,7 +446,14 @@ fn register_blocks(
         agent.clone(),
         registry.clone(),
     )));
-    // Native iterate workflow blocks (Phase 3)
+}
+
+/// Native iterate workflow (Phase 3): charter, assess, triage, plan, direct prompt, strategic loop.
+fn register_iterate_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
     engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::AssessProject::new(
         agent.clone(),
@@ -430,9 +467,7 @@ fn register_blocks(
         agent.clone(),
         registry.clone(),
     )));
-    // Prompt workflow (direct prompt execution with gates)
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
-    // Strategic loop workflow (nested iteration)
     engine.register(Box::new(foundry_blocks::blocks::StrategicAssessor::new(
         agent.clone(),
         registry.clone(),
@@ -441,13 +476,21 @@ fn register_blocks(
         agent.clone(),
         registry.clone(),
     )));
-    // Pipeline health workflow
+}
+
+/// Pipeline health, drift scout, plan execution, and audit summary.
+fn register_pipeline_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+    trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
+    audits_dir: String,
+) {
     engine.register(Box::new(foundry_blocks::blocks::CheckPipeline::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::RemediatePipeline::new(
         agent.clone(),
         registry.clone(),
     )));
-    // Drift scout workflow
     engine.register(Box::new(foundry_blocks::blocks::ScoutDrift::new(
         agent.clone(),
         registry.clone(),
@@ -458,41 +501,43 @@ fn register_blocks(
     )));
     engine
         .register(Box::new(foundry_blocks::blocks::GenerateSummary::new(trace_writer, audits_dir)));
-    // Commit-digest formation (daily proactive summary of registered projects)
+}
+
+/// Digest formation: commit, ops, triage, and supply-chain writers.
+fn register_digest_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    shell: &Arc<dyn foundry_blocks::gateway::ShellGateway>,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+    paths: DigestPaths,
+) {
+    // Commit-digest formation (daily proactive summary of registered projects).
     engine.register(Box::new(foundry_blocks::blocks::ObserveCommits::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::SummarizeCommits::new(agent.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::WriteCommitDigest::new(digests_dir)));
-    // Ops-digest formation (periodic summary of MBOS operational events)
+    engine.register(Box::new(foundry_blocks::blocks::WriteCommitDigest::new(paths.digests_dir)));
+    // Ops-digest formation (periodic summary of MBOS operational events).
     engine.register(Box::new(foundry_blocks::blocks::ObserveEvents::new(
-        ops_events_intake_dir,
-        ops_watermark_path.clone(),
+        paths.ops_events_intake_dir,
+        paths.ops_watermark_path.clone(),
     )));
-    engine.register(Box::new(foundry_blocks::blocks::SummarizeEvents::new(agent)));
+    engine.register(Box::new(foundry_blocks::blocks::SummarizeEvents::new(agent.clone())));
     engine.register(Box::new(foundry_blocks::blocks::WriteOpsDigest::new(
-        ops_digests_dir,
-        ops_watermark_path,
+        paths.ops_digests_dir,
+        paths.ops_watermark_path,
     )));
-    // Post-maintenance failure triage formation (propose-only)
+    // Post-maintenance failure triage formation (propose-only).
     let events_dir = foundry_sdk::paths::events_dir();
     engine.register(Box::new(foundry_blocks::blocks::TriageMaintenance::new(
         events_dir, 14, // 14-day streak lookback
     )));
-    engine.register(Box::new(foundry_blocks::blocks::WriteTriageDigest::new(triage_dir)));
+    engine.register(Box::new(foundry_blocks::blocks::WriteTriageDigest::new(paths.triage_dir)));
     // Supply-chain scan formation (nightly working-tree dependency advisory scan).
-    // Detection-only and advisory: scans every active project's lockfile, classifies
-    // findings against each repo's committed `.supply-chain-allow.json`, and writes a
-    // deterministic digest. Never mutates a working tree or fails a project run.
     engine.register(Box::new(foundry_blocks::blocks::ScanSupplyChain::new(registry.clone())));
-    // Remediation sits between the scan and the digest: it always classifies each
-    // live finding as auto-fixable (a populated fix version) vs a policy call, and
-    // — only when FOUNDRY_SUPPLY_CHAIN_REMEDIATE is enabled and the throttle
-    // permits mutation — applies verified, reversible (commit-only) auto-fixes.
-    // Dark by default.
     engine.register(Box::new(foundry_blocks::blocks::RemediateSupplyChain::new(
         shell.clone(),
         registry.clone(),
     )));
-    engine
-        .register(Box::new(foundry_blocks::blocks::WriteSupplyChainDigest::new(supply_chain_dir)));
-    engine
+    engine.register(Box::new(foundry_blocks::blocks::WriteSupplyChainDigest::new(
+        paths.supply_chain_dir,
+    )));
 }

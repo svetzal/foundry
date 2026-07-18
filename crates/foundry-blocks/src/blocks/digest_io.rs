@@ -61,26 +61,34 @@ pub(crate) fn today_dated_path(dir: &Path) -> (String, PathBuf) {
     (date, path)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Context for a single digest write operation.
+///
+/// Groups the six invariant parameters that every digest writer passes identically
+/// so `write_digest_and_emit` stays within clippy's argument-count limit.
+pub(crate) struct DigestWrite<'a> {
+    /// Short label used in log and summary messages (e.g. `"commit"`).
+    pub(crate) noun: &'a str,
+    pub(crate) event_type: EventType,
+    pub(crate) project: &'a str,
+    pub(crate) throttle: Throttle,
+    pub(crate) dir: &'a Path,
+    pub(crate) rendered: &'a str,
+}
+
 /// Shared orchestration skeleton for all four digest writers.
 ///
 /// Handles the dry-run guard, atomic write, tracing, and terminal event
 /// emission — the only variation across callers is the digest noun, event
 /// type, and how the typed result payload is constructed.
 ///
-/// * `noun` — short label used in log and summary messages (e.g. `"commit"`).
+/// * `ctx` — invariant write context (noun, event type, project, throttle, dir, rendered).
 /// * `make_payload` — called once with `(success, digest_path)` to build the
 ///   serialisable terminal payload.
 /// * `on_committed` — called exactly once after a successful `write_atomic`,
 ///   before `emit_result`. Pass `|| {}` when there is no post-commit work.
 ///   `WriteOpsDigest` uses this hook to advance the watermark.
 pub(crate) fn write_digest_and_emit<P, F, C>(
-    noun: &str,
-    event_type: EventType,
-    project: &str,
-    throttle: Throttle,
-    dir: &Path,
-    rendered: &str,
+    ctx: DigestWrite<'_>,
     make_payload: F,
     on_committed: C,
 ) -> anyhow::Result<TaskBlockResult>
@@ -89,36 +97,36 @@ where
     F: Fn(bool, Option<String>) -> P,
     C: FnOnce(),
 {
-    let (_, intended_path) = today_dated_path(dir);
+    let (_, intended_path) = today_dated_path(ctx.dir);
 
-    if !throttle.permits_mutation() {
+    if !ctx.throttle.permits_mutation() {
         tracing::info!(
             path = %intended_path.display(),
-            bytes = rendered.len(),
-            "dry-run: skipping {noun} digest write",
+            bytes = ctx.rendered.len(),
+            "dry-run: skipping {} digest write", ctx.noun,
         );
         return super::emit_result(
-            format!("dry-run: {noun} digest not written to {}", intended_path.display()),
-            event_type,
-            project,
-            throttle,
+            format!("dry-run: {} digest not written to {}", ctx.noun, intended_path.display()),
+            ctx.event_type,
+            ctx.project,
+            ctx.throttle,
             &make_payload(true, None),
         );
     }
 
-    match write_atomic(dir, &intended_path, rendered) {
+    match write_atomic(ctx.dir, &intended_path, ctx.rendered) {
         Ok(()) => {
             tracing::info!(
                 path = %intended_path.display(),
-                bytes = rendered.len(),
-                "{noun} digest written",
+                bytes = ctx.rendered.len(),
+                "{} digest written", ctx.noun,
             );
             on_committed();
             super::emit_result(
-                format!("{noun} digest written to {}", intended_path.display()),
-                event_type,
-                project,
-                throttle,
+                format!("{} digest written to {}", ctx.noun, intended_path.display()),
+                ctx.event_type,
+                ctx.project,
+                ctx.throttle,
                 &make_payload(true, Some(intended_path.to_string_lossy().to_string())),
             )
         }
@@ -126,13 +134,13 @@ where
             tracing::warn!(
                 path = %intended_path.display(),
                 error = %e,
-                "{noun} digest write failed",
+                "{} digest write failed", ctx.noun,
             );
             super::emit_result(
-                format!("failed to write {noun} digest: {e}"),
-                event_type,
-                project,
-                throttle,
+                format!("failed to write {} digest: {e}", ctx.noun),
+                ctx.event_type,
+                ctx.project,
+                ctx.throttle,
                 &make_payload(false, None),
             )
         }
@@ -221,12 +229,14 @@ mod tests {
         let rendered = format!("# Test Digest — {date}\n");
 
         let result = write_digest_and_emit(
-            "test",
-            foundry_sdk::event::EventType::CommitDigestCompleted,
-            "test-project",
-            foundry_sdk::throttle::Throttle::Full,
-            dir,
-            &rendered,
+            DigestWrite {
+                noun: "test",
+                event_type: foundry_sdk::event::EventType::CommitDigestCompleted,
+                project: "test-project",
+                throttle: foundry_sdk::throttle::Throttle::Full,
+                dir,
+                rendered: &rendered,
+            },
             |success, digest_path| serde_json::json!({"success": success, "path": digest_path}),
             || {},
         )
@@ -245,12 +255,14 @@ mod tests {
         let rendered = format!("# Test Digest — {date}\n");
 
         let result = write_digest_and_emit(
-            "test",
-            foundry_sdk::event::EventType::CommitDigestCompleted,
-            "test-project",
-            foundry_sdk::throttle::Throttle::DryRun,
-            dir,
-            &rendered,
+            DigestWrite {
+                noun: "test",
+                event_type: foundry_sdk::event::EventType::CommitDigestCompleted,
+                project: "test-project",
+                throttle: foundry_sdk::throttle::Throttle::DryRun,
+                dir,
+                rendered: &rendered,
+            },
             |success, digest_path| serde_json::json!({"success": success, "path": digest_path}),
             || {},
         )
@@ -268,12 +280,14 @@ mod tests {
         let unwritable = blocker.join("nested");
 
         let result = write_digest_and_emit(
-            "test",
-            foundry_sdk::event::EventType::CommitDigestCompleted,
-            "test-project",
-            foundry_sdk::throttle::Throttle::Full,
-            &unwritable,
-            "content",
+            DigestWrite {
+                noun: "test",
+                event_type: foundry_sdk::event::EventType::CommitDigestCompleted,
+                project: "test-project",
+                throttle: foundry_sdk::throttle::Throttle::Full,
+                dir: &unwritable,
+                rendered: "content",
+            },
             |success, digest_path| serde_json::json!({"success": success, "path": digest_path}),
             || {},
         )

@@ -51,12 +51,14 @@ fn write(
     let (date, _) = super::today_dated_path(dir);
     let rendered = render_document(&date, scan);
     super::write_digest_and_emit(
-        "supply-chain",
-        EventType::SupplyChainScanCompleted,
-        project,
-        throttle,
-        dir,
-        &rendered,
+        super::DigestWrite {
+            noun: "supply-chain",
+            event_type: EventType::SupplyChainScanCompleted,
+            project,
+            throttle,
+            dir,
+            rendered: &rendered,
+        },
         |success, digest_path| SupplyChainScanCompletedPayload {
             success,
             skipped: false,

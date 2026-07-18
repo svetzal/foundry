@@ -68,12 +68,14 @@ fn write(
     let (date, _) = super::today_dated_path(triage_dir);
     let rendered = render_document(&date, payload);
     super::write_digest_and_emit(
-        "triage",
-        EventType::MaintenanceTriageDigestWritten,
-        project,
-        throttle,
-        triage_dir,
-        &rendered,
+        super::DigestWrite {
+            noun: "triage",
+            event_type: EventType::MaintenanceTriageDigestWritten,
+            project,
+            throttle,
+            dir: triage_dir,
+            rendered: &rendered,
+        },
         |success, digest_path| MaintenanceTriageCompletedPayload {
             success,
             digest_path,
