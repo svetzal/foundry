@@ -1,6 +1,7 @@
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CampaignAdvanceRequestedPayload, TaskRunCompletedPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
+use foundry_sdk::throttle::Throttle;
 
 pub struct RequestCampaignAdvance;
 
@@ -12,11 +13,12 @@ impl TaskBlock for RequestCampaignAdvance {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        trigger
-            .parse_payload::<TaskRunCompletedPayload>()
-            .ok()
-            .and_then(|payload| payload.context.campaign)
-            .is_some()
+        trigger.throttle == Throttle::Full
+            && trigger
+                .parse_payload::<TaskRunCompletedPayload>()
+                .ok()
+                .and_then(|payload| payload.context.campaign)
+                .is_some()
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {

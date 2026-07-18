@@ -134,7 +134,9 @@ The decision block checks live repository state, neutral context files, typed
 task results, and required done evidence. It cuts exactly one next objective.
 Campaign budget is spent only on dispatched tasks. Paused campaigns record an
 in-flight result without advancing; `blocked_on_decision`, `runner_error`,
-budget exhaustion, and owner-judgment findings escalate.
+budget exhaustion, and owner-judgment findings escalate. Store mutations are
+serialized across CLI and daemon processes. Dry-run formation executes one
+simulated task to terminal state and suppresses recursive auto-advance.
 
 ## Drift Scout Workflow
 

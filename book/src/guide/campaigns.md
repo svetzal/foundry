@@ -97,13 +97,15 @@ Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the
 paused state. Resume is allowed only when `authorized_by` is present. Completion
 and escalation are terminal events and are forced into the next ops digest as
-an anomaly.
+an anomaly. Campaign-store mutations are serialized across the CLI and daemon,
+so a control command cannot overwrite an in-flight formation decision.
 
 ## Dry Run
 
 Campaign advancement honors event throttle. A dry-run
 `campaign_advance_requested` simulates the next objective without mutating the
-campaign store or repository:
+campaign store or repository. It executes exactly one simulated task through
+review and terminal result, then stops without recursively auto-advancing:
 
 ```bash
 foundry emit campaign_advance_requested \

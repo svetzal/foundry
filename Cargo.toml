@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.27.0"
+version = "0.28.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Stacey Vetzal <stacey@vetzal.com>"]
@@ -50,6 +50,7 @@ prost-types = "0.14"
 # Error handling
 anyhow = "1"
 thiserror = "2"
+fs2 = "0.4"
 
 # Logging
 tracing = "0.1"

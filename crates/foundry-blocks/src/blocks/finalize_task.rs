@@ -222,15 +222,28 @@ impl TaskBlock for FinalizeTask {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
             let context = payload.context.clone();
-            let worktree = context
-                .task_worktree
-                .as_deref()
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("task finalization missing worktree"))?;
-            let branch = context
-                .task_branch
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("task finalization missing branch"))?;
+            let Some(worktree) = context.task_worktree.as_deref().map(PathBuf::from) else {
+                let detail = "task finalization missing worktree".to_string();
+                return terminal_result(
+                    &project,
+                    throttle,
+                    detail.clone(),
+                    None,
+                    TaskVerdict::RunnerError { detail },
+                    context,
+                );
+            };
+            let Some(branch) = context.task_branch.as_deref() else {
+                let detail = "task finalization missing branch".to_string();
+                return terminal_result(
+                    &project,
+                    throttle,
+                    detail.clone(),
+                    None,
+                    TaskVerdict::RunnerError { detail },
+                    context,
+                );
+            };
             let checkout = Path::new(&entry.path);
 
             let verdict = enforce_gate_truth(&payload);

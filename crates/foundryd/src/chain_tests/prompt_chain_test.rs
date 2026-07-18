@@ -6,9 +6,13 @@
 //! - Assessment/triage/plan blocks do NOT fire
 //! - Standard iterate still works when engine has both formations
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, RwLock};
 
+use foundry_sdk::campaign::{
+    Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence,
+};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
@@ -77,6 +81,46 @@ fn prompt_engine(
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry)));
 
     engine
+}
+
+fn campaign_engine(
+    shell: Arc<dyn ShellGateway>,
+    agent: Arc<dyn AgentGateway>,
+    registry: Arc<RwLock<Registry>>,
+    store_path: PathBuf,
+) -> Engine {
+    let mut engine = prompt_engine(shell.clone(), agent.clone(), registry.clone());
+    engine.register(Box::new(foundry_blocks::blocks::RequestCampaignAdvance));
+    engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
+        agent, shell, registry, store_path,
+    )));
+    engine
+}
+
+fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: Vec<String>) {
+    let mut store = CampaignStore::default();
+    store
+        .add(Campaign {
+            name: "campaign-test".to_string(),
+            project: "test-project".to_string(),
+            mission: "Prove one campaign cycle closes safely.".to_string(),
+            intent_refs: vec!["test.intent".to_string()],
+            context_paths,
+            done_evidence: vec![DoneEvidence::Review {
+                statement: "The requested behavior exists.".to_string(),
+            }],
+            budget: CampaignBudget { max_cycles: 2 },
+            escalation: vec![],
+            status: CampaignStatus::Active,
+            cycles_completed: 0,
+            cycles_landed: 0,
+            authorized_by: Some("test-owner".to_string()),
+            agent_provider: None,
+            last_run_event_id: None,
+        })
+        .unwrap();
+    assert!(repo.exists());
+    store.save(path).unwrap();
 }
 
 #[tokio::test]
@@ -303,6 +347,95 @@ async fn task_workflow_happy_path() {
         invocations[0].working_dir.contains(".foundry/worktrees"),
         "executor escaped isolated worktree: {}",
         invocations[0].working_dir
+    );
+}
+
+#[tokio::test]
+async fn campaign_dry_run_completes_one_simulated_task_without_looping() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::write(repo.join("CHARTER.md"), "a".repeat(100)).unwrap();
+    std::fs::write(
+        repo.join(".hone-gates.json"),
+        r#"{"gates":[{"name":"fmt","command":"true","required":true}]}"#,
+    )
+    .unwrap();
+    let store_path = dir.path().join("campaigns.json");
+    save_campaign(&store_path, &repo, vec![]);
+    let registry = test_helpers::registry_with_project("test-project", repo.to_str().unwrap());
+    let agent = FakeAgentGateway::sequence(vec![foundry_blocks::gateway::AgentResponse::success(
+        "```json\n{\"verdict\":\"complete\"}\n```",
+    )]);
+    let engine =
+        campaign_engine(test_helpers::passing_shell(), agent.clone(), registry, store_path.clone());
+    let trigger = Event::new(
+        EventType::CampaignAdvanceRequested,
+        "test-project".to_string(),
+        Throttle::DryRun,
+        serde_json::json!({"campaign": "campaign-test"}),
+    );
+
+    let result = engine.process(trigger).await;
+    let event_types =
+        result.events.iter().map(|event| event.event_type.clone()).collect::<Vec<_>>();
+
+    assert_eq!(
+        event_types
+            .iter()
+            .filter(|event_type| **event_type == EventType::CampaignAdvanceRequested)
+            .count(),
+        1,
+        "dry-run task result must not recursively auto-advance"
+    );
+    assert!(event_types.contains(&EventType::CampaignAdvanceCompleted));
+    assert!(event_types.contains(&EventType::TaskRunCompleted));
+    assert!(!event_types.contains(&EventType::CampaignEscalated));
+    let invocations = agent.invocations();
+    assert_eq!(invocations.len(), 1, "only the skeptical reviewer should run");
+    assert_eq!(invocations[0].working_dir, repo);
+    let stored = CampaignStore::load(&store_path).unwrap();
+    let campaign = stored.find("campaign-test").unwrap();
+    assert_eq!(campaign.status, CampaignStatus::Active);
+    assert_eq!(campaign.cycles_completed, 0);
+}
+
+#[tokio::test]
+async fn campaign_formation_error_emits_terminal_escalation() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let store_path = dir.path().join("campaigns.json");
+    save_campaign(&store_path, &repo, vec!["missing-context.md".to_string()]);
+    let registry = test_helpers::registry_with_project("test-project", repo.to_str().unwrap());
+    let agent = FakeAgentGateway::success();
+    let engine =
+        campaign_engine(test_helpers::passing_shell(), agent.clone(), registry, store_path.clone());
+    let trigger = Event::new(
+        EventType::CampaignAdvanceRequested,
+        "test-project".to_string(),
+        Throttle::Full,
+        serde_json::json!({"campaign": "campaign-test"}),
+    );
+
+    let result = engine.process(trigger).await;
+
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::CampaignAdvanceCompleted)
+    );
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::CampaignEscalated)
+    );
+    assert!(agent.invocations().is_empty());
+    assert_eq!(
+        CampaignStore::load(&store_path).unwrap().find("campaign-test").unwrap().status,
+        CampaignStatus::Escalated
     );
 }
 

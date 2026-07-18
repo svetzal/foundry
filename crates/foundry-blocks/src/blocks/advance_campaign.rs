@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, DoneEvidence};
+use foundry_sdk::campaign::{
+    Campaign, CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence,
+};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
 use foundry_sdk::payload::{
@@ -195,6 +197,82 @@ fn execution_event(
     Event::new(EventType::ExecutionRequested, campaign.project.clone(), throttle, payload)
 }
 
+fn terminal_error_result(
+    campaign: &str,
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    cycles_completed: u64,
+    cycles_landed: u64,
+    reason: String,
+) -> TaskBlockResult {
+    let summary = format!("campaign '{campaign}' escalated: {reason}");
+    let completed = super::event_from_infallible_payload(
+        EventType::CampaignAdvanceCompleted,
+        project,
+        throttle,
+        &CampaignAdvanceCompletedPayload {
+            campaign: campaign.to_string(),
+            project: project.to_string(),
+            cycles_completed,
+            cycles_landed,
+            outcome: CampaignDecision::Escalate {
+                reason: reason.clone(),
+            },
+        },
+    );
+    let escalated = super::event_from_infallible_payload(
+        EventType::CampaignEscalated,
+        project,
+        throttle,
+        &CampaignTerminalPayload {
+            campaign: campaign.to_string(),
+            project: project.to_string(),
+            reason,
+            cycles_completed,
+            cycles_landed,
+        },
+    );
+    TaskBlockResult {
+        success: false,
+        summary,
+        events: vec![completed, escalated],
+        ..Default::default()
+    }
+}
+
+struct AdvanceExecution {
+    agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
+    registry: Arc<std::sync::RwLock<Registry>>,
+    store_path: PathBuf,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    request: CampaignAdvanceRequestedPayload,
+    project: String,
+    throttle: foundry_sdk::throttle::Throttle,
+}
+
+fn persist_or_terminal(
+    execution: &AdvanceExecution,
+    guard: &CampaignStoreGuard,
+    events: Vec<Event>,
+    success_summary: String,
+    failure_context: &str,
+    cycles_completed: u64,
+    cycles_landed: u64,
+) -> TaskBlockResult {
+    match guard.save() {
+        Ok(()) => TaskBlockResult::success(success_summary, events),
+        Err(error) => terminal_error_result(
+            &execution.request.campaign,
+            &execution.project,
+            execution.throttle,
+            cycles_completed,
+            cycles_landed,
+            format!("{failure_context}: {error}"),
+        ),
+    }
+}
+
 fn update_run_and_forced_decision(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
@@ -357,6 +435,124 @@ fn apply_campaign_decision(
     }
 }
 
+async fn choose_campaign_decision(
+    execution: &AdvanceExecution,
+    campaign: &Campaign,
+    forced: Option<CampaignDecision>,
+) -> CampaignDecision {
+    if let Some(decision) = forced {
+        return decision;
+    }
+    let entry = match super::read_registry(&execution.registry) {
+        Ok(registry) => registry
+            .find_project(&campaign.project)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", campaign.project)),
+        Err(error) => Err(error),
+    };
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(error) => {
+            return CampaignDecision::Escalate {
+                reason: format!("campaign formation failed: {error}"),
+            };
+        }
+    };
+    derive_campaign_decision(
+        &*execution.agent,
+        &*execution.shell,
+        &entry,
+        campaign,
+        &execution.request,
+    )
+    .await
+    .unwrap_or_else(|error| CampaignDecision::Escalate {
+        reason: format!("campaign formation failed: {error}"),
+    })
+}
+
+async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
+    let _process_guard = execution.lock.lock().await;
+    let mut guard = match CampaignStore::lock_exclusive(&execution.store_path) {
+        Ok(guard) => guard,
+        Err(error) => {
+            return terminal_error_result(
+                &execution.request.campaign,
+                &execution.project,
+                execution.throttle,
+                0,
+                0,
+                format!("campaign store unavailable: {error}"),
+            );
+        }
+    };
+    let Some(campaign) = guard.store.find_mut(&execution.request.campaign) else {
+        return terminal_error_result(
+            &execution.request.campaign,
+            &execution.project,
+            execution.throttle,
+            0,
+            0,
+            format!("campaign '{}' not found", execution.request.campaign),
+        );
+    };
+
+    if let Err(error) = campaign.validate() {
+        let events = apply_campaign_decision(
+            campaign,
+            &execution.request,
+            execution.throttle,
+            CampaignDecision::Escalate {
+                reason: error.to_string(),
+            },
+        );
+        let cycles_completed = campaign.cycles_completed;
+        let cycles_landed = campaign.cycles_landed;
+        return persist_or_terminal(
+            &execution,
+            &guard,
+            events,
+            format!("campaign '{}' escalated", execution.request.campaign),
+            "campaign invalid and escalation could not be saved",
+            cycles_completed,
+            cycles_landed,
+        );
+    }
+
+    let forced = update_run_and_forced_decision(campaign, &execution.request);
+    if campaign.status == CampaignStatus::Paused {
+        let cycles_completed = campaign.cycles_completed;
+        let cycles_landed = campaign.cycles_landed;
+        return persist_or_terminal(
+            &execution,
+            &guard,
+            vec![],
+            format!(
+                "campaign '{}' is paused; run recorded without advancing",
+                execution.request.campaign
+            ),
+            "paused campaign result could not be saved",
+            cycles_completed,
+            cycles_landed,
+        );
+    }
+
+    let decision = choose_campaign_decision(&execution, campaign, forced).await;
+    let events =
+        apply_campaign_decision(campaign, &execution.request, execution.throttle, decision);
+    let cycles_completed = campaign.cycles_completed;
+    let cycles_landed = campaign.cycles_landed;
+    persist_or_terminal(
+        &execution,
+        &guard,
+        events,
+        format!("campaign '{}' advanced", execution.request.campaign),
+        "campaign decision could not be saved",
+        cycles_completed,
+        cycles_landed,
+    )
+}
+
 impl SimulatedSuccess for AdvanceCampaign {
     type Outcome = Vec<Event>;
 
@@ -405,6 +601,7 @@ impl TaskBlock for AdvanceCampaign {
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let request = parse_payload!(trigger, CampaignAdvanceRequestedPayload);
+        let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let agent = Arc::clone(&self.agent);
         let shell = Arc::clone(&self.shell);
@@ -413,38 +610,17 @@ impl TaskBlock for AdvanceCampaign {
         let lock = Arc::clone(&self.lock);
 
         Box::pin(async move {
-            let _guard = lock.lock().await;
-            let mut store = CampaignStore::load(&store_path)?;
-            let campaign = store
-                .find_mut(&request.campaign)
-                .ok_or_else(|| anyhow::anyhow!("campaign '{}' not found", request.campaign))?;
-            campaign.validate()?;
-            let forced = update_run_and_forced_decision(campaign, &request);
-            if campaign.status == CampaignStatus::Paused {
-                store.save(&store_path)?;
-                return Ok(TaskBlockResult::success(
-                    format!(
-                        "campaign '{}' is paused; run recorded without advancing",
-                        request.campaign
-                    ),
-                    vec![],
-                ));
-            }
-            let decision = if let Some(decision) = forced {
-                decision
-            } else {
-                let entry = super::read_registry(&registry)?
-                    .find_project(&campaign.project)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("project '{}' not found", campaign.project))?;
-                derive_campaign_decision(&*agent, &*shell, &entry, campaign, &request).await?
-            };
-            let events = apply_campaign_decision(campaign, &request, throttle, decision);
-            store.save(&store_path)?;
-            Ok(TaskBlockResult::success(
-                format!("campaign '{}' advanced", request.campaign),
-                events,
-            ))
+            Ok(execute_campaign_advance(AdvanceExecution {
+                agent,
+                shell,
+                registry,
+                store_path,
+                lock,
+                request,
+                project,
+                throttle,
+            })
+            .await)
         })
     }
 }

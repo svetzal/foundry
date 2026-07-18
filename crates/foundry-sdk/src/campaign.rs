@@ -1,5 +1,7 @@
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -82,6 +84,65 @@ impl CampaignStore {
         campaign.validate()?;
         self.campaigns.push(campaign);
         Ok(())
+    }
+
+    /// Acquire the campaign store's cross-process advisory lock and load its
+    /// latest contents. Every production read-modify-write operation must use
+    /// this guard so CLI control commands cannot race daemon advancement.
+    pub fn lock_exclusive(path: &Path) -> Result<CampaignStoreGuard, StoreError> {
+        CampaignStoreGuard::load(path)
+    }
+}
+
+/// Exclusive read-modify-write guard for the campaign store.
+///
+/// The adjacent `.lock` file has a stable inode even though campaign saves use
+/// atomic rename, so the lock remains valid across store replacements.
+pub struct CampaignStoreGuard {
+    path: PathBuf,
+    lock_file: File,
+    pub store: CampaignStore,
+}
+
+impl CampaignStoreGuard {
+    fn load(path: &Path) -> Result<Self, StoreError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: parent.to_owned(),
+                source,
+            })?;
+        }
+        let lock_path = path.with_extension("lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|source| StoreError::Io {
+                path: lock_path.clone(),
+                source,
+            })?;
+        lock_file.lock_exclusive().map_err(|source| StoreError::Io {
+            path: lock_path,
+            source,
+        })?;
+        let store = CampaignStore::load(path)?;
+        Ok(Self {
+            path: path.to_owned(),
+            lock_file,
+            store,
+        })
+    }
+
+    pub fn save(&self) -> Result<(), StoreError> {
+        self.store.save(&self.path)
+    }
+}
+
+impl Drop for CampaignStoreGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.lock_file);
     }
 }
 
@@ -189,6 +250,9 @@ fn default_required() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -220,5 +284,26 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().campaigns.len(), 1);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn exclusive_guard_serializes_cross_thread_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.json");
+        let first = CampaignStore::lock_exclusive(&path).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let second_path = path.clone();
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _guard = CampaignStore::lock_exclusive(&second_path).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        handle.join().unwrap();
     }
 }

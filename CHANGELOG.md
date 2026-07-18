@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-18
+
 ### Changed
 
 - Release blocks (`CutRelease`, `ExecuteRelease`) now use the canonical `TaskBlock` + `SimulatedSuccess` + `dry_run_via_simulation!()` composition, eliminating the parallel `WorkBlock`/`EventAdapter`/`OutputMapper`/`ComposedStep` abstraction.
@@ -45,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Campaign control-plane races are serialized.** CLI add/pause/resume and
+  daemon advancement now share a cross-process advisory lock around campaign
+  store read-modify-write operations, preventing lost state during concurrent
+  control commands.
+- **Campaign dry-runs now terminate after one simulated task.** Skeptical review
+  uses the registered checkout when dry-run execution intentionally creates no
+  worktree, and dry-run task results do not recursively request another
+  campaign advance.
+- **Campaign formation failures now close the workflow.** Invalid context
+  artifacts, registry failures, malformed agent decisions, and campaign-store
+  failures emit `CampaignAdvanceCompleted` plus `CampaignEscalated` instead of
+  leaving synchronous clients waiting without a terminal event.
 - **`AuditReleaseTag` no longer reports a failed or mis-targeted scan as `vulnerable: false`.**
   Git checkout failures and scanner errors now propagate via
   `ReleaseTagAuditedPayload::scan_error` (an optional field, absent when the

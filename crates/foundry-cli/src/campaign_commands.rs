@@ -12,9 +12,9 @@ pub fn add(store_path: &Path, file: &Path) -> Result<()> {
     let campaign: Campaign = serde_json::from_str(&content)
         .with_context(|| format!("parse campaign definition {}", file.display()))?;
     let name = campaign.name.clone();
-    let mut store = CampaignStore::load(store_path)?;
-    store.add(campaign)?;
-    store.save(store_path)?;
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    guard.store.add(campaign)?;
+    guard.save()?;
     println!("Added campaign '{name}'.");
     Ok(())
 }
@@ -42,23 +42,28 @@ pub fn pause(store_path: &Path, name: &str) -> Result<()> {
 }
 
 pub fn resume(store_path: &Path, name: &str) -> Result<()> {
-    let store = CampaignStore::load(store_path)?;
-    let campaign =
-        store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
     if campaign.authorized_by.is_none() {
         bail!("campaign '{name}' cannot resume until authorized_by is set");
     }
-    drop(store);
-    set_status(store_path, name, CampaignStatus::Active)
+    campaign.status = CampaignStatus::Active;
+    guard.save()?;
+    println!("Campaign '{name}' is now active.");
+    Ok(())
 }
 
 fn set_status(store_path: &Path, name: &str, status: CampaignStatus) -> Result<()> {
-    let mut store = CampaignStore::load(store_path)?;
-    let campaign = store
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
     campaign.status = status;
-    store.save(store_path)?;
+    guard.save()?;
     println!("Campaign '{name}' is now {status}.");
     Ok(())
 }

@@ -6,7 +6,8 @@ use foundry_sdk::payload::{
     GateVerificationCompletedPayload, LoopContext, TaskReviewedPayload, TaskVerdict,
 };
 use foundry_sdk::registry::Registry;
-use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::task_block::{BlockKind, TaskBlock};
+use foundry_sdk::throttle::Throttle;
 use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
@@ -78,10 +79,29 @@ impl TaskBlock for ReviewTask {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();
-        let Some(worktree) = context.task_worktree.clone() else {
-            return Box::pin(async {
-                Ok(TaskBlockResult::failure("task review missing isolated worktree"))
-            });
+        let working_dir = match context.task_worktree.clone() {
+            Some(worktree) => PathBuf::from(worktree),
+            None if throttle == Throttle::DryRun => PathBuf::from(&entry.path),
+            None => {
+                return Box::pin(async move {
+                    let detail = "task review missing isolated worktree".to_string();
+                    super::emit_event_result(
+                        format!("{project}: {detail}"),
+                        false,
+                        EventType::TaskReviewed,
+                        &project,
+                        throttle,
+                        &TaskReviewedPayload {
+                            project: project.clone(),
+                            objective,
+                            review: detail.clone(),
+                            gate_results: p.results,
+                            verdict: TaskVerdict::RunnerError { detail },
+                            context,
+                        },
+                    )
+                });
+            }
         };
         let prompt = build_review_prompt(&objective, &p.results);
         let provider = super::chain_agent_provider(&payload);
@@ -91,7 +111,7 @@ impl TaskBlock for ReviewTask {
                 &*agent,
                 AgentBlockSpec {
                     prompt,
-                    working_dir: PathBuf::from(worktree),
+                    working_dir,
                     access: AgentAccess::ReadOnly,
                     tier: ModelTier::Deep,
                     effort: ReasoningEffort::High,
