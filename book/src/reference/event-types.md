@@ -170,7 +170,7 @@ Every event carries these common fields:
 |------|-------------|
 | `task_run_started` | Isolated one-shot task execution began |
 | `task_reviewed` | Skeptical review produced a structural verdict |
-| `task_run_completed` | Task work was landed or durably preserved |
+| `task_run_completed` | Task work was landed, durably preserved, or completed with no landing required |
 
 **`task_run_completed` payload**
 

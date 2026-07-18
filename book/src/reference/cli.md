@@ -155,7 +155,7 @@ The terminal event contains one structural verdict:
 
 | Verdict | Meaning |
 |---------|---------|
-| `complete` | Required gates and skeptical review passed; changes landed on trunk |
+| `complete` | Required gates and skeptical review passed; deliverable changes landed on trunk, or no landing was required |
 | `remainder` | The objective is incomplete; `gaps[]` names what remains |
 | `defect` | The implementation or evidence is wrong; `diagnosis` explains why |
 | `blocked_on_decision` | A human choice is required; `finding` and `options[]` carry it |
