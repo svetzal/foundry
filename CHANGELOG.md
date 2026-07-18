@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-18
+
+### Added
+
+- `ListCampaigns` exposes the durable campaign inventory through a read-only
+  gRPC query, with deterministic ordering and an optional exact project filter.
+  Store access is request-time, and errors do not expose the campaign file path.
+
+### Fixed
+
+- A task that lands in the final authorized campaign cycle now receives its
+  completion evaluation. Foundry escalates only if that evaluation attempts to
+  dispatch another task beyond the cycle budget.
+
 ## [0.28.2] - 2026-07-18
 
 ### Added

@@ -100,6 +100,9 @@ Task results auto-request the next advance. A `remainder` or `defect` carries
 its preserved branch into the next task, so the campaign resumes warm. A
 `blocked_on_decision` or `runner_error` escalates immediately. `cycles_completed`
 counts dispatched tasks, while `cycles_landed` counts complete task results.
+When the final budgeted task lands, Foundry still evaluates the repository for
+completion. Only a decision to dispatch another task is converted to a budget
+escalation.
 
 Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the

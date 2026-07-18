@@ -314,9 +314,18 @@ fn update_run_and_forced_decision(
             TaskVerdict::Complete | TaskVerdict::Remainder { .. } | TaskVerdict::Defect { .. } => {}
         }
     }
-    (campaign.cycles_completed >= campaign.budget.max_cycles).then(|| CampaignDecision::Escalate {
+    None
+}
+
+fn enforce_campaign_budget(campaign: &Campaign, decision: CampaignDecision) -> CampaignDecision {
+    if campaign.cycles_completed < campaign.budget.max_cycles
+        || !matches!(decision, CampaignDecision::Advance { .. })
+    {
+        return decision;
+    }
+    CampaignDecision::Escalate {
         reason: format!("campaign cycle budget exhausted ({})", campaign.budget.max_cycles),
-    })
+    }
 }
 
 fn enforce_done_gate_truth(
@@ -538,6 +547,7 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     }
 
     let decision = choose_campaign_decision(&execution, campaign, forced).await;
+    let decision = enforce_campaign_budget(campaign, decision);
     let events =
         apply_campaign_decision(campaign, &execution.request, execution.throttle, decision);
     let cycles_completed = campaign.cycles_completed;
@@ -640,7 +650,7 @@ mod tests {
 
     use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
-    use super::{AdvanceCampaign, parse_decision};
+    use super::{AdvanceCampaign, enforce_campaign_budget, parse_decision};
 
     #[test]
     fn parses_structural_advance_decision() {
@@ -650,6 +660,54 @@ mod tests {
             CampaignDecision::Advance {
                 objective: "one thing".to_string(),
                 reason: "gap".to_string(),
+            }
+        );
+    }
+
+    fn campaign_at_budget() -> Campaign {
+        Campaign {
+            name: "c".to_string(),
+            project: "p".to_string(),
+            mission: "ship".to_string(),
+            intent_refs: vec![],
+            context_paths: vec![],
+            done_evidence: vec![DoneEvidence::Review {
+                statement: "shipped".to_string(),
+            }],
+            budget: CampaignBudget { max_cycles: 2 },
+            escalation: vec![],
+            status: CampaignStatus::Active,
+            cycles_completed: 2,
+            cycles_landed: 2,
+            authorized_by: Some("owner".to_string()),
+            agent_provider: None,
+            last_run_event_id: Some("run-2".to_string()),
+        }
+    }
+
+    #[test]
+    fn final_budgeted_result_can_complete_campaign() {
+        let decision = CampaignDecision::Done {
+            reason: "all evidence passes".to_string(),
+        };
+
+        assert_eq!(enforce_campaign_budget(&campaign_at_budget(), decision.clone()), decision);
+    }
+
+    #[test]
+    fn exhausted_budget_prevents_another_task_dispatch() {
+        let decision = enforce_campaign_budget(
+            &campaign_at_budget(),
+            CampaignDecision::Advance {
+                objective: "one more task".to_string(),
+                reason: "gap remains".to_string(),
+            },
+        );
+
+        assert_eq!(
+            decision,
+            CampaignDecision::Escalate {
+                reason: "campaign cycle budget exhausted (2)".to_string(),
             }
         );
     }
