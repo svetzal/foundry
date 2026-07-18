@@ -127,6 +127,26 @@ and escalation are terminal events and are forced into the next ops digest as
 an anomaly. Campaign-store mutations are serialized across the CLI and daemon,
 so a control command cannot overwrite an in-flight formation decision.
 
+### Pause and the daemon boundary
+
+`foundry campaign pause` routes the mutation through `foundryd` via the
+`PauseCampaign` gRPC RPC when the daemon is reachable. The daemon owns the
+exclusive lock on the campaign store, so a concurrent advance formation cannot
+race with a pause. On success the command renders the full campaign detail
+returned in `PauseCampaignResponse.campaign` — it does not re-read the store
+file.
+
+If `foundryd` is not running, pass `--offline` to write the store file
+directly:
+
+```bash
+foundry campaign pause parite-phase-2d --offline
+```
+
+Without `--offline`, the CLI warns and falls back to direct file mutation
+automatically when the daemon is unreachable. Restart `foundryd` afterward so
+its in-memory state stays consistent with the file on disk.
+
 ## Dry Run
 
 Campaign advancement honors event throttle. A dry-run

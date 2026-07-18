@@ -1,8 +1,25 @@
+//! CLI handlers for the `foundry campaign` subcommands.
+//!
+//! Inspection commands (`add`, `list`, `show`) always operate on `campaigns.json`
+//! directly — they never need the daemon.
+//!
+//! The `pause` mutation command mirrors the registry/sentinel daemon-or-offline
+//! protocol: the online path calls the `PauseCampaign` gRPC RPC and renders the
+//! response from the typed `PauseCampaignResponse.campaign` detail; the offline
+//! fallback (and graceful-degradation path when the daemon is unreachable) mutates
+//! the store file directly via [`CampaignStore::lock_exclusive`].
+//!
+//! The `resume` and `advance` commands are out of scope for this slice — their
+//! daemon-boundary migration carries decision-bearing semantic changes and is
+//! handled separately.
+
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore};
 
+use crate::daemon::status_to_anyhow;
+use crate::proto::{PauseCampaignRequest, foundry_client::FoundryClient};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
@@ -37,8 +54,72 @@ pub fn show(store_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn pause(store_path: &Path, name: &str) -> Result<()> {
-    set_status(store_path, name, CampaignStatus::Paused)
+/// Pause a campaign via the daemon (online path) or the campaign store
+/// (offline/fallback path).
+///
+/// Returns the rendered output string. Callers print it so that tests can
+/// inspect the value without capturing stdout.
+///
+/// **Online path**: calls `PauseCampaign` gRPC, renders from
+/// `PauseCampaignResponse.campaign` — no store reads on this path.
+///
+/// **Offline / fallback path**: acquires an exclusive lock on the store file
+/// and mutates `status` directly, mirroring the behaviour of
+/// `CampaignStore::lock_exclusive` used by the daemon itself.
+pub async fn pause_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+) -> Result<String> {
+    if !offline {
+        match FoundryClient::connect(addr.to_string()).await {
+            Ok(mut client) => {
+                let req = PauseCampaignRequest {
+                    name: name.to_string(),
+                };
+                let resp = client.pause_campaign(req).await.map_err(status_to_anyhow)?;
+                let detail = resp.into_inner().campaign.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "daemon returned no campaign in PauseCampaignResponse for '{name}'"
+                    )
+                })?;
+                // Render from the typed proto response — never re-read from disk.
+                return Ok(render::campaign::campaign_detail_proto(&detail));
+            }
+            Err(_) => {
+                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
+            }
+        }
+    }
+    // Offline / graceful-degradation fallback: mutate the store directly.
+    pause_offline(store_path, name)?;
+    Ok(format!("Campaign '{name}' is now paused.\n"))
+}
+
+/// Pause a campaign, printing the result to stdout.
+///
+/// See [`pause_and_render`] for the full description of the online/offline
+/// dispatch logic.
+pub async fn pause(store_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+    let output = pause_and_render(store_path, addr, offline, name).await?;
+    print!("{output}");
+    Ok(())
+}
+
+/// Direct-store pause used by the offline / fallback path.
+///
+/// Acquires an exclusive lock, sets `status = Paused`, and saves.
+/// Does NOT emit any events; that is the daemon's responsibility.
+fn pause_offline(store_path: &Path, name: &str) -> Result<()> {
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    campaign.status = CampaignStatus::Paused;
+    guard.save()?;
+    Ok(())
 }
 
 pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
@@ -64,18 +145,6 @@ pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
     let max_cycles = campaign.budget.max_cycles;
     guard.save()?;
     println!("Campaign '{name}' is now active with a {max_cycles}-cycle budget.");
-    Ok(())
-}
-
-fn set_status(store_path: &Path, name: &str, status: CampaignStatus) -> Result<()> {
-    let mut guard = CampaignStore::lock_exclusive(store_path)?;
-    let campaign = guard
-        .store
-        .find_mut(name)
-        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    campaign.status = status;
-    guard.save()?;
-    println!("Campaign '{name}' is now {status}.");
     Ok(())
 }
 
@@ -108,8 +177,41 @@ pub async fn advance(addr: &str, store_path: &Path, name: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn add_list_show_pause_round_trip() {
+    // Offline path: pause_and_render with offline=true must not touch gRPC
+    // and must flip the status to Paused in the store file.
+    #[tokio::test]
+    async fn offline_pause_sets_status_paused_in_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let file = dir.path().join("campaign.json");
+        std::fs::write(
+            &file,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester"
+            }"#,
+        )
+        .unwrap();
+        add(&store, &file).unwrap();
+
+        let output = pause_and_render(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
+
+        assert_eq!(
+            CampaignStore::load(&store).unwrap().find("c").unwrap().status,
+            CampaignStatus::Paused,
+            "store must reflect Paused after offline pause"
+        );
+        assert!(
+            output.contains("paused"),
+            "offline output must mention 'paused'; got: {output:?}"
+        );
+    }
+
+    // Offline round-trip: add → list → show → pause all succeed against the
+    // same store file.
+    #[tokio::test]
+    async fn add_list_show_pause_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
         let file = dir.path().join("campaign.json");
@@ -125,7 +227,7 @@ mod tests {
         add(&store, &file).unwrap();
         list(&store).unwrap();
         show(&store, "c").unwrap();
-        pause(&store, "c").unwrap();
+        pause(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused

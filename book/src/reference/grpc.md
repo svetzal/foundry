@@ -177,6 +177,39 @@ only.
 `INTERNAL` when the campaign store is unreadable. Missing or empty stores
 return an empty list.
 
+### `PauseCampaign(PauseCampaignRequest) → PauseCampaignResponse`
+
+Pause a campaign. The operation is idempotent on the `status` field — pausing
+an already-paused campaign is not an error. The daemon holds an exclusive lock
+on the campaign store for the duration of the write, so a concurrent advance
+formation cannot interleave with a pause.
+
+Any `pending_run_result` that was recorded before the pause is explicitly
+preserved: the operation never clears or overwrites it. The result remains
+available for the next manual advance after a subsequent resume.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to pause |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Full campaign detail reflecting the state after the pause is applied |
+
+**Errors:** `NOT_FOUND` when no campaign with the given name exists;
+`FAILED_PRECONDITION` when the campaign store is malformed;
+`INTERNAL` when the campaign store is unreadable.
+
+**CLI:** `foundry campaign pause <name>` routes through this RPC when the daemon
+is reachable. Pass `--offline` to bypass the daemon and mutate the store file
+directly (useful when `foundryd` is not running). When the daemon is
+unreachable and `--offline` is not set, the CLI warns and falls back to the
+direct-store path automatically.
+
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 
 Retrieve the complete durable definition of one campaign by exact name. Unlike

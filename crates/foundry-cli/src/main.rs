@@ -535,6 +535,7 @@ async fn handle_campaign_command(
     command: CampaignCommands,
     campaigns_path: &std::path::Path,
     addr: &str,
+    offline: bool,
 ) -> Result<()> {
     match command {
         CampaignCommands::Add { file } => campaign_commands::add(campaigns_path, &file),
@@ -543,7 +544,9 @@ async fn handle_campaign_command(
         CampaignCommands::Advance { name } => {
             campaign_commands::advance(addr, campaigns_path, &name).await
         }
-        CampaignCommands::Pause { name } => campaign_commands::pause(campaigns_path, &name),
+        CampaignCommands::Pause { name } => {
+            campaign_commands::pause(campaigns_path, addr, offline, &name).await
+        }
         CampaignCommands::Resume { name, add_cycles } => {
             campaign_commands::resume(campaigns_path, &name, add_cycles)
         }
@@ -638,7 +641,8 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Campaign(sub) => {
-            handle_campaign_command(sub, &foundry_sdk::paths::campaigns_path(), &cli.addr).await
+            let campaigns = foundry_sdk::paths::campaigns_path();
+            handle_campaign_command(sub, &campaigns, &cli.addr, cli.offline).await
         }
         Commands::Sentinel(sub) => {
             handle_sentinel_command(

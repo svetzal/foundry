@@ -3,6 +3,67 @@ use std::fmt::Write as _;
 use comfy_table::{ContentArrangement, Table};
 use foundry_sdk::campaign::{Campaign, DoneEvidence};
 
+/// Render a `CampaignDetail` received from the daemon gRPC response.
+///
+/// Takes the proto wire type rather than the SDK type, so callers on the online
+/// code path do not need to re-read the campaign store after a successful RPC.
+pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Name:       {}", detail.name);
+    let _ = writeln!(out, "Project:    {}", detail.project);
+    let _ = writeln!(out, "Status:     {}", detail.status);
+    let auth = if detail.authorized_by.is_empty() {
+        "no"
+    } else {
+        &detail.authorized_by
+    };
+    let _ = writeln!(out, "Authorized: {auth}");
+    let agent = if detail.agent_provider.is_empty() {
+        "default"
+    } else {
+        &detail.agent_provider
+    };
+    let _ = writeln!(out, "Agent:      {agent}");
+    let _ = writeln!(
+        out,
+        "Cycles:     {}/{} ({} landed)",
+        detail.cycles_completed, detail.max_cycles, detail.cycles_landed
+    );
+    let _ = writeln!(out, "Mission:    {}", detail.mission);
+    let _ = writeln!(out, "Intent:     {}", detail.intent_refs.join(", "));
+    let _ = writeln!(out, "Context:    {}", detail.context_paths.join(", "));
+    let _ = writeln!(out, "Done evidence:");
+    for evidence in &detail.done_evidence {
+        match evidence.kind.as_str() {
+            "gate" => {
+                let artifacts_note = if evidence.artifacts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (artifacts: {})", evidence.artifacts.join(", "))
+                };
+                let _ = writeln!(
+                    out,
+                    "  gate [{}]: {}{}",
+                    if evidence.required {
+                        "required"
+                    } else {
+                        "optional"
+                    },
+                    evidence.command,
+                    artifacts_note,
+                );
+            }
+            "review" => {
+                let _ = writeln!(out, "  review: {}", evidence.statement);
+            }
+            other => {
+                let _ = writeln!(out, "  {other}: (unknown kind)");
+            }
+        }
+    }
+    out
+}
+
 pub fn campaign_table(campaigns: &[Campaign]) -> String {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);

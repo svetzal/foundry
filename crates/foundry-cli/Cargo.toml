@@ -34,6 +34,13 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 cmx-core = { version = "0.3", features = ["test-support"] }
+# Needed by campaign_pause_grpc integration test: spins up a real FoundryService
+# over a tonic gRPC server to exercise the online pause path end-to-end.
+foundryd = { path = "../foundryd" }
+foundry-sdk = { workspace = true, features = ["test-support"] }
+foundry-engine = { workspace = true }
+foundry-blocks = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true
