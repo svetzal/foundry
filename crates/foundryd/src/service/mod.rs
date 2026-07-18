@@ -885,6 +885,7 @@ mod tests {
                 DoneEvidence::Gate {
                     command: "cargo test --workspace".to_string(),
                     required: true,
+                    artifacts: vec!["tests/campaign_detail.rs".to_string()],
                 },
                 DoneEvidence::Review {
                     statement: "Human reviewer signed off.".to_string(),
@@ -898,6 +899,7 @@ mod tests {
             authorized_by: Some("bob".to_string()),
             agent_provider: Some("opus".to_string()),
             last_run_event_id: Some("evt-service-42".to_string()),
+            pending_run_result: None,
         };
         let store = CampaignStore {
             version: 1,
@@ -934,6 +936,7 @@ mod tests {
         assert_eq!(gate.kind, "gate");
         assert_eq!(gate.command, "cargo test --workspace");
         assert!(gate.required, "gate.required must be true");
+        assert_eq!(gate.artifacts, vec!["tests/campaign_detail.rs"]);
 
         // Review: assert statement.
         let review = &detail.done_evidence[1];
@@ -967,6 +970,7 @@ mod tests {
                 authorized_by: None,
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             }],
         };
         store.save(tmp.path()).expect("save");

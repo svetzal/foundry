@@ -70,21 +70,57 @@ async fn run_done_gates(
     repo: &Path,
     evidence: &[DoneEvidence],
 ) -> anyhow::Result<Vec<foundry_sdk::gates::GateResult>> {
-    let gates = evidence
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| match item {
-            DoneEvidence::Gate { command, required } => Some(GateDefinition {
-                name: format!("campaign_done_{}", index + 1),
+    let mut results = Vec::new();
+    for (index, item) in evidence.iter().enumerate() {
+        let DoneEvidence::Gate {
+            command,
+            required,
+            artifacts,
+        } = item
+        else {
+            continue;
+        };
+        let name = format!("campaign_done_{}", index + 1);
+        if let Some(error) = artifact_error(repo, artifacts) {
+            results.push(foundry_sdk::gates::GateResult {
+                name,
                 command: command.clone(),
+                passed: false,
                 required: *required,
-                timeout: None,
-                fix_command: None,
-            }),
-            DoneEvidence::Review { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    Ok(crate::gate_runner::run_gates(&gates, repo, shell).await?.results)
+                output: error,
+                exit_code: 1,
+                duration_ms: Some(0),
+                fix_applied: false,
+            });
+            continue;
+        }
+        let gate = GateDefinition {
+            name,
+            command: command.clone(),
+            required: *required,
+            timeout: None,
+            fix_command: None,
+        };
+        results.extend(crate::gate_runner::run_gates(&[gate], repo, shell).await?.results);
+    }
+    Ok(results)
+}
+
+fn artifact_error(repo: &Path, artifacts: &[String]) -> Option<String> {
+    artifacts.iter().find_map(|artifact| {
+        let relative = Path::new(artifact);
+        let safe = !relative.is_absolute()
+            && relative.components().all(|component| {
+                matches!(component, std::path::Component::Normal(_) | std::path::Component::CurDir)
+            });
+        if !safe {
+            return Some(format!("campaign gate artifact must be repository-relative: {artifact}"));
+        }
+        if !repo.join(relative).exists() {
+            return Some(format!("campaign gate artifact missing: {artifact}"));
+        }
+        None
+    })
 }
 
 fn decision_prompt(
@@ -277,11 +313,16 @@ fn update_run_and_forced_decision(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
 ) -> Option<CampaignDecision> {
-    if request.run_event_id.as_ref() != campaign.last_run_event_id.as_ref() {
-        if request.run_result.as_ref().is_some_and(|result| result.landed) {
-            campaign.cycles_landed += 1;
+    if let Some(run_event_id) = &request.run_event_id
+        && Some(run_event_id) != campaign.last_run_event_id.as_ref()
+    {
+        if let Some(run_result) = &request.run_result {
+            if run_result.landed {
+                campaign.cycles_landed += 1;
+            }
+            campaign.pending_run_result = Some(run_result.clone());
         }
-        campaign.last_run_event_id.clone_from(&request.run_event_id);
+        campaign.last_run_event_id = Some(run_event_id.clone());
     }
 
     if campaign.authorized_by.is_none() {
@@ -401,6 +442,7 @@ fn apply_campaign_decision(
     match decision {
         CampaignDecision::Done { reason } => {
             campaign.status = CampaignStatus::Completed;
+            campaign.pending_run_result = None;
             vec![
                 completed_event(
                     campaign,
@@ -414,6 +456,7 @@ fn apply_campaign_decision(
         }
         CampaignDecision::Escalate { reason } => {
             campaign.status = CampaignStatus::Escalated;
+            campaign.pending_run_result = None;
             vec![
                 completed_event(
                     campaign,
@@ -430,6 +473,7 @@ fn apply_campaign_decision(
             campaign.cycles_completed += 1;
             let base_ref =
                 request.run_result.as_ref().and_then(|result| result.preservation_ref.clone());
+            campaign.pending_run_result = None;
             vec![
                 completed_event(
                     campaign,
@@ -547,10 +591,29 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         );
     }
 
-    let decision = choose_campaign_decision(&execution, campaign, forced).await;
+    let mut effective_request = execution.request.clone();
+    if effective_request.run_result.is_none() {
+        effective_request.run_result.clone_from(&campaign.pending_run_result);
+        effective_request.run_event_id.clone_from(&campaign.last_run_event_id);
+    }
+    let effective_execution = AdvanceExecution {
+        request: effective_request,
+        agent: Arc::clone(&execution.agent),
+        shell: Arc::clone(&execution.shell),
+        registry: Arc::clone(&execution.registry),
+        store_path: execution.store_path.clone(),
+        lock: Arc::clone(&execution.lock),
+        project: execution.project.clone(),
+        throttle: execution.throttle,
+    };
+    let decision = choose_campaign_decision(&effective_execution, campaign, forced).await;
     let decision = enforce_campaign_budget(campaign, decision);
-    let events =
-        apply_campaign_decision(campaign, &execution.request, execution.throttle, decision);
+    let events = apply_campaign_decision(
+        campaign,
+        &effective_execution.request,
+        execution.throttle,
+        decision,
+    );
     let cycles_completed = campaign.cycles_completed;
     let cycles_landed = campaign.cycles_landed;
     persist_or_terminal(
@@ -651,7 +714,7 @@ mod tests {
 
     use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
-    use super::{AdvanceCampaign, enforce_campaign_budget, parse_decision};
+    use super::{AdvanceCampaign, enforce_campaign_budget, parse_decision, run_done_gates};
 
     #[test]
     fn parses_structural_advance_decision() {
@@ -683,6 +746,7 @@ mod tests {
             authorized_by: Some("owner".to_string()),
             agent_provider: None,
             last_run_event_id: Some("run-2".to_string()),
+            pending_run_result: None,
         }
     }
 
@@ -714,6 +778,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_declared_artifact_fails_gate_without_running_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+        let evidence = vec![DoneEvidence::Gate {
+            command: "mix test test/required_test.exs".to_string(),
+            required: true,
+            artifacts: vec!["test/required_test.exs".to_string()],
+        }];
+
+        let results = run_done_gates(&*shell, dir.path(), &evidence).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+        assert!(results[0].output.contains("campaign gate artifact missing"));
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn present_declared_artifact_allows_gate_command_to_run() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("test")).unwrap();
+        std::fs::write(dir.path().join("test/required_test.exs"), "test").unwrap();
+        let shell = FakeShellGateway::success();
+        let evidence = vec![DoneEvidence::Gate {
+            command: "mix test test/required_test.exs".to_string(),
+            required: true,
+            artifacts: vec!["test/required_test.exs".to_string()],
+        }];
+
+        let results = run_done_gates(&*shell, dir.path(), &evidence).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed);
+        assert_eq!(shell.invocations().len(), 1);
+    }
+
+    #[tokio::test]
     async fn blocked_on_decision_escalates_without_asking_agent() {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("campaigns.json");
@@ -736,6 +837,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -809,6 +911,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -853,6 +956,13 @@ mod tests {
         assert_eq!(campaign.status, CampaignStatus::Paused);
         assert_eq!(campaign.cycles_landed, 1);
         assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
+        assert_eq!(
+            campaign
+                .pending_run_result
+                .as_ref()
+                .and_then(|result| result.preservation_ref.as_deref()),
+            None
+        );
     }
 
     #[tokio::test]
@@ -878,6 +988,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -922,5 +1033,112 @@ mod tests {
         assert_eq!(campaign.status, CampaignStatus::Paused);
         assert_eq!(campaign.cycles_landed, 0);
         assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
+    }
+
+    #[tokio::test]
+    async fn resumed_campaign_forms_from_pending_result_and_preservation_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let pending = TaskRunCompletedPayload {
+            project: "p".to_string(),
+            success: true,
+            landed: true,
+            summary: "first slice landed with one boundary test gap".to_string(),
+            preservation_ref: Some("foundry-task/preserved-boundary".to_string()),
+            verdict: TaskVerdict::Remainder {
+                gaps: vec!["exercise the generated gRPC boundary".to_string()],
+            },
+            context: LoopContext {
+                campaign: Some("c".to_string()),
+                ..LoopContext::default()
+            },
+        };
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: CampaignBudget { max_cycles: 3 },
+                escalation: vec![],
+                status: CampaignStatus::Paused,
+                cycles_completed: 1,
+                cycles_landed: 0,
+                authorized_by: Some("owner".to_string()),
+                agent_provider: None,
+                last_run_event_id: None,
+                pending_run_result: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Add the generated gRPC boundary test.\",\"reason\":\"typed remainder\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let paused_trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(pending.clone()),
+            })
+            .unwrap(),
+        );
+        let paused_result = block.execute(&paused_trigger).await.unwrap();
+        assert!(paused_result.events.is_empty());
+        let mut stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find_mut("c").unwrap();
+        assert_eq!(campaign.pending_run_result.as_ref(), Some(&pending));
+        campaign.status = CampaignStatus::Active;
+        stored.save(&store_path).unwrap();
+
+        let manual_trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        );
+        let result = block.execute(&manual_trigger).await.unwrap();
+
+        let execution = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("next task dispatched");
+        assert_eq!(
+            execution.payload.get("base_ref").and_then(serde_json::Value::as_str),
+            Some("foundry-task/preserved-boundary")
+        );
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(invocations[0].prompt.contains("exercise the generated gRPC boundary"));
+        assert!(invocations[0].prompt.contains("first slice landed with one boundary test gap"));
+
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
+        assert_eq!(campaign.cycles_landed, 1);
+        assert_eq!(campaign.cycles_completed, 2);
+        assert!(campaign.pending_run_result.is_none());
     }
 }

@@ -253,7 +253,7 @@ message ListCampaignsResponse {
 }
 
 // One done-evidence item from a campaign definition. The kind field is either
-// "gate" (command + required) or "review" (statement).
+// "gate" (command + required + artifacts) or "review" (statement).
 message DoneEvidence {
     // "gate" or "review"
     string kind = 1;
@@ -263,6 +263,9 @@ message DoneEvidence {
     bool required = 3;
     // Review variant: the human-readable completion statement.
     string statement = 4;
+    // Gate variant: repository-relative artifacts that must exist before the
+    // command is eligible to pass.
+    repeated string artifacts = 5;
 }
 
 // Full durable definition of a campaign, as returned by GetCampaign.

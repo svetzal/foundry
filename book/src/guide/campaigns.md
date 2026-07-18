@@ -59,7 +59,8 @@ Create a JSON definition file:
     {
       "kind": "gate",
       "command": "cargo test -p parite-core retrieval_parity",
-      "required": true
+      "required": true,
+      "artifacts": ["crates/parite-core/tests/retrieval_parity.rs"]
     },
     {
       "kind": "review",
@@ -76,8 +77,11 @@ Create a JSON definition file:
 `intent_refs` are opaque trace references. `context_paths` must be
 repository-relative files and cannot escape the registered checkout. Foundry
 reads these neutral artifacts but does not invoke the system that produced
-them. At least one `done_evidence` item is required. The default cycle budget is
-20 when `budget` is omitted.
+them. A gate may declare repository-relative `artifacts`; every declared path
+must exist before its command is eligible to pass. This prevents test runners
+that silently ignore missing file arguments from producing false-green campaign
+evidence. At least one `done_evidence` item is required. The default cycle
+budget is 20 when `budget` is omitted.
 
 ## Managing a Campaign
 
@@ -113,7 +117,10 @@ escalation.
 
 Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the
-paused state. Resume is allowed only when `authorized_by` is present. A campaign
+paused state. The typed result and preservation ref remain pending in the
+campaign store; the next manual advance after resume consumes them, so formation
+sees the exact reviewer gaps and the task continues from preserved work. Resume
+is allowed only when `authorized_by` is present. A campaign
 that exhausted its budget also requires `--add-cycles N`; this makes the owner's
 additional work authorization explicit. Completion
 and escalation are terminal events and are forced into the next ops digest as

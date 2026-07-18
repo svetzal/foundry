@@ -41,10 +41,19 @@ pub fn campaign_detail(campaign: &Campaign) -> String {
     let _ = writeln!(out, "Done evidence:");
     for evidence in &campaign.done_evidence {
         match evidence {
-            DoneEvidence::Gate { command, required } => {
+            DoneEvidence::Gate {
+                command,
+                required,
+                artifacts,
+            } => {
+                let artifacts = if artifacts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (artifacts: {})", artifacts.join(", "))
+                };
                 let _ = writeln!(
                     out,
-                    "  gate [{}]: {command}",
+                    "  gate [{}]: {command}{artifacts}",
                     if *required { "required" } else { "optional" }
                 );
             }

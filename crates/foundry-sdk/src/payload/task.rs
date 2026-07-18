@@ -55,7 +55,7 @@ pub struct TaskReviewedPayload {
 }
 
 /// Typed terminal result emitted by the task runner wrapper.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRunCompletedPayload {
     pub project: String,
     pub success: bool,

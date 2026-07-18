@@ -15,7 +15,7 @@ description: >
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.29.3"
+  version: "0.29.4"
   author: Stacey Vetzal
 ---
 
@@ -155,6 +155,14 @@ errors escalate. Completion and escalation are forced into the ops digest.
 
 A final budgeted task still receives completion evaluation. Only an attempted
 dispatch beyond the authorized cycle budget escalates the campaign.
+
+When a task finishes while its campaign is paused, Foundry durably retains the
+typed result and preservation ref. The first manual advance after resume
+consumes that pending result, preserving reviewer gaps and branch continuity.
+
+Campaign gate evidence may declare repository-relative `artifacts`. Foundry
+requires each path to exist before running the command, preventing tools that
+silently ignore absent test files from yielding false-green evidence.
 
 When a campaign escalates because its cycle budget is exhausted, resuming
 requires an explicit owner-authorized extension, for example

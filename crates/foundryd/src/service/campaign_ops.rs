@@ -50,17 +50,23 @@ fn status_str(status: CampaignStatus) -> String {
 
 fn done_evidence_to_proto(evidence: &DoneEvidence) -> ProtoDoneEvidence {
     match evidence {
-        DoneEvidence::Gate { command, required } => ProtoDoneEvidence {
+        DoneEvidence::Gate {
+            command,
+            required,
+            artifacts,
+        } => ProtoDoneEvidence {
             kind: "gate".to_string(),
             command: command.clone(),
             required: *required,
             statement: String::new(),
+            artifacts: artifacts.clone(),
         },
         DoneEvidence::Review { statement } => ProtoDoneEvidence {
             kind: "review".to_string(),
             command: String::new(),
             required: false,
             statement: statement.clone(),
+            artifacts: vec![],
         },
     }
 }
@@ -139,6 +145,7 @@ mod tests {
             authorized_by: Some("Owner".to_string()),
             agent_provider: Some("codex".to_string()),
             last_run_event_id: Some("run-42".to_string()),
+            pending_run_result: None,
         }
     }
 
@@ -183,6 +190,7 @@ mod tests {
                 DoneEvidence::Gate {
                     command: "cargo test --workspace".to_string(),
                     required: true,
+                    artifacts: vec!["tests/campaign_detail.rs".to_string()],
                 },
                 DoneEvidence::Review {
                     statement: "All reviewers approved.".to_string(),
@@ -196,6 +204,7 @@ mod tests {
             authorized_by: Some("alice".to_string()),
             agent_provider: Some("claude".to_string()),
             last_run_event_id: Some("evt-99".to_string()),
+            pending_run_result: None,
         };
         let tmp = write_store_with(vec![campaign]);
 
@@ -226,6 +235,7 @@ mod tests {
         assert_eq!(gate.command, "cargo test --workspace");
         assert!(gate.required, "gate.required must be true");
         assert_eq!(gate.statement, "");
+        assert_eq!(gate.artifacts, vec!["tests/campaign_detail.rs"]);
 
         // Verify Review evidence: kind, statement
         let review = &detail.done_evidence[1];

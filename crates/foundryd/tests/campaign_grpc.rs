@@ -90,6 +90,7 @@ fn sample_campaign(name: &str, project: &str) -> Campaign {
         authorized_by: Some("Stacey".to_string()),
         agent_provider: Some("codex".to_string()),
         last_run_event_id: Some("run-123".to_string()),
+        pending_run_result: None,
     }
 }
 

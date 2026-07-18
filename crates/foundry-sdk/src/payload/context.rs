@@ -120,7 +120,7 @@ impl ChainContext {
 ///
 /// Used by blocks that call `forward_loop_context` (not the full chain context):
 /// `execute_plan`, `run_verify_gates`, `retry_execution`, `direct_prompt`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<serde_json::Value>,

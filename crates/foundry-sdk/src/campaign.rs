@@ -5,6 +5,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
+use crate::payload::TaskRunCompletedPayload;
 
 fn default_version() -> u32 {
     1
@@ -176,6 +177,11 @@ pub struct Campaign {
     pub agent_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_event_id: Option<String>,
+    /// Typed result recorded while a campaign is paused. The next manual
+    /// advance replays it so formation sees the reviewer gaps and the executor
+    /// continues from its preservation ref. Consumed when a decision is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_run_result: Option<TaskRunCompletedPayload>,
 }
 
 impl Campaign {
@@ -241,6 +247,10 @@ pub enum DoneEvidence {
         command: String,
         #[serde(default = "default_required")]
         required: bool,
+        /// Repository-relative files or directories that must exist before the
+        /// command is eligible to pass.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        artifacts: Vec<String>,
     },
     Review {
         statement: String,
@@ -282,6 +292,7 @@ mod tests {
                 authorized_by: Some("tester".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             })
             .unwrap();
         store.save(&path).unwrap();
@@ -297,6 +308,27 @@ mod tests {
 
         let store = CampaignStore::load(&path).unwrap();
         assert!(store.campaigns.is_empty());
+    }
+
+    #[test]
+    fn legacy_campaign_defaults_pending_result_and_gate_artifacts() {
+        let campaign: Campaign = serde_json::from_value(serde_json::json!({
+            "name": "legacy",
+            "project": "p",
+            "mission": "ship",
+            "done_evidence": [{
+                "kind": "gate",
+                "command": "cargo test",
+                "required": true
+            }]
+        }))
+        .unwrap();
+
+        assert!(campaign.pending_run_result.is_none());
+        let DoneEvidence::Gate { artifacts, .. } = &campaign.done_evidence[0] else {
+            panic!("expected gate evidence");
+        };
+        assert!(artifacts.is_empty());
     }
 
     #[test]

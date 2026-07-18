@@ -155,6 +155,7 @@ mod tests {
                 authorized_by: Some("tester".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                pending_run_result: None,
             })
             .unwrap();
         store.save(&store_path).unwrap();

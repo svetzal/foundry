@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.29.4] - 2026-07-18
+
+### Added
+
+- Campaign gate evidence can declare repository-relative artifacts. A gate now
+  fails before running its command when any declared artifact is absent or
+  unsafe, preventing test runners from silently accepting a missing test path.
+
+### Fixed
+
+- Results arriving while a campaign is paused are stored durably with their
+  typed verdict and preservation reference. The next manual advance consumes
+  that result, forms from the stopped work, and dispatches from the preserved
+  branch without double-counting a landing or erasing the last run identity.
+- Skeptical review now requires tests to exercise a requested real or generated
+  boundary and assert its observable request or response; mocks installed above
+  that boundary no longer satisfy the evidence requirement.
+
 ## [0.29.3] - 2026-07-18
 
 ### Fixed
