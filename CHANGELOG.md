@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-07-18
+
+### Added
+
+- `foundry campaign resume --add-cycles N` explicitly extends an exhausted
+  campaign's cycle budget with owner authorization. Exhausted campaigns now
+  reject a no-op resume that could only re-escalate immediately.
+
+### Fixed
+
+- Skeptical task review now labels every gate as required or optional and
+  states that optional failures are advisory. The prompt also reflects the
+  actual lifecycle boundary: tracked modifications and untracked additions
+  are both valid review inputs because Finalize Task commits them only after a
+  complete verdict.
+
 ## [0.28.1] - 2026-07-18
 
 ### Fixed

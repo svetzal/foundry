@@ -41,7 +41,7 @@ pub fn pause(store_path: &Path, name: &str) -> Result<()> {
     set_status(store_path, name, CampaignStatus::Paused)
 }
 
-pub fn resume(store_path: &Path, name: &str) -> Result<()> {
+pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
     let mut guard = CampaignStore::lock_exclusive(store_path)?;
     let campaign = guard
         .store
@@ -50,9 +50,20 @@ pub fn resume(store_path: &Path, name: &str) -> Result<()> {
     if campaign.authorized_by.is_none() {
         bail!("campaign '{name}' cannot resume until authorized_by is set");
     }
+    if add_cycles == 0 && campaign.cycles_completed >= campaign.budget.max_cycles {
+        bail!(
+            "campaign '{name}' exhausted its cycle budget; pass --add-cycles N to authorize more work"
+        );
+    }
+    campaign.budget.max_cycles = campaign
+        .budget
+        .max_cycles
+        .checked_add(add_cycles)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' cycle budget overflow"))?;
     campaign.status = CampaignStatus::Active;
+    let max_cycles = campaign.budget.max_cycles;
     guard.save()?;
-    println!("Campaign '{name}' is now active.");
+    println!("Campaign '{name}' is now active with a {max_cycles}-cycle budget.");
     Ok(())
 }
 
@@ -119,5 +130,42 @@ mod tests {
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused
         );
+    }
+
+    #[test]
+    fn exhausted_campaign_requires_and_applies_explicit_added_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: foundry_sdk::campaign::CampaignBudget { max_cycles: 2 },
+                escalation: vec![],
+                status: CampaignStatus::Escalated,
+                cycles_completed: 2,
+                cycles_landed: 0,
+                authorized_by: Some("tester".to_string()),
+                agent_provider: None,
+                last_run_event_id: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+
+        let error = resume(&store_path, "c", 0).unwrap_err();
+        assert!(error.to_string().contains("--add-cycles"));
+
+        resume(&store_path, "c", 1).unwrap();
+        let resumed = CampaignStore::load(&store_path).unwrap();
+        let campaign = resumed.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert_eq!(campaign.budget.max_cycles, 3);
     }
 }

@@ -242,7 +242,12 @@ enum CampaignCommands {
     /// Pause automatic advancement
     Pause { name: String },
     /// Resume an authorized paused or escalated campaign
-    Resume { name: String },
+    Resume {
+        name: String,
+        /// Add owner-authorized cycles to the campaign budget before resuming
+        #[arg(long, default_value_t = 0)]
+        add_cycles: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -539,7 +544,9 @@ async fn handle_campaign_command(
             campaign_commands::advance(addr, campaigns_path, &name).await
         }
         CampaignCommands::Pause { name } => campaign_commands::pause(campaigns_path, &name),
-        CampaignCommands::Resume { name } => campaign_commands::resume(campaigns_path, &name),
+        CampaignCommands::Resume { name, add_cycles } => {
+            campaign_commands::resume(campaigns_path, &name, add_cycles)
+        }
     }
 }
 

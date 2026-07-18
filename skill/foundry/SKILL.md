@@ -15,7 +15,7 @@ description: >
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.28.1"
+  version: "0.28.2"
   author: Stacey Vetzal
 ---
 
@@ -142,7 +142,7 @@ foundry campaign list
 foundry campaign show <name>
 foundry campaign advance <name>
 foundry campaign pause <name>
-foundry campaign resume <name>
+foundry campaign resume <name> [--add-cycles N]
 ```
 
 Campaign definitions live in `~/.foundry/campaigns.json`. They carry a mission,
@@ -152,6 +152,10 @@ budget. The formation chooses exactly one of done, one next objective, or
 escalation. A task result automatically requests the next advance; remainders
 and defects continue from preserved work, while human decisions and runner
 errors escalate. Completion and escalation are forced into the ops digest.
+
+When a campaign escalates because its cycle budget is exhausted, resuming
+requires an explicit owner-authorized extension, for example
+`foundry campaign resume <name> --add-cycles 1`.
 
 Read `references/workflows.md` for the event chain and the campaign definition
 example in `book/src/guide/campaigns.md` when preparing a new campaign.

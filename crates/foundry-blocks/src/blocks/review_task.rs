@@ -30,8 +30,9 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
         .iter()
         .map(|g| {
             format!(
-                "- {}: {} (exit {})\n{}",
+                "- {} [{}]: {} (exit {})\n{}",
                 g.name,
+                if g.required { "REQUIRED" } else { "OPTIONAL" },
                 if g.passed { "PASS" } else { "FAIL" },
                 g.exit_code,
                 g.output
@@ -43,7 +44,7 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
-         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all required gates to pass. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
          {{\"verdict\":\"complete\"}}\n\
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
@@ -161,7 +162,8 @@ impl TaskBlock for ReviewTask {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_verdict;
+    use super::{build_review_prompt, parse_verdict};
+    use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::TaskVerdict;
 
     #[test]
@@ -178,5 +180,38 @@ mod tests {
     #[test]
     fn rejects_prose_pass_without_typed_verdict() {
         assert!(parse_verdict("VALIDATE: PASS").is_err());
+    }
+
+    #[test]
+    fn review_prompt_labels_gate_criticality_and_explains_finalize_boundary() {
+        let gates = vec![
+            GateResult {
+                name: "test".to_string(),
+                command: "cargo test".to_string(),
+                passed: true,
+                required: true,
+                output: String::new(),
+                exit_code: 0,
+                duration_ms: None,
+                fix_applied: false,
+            },
+            GateResult {
+                name: "dialyzer".to_string(),
+                command: "mix dialyzer".to_string(),
+                passed: false,
+                required: false,
+                output: "baseline warnings".to_string(),
+                exit_code: 2,
+                duration_ms: None,
+                fix_applied: false,
+            },
+        ];
+
+        let prompt = build_review_prompt("ship the slice", &gates);
+
+        assert!(prompt.contains("test [REQUIRED]: PASS"));
+        assert!(prompt.contains("dialyzer [OPTIONAL]: FAIL"));
+        assert!(prompt.contains("OPTIONAL gate failures are advisory"));
+        assert!(prompt.contains("untracked new files are both valid deliverable changes"));
     }
 }

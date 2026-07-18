@@ -76,6 +76,8 @@ foundry campaign show parite-phase-2d
 foundry campaign advance parite-phase-2d
 foundry campaign pause parite-phase-2d
 foundry campaign resume parite-phase-2d
+# When the cycle budget was exhausted, explicitly authorize more work:
+foundry campaign resume parite-phase-2d --add-cycles 1
 ```
 
 New definitions start as `staged`. An authorized staged campaign becomes
@@ -95,7 +97,9 @@ counts dispatched tasks, while `cycles_landed` counts complete task results.
 
 Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the
-paused state. Resume is allowed only when `authorized_by` is present. Completion
+paused state. Resume is allowed only when `authorized_by` is present. A campaign
+that exhausted its budget also requires `--add-cycles N`; this makes the owner's
+additional work authorization explicit. Completion
 and escalation are terminal events and are forced into the next ops digest as
 an anomaly. Campaign-store mutations are serialized across the CLI and daemon,
 so a control command cannot overwrite an in-flight formation decision.
