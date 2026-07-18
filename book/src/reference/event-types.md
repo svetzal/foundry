@@ -178,6 +178,7 @@ Every event carries these common fields:
 |-------|------|-------------|
 | `project` | string | Registered project name |
 | `success` | bool | `true` only for a `complete` verdict |
+| `landed` | bool | `true` only when complete work was actually fast-forwarded onto trunk |
 | `summary` | string | Human-readable terminal summary |
 | `verdict` | string | `complete`, `remainder`, `defect`, `blocked_on_decision`, or `runner_error` |
 | `preservation_ref` | string (optional) | Remote branch or `bundle:<path>` for preserved work |
@@ -210,7 +211,7 @@ or `detail`.
 | `campaign` | string | Campaign name |
 | `project` | string | Registered project name |
 | `cycles_completed` | integer | Tasks dispatched by the campaign |
-| `cycles_landed` | integer | Task results completed and landed |
+| `cycles_landed` | integer | Task results whose `task_run_completed.landed` field was `true` |
 | `decision` | string | `done`, `advance`, or `escalate` |
 | `objective` | string (advance only) | Exactly one next task objective |
 | `reason` | string | Evidence or gap supporting the decision |

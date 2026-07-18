@@ -172,7 +172,7 @@ Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseReq
 | `OpsSummaryCompleted` | `markdown`, `event_count`, `new_watermark?` |
 | `OpsDigestCompleted` | `success`, `skipped`, `digest_path?`, `event_count` |
 | `TaskReviewed` | `objective`, `review`, `gate_results[]`, structural verdict fields, `campaign?` |
-| `TaskRunCompleted` | `success`, `summary`, `preservation_ref?`, structural verdict fields, `campaign?` |
+| `TaskRunCompleted` | `success`, `landed`, `summary`, `preservation_ref?`, structural verdict fields, `campaign?` |
 | `CampaignAdvanceRequested` | `campaign`, `run_event_id?`, `run_result?` |
 | `CampaignAdvanceCompleted` | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason` |
 | `CampaignEscalated` | `campaign`, `reason`, `cycles_completed`, `cycles_landed` |

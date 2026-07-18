@@ -49,6 +49,25 @@ async fn commit_worktree(shell: &dyn ShellGateway, worktree: &Path, project: &st
     Ok(true)
 }
 
+async fn branch_has_deliverable(
+    shell: &dyn ShellGateway,
+    checkout: &Path,
+    base_branch: &str,
+    task_branch: &str,
+) -> Result<bool> {
+    let count = checked(
+        shell,
+        checkout,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{base_branch}..{task_branch}"),
+        ],
+    )
+    .await?;
+    Ok(count != "0")
+}
+
 async fn preserve(
     shell: &dyn ShellGateway,
     worktree: &Path,
@@ -122,9 +141,33 @@ fn enforce_gate_truth(payload: &TaskReviewedPayload) -> TaskVerdict {
     }
 }
 
+fn task_location(context: &LoopContext) -> Result<(PathBuf, &str), String> {
+    let worktree = context
+        .task_worktree
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| "task finalization missing worktree".to_string())?;
+    let branch = context
+        .task_branch
+        .as_deref()
+        .ok_or_else(|| "task finalization missing branch".to_string())?;
+    Ok((worktree, branch))
+}
+
+fn task_summary(verdict: &TaskVerdict, landed: bool) -> String {
+    if landed {
+        "task completed, reviewed, and landed".to_string()
+    } else if verdict.is_complete() {
+        "task completed, reviewed, and required no landing".to_string()
+    } else {
+        "task stopped with a typed non-complete verdict; work preserved".to_string()
+    }
+}
+
 fn terminal_result(
     project: &str,
     throttle: foundry_sdk::throttle::Throttle,
+    landed: bool,
     summary: String,
     preservation_ref: Option<String>,
     verdict: TaskVerdict,
@@ -139,6 +182,7 @@ fn terminal_result(
         &TaskRunCompletedPayload {
             project: project.to_string(),
             success: verdict.is_complete(),
+            landed,
             summary,
             preservation_ref,
             verdict,
@@ -149,18 +193,21 @@ fn terminal_result(
 
 async fn commit_and_preserve_if_needed(
     shell: &dyn ShellGateway,
+    checkout: &Path,
     worktree: &Path,
     project: &str,
+    base_branch: &str,
     branch: &str,
     verdict: &TaskVerdict,
 ) -> Result<(bool, Option<String>)> {
-    let changed = commit_worktree(shell, worktree, project).await?;
-    let reference = if changed || !verdict.is_complete() {
+    let _committed = commit_worktree(shell, worktree, project).await?;
+    let deliverable = branch_has_deliverable(shell, checkout, base_branch, branch).await?;
+    let reference = if deliverable || !verdict.is_complete() {
         Some(preserve(shell, worktree, project, branch).await?)
     } else {
         None
     };
-    Ok((changed, reference))
+    Ok((deliverable, reference))
 }
 
 impl SimulatedSuccess for FinalizeTask {
@@ -183,6 +230,7 @@ impl SimulatedSuccess for FinalizeTask {
         TaskRunCompletedPayload {
             project: trigger.project.clone(),
             success: verdict.is_complete(),
+            landed: false,
             summary: "dry-run task finalization".to_string(),
             preservation_ref: None,
             verdict,
@@ -222,85 +270,88 @@ impl TaskBlock for FinalizeTask {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
             let context = payload.context.clone();
-            let Some(worktree) = context.task_worktree.as_deref().map(PathBuf::from) else {
-                let detail = "task finalization missing worktree".to_string();
-                return terminal_result(
-                    &project,
-                    throttle,
-                    detail.clone(),
-                    None,
-                    TaskVerdict::RunnerError { detail },
-                    context,
-                );
-            };
-            let Some(branch) = context.task_branch.as_deref() else {
-                let detail = "task finalization missing branch".to_string();
-                return terminal_result(
-                    &project,
-                    throttle,
-                    detail.clone(),
-                    None,
-                    TaskVerdict::RunnerError { detail },
-                    context,
-                );
+            let (worktree, branch) = match task_location(&context) {
+                Ok(location) => location,
+                Err(detail) => {
+                    return terminal_result(
+                        &project,
+                        throttle,
+                        false,
+                        detail.clone(),
+                        None,
+                        TaskVerdict::RunnerError { detail },
+                        context,
+                    );
+                }
             };
             let checkout = Path::new(&entry.path);
 
             let verdict = enforce_gate_truth(&payload);
-            let (changed, preservation_ref) =
-                match commit_and_preserve_if_needed(&*shell, &worktree, &project, branch, &verdict)
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(error) => {
-                        return terminal_result(
-                            &project,
-                            throttle,
-                            error.to_string(),
-                            None,
-                            TaskVerdict::RunnerError {
-                                detail: error.to_string(),
-                            },
-                            context,
-                        );
-                    }
-                };
+            let (deliverable, preservation_ref) = match commit_and_preserve_if_needed(
+                &*shell,
+                checkout,
+                &worktree,
+                &project,
+                &entry.branch,
+                branch,
+                &verdict,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return terminal_result(
+                        &project,
+                        throttle,
+                        false,
+                        error.to_string(),
+                        None,
+                        TaskVerdict::RunnerError {
+                            detail: error.to_string(),
+                        },
+                        context,
+                    );
+                }
+            };
 
-            if verdict.is_complete()
-                && changed
-                && let Err(error) =
+            let landed = if verdict.is_complete() && deliverable {
+                if let Err(error) =
                     land_on_trunk(&*shell, checkout, &entry.branch, branch, entry.actions.push)
                         .await
-            {
-                remove_workspace(&*shell, checkout, &worktree).await;
-                return terminal_result(
-                    &project,
-                    throttle,
-                    "complete work preserved but could not land on trunk".to_string(),
-                    preservation_ref,
-                    TaskVerdict::Defect {
-                        diagnosis: format!(
-                            "task passed review but could not land on trunk: {error}"
-                        ),
-                    },
-                    context,
-                );
-            }
+                {
+                    remove_workspace(&*shell, checkout, &worktree).await;
+                    return terminal_result(
+                        &project,
+                        throttle,
+                        false,
+                        "complete work preserved but could not land on trunk".to_string(),
+                        preservation_ref,
+                        TaskVerdict::Defect {
+                            diagnosis: format!(
+                                "task passed review but could not land on trunk: {error}"
+                            ),
+                        },
+                        context,
+                    );
+                }
+                true
+            } else {
+                false
+            };
 
-            let success = verdict.is_complete();
-            if success {
+            if success_needs_cleanup(&verdict) {
                 cleanup_landed_branch(&*shell, checkout, &worktree, branch).await;
             } else {
                 remove_workspace(&*shell, checkout, &worktree).await;
             }
-            let summary = if success {
-                "task completed, reviewed, and landed".to_string()
-            } else {
-                "task stopped with a typed non-complete verdict; work preserved".to_string()
-            };
-            terminal_result(&project, throttle, summary, preservation_ref, verdict, context)
+            let summary = task_summary(&verdict, landed);
+            terminal_result(&project, throttle, landed, summary, preservation_ref, verdict, context)
         })
     }
+}
+
+fn success_needs_cleanup(verdict: &TaskVerdict) -> bool {
+    verdict.is_complete()
 }
 
 #[cfg(test)]
@@ -310,6 +361,7 @@ mod tests {
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::{LoopContext, TaskReviewedPayload, TaskVerdict};
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Stack};
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
 
@@ -348,6 +400,45 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    fn task_trigger(worktree: &std::path::Path, branch: &str, verdict: TaskVerdict) -> Event {
+        Event::new(
+            EventType::TaskReviewed,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&TaskReviewedPayload {
+                project: "p".to_string(),
+                objective: "finish".to_string(),
+                review: String::new(),
+                gate_results: vec![],
+                verdict,
+                context: LoopContext {
+                    task_worktree: Some(worktree.to_string_lossy().to_string()),
+                    task_branch: Some(branch.to_string()),
+                    ..LoopContext::default()
+                },
+            })
+            .unwrap(),
+        )
+    }
+
+    fn test_entry(path: &std::path::Path) -> ProjectEntry {
+        ProjectEntry {
+            name: "p".to_string(),
+            path: path.to_string_lossy().to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            notes: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: None,
+            timeout_secs: None,
+            audit_exceptions: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn noncomplete_task_commits_and_pushes_before_removing_worktree() {
         let dir = tempfile::tempdir().unwrap();
@@ -376,28 +467,14 @@ mod tests {
         );
         std::fs::write(worktree.join("remainder.txt"), "valuable work\n").unwrap();
 
-        let registry =
-            super::super::test_helpers::registry_with_project("p", checkout.to_str().unwrap());
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
         let block = FinalizeTask::new(registry);
-        let trigger = Event::new(
-            EventType::TaskReviewed,
-            "p".to_string(),
-            Throttle::Full,
-            Event::serialize_payload(&TaskReviewedPayload {
-                project: "p".to_string(),
-                objective: "finish".to_string(),
-                review: "one gap".to_string(),
-                gate_results: vec![],
-                verdict: TaskVerdict::Remainder {
-                    gaps: vec!["one gap".to_string()],
-                },
-                context: LoopContext {
-                    task_worktree: Some(worktree.to_string_lossy().to_string()),
-                    task_branch: Some("foundry-task/preserve-test".to_string()),
-                    ..LoopContext::default()
-                },
-            })
-            .unwrap(),
+        let trigger = task_trigger(
+            &worktree,
+            "foundry-task/preserve-test",
+            TaskVerdict::Remainder {
+                gaps: vec!["one gap".to_string()],
+            },
         );
 
         let result = block.execute(&trigger).await.unwrap();
@@ -405,6 +482,7 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.events[0].event_type, EventType::TaskRunCompleted);
         assert_eq!(result.events[0].payload["preservation_ref"], "foundry-task/preserve-test");
+        assert_eq!(result.events[0].payload["landed"], false);
         assert!(!worktree.exists(), "disposable worktree should be removed after durable push");
         let refs = git(
             &checkout,
@@ -417,5 +495,159 @@ mod tests {
         );
         assert!(!refs.is_empty(), "preservation branch was not pushed");
         assert!(!checkout.join("remainder.txt").exists(), "non-complete work leaked onto main");
+    }
+
+    #[tokio::test]
+    async fn complete_task_lands_clean_branch_that_is_ahead_of_trunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let checkout = dir.path().join("checkout");
+        let worktree = dir.path().join("worktree");
+        git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git(dir.path(), &["init", "-b", "main", checkout.to_str().unwrap()]);
+        git(&checkout, &["config", "user.email", "foundry-test@example.com"]);
+        git(&checkout, &["config", "user.name", "Foundry Test"]);
+        std::fs::write(checkout.join("README.md"), "base\n").unwrap();
+        git(&checkout, &["add", "README.md"]);
+        git(&checkout, &["commit", "-m", "initial"]);
+        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["push", "-u", "origin", "main"]);
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "foundry-task/landed-test",
+                worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(worktree.join("README.md"), "base\nbranch change\n").unwrap();
+        git(&worktree, &["add", "README.md"]);
+        git(&worktree, &["commit", "-m", "branch commit"]);
+        let branch_head = git(&worktree, &["rev-parse", "HEAD"]);
+
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block = FinalizeTask::new(registry);
+        let trigger = task_trigger(&worktree, "foundry-task/landed-test", TaskVerdict::Complete);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["landed"], true);
+        assert_eq!(result.events[0].payload["summary"], "task completed, reviewed, and landed");
+        assert!(!worktree.exists(), "landed worktree should be removed");
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
+        assert!(checkout.join("README.md").exists());
+        assert!(
+            std::fs::read_to_string(checkout.join("README.md"))
+                .unwrap()
+                .contains("branch change")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_task_with_no_deliverable_reports_no_landing() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let checkout = dir.path().join("checkout");
+        let worktree = dir.path().join("worktree");
+        git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git(dir.path(), &["init", "-b", "main", checkout.to_str().unwrap()]);
+        git(&checkout, &["config", "user.email", "foundry-test@example.com"]);
+        git(&checkout, &["config", "user.name", "Foundry Test"]);
+        std::fs::write(checkout.join("README.md"), "base\n").unwrap();
+        git(&checkout, &["add", "README.md"]);
+        git(&checkout, &["commit", "-m", "initial"]);
+        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["push", "-u", "origin", "main"]);
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "foundry-task/noop-test",
+                worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+
+        let head_before = git(&checkout, &["rev-parse", "HEAD"]);
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block = FinalizeTask::new(registry);
+        let trigger = task_trigger(&worktree, "foundry-task/noop-test", TaskVerdict::Complete);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["landed"], false);
+        assert_eq!(
+            result.events[0].payload["summary"],
+            "task completed, reviewed, and required no landing"
+        );
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head_before);
+        assert!(!worktree.exists(), "no-op worktree should still be removed");
+    }
+
+    #[tokio::test]
+    async fn complete_task_that_cannot_land_is_preserved_and_reported_truthfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let checkout = dir.path().join("checkout");
+        let worktree = dir.path().join("worktree");
+        git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git(dir.path(), &["init", "-b", "main", checkout.to_str().unwrap()]);
+        git(&checkout, &["config", "user.email", "foundry-test@example.com"]);
+        git(&checkout, &["config", "user.name", "Foundry Test"]);
+        std::fs::write(checkout.join("README.md"), "base\n").unwrap();
+        git(&checkout, &["add", "README.md"]);
+        git(&checkout, &["commit", "-m", "initial"]);
+        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["push", "-u", "origin", "main"]);
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "foundry-task/fail-land-test",
+                worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(worktree.join("README.md"), "base\nbranch change\n").unwrap();
+        git(&worktree, &["add", "README.md"]);
+        git(&worktree, &["commit", "-m", "branch commit"]);
+        std::fs::write(checkout.join("unrelated.txt"), "dirty\n").unwrap();
+
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block = FinalizeTask::new(registry);
+        let trigger = task_trigger(&worktree, "foundry-task/fail-land-test", TaskVerdict::Complete);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["landed"], false);
+        assert_eq!(
+            result.events[0].payload["summary"],
+            "complete work preserved but could not land on trunk"
+        );
+        assert_eq!(result.events[0].payload["preservation_ref"], "foundry-task/fail-land-test");
+        assert!(!worktree.exists(), "failed landing should still remove the disposable worktree");
+        assert!(
+            git(
+                &checkout,
+                &[
+                    "ls-remote",
+                    "--heads",
+                    "origin",
+                    "foundry-task/fail-land-test"
+                ]
+            )
+            .contains("foundry-task/fail-land-test")
+        );
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), git(&checkout, &["rev-parse", "main"]));
     }
 }

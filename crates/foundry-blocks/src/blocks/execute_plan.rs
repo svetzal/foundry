@@ -139,6 +139,7 @@ impl TaskBlock for ExecutePlan {
                             &TaskRunCompletedPayload {
                                 project: project.clone(),
                                 success: false,
+                                landed: false,
                                 summary: error.to_string(),
                                 preservation_ref: None,
                                 verdict: TaskVerdict::RunnerError {

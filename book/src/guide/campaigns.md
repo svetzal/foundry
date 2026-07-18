@@ -105,7 +105,8 @@ reviews the repository and context artifacts, then makes exactly one decision:
 Task results auto-request the next advance. A `remainder` or `defect` carries
 its preserved branch into the next task, so the campaign resumes warm. A
 `blocked_on_decision` or `runner_error` escalates immediately. `cycles_completed`
-counts dispatched tasks, while `cycles_landed` counts complete task results.
+counts dispatched tasks, while `cycles_landed` counts only task results whose
+work actually landed on trunk.
 When the final budgeted task lands, Foundry still evaluates the repository for
 completion. Only a decision to dispatch another task is converted to a budget
 escalation.

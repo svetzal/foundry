@@ -59,6 +59,7 @@ pub struct TaskReviewedPayload {
 pub struct TaskRunCompletedPayload {
     pub project: String,
     pub success: bool,
+    pub landed: bool,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preservation_ref: Option<String>,

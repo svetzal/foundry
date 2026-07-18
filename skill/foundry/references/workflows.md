@@ -97,7 +97,7 @@ ExecutionRequested {workflow: "task", prompt: "..."}
                                                               └─ ReviewTask (Observer, AI Reasoning)
                                                                    └─ TaskReviewed {verdict, gate_results}
                                                                         └─ FinalizeTask (Mutator)
-                                                                             └─ TaskRunCompleted {verdict, preservation_ref?}
+                                                                             └─ TaskRunCompleted {landed, verdict, preservation_ref?}
 ```
 
 `ReviewTask` emits one structural verdict: `complete`, `remainder`, `defect`,
