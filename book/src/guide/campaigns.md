@@ -10,11 +10,15 @@ Campaigns do not contain a pre-cut queue. The next objective is created only
 when the preceding task has a typed result, so stale downstream inventory and
 per-item retry loops are unnecessary.
 
-The daemon also exposes the durable inventory through the read-only
-`ListCampaigns` gRPC query. It returns summary/status records only, sorted by
-campaign name, with an optional exact `project` filter. Missing or empty stores
-return an empty list; malformed or unreadable stores return a gRPC error rather
-than an implicit empty inventory.
+The daemon also exposes the durable inventory through two read-only gRPC
+queries. `ListCampaigns` returns summary/status records sorted by campaign name,
+with an optional exact `project` filter. `GetCampaign` retrieves the complete
+durable definition and runtime state for one campaign by exact name — including
+`intent_refs`, `context_paths`, typed `done_evidence` items, and `escalation`
+rules — as a `CampaignDetail` message. Both queries load the store fresh from
+disk on every request. Missing or empty stores return an empty list for
+`ListCampaigns` and `NOT_FOUND` for `GetCampaign`; malformed or unreadable
+stores return a gRPC error rather than an implicit empty inventory.
 
 ## One-Shot Tasks
 

@@ -252,6 +252,50 @@ message ListCampaignsResponse {
     repeated Campaign campaigns = 1;
 }
 
+// Typed done-evidence item carried inside CampaignDetail. Exactly one of
+// command+required (gate kind) or statement (review kind) is populated,
+// discriminated by the kind field.
+message DoneEvidenceItem {
+    // "gate" or "review"
+    string kind = 1;
+    // Present when kind = "gate": the quality-gate command to run.
+    string command = 2;
+    // Present when kind = "gate": true when this gate must pass for the
+    // mission to be considered complete.
+    bool required = 3;
+    // Present when kind = "review": the human-readable statement to verify.
+    string statement = 4;
+}
+
+// Full detail view of a campaign, exposing the complete durable definition
+// and runtime state. Intentionally DISTINCT from the summary Campaign message;
+// the two representations are independent and may diverge.
+message CampaignDetail {
+    string name = 1;
+    string project = 2;
+    string mission = 3;
+    repeated string intent_refs = 4;
+    repeated string context_paths = 5;
+    repeated DoneEvidenceItem done_evidence = 6;
+    repeated string escalation = 7;
+    string authorized_by = 8;
+    string agent_provider = 9;
+    uint64 max_cycles = 10;
+    string status = 11;
+    uint64 cycles_completed = 12;
+    uint64 cycles_landed = 13;
+    string last_run_event_id = 14;
+}
+
+// Retrieve one campaign by exact name.
+message GetCampaignRequest {
+    string name = 1;
+}
+
+message GetCampaignResponse {
+    CampaignDetail campaign = 1;
+}
+
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.
 message Sentinel {
     string name = 1;
@@ -315,6 +359,12 @@ service Foundry {
 
     // List durable campaigns from the configured campaign store.
     rpc ListCampaigns(ListCampaignsRequest) returns (ListCampaignsResponse);
+
+    // Retrieve the full durable definition and runtime state of one campaign.
+    // Returns NOT_FOUND when the named campaign is absent (including a missing
+    // store file). Returns FAILED_PRECONDITION for a malformed store and
+    // INTERNAL for an unreadable store.
+    rpc GetCampaign(GetCampaignRequest) returns (GetCampaignResponse);
 
     // Mark a sentinel as enabled. Persists to disk and wakes the scheduler.
     rpc SentinelEnable(SentinelEnableRequest) returns (SentinelEnableResponse);

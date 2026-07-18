@@ -177,6 +177,31 @@ only.
 `INTERNAL` when the campaign store is unreadable. Missing or empty stores
 return an empty list.
 
+### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
+
+Retrieve the full durable definition and runtime state of one campaign by
+exact name. This is a read-only query: the store is loaded fresh from disk on
+every request (no in-memory cache). Unlike `ListCampaigns`, this RPC exposes
+the complete `CampaignDetail` message, including `intent_refs`, `context_paths`,
+typed `done_evidence` items preserving the gate/review discriminated variants,
+`escalation` rules, and the full budget and runtime counters.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to look up |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Complete durable definition and runtime state |
+
+**Errors:** `NOT_FOUND` when the named campaign is absent (including when the
+store file does not exist); `FAILED_PRECONDITION` when the campaign store is
+malformed; `INTERNAL` when the campaign store is unreadable.
+
 ### `Trace(TraceRequest) → TraceResponse`
 
 Retrieve the trace of a completed event chain. Returns all events produced
@@ -236,6 +261,10 @@ and survive daemon restarts. The `Trace` RPC checks the in-memory store first
 
 ### `Campaign`
 
+Summary/status view returned by `ListCampaigns`. Intentionally omits
+`intent_refs`, `context_paths`, `done_evidence` internals, and `escalation`
+rules; use `GetCampaign` to retrieve those.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Campaign name |
@@ -247,6 +276,40 @@ and survive daemon restarts. The `Trace` RPC checks the in-memory store first
 | `max_cycles` | uint64 | Configured campaign cycle budget |
 | `authorized_by` | string | Owner authorization identity, or empty when absent |
 | `agent_provider` | string | Preferred agent provider, or empty when absent |
+| `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent |
+
+### `DoneEvidenceItem`
+
+Typed done-evidence item carried inside `CampaignDetail`. Exactly one of the
+gate or review field sets is populated, discriminated by `kind`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | `"gate"` or `"review"` |
+| `command` | string | Present when `kind = "gate"`: the quality-gate command to run |
+| `required` | bool | Present when `kind = "gate"`: `true` when the gate must pass for the mission to be complete |
+| `statement` | string | Present when `kind = "review"`: the human-readable statement to verify |
+
+### `CampaignDetail`
+
+Full detail view returned by `GetCampaign`. Distinct from the summary
+`Campaign` message; the two representations are independent.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Campaign name |
+| `project` | string | Registered project name |
+| `mission` | string | Campaign mission statement |
+| `intent_refs` | repeated string | Opaque intent trace references |
+| `context_paths` | repeated string | Repository-relative context file paths |
+| `done_evidence` | repeated DoneEvidenceItem | Typed completion criteria preserving gate/review variants |
+| `escalation` | repeated string | Escalation rules (plain text) |
+| `authorized_by` | string | Owner authorization identity, or empty when absent |
+| `agent_provider` | string | Preferred agent provider, or empty when absent |
+| `max_cycles` | uint64 | Configured campaign cycle budget |
+| `status` | string | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
+| `cycles_completed` | uint64 | Number of dispatched task cycles |
+| `cycles_landed` | uint64 | Number of complete task results that landed |
 | `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent |
 
 ### `TraceBlockExecution`

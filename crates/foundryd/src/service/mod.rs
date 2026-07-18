@@ -11,11 +11,12 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    EmitRequest, EmitResponse, ListCampaignsRequest, ListCampaignsResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
-    RegistryRemoveResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
-    SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
-    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
+    EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
+    ListCampaignsResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
+    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, SentinelDisableRequest,
+    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
+    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
+    WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -158,6 +159,13 @@ impl Foundry for FoundryService {
         request: Request<ListCampaignsRequest>,
     ) -> Result<Response<ListCampaignsResponse>, Status> {
         campaign_ops::list(&self.campaigns_path, request)
+    }
+
+    async fn get_campaign(
+        &self,
+        request: Request<GetCampaignRequest>,
+    ) -> Result<Response<GetCampaignResponse>, Status> {
+        campaign_ops::get(&self.campaigns_path, request)
     }
 
     async fn sentinel_enable(
