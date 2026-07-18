@@ -41,12 +41,17 @@ use tonic::transport::Server;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
-/// Build a [`FoundryService`] backed by temporary files.
+/// Build a [`FoundryService`] backed by an explicitly supplied campaigns file
+/// path and otherwise-temporary support files.
 ///
-/// Returns the service, the campaigns temp file (so callers can inspect the
-/// persisted store), and the traces temp-dir (to keep it alive for the
-/// test's lifetime).
-fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
+/// The campaigns file is owned by the caller — passing a [`NamedTempFile`]
+/// that lives in the test body keeps it alive for the test's lifetime.
+///
+/// Returns the service and the traces temp-dir (also kept alive by the
+/// caller).
+fn make_service_with_campaigns_path(
+    campaigns_path: std::path::PathBuf,
+) -> (FoundryService, TempDir) {
     let (event_tx, _rx) = broadcast::channel(64);
     let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
 
@@ -63,10 +68,11 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
         projects: vec![],
     }));
 
+    // Support files: registry and sentinels.  These are ephemeral — the tests
+    // in this module do not exercise registry or sentinel RPCs, so the files
+    // being cleaned up when make_service_with_campaigns_path returns is fine.
     let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
     let registry_path = tmp_registry.path().to_path_buf();
-    let tmp_campaigns = NamedTempFile::new().expect("tempfile for campaigns");
-    let campaigns_path = tmp_campaigns.path().to_path_buf();
     let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
     let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
     let sentinels_path = tmp_sentinels.path().to_path_buf();
@@ -89,6 +95,18 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
     };
     let service = FoundryService::new(ctx, stores);
 
+    (service, tmp_traces)
+}
+
+/// Build a [`FoundryService`] backed by temporary files.
+///
+/// Returns the service, the campaigns temp file (so callers can inspect the
+/// persisted store), and the traces temp-dir (to keep it alive for the
+/// test's lifetime).
+fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
+    let tmp_campaigns = NamedTempFile::new().expect("tempfile for campaigns");
+    let campaigns_path = tmp_campaigns.path().to_path_buf();
+    let (service, tmp_traces) = make_service_with_campaigns_path(campaigns_path);
     (service, tmp_campaigns, tmp_traces)
 }
 
@@ -288,4 +306,74 @@ async fn online_pause_not_found_maps_to_daemon_error() {
     );
     // Must not leak a filesystem path.
     assert!(!msg.contains('/'), "error must not contain a filesystem path; got: {msg:?}");
+}
+
+// ── Gate (3, discriminating) — rendered output diverges from CLI-side file ────
+
+/// The rendered output from an online pause MUST be built from the
+/// `PauseCampaignResponse.campaign` detail returned by the RPC, not from
+/// re-reading the `campaigns_path` file the CLI holds.
+///
+/// This is the discriminating variant of Gate (3): the daemon's campaign store
+/// carries mission value "A" while the `campaigns_path` argument supplied to
+/// the CLI call points to a DIFFERENT file that carries mission value "B".
+///
+/// After the online pause:
+///
+/// - The rendered string must contain "A" (the daemon's response).
+/// - The rendered string must NOT contain "B" (the CLI-side file value).
+///
+/// An implementation that re-reads from `campaigns_path` would render "B"
+/// and fail this assertion.  Passing is proof that the render is sourced
+/// exclusively from the `PauseCampaignResponse` wire value.
+#[tokio::test]
+async fn online_pause_renders_from_rpc_response_not_from_cli_side_file() {
+    // Daemon store: campaign "c" with a distinctive mission that only the
+    // daemon will see.  The CLI has no access to this file path.
+    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
+    let daemon_mission = "Mission-From-Daemon-ALPHA-unique-marker";
+    let daemon_campaign = Campaign {
+        mission: daemon_mission.to_string(),
+        ..active_campaign("c")
+    };
+    seed_campaign(&daemon_campaigns, daemon_campaign);
+
+    // CLI-side file: campaign "c" with a DIFFERENT mission.  The CLI will
+    // pass this path as its `store_path` argument to `pause_and_render`.
+    // If the CLI re-reads from this file after the RPC call, it will return
+    // the CLI-file mission instead of the daemon-response mission.
+    let cli_campaigns = NamedTempFile::new().expect("cli campaigns tempfile");
+    let cli_file_mission = "Mission-From-CLI-File-BETA-stale-snapshot";
+    let cli_campaign = Campaign {
+        mission: cli_file_mission.to_string(),
+        ..active_campaign("c")
+    };
+    seed_campaign(&cli_campaigns, cli_campaign);
+
+    // Build a FoundryService that uses the DAEMON store exclusively.
+    let (service, _tmp_traces) =
+        make_service_with_campaigns_path(daemon_campaigns.path().to_path_buf());
+    let addr = start_server(service).await;
+
+    // Invoke the CLI online path, passing the CLI-side file as `store_path`.
+    // The correct implementation ignores `store_path` on the online path and
+    // renders exclusively from the PauseCampaignResponse wire value.
+    let rendered = pause_and_render(cli_campaigns.path(), &addr, false, "c")
+        .await
+        .expect("online pause must succeed");
+
+    // The rendered output must reflect the DAEMON's response (mission "A").
+    assert!(
+        rendered.contains(daemon_mission),
+        "rendered output must contain the daemon-response mission '{daemon_mission}'; got: {rendered:?}"
+    );
+
+    // The rendered output must NOT reflect the CLI-side file value (mission "B").
+    // Failure here means the implementation re-read from `campaigns_path` instead
+    // of using the PauseCampaignResponse detail.
+    assert!(
+        !rendered.contains(cli_file_mission),
+        "rendered output must NOT contain the CLI-side file mission '{cli_file_mission}' \
+        (disk re-read regression); got: {rendered:?}"
+    );
 }
