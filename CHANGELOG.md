@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-07-19
+
+### Fixed
+
+- `foundry campaign add` now resolves the registered project checkout and
+  rejects missing, absolute, parent-traversing, or checkout-escaping context
+  paths before mutating the campaign store. Errors identify the campaign and
+  offending path, unknown projects remain distinct, and rejected definitions
+  leave existing campaign data byte-identical.
+
 ## [0.30.0] - 2026-07-18
 
 ### Added
