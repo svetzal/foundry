@@ -169,12 +169,21 @@ pub(super) fn pause(
     }))
 }
 
-/// Resume a paused campaign, optionally extending its cycle budget.
+/// Resume a paused or escalated campaign, optionally extending its cycle budget.
 ///
 /// Requires `authorized_by` to be set (`FAILED_PRECONDITION` otherwise).
-/// Valid only when the campaign status is `Paused` (`FAILED_PRECONDITION` for
-/// other statuses).  `add_cycles` is applied to `budget.max_cycles` via
-/// checked addition; overflow returns `FAILED_PRECONDITION`.
+/// Valid only when the campaign status is `Paused` or `Escalated`
+/// (`FAILED_PRECONDITION` for all other statuses).
+///
+/// When `add_cycles == 0` and `cycles_completed >= budget.max_cycles` the
+/// budget is exhausted; the caller must pass a positive `add_cycles` to
+/// explicitly authorize more work (`FAILED_PRECONDITION` otherwise).
+///
+/// `add_cycles` is applied to `budget.max_cycles` via checked addition;
+/// overflow returns `FAILED_PRECONDITION`.
+///
+/// `pending_run_result` is intentionally left untouched — it remains pending
+/// for the next manual advance to consume.
 pub(super) fn resume(
     campaigns_path: &Path,
     request: Request<ResumeCampaignRequest>,
@@ -194,10 +203,15 @@ pub(super) fn resume(
             "campaign '{name}' has not been authorized; resume requires an authorized_by owner"
         )));
     }
-    if campaign.status != CampaignStatus::Paused {
+    if campaign.status != CampaignStatus::Paused && campaign.status != CampaignStatus::Escalated {
         return Err(Status::failed_precondition(format!(
-            "campaign '{name}' is '{}'; resume requires Paused status",
+            "campaign '{name}' is '{}'; resume requires Paused or Escalated status",
             campaign.status
+        )));
+    }
+    if add_cycles == 0 && campaign.cycles_completed >= campaign.budget.max_cycles {
+        return Err(Status::failed_precondition(format!(
+            "campaign '{name}' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
         )));
     }
     if add_cycles > 0 {
@@ -209,6 +223,7 @@ pub(super) fn resume(
             })?;
     }
     campaign.status = CampaignStatus::Active;
+    // pending_run_result is intentionally left untouched.
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
     Ok(Response::new(ResumeCampaignResponse {

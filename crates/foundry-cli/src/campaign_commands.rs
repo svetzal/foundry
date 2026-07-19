@@ -3,11 +3,12 @@
 //! Inspection commands (`add`, `list`, `show`) always operate on `campaigns.json`
 //! directly — they never need the daemon.
 //!
-//! The `pause` mutation command mirrors the registry/sentinel daemon-or-offline
-//! protocol: the online path calls the `PauseCampaign` gRPC RPC and renders the
-//! response from the typed `PauseCampaignResponse.campaign` detail; the offline
-//! fallback (and graceful-degradation path when the daemon is unreachable) mutates
-//! the store file directly via [`CampaignStore::lock_exclusive`].
+//! The `pause` and `resume` mutation commands mirror the registry/sentinel
+//! daemon-or-offline protocol: the online path calls the `PauseCampaign` /
+//! `ResumeCampaign` gRPC RPC and renders the response from the typed detail
+//! field; the offline fallback (and graceful-degradation path when the daemon
+//! is unreachable) mutates the store file directly via
+//! [`CampaignStore::lock_exclusive`].
 //!
 //! The `decide` mutation command is intentionally stricter: without explicit
 //! `--offline` it requires a reachable daemon and must not mutate the store
@@ -23,7 +24,7 @@ use chrono::Utc;
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow, with_daemon_or_offline_render};
-use crate::proto::{DecideCampaignRequest, PauseCampaignRequest};
+use crate::proto::{DecideCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
@@ -194,7 +195,77 @@ fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> R
     Ok(rendered)
 }
 
-pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
+/// Resume a campaign via the daemon (online path) or the campaign store
+/// (offline/fallback path).
+///
+/// Returns the rendered output string. Callers print it so that tests can
+/// inspect the value without capturing stdout.
+///
+/// **Online path**: calls `ResumeCampaign` gRPC, renders from
+/// `ResumeCampaignResponse.campaign` — no store reads on this path.
+///
+/// **Offline / fallback path**: acquires an exclusive lock on the store file
+/// and mutates `status`, `budget.max_cycles` directly, mirroring the behaviour
+/// of `CampaignStore::lock_exclusive` used by the daemon itself.
+/// `pending_run_result` is never cleared or overwritten on this path.
+pub async fn resume_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    add_cycles: u64,
+) -> Result<String> {
+    // Clone owned values so each closure can capture independently.
+    let name_for_daemon = name.to_string();
+    let name_for_file = name.to_string();
+    let store_path_for_file = store_path.to_path_buf();
+    with_daemon_or_offline_render(
+        addr,
+        offline,
+        move |mut client| async move {
+            let req = ResumeCampaignRequest {
+                name: name_for_daemon,
+                add_cycles,
+            };
+            let resp = client.resume_campaign(req).await.map_err(status_to_anyhow)?;
+            let detail = resp.into_inner().campaign.ok_or_else(|| {
+                anyhow::anyhow!("daemon returned no campaign in ResumeCampaignResponse")
+            })?;
+            // Render from the typed proto response — never re-read from disk.
+            Ok(render::campaign::campaign_detail_proto(&detail))
+        },
+        move || {
+            // Offline / graceful-degradation fallback: mutate the store directly.
+            resume_offline(&store_path_for_file, &name_for_file, add_cycles)?;
+            Ok(format!("Campaign '{name_for_file}' is now active.\n"))
+        },
+    )
+    .await
+}
+
+/// Resume a campaign, printing the result to stdout.
+///
+/// See [`resume_and_render`] for the full description of the online/offline
+/// dispatch logic.
+pub async fn resume(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    add_cycles: u64,
+) -> Result<()> {
+    let output = resume_and_render(store_path, addr, offline, name, add_cycles).await?;
+    print!("{output}");
+    Ok(())
+}
+
+/// Direct-store resume used by the offline / fallback path.
+///
+/// Acquires an exclusive lock, validates `authorized_by` and the exhausted-budget
+/// guard, applies `add_cycles` to `budget.max_cycles`, sets `status = Active`,
+/// and saves.  `pending_run_result` is left untouched.
+/// Does NOT emit any events; that is the daemon's responsibility.
+fn resume_offline(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
     let mut guard = CampaignStore::lock_exclusive(store_path)?;
     let campaign = guard
         .store
@@ -214,9 +285,8 @@ pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
         .checked_add(add_cycles)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' cycle budget overflow"))?;
     campaign.status = CampaignStatus::Active;
-    let max_cycles = campaign.budget.max_cycles;
+    // pending_run_result is intentionally left untouched.
     guard.save()?;
-    println!("Campaign '{name}' is now active with a {max_cycles}-cycle budget.");
     Ok(())
 }
 
@@ -311,8 +381,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exhausted_campaign_requires_and_applies_explicit_added_cycles() {
+    #[tokio::test]
+    async fn exhausted_campaign_requires_and_applies_explicit_added_cycles() {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("campaigns.json");
         let mut store = CampaignStore::default();
@@ -340,14 +410,67 @@ mod tests {
             .unwrap();
         store.save(&store_path).unwrap();
 
-        let error = resume(&store_path, "c", 0).unwrap_err();
+        // Offline path rejects add_cycles=0 when budget is exhausted.
+        let error = resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 0)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("--add-cycles"));
 
-        resume(&store_path, "c", 1).unwrap();
+        // Offline path applies add_cycles=1 and sets status to Active.
+        resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 1)
+            .await
+            .unwrap();
         let resumed = CampaignStore::load(&store_path).unwrap();
         let campaign = resumed.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Active);
         assert_eq!(campaign.budget.max_cycles, 3);
+    }
+
+    // Offline path: resume_and_render with offline=true must not touch gRPC,
+    // must flip the status to Active in the store file, and must reject
+    // add_cycles=0 when the campaign budget is exhausted.
+    #[tokio::test]
+    async fn offline_resume_mutates_store_and_rejects_exhausted_with_zero_add_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let file = dir.path().join("campaign.json");
+        // Seed a paused campaign with an exhausted budget.
+        std::fs::write(
+            &file,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "budget":{"max_cycles":2},
+                "cycles_completed":2,
+                "status":"paused"
+            }"#,
+        )
+        .unwrap();
+        add(&store, &file).unwrap();
+
+        // Exhausted + add_cycles=0 must be rejected — store must be unchanged.
+        let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
+        assert!(
+            err.to_string().contains("--add-cycles"),
+            "error must mention --add-cycles; got: {err}"
+        );
+        assert_eq!(
+            CampaignStore::load(&store).unwrap().find("c").unwrap().status,
+            CampaignStatus::Paused,
+            "store must remain Paused after rejected resume"
+        );
+
+        // add_cycles=1 must succeed and set status to Active.
+        let output = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 1).await.unwrap();
+        assert!(
+            output.contains("active"),
+            "offline output must mention 'active'; got: {output:?}"
+        );
+        let after = CampaignStore::load(&store).unwrap();
+        let campaign = after.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert_eq!(campaign.budget.max_cycles, 3, "budget must be extended by add_cycles");
     }
 
     #[tokio::test]

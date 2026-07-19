@@ -120,13 +120,29 @@ Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the
 paused state. The typed result and preservation ref remain pending in the
 campaign store; the next manual advance after resume consumes them, so formation
-sees the exact reviewer gaps and the task continues from preserved work. Resume
-is allowed only when `authorized_by` is present. A campaign
-that exhausted its budget also requires `--add-cycles N`; this makes the owner's
-additional work authorization explicit. Completion
-and escalation are terminal events and are forced into the next ops digest as
-an anomaly. Campaign-store mutations are serialized across the CLI and daemon,
-so a control command cannot overwrite an in-flight formation decision.
+sees the exact reviewer gaps and the task continues from preserved work.
+
+Resume is valid for both `paused` and `escalated` campaigns. When an escalation
+is budget-only (the engine stopped because the cycle limit was reached but no
+human judgment question was recorded), `resume` is the right command — it
+returns the campaign to `active` without requiring an owner-decision record:
+
+```bash
+foundry campaign resume parite-phase-2d
+```
+
+`resume` requires `authorized_by` to be set and will not silently reactivate
+an exhausted campaign. When `cycles_completed >= max_cycles`, pass
+`--add-cycles N` to explicitly authorize more work; the engine rejects `resume`
+without an extension on an exhausted budget:
+
+```bash
+foundry campaign resume parite-phase-2d --add-cycles 1
+```
+
+Completion and escalation are terminal events and are forced into the next ops
+digest as an anomaly. Campaign-store mutations are serialized across the CLI and
+daemon, so a control command cannot overwrite an in-flight formation decision.
 
 When a task escalates with a human judgment question, record the owner's policy
 before the next advance:
@@ -171,6 +187,27 @@ directly:
 
 ```bash
 foundry campaign pause parite-phase-2d --offline
+```
+
+Without `--offline`, the CLI warns and falls back to direct file mutation
+automatically when the daemon is unreachable. Restart `foundryd` afterward so
+its in-memory state stays consistent with the file on disk.
+
+### Resume and the daemon boundary
+
+`foundry campaign resume` routes the mutation through `foundryd` via the
+`ResumeCampaign` gRPC RPC when the daemon is reachable. The daemon owns the
+exclusive lock on the campaign store, so a concurrent advance formation cannot
+race with a resume. On success the command renders the full campaign detail
+returned in `ResumeCampaignResponse.campaign` — it does not re-read the store
+file.
+
+If `foundryd` is not running, pass `--offline` to write the store file
+directly:
+
+```bash
+foundry campaign resume parite-phase-2d --offline
+foundry campaign resume parite-phase-2d --add-cycles 1 --offline
 ```
 
 Without `--offline`, the CLI warns and falls back to direct file mutation

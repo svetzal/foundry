@@ -210,6 +210,53 @@ directly (useful when `foundryd` is not running). When the daemon is
 unreachable and `--offline` is not set, the CLI warns and falls back to the
 direct-store path automatically.
 
+### `ResumeCampaign(ResumeCampaignRequest) → ResumeCampaignResponse`
+
+Resume a `paused` or `escalated` campaign, optionally extending its cycle
+budget. The daemon holds an exclusive lock on the campaign store for the
+duration of the write.
+
+`pending_run_result` is explicitly preserved: the operation never clears or
+overwrites it. The result remains available for the next manual advance after
+resume.
+
+**Accepted statuses:** `paused` and `escalated`. Budget-only escalations (where
+the engine stopped because the cycle limit was reached) may be resumed with this
+RPC without recording an owner-decision entry. Use `DecideCampaign` when the
+escalation contains a human judgment question that requires a policy record.
+
+**Exhausted budget guard:** when `add_cycles == 0` and
+`cycles_completed >= max_cycles`, the RPC returns `FAILED_PRECONDITION`. Pass a
+positive `add_cycles` to explicitly authorize more work; the engine never
+silently reactivates an exhausted campaign.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to resume |
+| `add_cycles` | uint64 | Additional cycles to add to `max_cycles` before resuming (0 = no extension) |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Full campaign detail reflecting the state after the resume is applied |
+
+**Errors:** `NOT_FOUND` when no campaign with the given name exists;
+`FAILED_PRECONDITION` when the campaign is not `paused` or `escalated`, lacks
+`authorized_by`, the budget is exhausted and `add_cycles == 0`, `add_cycles`
+would overflow `max_cycles`, or the campaign store is malformed; `INTERNAL`
+when the campaign store is unreadable.
+
+**CLI:** `foundry campaign resume <name>` routes through this RPC when the
+daemon is reachable. Pass `--offline` to bypass the daemon and mutate the store
+file directly (useful when `foundryd` is not running). When the daemon is
+unreachable and `--offline` is not set, the CLI warns and falls back to the
+direct-store path automatically. The rendered output is built from the
+`ResumeCampaignResponse.campaign` detail — the CLI never re-reads the store
+file on the online path.
+
 ### `DecideCampaign(DecideCampaignRequest) → DecideCampaignResponse`
 
 Record an owner decision on an escalated campaign. The daemon holds the

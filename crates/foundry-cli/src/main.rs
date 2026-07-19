@@ -557,7 +557,7 @@ async fn handle_campaign_command(
             campaign_commands::decide(campaigns_path, addr, offline, &name, &decision).await
         }
         CampaignCommands::Resume { name, add_cycles } => {
-            campaign_commands::resume(campaigns_path, &name, add_cycles)
+            campaign_commands::resume(campaigns_path, addr, offline, &name, add_cycles).await
         }
     }
 }
