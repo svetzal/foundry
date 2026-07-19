@@ -18,8 +18,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore};
 
-use crate::daemon::status_to_anyhow;
-use crate::proto::{PauseCampaignRequest, foundry_client::FoundryClient};
+use crate::daemon::{status_to_anyhow, with_daemon_or_offline_render};
+use crate::proto::PauseCampaignRequest;
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
@@ -72,29 +72,31 @@ pub async fn pause_and_render(
     offline: bool,
     name: &str,
 ) -> Result<String> {
-    if !offline {
-        match FoundryClient::connect(addr.to_string()).await {
-            Ok(mut client) => {
-                let req = PauseCampaignRequest {
-                    name: name.to_string(),
-                };
-                let resp = client.pause_campaign(req).await.map_err(status_to_anyhow)?;
-                let detail = resp.into_inner().campaign.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "daemon returned no campaign in PauseCampaignResponse for '{name}'"
-                    )
-                })?;
-                // Render from the typed proto response — never re-read from disk.
-                return Ok(render::campaign::campaign_detail_proto(&detail));
-            }
-            Err(_) => {
-                eprintln!("warning: daemon not reachable, falling back to direct file mutation");
-            }
-        }
-    }
-    // Offline / graceful-degradation fallback: mutate the store directly.
-    pause_offline(store_path, name)?;
-    Ok(format!("Campaign '{name}' is now paused.\n"))
+    // Clone owned values so each closure can capture independently.
+    let name_for_daemon = name.to_string();
+    let name_for_file = name.to_string();
+    let store_path_for_file = store_path.to_path_buf();
+    with_daemon_or_offline_render(
+        addr,
+        offline,
+        move |mut client| async move {
+            let req = PauseCampaignRequest {
+                name: name_for_daemon,
+            };
+            let resp = client.pause_campaign(req).await.map_err(status_to_anyhow)?;
+            let detail = resp.into_inner().campaign.ok_or_else(|| {
+                anyhow::anyhow!("daemon returned no campaign in PauseCampaignResponse")
+            })?;
+            // Render from the typed proto response — never re-read from disk.
+            Ok(render::campaign::campaign_detail_proto(&detail))
+        },
+        move || {
+            // Offline / graceful-degradation fallback: mutate the store directly.
+            pause_offline(&store_path_for_file, &name_for_file)?;
+            Ok(format!("Campaign '{name_for_file}' is now paused.\n"))
+        },
+    )
+    .await
 }
 
 /// Pause a campaign, printing the result to stdout.
