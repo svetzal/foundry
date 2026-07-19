@@ -19,7 +19,6 @@ use foundry_engine::engine::Engine;
 use foundry_sdk::gateway::fakes::FakeShellGateway;
 
 /// Build the full strategic loop engine with inner iterate chain.
-#[allow(clippy::needless_pass_by_value)]
 fn strategic_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
@@ -36,46 +35,11 @@ fn strategic_engine(
         agent.clone(),
         registry.clone(),
     )));
-    // Inner iterate chain blocks — share the fake shell with execution blocks so that
-    // detect_post_execution_changes does not spawn a real git process against the temp dir.
-    engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
-        shell.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::AssessProject::new(
-        agent.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::TriageAssessment::new(
-        agent.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::CreatePlan::new(
-        agent.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::with_gateways(
-        agent.clone(),
-        registry.clone(),
-        shell.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(
-        shell.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
-    engine.register(Box::new(foundry_blocks::blocks::RetryExecution::with_gateways(
-        agent.clone(),
-        registry.clone(),
-        shell.clone(),
-    )));
-    // Terminal blocks
-    engine.register(Box::new(foundry_blocks::blocks::SummarizeResult::new(
-        agent.clone(),
-        registry.clone(),
-    )));
+    // Inner iterate chain (CheckCharter → gate scaffold → AssessProject → TriageAssessment →
+    // CreatePlan → ExecutePlan → RetryExecution → SummarizeResult). The shared fake shell
+    // ensures change detection does not spawn a real git process against the temp dir.
+    test_helpers::register_iterate_chain(&mut engine, shell, agent.clone(), registry.clone());
+    // Chain-specific terminal block
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry)));
 
     engine

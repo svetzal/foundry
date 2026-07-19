@@ -79,11 +79,32 @@ pub fn test_project_dir_no_charter() -> tempfile::TempDir {
     dir
 }
 
+/// Register the four gate-scaffold blocks shared by every chain into `engine`.
+///
+/// Registers: `ResolveGates`, `RunPreflightGates`, `RunVerifyGates`, `RouteGateResult`.
+///
+/// These four blocks are common to the iterate chain, the strategic chain
+/// (via `register_iterate_chain`), and the maintain chain.  Callers add
+/// their chain-specific blocks (e.g. `ExecuteMaintain`, `AssessProject`)
+/// around this call.
+pub fn register_gate_scaffold(
+    engine: &mut Engine,
+    shell: Arc<dyn ShellGateway>,
+    registry: Arc<RwLock<Registry>>,
+) {
+    use foundry_blocks::blocks as b;
+    engine.register(Box::new(b::ResolveGates::new(registry.clone())));
+    engine.register(Box::new(b::RunPreflightGates::new(shell.clone(), registry.clone())));
+    engine.register(Box::new(b::RunVerifyGates::new(shell, registry)));
+    engine.register(Box::new(b::RouteGateResult));
+}
+
 /// Register the standard iterate-chain blocks into `engine`.
 ///
-/// Registers: `CheckCharter`, `ResolveGates`, `RunPreflightGates`,
-/// `AssessProject`, `TriageAssessment`, `CreatePlan`, `ExecutePlan`,
-/// `RunVerifyGates`, `RouteGateResult`, `RetryExecution`, `SummarizeResult`.
+/// Internally composes `register_gate_scaffold` (`ResolveGates`,
+/// `RunPreflightGates`, `RunVerifyGates`, `RouteGateResult`) plus:
+/// `CheckCharter`, `AssessProject`, `TriageAssessment`, `CreatePlan`,
+/// `ExecutePlan`, `RetryExecution`, `SummarizeResult`.
 ///
 /// The `shell` gateway is shared by ALL shell-using blocks, including the
 /// execution blocks (`ExecutePlan`, `RetryExecution`), so change detection
@@ -99,8 +120,7 @@ pub fn register_iterate_chain(
 ) {
     use foundry_blocks::blocks as b;
     engine.register(Box::new(b::CheckCharter::new(registry.clone())));
-    engine.register(Box::new(b::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(b::RunPreflightGates::new(shell.clone(), registry.clone())));
+    register_gate_scaffold(engine, shell.clone(), registry.clone());
     engine.register(Box::new(b::AssessProject::new(agent.clone(), registry.clone())));
     engine.register(Box::new(b::TriageAssessment::new(agent.clone(), registry.clone())));
     engine.register(Box::new(b::CreatePlan::new(agent.clone(), registry.clone())));
@@ -109,8 +129,6 @@ pub fn register_iterate_chain(
         registry.clone(),
         shell.clone(),
     )));
-    engine.register(Box::new(b::RunVerifyGates::new(shell.clone(), registry.clone())));
-    engine.register(Box::new(b::RouteGateResult));
     engine.register(Box::new(b::RetryExecution::with_gateways(
         agent.clone(),
         registry.clone(),

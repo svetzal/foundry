@@ -39,7 +39,6 @@ fn git_ok(cwd: Option<&std::path::Path>, args: &[&str]) -> bool {
     command.status().unwrap().success()
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
@@ -49,13 +48,8 @@ fn prompt_engine(
 
     // Charter check (sinks on ProjectIterationRequested + ExecutionRequested)
     engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
-    // Gate resolution (sinks on CharterCheckCompleted)
-    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
-    // Preflight gates (sinks on GateResolutionCompleted)
-    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
-        shell.clone(),
-        registry.clone(),
-    )));
+    // Gate scaffold: ResolveGates, RunPreflightGates, RunVerifyGates, RouteGateResult
+    test_helpers::register_gate_scaffold(&mut engine, shell.clone(), registry.clone());
     // Direct prompt (sinks on PreflightCompleted, workflow=prompt only)
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
     engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
@@ -76,15 +70,12 @@ fn prompt_engine(
         agent.clone(),
         registry.clone(),
     )));
-    // Execution (sinks on PlanCompleted)
+    // Execution blocks use ProcessShellGateway (::new) rather than the fake shell because
+    // task_workflow_happy_path relies on real worktree change-detection in an isolated git repo.
     engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::new(
         agent.clone(),
         registry.clone(),
     )));
-    // Verify gates (sinks on ExecutionCompleted)
-    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(shell, registry.clone())));
-    // Routing (sinks on GateVerificationCompleted)
-    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
     // Retry (sinks on RetryRequested)
     engine.register(Box::new(foundry_blocks::blocks::RetryExecution::new(
         agent.clone(),

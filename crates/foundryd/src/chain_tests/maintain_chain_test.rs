@@ -34,14 +34,8 @@ fn maintain_engine(
 ) -> Engine {
     let mut engine = Engine::new();
 
-    // Gate resolution and verification
-    engine.register(Box::new(foundry_blocks::blocks::ResolveGates::new(registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::RunPreflightGates::new(
-        shell.clone(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::RunVerifyGates::new(shell, registry.clone())));
-    engine.register(Box::new(foundry_blocks::blocks::RouteGateResult));
+    // Gate scaffold: ResolveGates, RunPreflightGates, RunVerifyGates, RouteGateResult
+    test_helpers::register_gate_scaffold(&mut engine, shell, registry.clone());
 
     // Native maintain workflow blocks
     engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
