@@ -20,6 +20,14 @@
 //!    Proofs 4 and 5 are asserted as distinct typed codes in the same file.
 //! 6. No returned gRPC status message contains the campaign store filesystem
 //!    path.
+//! 7. Two concurrent `PauseCampaign` RPCs targeting *different* campaigns in
+//!    the same store both succeed and both persist — no lost update.  A
+//!    `Barrier(2)` synchronises the request start so neither RPC fires until
+//!    both clients are ready, maximising overlap in the server-side
+//!    read-modify-write window.  A naive load-mutate-write implementation
+//!    without exclusive file locking would let one writer overwrite the
+//!    other's update, leaving one campaign still Active after both calls
+//!    return `Ok`; the reloaded-store assertion catches that defect.
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -39,7 +47,7 @@ use foundryd::{
     workflow_tracker::WorkflowTracker,
 };
 use tempfile::{NamedTempFile, TempDir};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Barrier, Notify, broadcast};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Code;
 use tonic::transport::Server;
@@ -147,6 +155,15 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
         version: 1,
         campaigns: vec![campaign],
+    }
+    .save(tmp.path())
+    .expect("seed campaign store");
+}
+
+fn seed_campaigns(tmp: &NamedTempFile, campaigns: Vec<Campaign>) {
+    CampaignStore {
+        version: 1,
+        campaigns,
     }
     .save(tmp.path())
     .expect("seed campaign store");
@@ -429,6 +446,139 @@ async fn generated_client_pause_malformed_store_returns_failed_precondition_and_
             err.message()
         );
     }
+}
+
+// ── Proof 7: concurrent pause of two campaigns does not lose either update ────
+
+/// Two concurrent `PauseCampaign` RPCs targeting *different* campaigns in the
+/// same store must both succeed and both persist, with no lost update.
+///
+/// ## Why this test is discriminating
+///
+/// A `Barrier(2)` releases both futures simultaneously so neither RPC fires
+/// until both clients are ready, maximising overlap in the server-side
+/// read-modify-write window.  `tokio::join!` drives both concurrently;
+/// with `flavor = "multi_thread"` they may run on separate OS threads.
+///
+/// A naive `load → mutate → write` implementation without exclusive file
+/// locking would let one writer observe stale state and silently overwrite the
+/// other's update.  After both calls return `Ok`, the store would still show
+/// one campaign as `Active` — a lost update.  The reloaded-store assertion
+/// below catches exactly that defect: if *either* campaign is not `Paused`
+/// the test fails.
+///
+/// A sequential arrangement cannot satisfy this test by construction: the
+/// `Barrier(2)` requires *both* futures to be concurrently live before either
+/// can proceed past the barrier.  In a truly sequential execution the first
+/// future would block at the barrier indefinitely because no second future is
+/// running alongside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_pause_of_two_campaigns_does_not_lose_either_update() {
+    let (service, tmp_campaigns, _tmp_traces) = make_service();
+
+    // Seed both campaigns into the same store file.
+    seed_campaigns(
+        &tmp_campaigns,
+        vec![
+            active_campaign("campaign-alpha"),
+            active_campaign("campaign-beta"),
+        ],
+    );
+
+    let addr = start_server(service).await;
+
+    // Two independently connected clients — each holds a separate gRPC channel
+    // so the server receives two genuinely concurrent incoming streams.
+    let mut client_alpha =
+        FoundryClient::connect(addr.clone()).await.expect("connect client-alpha");
+    let mut client_beta = FoundryClient::connect(addr.clone()).await.expect("connect client-beta");
+
+    // The barrier synchronises the request *start*: neither RPC fires until
+    // both futures have arrived, maximising overlap in the server-side
+    // read-modify-write window.
+    let barrier = Arc::new(Barrier::new(2));
+    let b_alpha = Arc::clone(&barrier);
+    let b_beta = Arc::clone(&barrier);
+
+    let (r_alpha, r_beta) = tokio::join!(
+        async move {
+            b_alpha.wait().await;
+            client_alpha
+                .pause_campaign(PauseCampaignRequest {
+                    name: "campaign-alpha".to_string(),
+                })
+                .await
+        },
+        async move {
+            b_beta.wait().await;
+            client_beta
+                .pause_campaign(PauseCampaignRequest {
+                    name: "campaign-beta".to_string(),
+                })
+                .await
+        },
+    );
+
+    // Both RPCs must succeed — a store-safety failure often surfaces as an
+    // internal error on one arm, not a panic, so check both explicitly.
+    let r_alpha = r_alpha.expect("pause of campaign-alpha must succeed");
+    let r_beta = r_beta.expect("pause of campaign-beta must succeed");
+
+    // Each response must identify the correct campaign and carry the correct status.
+    let detail_alpha = r_alpha
+        .into_inner()
+        .campaign
+        .expect("alpha response must contain a CampaignDetail");
+    assert_eq!(detail_alpha.name, "campaign-alpha", "response name mismatch for alpha");
+    assert_eq!(detail_alpha.status, "paused", "alpha response must report status=paused");
+
+    let detail_beta = r_beta
+        .into_inner()
+        .campaign
+        .expect("beta response must contain a CampaignDetail");
+    assert_eq!(detail_beta.name, "campaign-beta", "response name mismatch for beta");
+    assert_eq!(detail_beta.status, "paused", "beta response must report status=paused");
+
+    // Reload the store and assert no lost update: BOTH campaigns must be Paused
+    // and all unrelated fields must be preserved byte-for-byte.
+    let stored =
+        CampaignStore::load(tmp_campaigns.path()).expect("reload store after concurrent pause");
+
+    let alpha = stored
+        .find("campaign-alpha")
+        .expect("campaign-alpha must still exist after concurrent pause");
+    assert_eq!(
+        alpha.status,
+        CampaignStatus::Paused,
+        "campaign-alpha must be Paused in the reloaded store (lost-update check)"
+    );
+    assert_eq!(alpha.cycles_completed, 3, "campaign-alpha cycles_completed must be unchanged");
+    assert_eq!(alpha.cycles_landed, 2, "campaign-alpha cycles_landed must be unchanged");
+    assert_eq!(alpha.budget.max_cycles, 10, "campaign-alpha max_cycles must be unchanged");
+    assert_eq!(alpha.project, "test-project", "campaign-alpha project must be unchanged");
+    assert_eq!(alpha.mission, "Test mission", "campaign-alpha mission must be unchanged");
+
+    let beta = stored
+        .find("campaign-beta")
+        .expect("campaign-beta must still exist after concurrent pause");
+    assert_eq!(
+        beta.status,
+        CampaignStatus::Paused,
+        "campaign-beta must be Paused in the reloaded store (lost-update check)"
+    );
+    assert_eq!(beta.cycles_completed, 3, "campaign-beta cycles_completed must be unchanged");
+    assert_eq!(beta.cycles_landed, 2, "campaign-beta cycles_landed must be unchanged");
+    assert_eq!(beta.budget.max_cycles, 10, "campaign-beta max_cycles must be unchanged");
+    assert_eq!(beta.project, "test-project", "campaign-beta project must be unchanged");
+    assert_eq!(beta.mission, "Test mission", "campaign-beta mission must be unchanged");
+
+    // The total campaign count must be unchanged — no phantom campaigns created
+    // or dropped as a side-effect of the concurrent writes.
+    assert_eq!(
+        stored.campaigns.len(),
+        2,
+        "store must contain exactly the two seeded campaigns after concurrent pause"
+    );
 }
 
 // ── Proof 6: no error message contains the store filesystem path ──────────────
