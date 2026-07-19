@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-18
+
+### Added
+
+- Campaigns now expose typed `PauseCampaign`, `ResumeCampaign`,
+  `AdvanceCampaign`, and `RecordCampaignDecision` gRPC operations, with
+  matching `foundry campaign pause|resume|advance|decide` commands. Owner
+  decisions are durable campaign state, exhausted budgets require an explicit
+  positive extension, and every extension is applied exactly once.
+- Real-server generated-client integration coverage now verifies campaign
+  pause, resume, advance, and owner-decision behavior at the wire boundary.
+  Concurrent pause requests from independent clients also prove that campaign
+  store updates do not lose unrelated writes.
+
+### Changed
+
+- `foundry campaign advance` preserves its synchronous wait-and-render CLI
+  experience while the typed daemon RPC remains asynchronous, allowing UI and
+  automation clients to issue lifecycle commands without holding the request
+  open for a complete formation cycle.
+
+### Fixed
+
+- Campaign continuation now resolves the exact landed task commit and retains
+  a local task reference before removing its worktree, so the next cycle can
+  inspect the proven result without depending on an ephemeral remote branch.
+- The task workspace Git guard now protects nested test shells as well as the
+  primary agent process, while Foundry's finalizer retains sole authority to
+  commit and land reviewed work.
+- Online campaign decisions now fail through the typed daemon boundary instead
+  of silently falling back to direct campaign-file mutation.
+
 ## [0.29.4] - 2026-07-18
 
 ### Added
