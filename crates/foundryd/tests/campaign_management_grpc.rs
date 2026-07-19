@@ -101,6 +101,7 @@ fn active_campaign(name: &str) -> Campaign {
         authorized_by: Some("owner".to_string()),
         agent_provider: None,
         last_run_event_id: None,
+        owner_decisions: vec![],
         pending_run_result: None,
     }
 }
@@ -123,6 +124,7 @@ fn paused_campaign(name: &str, max_cycles: u64) -> Campaign {
         authorized_by: Some("owner".to_string()),
         agent_provider: None,
         last_run_event_id: None,
+        owner_decisions: vec![],
         pending_run_result: None,
     }
 }

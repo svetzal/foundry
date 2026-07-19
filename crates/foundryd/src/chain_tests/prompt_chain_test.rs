@@ -134,6 +134,7 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
             authorized_by: Some("test-owner".to_string()),
             agent_provider: None,
             last_run_event_id: None,
+            owner_decisions: vec![],
             pending_run_result: None,
         })
         .unwrap();

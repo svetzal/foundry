@@ -177,6 +177,10 @@ pub struct Campaign {
     pub agent_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_event_id: Option<String>,
+    /// Owner decisions recorded after escalations. These are append-only and
+    /// fed back into future formation prompts as binding policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owner_decisions: Vec<OwnerDecision>,
     /// Typed result recorded while a campaign is paused. The next manual
     /// advance replays it so formation sees the reviewer gaps and the executor
     /// continues from its preservation ref. Consumed when a decision is made.
@@ -240,6 +244,13 @@ impl std::fmt::Display for CampaignStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerDecision {
+    pub decision: String,
+    pub authorized_by: String,
+    pub decided_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoneEvidence {
@@ -292,6 +303,7 @@ mod tests {
                 authorized_by: Some("tester".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -324,11 +336,51 @@ mod tests {
         }))
         .unwrap();
 
+        assert!(campaign.owner_decisions.is_empty());
         assert!(campaign.pending_run_result.is_none());
         let DoneEvidence::Gate { artifacts, .. } = &campaign.done_evidence[0] else {
             panic!("expected gate evidence");
         };
         assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn owner_decisions_round_trip_as_rfc3339_strings() {
+        let campaign = Campaign {
+            name: "one".to_string(),
+            project: "p".to_string(),
+            mission: "ship one thing".to_string(),
+            intent_refs: vec![],
+            context_paths: vec![],
+            done_evidence: vec![DoneEvidence::Review {
+                statement: "it is shipped".to_string(),
+            }],
+            budget: CampaignBudget::default(),
+            escalation: vec![],
+            status: CampaignStatus::Active,
+            cycles_completed: 0,
+            cycles_landed: 0,
+            authorized_by: Some("tester".to_string()),
+            agent_provider: None,
+            last_run_event_id: None,
+            owner_decisions: vec![OwnerDecision {
+                decision: "Proceed with the gRPC path.".to_string(),
+                authorized_by: "tester".to_string(),
+                decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            }],
+            pending_run_result: None,
+        };
+
+        let json = serde_json::to_value(&campaign).unwrap();
+        assert_eq!(
+            json["owner_decisions"][0]["decided_at"],
+            serde_json::json!("2026-07-18T12:00:00Z")
+        );
+
+        let round_trip: Campaign = serde_json::from_value(json).unwrap();
+        assert_eq!(round_trip.owner_decisions, campaign.owner_decisions);
     }
 
     #[test]

@@ -11,13 +11,14 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    AdvanceCampaignRequest, AdvanceCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest,
-    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest,
-    PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
-    RegistryEditResponse, RegistryRemoveRequest, RegistryRemoveResponse, ResumeCampaignRequest,
-    ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
-    SentinelEnableResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
-    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
+    AdvanceCampaignRequest, AdvanceCampaignResponse, DecideCampaignRequest, DecideCampaignResponse,
+    EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
+    ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
+    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
+    RegistryRemoveResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
+    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
+    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
+    WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -181,6 +182,13 @@ impl Foundry for FoundryService {
         request: Request<ResumeCampaignRequest>,
     ) -> Result<Response<ResumeCampaignResponse>, Status> {
         campaign_ops::resume(&self.campaigns_path, request)
+    }
+
+    async fn decide_campaign(
+        &self,
+        request: Request<DecideCampaignRequest>,
+    ) -> Result<Response<DecideCampaignResponse>, Status> {
+        campaign_ops::decide(&self.campaigns_path, request)
     }
 
     async fn advance_campaign(
@@ -921,6 +929,7 @@ mod tests {
             authorized_by: Some("bob".to_string()),
             agent_provider: Some("opus".to_string()),
             last_run_event_id: Some("evt-service-42".to_string()),
+            owner_decisions: vec![],
             pending_run_result: None,
         };
         let store = CampaignStore {
@@ -992,6 +1001,7 @@ mod tests {
                 authorized_by: None,
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             }],
         };

@@ -268,6 +268,15 @@ message DoneEvidence {
     repeated string artifacts = 5;
 }
 
+// One owner-authored campaign decision recorded after an escalation.
+// These records are append-only and treated as binding policy on subsequent
+// formation runs.
+message OwnerDecision {
+    string decision = 1;
+    string authorized_by = 2;
+    string decided_at = 3;
+}
+
 // Full durable definition of a campaign, as returned by GetCampaign.
 // Carries all fields that Campaign (the summary form) intentionally omits.
 message CampaignDetail {
@@ -285,6 +294,7 @@ message CampaignDetail {
     repeated string context_paths = 12;
     repeated DoneEvidence done_evidence = 13;
     repeated string escalation = 14;
+    repeated OwnerDecision owner_decisions = 15;
 }
 
 message GetCampaignRequest {
@@ -319,6 +329,18 @@ message ResumeCampaignRequest {
 
 message ResumeCampaignResponse {
     // Full campaign detail reflecting the state after the resume is applied.
+    CampaignDetail campaign = 1;
+}
+
+// Record an owner decision on an escalated campaign and return it to active
+// state so the next advance can proceed with the explicit policy in context.
+message DecideCampaignRequest {
+    string name = 1;
+    string decision = 2;
+}
+
+message DecideCampaignResponse {
+    // Full campaign detail reflecting the state after the decision is applied.
     CampaignDetail campaign = 1;
 }
 
@@ -408,6 +430,9 @@ service Foundry {
 
     // Resume a paused campaign, optionally extending its cycle budget.
     rpc ResumeCampaign(ResumeCampaignRequest) returns (ResumeCampaignResponse);
+
+    // Record an owner decision on an escalated campaign and return it to active state.
+    rpc DecideCampaign(DecideCampaignRequest) returns (DecideCampaignResponse);
 
     // Manually dispatch one advance iteration for an active campaign.
     rpc AdvanceCampaign(AdvanceCampaignRequest) returns (AdvanceCampaignResponse);

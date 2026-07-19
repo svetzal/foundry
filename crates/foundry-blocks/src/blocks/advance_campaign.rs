@@ -139,6 +139,23 @@ fn decision_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let owner_decisions = if campaign.owner_decisions.is_empty() {
+        "none recorded".to_string()
+    } else {
+        campaign
+            .owner_decisions
+            .iter()
+            .map(|decision| {
+                format!(
+                    "- {} [{}] {}",
+                    decision.decided_at.to_rfc3339(),
+                    decision.authorized_by,
+                    decision.decision
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let gates = serde_json::to_string_pretty(gate_results).unwrap_or_default();
     let last_result = request.run_result.as_ref().map_or_else(
         || "none (initial/manual advance)".to_string(),
@@ -147,7 +164,7 @@ fn decision_prompt(
     format!(
         "You are advancing a durable engineering campaign. Inspect the live repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
-         REQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          DONE only when every required gate passes and every review statement is true against the repo itself. ADVANCE must cut exactly ONE objective from mission minus current state. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
@@ -160,6 +177,7 @@ fn decision_prompt(
         campaign.cycles_landed,
         campaign.budget.max_cycles,
         campaign.escalation.join("\n- "),
+        owner_decisions,
         review_evidence,
         gates,
         last_result,
@@ -702,7 +720,7 @@ impl TaskBlock for AdvanceCampaign {
 #[cfg(test)]
 mod tests {
     use foundry_sdk::campaign::{
-        Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence,
+        Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence, OwnerDecision,
     };
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::payload::{
@@ -746,6 +764,7 @@ mod tests {
             authorized_by: Some("owner".to_string()),
             agent_provider: None,
             last_run_event_id: Some("run-2".to_string()),
+            owner_decisions: vec![],
             pending_run_result: None,
         }
     }
@@ -837,6 +856,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -911,6 +931,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -988,6 +1009,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -1072,6 +1094,7 @@ mod tests {
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -1140,5 +1163,73 @@ mod tests {
         assert_eq!(campaign.cycles_landed, 1);
         assert_eq!(campaign.cycles_completed, 2);
         assert!(campaign.pending_run_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn recorded_owner_decision_appears_in_next_formation_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        std::fs::write(dir.path().join("CHARTER.md"), "charter").unwrap();
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: CampaignBudget { max_cycles: 3 },
+                escalation: vec![],
+                status: CampaignStatus::Active,
+                cycles_completed: 1,
+                cycles_landed: 1,
+                authorized_by: Some("owner".to_string()),
+                agent_provider: None,
+                last_run_event_id: Some("run-1".to_string()),
+                owner_decisions: vec![OwnerDecision {
+                    decision: "Prefer the generated gRPC client path; do not add raw JSON shims."
+                        .to_string(),
+                    authorized_by: "owner".to_string(),
+                    decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                }],
+                pending_run_result: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Add the generated client test.\",\"reason\":\"owner policy recorded\"}\n```",
+        );
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        );
+
+        let _ = block.execute(&trigger).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(
+            invocations[0]
+                .prompt
+                .contains("Prefer the generated gRPC client path; do not add raw JSON shims.")
+        );
+        assert!(invocations[0].prompt.contains("OWNER DECISIONS"));
+        assert!(invocations[0].prompt.contains("2026-07-18T12:00:00+00:00 [owner]"));
     }
 }

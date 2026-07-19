@@ -91,6 +91,7 @@ foundry campaign list
 foundry campaign show parite-phase-2d
 foundry campaign advance parite-phase-2d
 foundry campaign pause parite-phase-2d
+foundry campaign decide parite-phase-2d --decision "Use the generated tonic client path."
 foundry campaign resume parite-phase-2d
 # When the cycle budget was exhausted, explicitly authorize more work:
 foundry campaign resume parite-phase-2d --add-cycles 1
@@ -126,6 +127,21 @@ additional work authorization explicit. Completion
 and escalation are terminal events and are forced into the next ops digest as
 an anomaly. Campaign-store mutations are serialized across the CLI and daemon,
 so a control command cannot overwrite an in-flight formation decision.
+
+When a task escalates with a human judgment question, record the owner's policy
+before the next advance:
+
+```bash
+foundry campaign decide parite-phase-2d \
+  --decision "Keep the generated tonic client boundary; do not add raw JSON shims."
+```
+
+`decide` is valid only for an `escalated` campaign. It appends an owner
+decision record with the decision text, the campaign's `authorized_by` value,
+and a timestamp, then returns the campaign to `active`. Subsequent formation
+prompts include every recorded owner decision as binding context, so the next
+advance can continue under explicit policy instead of re-escalating on the same
+question.
 
 ### Pause and the daemon boundary
 

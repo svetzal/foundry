@@ -176,6 +176,7 @@ foundry campaign list
 foundry campaign show <name>
 foundry campaign advance <name>
 foundry campaign pause <name>
+foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign resume <name>
 ```
 
@@ -186,13 +187,17 @@ foundry campaign resume <name>
 | `show` | No | Show the complete stored campaign record |
 | `advance` | Yes | Re-evaluate done evidence and dispatch one next task, complete, or escalate |
 | `pause` | No | Halt future automatic and manual advancement |
+| `decide` | No | Record an owner decision on an escalated campaign and return it to active |
 | `resume` | No | Return an authorized paused or escalated campaign to active state |
 
 The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `FOUNDRY_CAMPAIGNS_PATH`. A definition requires non-empty `name`, `project`, and
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
-required before resume. See [Tasks and Campaigns](../guide/campaigns.md) for the
-definition schema and lifecycle.
+required before `decide` or resume. `decide` is valid only when the campaign is
+currently `escalated`; it appends an owner decision record and makes that
+policy available to the next formation run. See
+[Tasks and Campaigns](../guide/campaigns.md) for the definition schema and
+lifecycle.
 
 ## `foundry validate`
 

@@ -142,6 +142,7 @@ foundry campaign list
 foundry campaign show <name>
 foundry campaign advance <name>
 foundry campaign pause <name>
+foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign resume <name> [--add-cycles N]
 ```
 
@@ -167,6 +168,12 @@ silently ignore absent test files from yielding false-green evidence.
 When a campaign escalates because its cycle budget is exhausted, resuming
 requires an explicit owner-authorized extension, for example
 `foundry campaign resume <name> --add-cycles 1`.
+
+When a campaign escalates on a human judgment question, record the owner's
+policy with `foundry campaign decide <name> --decision "<text>"`. This appends
+an owner decision record to the durable campaign and returns the campaign to
+`active`; future formation prompts treat every recorded owner decision as
+binding context instead of re-escalating on the same question.
 
 Read `references/workflows.md` for the event chain and the campaign definition
 example in `book/src/guide/campaigns.md` when preparing a new campaign.

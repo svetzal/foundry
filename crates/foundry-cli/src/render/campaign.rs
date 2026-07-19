@@ -61,6 +61,14 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
             }
         }
     }
+    let _ = writeln!(out, "Owner decisions:");
+    for decision in &detail.owner_decisions {
+        let _ = writeln!(
+            out,
+            "  {} [{}] {}",
+            decision.decided_at, decision.authorized_by, decision.decision
+        );
+    }
     out
 }
 
@@ -122,6 +130,16 @@ pub fn campaign_detail(campaign: &Campaign) -> String {
                 let _ = writeln!(out, "  review: {statement}");
             }
         }
+    }
+    let _ = writeln!(out, "Owner decisions:");
+    for decision in &campaign.owner_decisions {
+        let _ = writeln!(
+            out,
+            "  {} [{}] {}",
+            decision.decided_at.to_rfc3339(),
+            decision.authorized_by,
+            decision.decision
+        );
     }
     out
 }

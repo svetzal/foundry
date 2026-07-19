@@ -241,6 +241,12 @@ enum CampaignCommands {
     Advance { name: String },
     /// Pause automatic advancement
     Pause { name: String },
+    /// Record an owner decision and reactivate an escalated campaign
+    Decide {
+        name: String,
+        #[arg(long)]
+        decision: String,
+    },
     /// Resume an authorized paused or escalated campaign
     Resume {
         name: String,
@@ -546,6 +552,9 @@ async fn handle_campaign_command(
         }
         CampaignCommands::Pause { name } => {
             campaign_commands::pause(campaigns_path, addr, offline, &name).await
+        }
+        CampaignCommands::Decide { name, decision } => {
+            campaign_commands::decide(campaigns_path, addr, offline, &name, &decision).await
         }
         CampaignCommands::Resume { name, add_cycles } => {
             campaign_commands::resume(campaigns_path, &name, add_cycles)

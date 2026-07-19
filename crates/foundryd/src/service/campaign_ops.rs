@@ -1,8 +1,11 @@
 use std::path::Path;
 
+use chrono::Utc;
 use tonic::{Request, Response, Status};
 
-use foundry_sdk::campaign::{CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence};
+use foundry_sdk::campaign::{
+    CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence, OwnerDecision,
+};
 use foundry_sdk::error::StoreError;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::CampaignAdvanceRequestedPayload;
@@ -10,8 +13,9 @@ use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     AdvanceCampaignRequest, AdvanceCampaignResponse, Campaign as ProtoCampaign, CampaignDetail,
-    DoneEvidence as ProtoDoneEvidence, GetCampaignRequest, GetCampaignResponse,
-    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    DecideCampaignRequest, DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence,
+    GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
     ResumeCampaignRequest, ResumeCampaignResponse,
 };
 
@@ -96,6 +100,14 @@ fn done_evidence_to_proto(evidence: &DoneEvidence) -> ProtoDoneEvidence {
     }
 }
 
+fn owner_decision_to_proto(decision: &OwnerDecision) -> ProtoOwnerDecision {
+    ProtoOwnerDecision {
+        decision: decision.decision.clone(),
+        authorized_by: decision.authorized_by.clone(),
+        decided_at: decision.decided_at.to_rfc3339(),
+    }
+}
+
 fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDetail {
     CampaignDetail {
         name: campaign.name.clone(),
@@ -112,7 +124,12 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         context_paths: campaign.context_paths.clone(),
         done_evidence: campaign.done_evidence.iter().map(done_evidence_to_proto).collect(),
         escalation: campaign.escalation.clone(),
+        owner_decisions: campaign.owner_decisions.iter().map(owner_decision_to_proto).collect(),
     }
+}
+
+fn invalid_state(name: &str, detail: &str) -> Status {
+    Status::failed_precondition(format!("campaign '{name}' {detail}"))
 }
 
 pub(super) fn get(
@@ -199,6 +216,47 @@ pub(super) fn resume(
     }))
 }
 
+/// Record an owner decision on an escalated campaign and return it to active state.
+pub(super) fn decide(
+    campaigns_path: &Path,
+    request: Request<DecideCampaignRequest>,
+) -> Result<Response<DecideCampaignResponse>, Status> {
+    let req = request.into_inner();
+    let name = req.name;
+    let decision = req.decision.trim().to_string();
+    if decision.is_empty() {
+        return Err(Status::invalid_argument("decision must be non-empty"));
+    }
+
+    let mut guard = lock_store_exclusive(campaigns_path)?;
+    let campaign = guard
+        .store
+        .find_mut(&name)
+        .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+
+    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
+        invalid_state(&name, "has not been authorized; decide requires authorized_by")
+    })?;
+    if campaign.status != CampaignStatus::Escalated {
+        return Err(invalid_state(
+            &name,
+            &format!("is '{}'; decide requires Escalated status", campaign.status),
+        ));
+    }
+
+    campaign.owner_decisions.push(OwnerDecision {
+        decision,
+        authorized_by,
+        decided_at: Utc::now(),
+    });
+    campaign.status = CampaignStatus::Active;
+    let detail = campaign_to_detail(campaign);
+    guard.save().map_err(map_save_error)?;
+    Ok(Response::new(DecideCampaignResponse {
+        campaign: Some(detail),
+    }))
+}
+
 /// Dispatch one manual advance iteration for an active (or staged) campaign.
 ///
 /// Validates campaign existence and status under the exclusive lock, releases
@@ -272,7 +330,7 @@ pub(super) fn list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_sdk::campaign::{Campaign, CampaignBudget, DoneEvidence};
+    use foundry_sdk::campaign::{Campaign, CampaignBudget, DoneEvidence, OwnerDecision};
 
     fn sample_campaign(name: &str, project: &str) -> Campaign {
         Campaign {
@@ -292,6 +350,7 @@ mod tests {
             authorized_by: Some("Owner".to_string()),
             agent_provider: Some("codex".to_string()),
             last_run_event_id: Some("run-42".to_string()),
+            owner_decisions: vec![],
             pending_run_result: None,
         }
     }
@@ -351,6 +410,13 @@ mod tests {
             authorized_by: Some("alice".to_string()),
             agent_provider: Some("claude".to_string()),
             last_run_event_id: Some("evt-99".to_string()),
+            owner_decisions: vec![OwnerDecision {
+                decision: "Proceed with the migration.".to_string(),
+                authorized_by: "alice".to_string(),
+                decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T10:00:00Z")
+                    .expect("parse RFC3339 timestamp")
+                    .with_timezone(&Utc),
+            }],
             pending_run_result: None,
         };
         let tmp = write_store_with(vec![campaign]);
@@ -374,6 +440,10 @@ mod tests {
         assert_eq!(detail.intent_refs, vec!["intent.one", "intent.two"]);
         assert_eq!(detail.context_paths, vec!["docs/context.md"]);
         assert_eq!(detail.escalation, vec!["Ping the team."]);
+        assert_eq!(detail.owner_decisions.len(), 1);
+        assert_eq!(detail.owner_decisions[0].decision, "Proceed with the migration.");
+        assert_eq!(detail.owner_decisions[0].authorized_by, "alice");
+        assert_eq!(detail.owner_decisions[0].decided_at, "2026-07-18T10:00:00+00:00");
 
         // Verify Gate evidence: kind, command, required flag
         assert_eq!(detail.done_evidence.len(), 2);

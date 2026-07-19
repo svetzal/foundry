@@ -9,17 +9,17 @@
 //! fallback (and graceful-degradation path when the daemon is unreachable) mutates
 //! the store file directly via [`CampaignStore::lock_exclusive`].
 //!
-//! The `resume` and `advance` commands are out of scope for this slice — their
-//! daemon-boundary migration carries decision-bearing semantic changes and is
-//! handled separately.
+//! The `advance` command is out of scope for daemon fallback changes in this
+//! slice — its workflow dispatch semantics are handled separately.
 
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore};
+use chrono::Utc;
+use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
 
 use crate::daemon::{status_to_anyhow, with_daemon_or_offline_render};
-use crate::proto::PauseCampaignRequest;
+use crate::proto::{DecideCampaignRequest, PauseCampaignRequest};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
@@ -109,6 +109,51 @@ pub async fn pause(store_path: &Path, addr: &str, offline: bool, name: &str) -> 
     Ok(())
 }
 
+/// Record an owner decision via the daemon (online path) or the campaign
+/// store (offline/fallback path).
+pub async fn decide_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    decision: &str,
+) -> Result<String> {
+    let name_for_daemon = name.to_string();
+    let name_for_file = name.to_string();
+    let decision_for_daemon = decision.to_string();
+    let decision_for_file = decision.to_string();
+    let store_path_for_file = store_path.to_path_buf();
+    with_daemon_or_offline_render(
+        addr,
+        offline,
+        move |mut client| async move {
+            let req = DecideCampaignRequest {
+                name: name_for_daemon,
+                decision: decision_for_daemon,
+            };
+            let resp = client.decide_campaign(req).await.map_err(status_to_anyhow)?;
+            let detail = resp.into_inner().campaign.ok_or_else(|| {
+                anyhow::anyhow!("daemon returned no campaign in DecideCampaignResponse")
+            })?;
+            Ok(render::campaign::campaign_detail_proto(&detail))
+        },
+        move || decide_offline_and_render(&store_path_for_file, &name_for_file, &decision_for_file),
+    )
+    .await
+}
+
+pub async fn decide(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    decision: &str,
+) -> Result<()> {
+    let output = decide_and_render(store_path, addr, offline, name, decision).await?;
+    print!("{output}");
+    Ok(())
+}
+
 /// Direct-store pause used by the offline / fallback path.
 ///
 /// Acquires an exclusive lock, sets `status = Paused`, and saves.
@@ -122,6 +167,33 @@ fn pause_offline(store_path: &Path, name: &str) -> Result<()> {
     campaign.status = CampaignStatus::Paused;
     guard.save()?;
     Ok(())
+}
+
+fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> Result<String> {
+    let decision = decision.trim();
+    if decision.is_empty() {
+        bail!("decision must be non-empty");
+    }
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
+        anyhow::anyhow!("campaign '{name}' has not been authorized; decide requires authorized_by")
+    })?;
+    if campaign.status != CampaignStatus::Escalated {
+        bail!("campaign '{name}' is '{}'; decide requires Escalated status", campaign.status);
+    }
+    campaign.owner_decisions.push(OwnerDecision {
+        decision: decision.to_string(),
+        authorized_by,
+        decided_at: Utc::now(),
+    });
+    campaign.status = CampaignStatus::Active;
+    let rendered = render::campaign::campaign_detail(campaign);
+    guard.save()?;
+    Ok(rendered)
 }
 
 pub fn resume(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
@@ -154,10 +226,15 @@ pub async fn advance(addr: &str, store_path: &Path, name: &str) -> Result<()> {
     let store = CampaignStore::load(store_path)?;
     let campaign =
         store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    if matches!(campaign.status, CampaignStatus::Paused | CampaignStatus::Escalated) {
+    if campaign.status == CampaignStatus::Paused {
         bail!(
             "campaign '{name}' is {}; run `foundry campaign resume {name}` before advancing",
             campaign.status
+        );
+    }
+    if campaign.status == CampaignStatus::Escalated {
+        bail!(
+            "campaign '{name}' is escalated; record owner policy with `foundry campaign decide {name} --decision \"...\"` or use `foundry campaign resume {name}` when the escalation was budget-only"
         );
     }
     if campaign.status == CampaignStatus::Completed {
@@ -259,6 +336,7 @@ mod tests {
                 authorized_by: Some("tester".to_string()),
                 agent_provider: None,
                 last_run_event_id: None,
+                owner_decisions: vec![],
                 pending_run_result: None,
             })
             .unwrap();
@@ -272,5 +350,54 @@ mod tests {
         let campaign = resumed.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Active);
         assert_eq!(campaign.budget.max_cycles, 3);
+    }
+
+    #[tokio::test]
+    async fn offline_decide_appends_owner_decision_and_reactivates_campaign() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: foundry_sdk::campaign::CampaignBudget { max_cycles: 2 },
+                escalation: vec![],
+                status: CampaignStatus::Escalated,
+                cycles_completed: 2,
+                cycles_landed: 1,
+                authorized_by: Some("tester".to_string()),
+                agent_provider: None,
+                last_run_event_id: Some("run-2".to_string()),
+                owner_decisions: vec![],
+                pending_run_result: None,
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+
+        let rendered = decide_and_render(
+            &store_path,
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            "Use the typed daemon mutation path.",
+        )
+        .await
+        .unwrap();
+
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert_eq!(campaign.owner_decisions.len(), 1);
+        assert_eq!(campaign.owner_decisions[0].decision, "Use the typed daemon mutation path.");
+        assert_eq!(campaign.owner_decisions[0].authorized_by, "tester");
+        assert!(rendered.contains("Owner decisions:"));
+        assert!(rendered.contains("Use the typed daemon mutation path."));
     }
 }

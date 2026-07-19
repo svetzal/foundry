@@ -210,6 +210,41 @@ directly (useful when `foundryd` is not running). When the daemon is
 unreachable and `--offline` is not set, the CLI warns and falls back to the
 direct-store path automatically.
 
+### `DecideCampaign(DecideCampaignRequest) → DecideCampaignResponse`
+
+Record an owner decision on an escalated campaign. The daemon holds the
+exclusive campaign-store lock for the full mutation, appends one durable owner
+decision record, and returns the campaign to `active` so the next advance can
+proceed with that policy in context.
+
+The persisted owner decision carries the decision text, the campaign's current
+`authorized_by` identity, and the daemon timestamp. Existing counters and any
+stored `pending_run_result` are preserved.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to update |
+| `decision` | string | Non-empty owner decision text to record |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Full campaign detail reflecting the state after the decision is applied |
+
+**Errors:** `NOT_FOUND` when no campaign with the given name exists;
+`INVALID_ARGUMENT` when `decision` is empty after trimming;
+`FAILED_PRECONDITION` when the campaign is not `escalated`, lacks
+`authorized_by`, or the campaign store is malformed; `INTERNAL` when the
+campaign store is unreadable.
+
+**CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
+this RPC when the daemon is reachable. Pass `--offline` to bypass the daemon
+and mutate the store file directly. Without `--offline`, an unreachable daemon
+triggers the same warning-and-fallback behavior as `PauseCampaign`.
+
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 
 Retrieve the complete durable definition of one campaign by exact name. Unlike
@@ -331,6 +366,19 @@ omits.
 | `context_paths` | repeated string | Paths to context documents for the campaign |
 | `done_evidence` | repeated DoneEvidence | Completion criteria with `Gate`/`Review` type distinction |
 | `escalation` | repeated string | Human-readable escalation instructions |
+| `owner_decisions` | repeated OwnerDecision | Append-only owner policy decisions recorded after escalations |
+
+### `OwnerDecision`
+
+One recorded owner decision attached to a campaign after an escalation. These
+records are append-only and are threaded back into future campaign formation
+prompts as binding context.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `decision` | string | Owner-authored decision text |
+| `authorized_by` | string | Owner identity copied from the campaign at record time |
+| `decided_at` | string | RFC 3339 timestamp recorded by the daemon |
 
 ### `DoneEvidence`
 
