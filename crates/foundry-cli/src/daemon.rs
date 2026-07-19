@@ -12,10 +12,27 @@
 //! - [`with_daemon_or_offline_render`] — for commands whose output is built
 //!   from the typed RPC response (e.g. `campaign pause`, which renders the
 //!   full `PauseCampaignResponse.campaign` detail).
+//! - [`connect_daemon_required`] — for commands whose online path must fail
+//!   cleanly when the daemon is unreachable instead of mutating a local store.
 
 use anyhow::Result;
 
 use crate::proto::foundry_client::FoundryClient;
+
+/// Connect to the daemon or return a stable actionable error.
+///
+/// Use this for commands whose default online path must not fall back to a
+/// direct file mutation when `foundryd` is unreachable.
+pub async fn connect_daemon_required(
+    addr: &str,
+    offline_hint: &str,
+) -> Result<FoundryClient<tonic::transport::Channel>> {
+    FoundryClient::connect(addr.to_string()).await.map_err(|_| {
+        anyhow::anyhow!(
+            "foundryd is not reachable at {addr}; start the daemon or rerun with `{offline_hint}`"
+        )
+    })
+}
 
 /// Run an operation via the daemon when reachable, or fall back to direct
 /// file mutation when not.
@@ -163,6 +180,19 @@ mod tests {
         assert!(
             err.to_string().contains("daemon error:"),
             "formatted error should start with 'daemon error:'"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_daemon_required_returns_stable_actionable_error() {
+        let err =
+            connect_daemon_required("http://127.0.0.1:0", "foundry campaign decide c --offline")
+                .await
+                .expect_err("unreachable daemon must error");
+
+        assert_eq!(
+            err.to_string(),
+            "foundryd is not reachable at http://127.0.0.1:0; start the daemon or rerun with `foundry campaign decide c --offline`"
         );
     }
 

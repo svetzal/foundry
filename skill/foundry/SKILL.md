@@ -173,7 +173,10 @@ When a campaign escalates on a human judgment question, record the owner's
 policy with `foundry campaign decide <name> --decision "<text>"`. This appends
 an owner decision record to the durable campaign and returns the campaign to
 `active`; future formation prompts treat every recorded owner decision as
-binding context instead of re-escalating on the same question.
+binding context instead of re-escalating on the same question. By default,
+`decide` requires a reachable `foundryd` daemon; pass `--offline` only when
+you intentionally want to mutate `~/.foundry/campaigns.json` directly while
+the daemon is stopped.
 
 Read `references/workflows.md` for the event chain and the campaign definition
 example in `book/src/guide/campaigns.md` when preparing a new campaign.

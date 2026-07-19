@@ -241,9 +241,10 @@ stored `pending_run_result` are preserved.
 campaign store is unreadable.
 
 **CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
-this RPC when the daemon is reachable. Pass `--offline` to bypass the daemon
-and mutate the store file directly. Without `--offline`, an unreachable daemon
-triggers the same warning-and-fallback behavior as `PauseCampaign`.
+this RPC by default and therefore requires a reachable daemon. Pass
+`--offline` to bypass the daemon and mutate the store file directly. Without
+`--offline`, an unreachable daemon returns an error and leaves the store file
+unchanged.
 
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 

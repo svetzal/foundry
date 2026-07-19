@@ -205,3 +205,31 @@ async fn online_decide_not_found_maps_to_daemon_error() {
     assert!(message.contains("daemon error"));
     assert!(message.contains("campaign 'missing' not found"));
 }
+
+#[tokio::test]
+async fn online_decide_unreachable_daemon_leaves_store_byte_for_byte_unchanged() {
+    let tmp_campaigns = NamedTempFile::new().expect("tempfile for campaigns");
+    seed_campaign(&tmp_campaigns, escalated_campaign("c"));
+    let before = std::fs::read(tmp_campaigns.path()).expect("read seeded campaigns file");
+
+    let err = decide_and_render(
+        tmp_campaigns.path(),
+        "http://127.0.0.1:0",
+        false,
+        "c",
+        "Keep the generated tonic client boundary.",
+    )
+    .await
+    .expect_err("unreachable daemon must fail");
+
+    assert_eq!(
+        err.to_string(),
+        "foundryd is not reachable at http://127.0.0.1:0; start the daemon or rerun with `foundry campaign decide c --offline`"
+    );
+
+    let after = std::fs::read(tmp_campaigns.path()).expect("read campaigns file after failure");
+    assert_eq!(
+        after, before,
+        "online decide must not mutate campaigns.json when the daemon is unreachable"
+    );
+}

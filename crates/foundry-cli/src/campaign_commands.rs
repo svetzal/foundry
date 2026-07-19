@@ -9,6 +9,10 @@
 //! fallback (and graceful-degradation path when the daemon is unreachable) mutates
 //! the store file directly via [`CampaignStore::lock_exclusive`].
 //!
+//! The `decide` mutation command is intentionally stricter: without explicit
+//! `--offline` it requires a reachable daemon and must not mutate the store
+//! file when the daemon is unavailable.
+//!
 //! The `advance` command is out of scope for daemon fallback changes in this
 //! slice — its workflow dispatch semantics are handled separately.
 
@@ -18,7 +22,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
 
-use crate::daemon::{status_to_anyhow, with_daemon_or_offline_render};
+use crate::daemon::{connect_daemon_required, status_to_anyhow, with_daemon_or_offline_render};
 use crate::proto::{DecideCampaignRequest, PauseCampaignRequest};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
@@ -110,7 +114,7 @@ pub async fn pause(store_path: &Path, addr: &str, offline: bool, name: &str) -> 
 }
 
 /// Record an owner decision via the daemon (online path) or the campaign
-/// store (offline/fallback path).
+/// store (explicit offline path).
 pub async fn decide_and_render(
     store_path: &Path,
     addr: &str,
@@ -118,28 +122,22 @@ pub async fn decide_and_render(
     name: &str,
     decision: &str,
 ) -> Result<String> {
-    let name_for_daemon = name.to_string();
-    let name_for_file = name.to_string();
-    let decision_for_daemon = decision.to_string();
-    let decision_for_file = decision.to_string();
-    let store_path_for_file = store_path.to_path_buf();
-    with_daemon_or_offline_render(
-        addr,
-        offline,
-        move |mut client| async move {
-            let req = DecideCampaignRequest {
-                name: name_for_daemon,
-                decision: decision_for_daemon,
-            };
-            let resp = client.decide_campaign(req).await.map_err(status_to_anyhow)?;
-            let detail = resp.into_inner().campaign.ok_or_else(|| {
-                anyhow::anyhow!("daemon returned no campaign in DecideCampaignResponse")
-            })?;
-            Ok(render::campaign::campaign_detail_proto(&detail))
-        },
-        move || decide_offline_and_render(&store_path_for_file, &name_for_file, &decision_for_file),
-    )
-    .await
+    if offline {
+        return decide_offline_and_render(store_path, name, decision);
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &format!("foundry campaign decide {name} --offline")).await?;
+    let req = DecideCampaignRequest {
+        name: name.to_string(),
+        decision: decision.to_string(),
+    };
+    let resp = client.decide_campaign(req).await.map_err(status_to_anyhow)?;
+    let detail = resp
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in DecideCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
 }
 
 pub async fn decide(

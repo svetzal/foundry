@@ -143,6 +143,20 @@ prompts include every recorded owner decision as binding context, so the next
 advance can continue under explicit policy instead of re-escalating on the same
 question.
 
+By default, `foundry campaign decide` is an online mutation: it requires a
+reachable `foundryd` daemon and sends the decision through the
+`DecideCampaign` RPC. If the daemon is unreachable, the command fails and does
+not mutate `~/.foundry/campaigns.json`.
+
+If you need to update the file while the daemon is stopped, opt into the direct
+store path explicitly:
+
+```bash
+foundry campaign decide parite-phase-2d \
+  --decision "Keep the generated tonic client boundary; do not add raw JSON shims." \
+  --offline
+```
+
 ### Pause and the daemon boundary
 
 `foundry campaign pause` routes the mutation through `foundryd` via the
