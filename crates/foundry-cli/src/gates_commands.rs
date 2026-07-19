@@ -264,7 +264,7 @@ fn invoke_claude(project_dir: &Path, context: &str) -> Result<String> {
     let mut cmd = Command::new("claude");
     cmd.arg("--print")
         .arg("--model")
-        .arg("claude-sonnet-4-6")
+        .arg("claude-sonnet-5")
         .arg("--dangerously-skip-permissions")
         .arg("--allowedTools")
         .arg("Read Glob Grep")

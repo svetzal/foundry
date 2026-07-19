@@ -160,7 +160,7 @@ The `retry_count` from the payload tracks which attempt this is.
 `Route Gate Result` makes the terminal decision:
 
 | Condition | Action |
-|-----------|--------|
+| --- | --- |
 | All required gates pass | Emit `project_iteration_completed` (success) |
 | Required gates fail, retry count < 3 | Emit `retry_requested` with failure context |
 | Required gates fail, retry count ≥ 3 | Emit `project_iteration_completed` (failure) |
@@ -239,15 +239,15 @@ Foundry delegates AI work to the Claude CLI, mapping each block's capability
 hint to a concrete model:
 
 | Capability | Model | Use Case |
-|------------|-------|----------|
+| --- | --- | --- |
 | Reasoning | `claude-opus-4-6` | Deep analysis and planning |
-| Coding | `claude-sonnet-4-6` | Code generation and modification |
+| Coding | `claude-sonnet-5` | Code generation and modification |
 | Quick | `claude-haiku-4-5-20251001` | Fast, lightweight decisions |
 
 Access levels control which CLI tools the agent may use:
 
 | Access | Allowed Tools |
-|--------|---------------|
+| --- | --- |
 | Read-only | `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch` |
 | Full | All tools (no restrictions) |
 
@@ -255,7 +255,7 @@ Each phase in the iterate workflow maps to a specific capability and access
 level:
 
 | Phase | Capability | Model | Access | Purpose |
-|-------|-----------|-------|--------|---------|
+| --- | --- | --- | --- | --- |
 | Assessment | Reasoning | Opus | Read-only | Deep analysis of codebase |
 | Audit naming | Quick | Haiku | Read-only | Generate kebab-case filename |
 | Triage | Quick | Haiku | Read-only | Accept/reject decision |
@@ -273,7 +273,7 @@ use a fixed 120-second timeout for their lightweight Quick calls.
 ## Payload Fields
 
 | Field | Carried By | Purpose |
-|-------|-----------|---------|
+| --- | --- | --- |
 | `actions` | All events | `{iterate, maintain}` flags for workflow routing |
 | `gates` | Gates resolved through plan creation | Gate definitions for execution context |
 | `audit_name` | Assessment through plan creation | Kebab-case audit filename for traceability |

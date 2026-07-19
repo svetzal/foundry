@@ -63,7 +63,7 @@ impl ProviderModels {
             AgentProvider::Claude => build(
                 &[
                     (ModelTier::Deep, "claude-opus-4-8"),
-                    (ModelTier::Balanced, "claude-sonnet-4-6"),
+                    (ModelTier::Balanced, "claude-sonnet-5"),
                     (ModelTier::Fast, "claude-haiku-4-5-20251001"),
                 ],
                 &[
@@ -275,7 +275,7 @@ mod tests {
     fn default_tier_models_match_prior_hardcoded_mappings() {
         let claude = ProviderModels::default_for(AgentProvider::Claude);
         assert_eq!(claude.model(ModelTier::Deep, AgentProvider::Claude), "claude-opus-4-8");
-        assert_eq!(claude.model(ModelTier::Balanced, AgentProvider::Claude), "claude-sonnet-4-6");
+        assert_eq!(claude.model(ModelTier::Balanced, AgentProvider::Claude), "claude-sonnet-5");
         assert_eq!(
             claude.model(ModelTier::Fast, AgentProvider::Claude),
             "claude-haiku-4-5-20251001"

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Claude's balanced model tier now uses `claude-sonnet-5`, replacing the
+  outdated `claude-sonnet-4-6` mapping for coding-agent work and gate
+  derivation.
+
 ## [0.30.1] - 2026-07-19
 
 ### Fixed

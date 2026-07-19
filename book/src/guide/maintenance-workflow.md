@@ -47,7 +47,7 @@ flowchart TD
 `project_validation_completed` payload and makes a single decision:
 
 | Condition | Emits |
-|-----------|-------|
+| --- | --- |
 | `status != "ok"` | nothing — chain stops |
 | `actions.iterate = true` | `iteration_requested` |
 | `actions.iterate = false`, `actions.maintain = true` | `maintenance_requested` |
@@ -76,7 +76,7 @@ foundry emit maintenance_run_started my-project
 ## Throttle Behaviour
 
 | Throttle | Effect |
-|----------|--------|
+| --- | --- |
 | `full` | All blocks execute and emit events |
 | `dry_run` | Observers emit; mutators are skipped entirely |
 
@@ -88,8 +88,8 @@ emitted (by the Observer router). No execution blocks run.
 The maintenance workflow uses a single agent invocation in `Execute Maintain`:
 
 | Phase | Capability | Model | Access | Purpose |
-|-------|-----------|-------|--------|---------|
-| Execute Maintain | Coding | `claude-sonnet-4-6` | Full | Update dependencies, fix vulnerabilities, resolve gate failures |
+| --- | --- | --- | --- | --- |
+| Execute Maintain | Coding | `claude-sonnet-5` | Full | Update dependencies, fix vulnerabilities, resolve gate failures |
 
 Gate definitions are passed as context so the agent knows what must pass
 after its changes. If the project has an agent file registered, it is
