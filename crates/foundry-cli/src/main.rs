@@ -544,7 +544,9 @@ async fn handle_campaign_command(
     offline: bool,
 ) -> Result<()> {
     match command {
-        CampaignCommands::Add { file } => campaign_commands::add(campaigns_path, &file),
+        CampaignCommands::Add { file } => {
+            campaign_commands::add(campaigns_path, &foundry_sdk::paths::registry_path(), &file)
+        }
         CampaignCommands::List => campaign_commands::list(campaigns_path),
         CampaignCommands::Show { name } => campaign_commands::show(campaigns_path, &name),
         CampaignCommands::Advance { name } => {

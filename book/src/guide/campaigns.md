@@ -74,14 +74,18 @@ Create a JSON definition file:
 }
 ```
 
-`intent_refs` are opaque trace references. `context_paths` must be
-repository-relative files and cannot escape the registered checkout. Foundry
-reads these neutral artifacts but does not invoke the system that produced
-them. A gate may declare repository-relative `artifacts`; every declared path
-must exist before its command is eligible to pass. This prevents test runners
-that silently ignore missing file arguments from producing false-green campaign
-evidence. At least one `done_evidence` item is required. The default cycle
-budget is 20 when `budget` is omitted.
+`intent_refs` are opaque trace references. `context_paths` must be existing
+repository-relative files under the registered checkout: absolute paths,
+parent-directory traversal, missing files, and paths that resolve outside the
+checkout are rejected by `foundry campaign add` before the definition is saved.
+Foundry reads these neutral artifacts but does not invoke the system that
+produced them. This means an accepted campaign definition will not later fail
+formation solely because a declared context file never existed. A gate may
+declare repository-relative `artifacts`; every declared path must exist before
+its command is eligible to pass. This prevents test runners that silently
+ignore missing file arguments from producing false-green campaign evidence. At
+least one `done_evidence` item is required. The default cycle budget is 20 when
+`budget` is omitted.
 
 ## Managing a Campaign
 

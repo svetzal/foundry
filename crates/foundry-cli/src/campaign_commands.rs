@@ -17,27 +17,96 @@
 //! The `advance` command is out of scope for daemon fallback changes in this
 //! slice — its workflow dispatch semantics are handled separately.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
+use foundry_sdk::registry::Registry;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow, with_daemon_or_offline_render};
 use crate::proto::{DecideCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
-pub fn add(store_path: &Path, file: &Path) -> Result<()> {
+pub fn add(store_path: &Path, registry_path: &Path, file: &Path) -> Result<()> {
     let content = std::fs::read_to_string(file)
         .with_context(|| format!("read campaign definition {}", file.display()))?;
     let campaign: Campaign = serde_json::from_str(&content)
         .with_context(|| format!("parse campaign definition {}", file.display()))?;
+    validate_campaign_definition(&campaign, registry_path)?;
     let name = campaign.name.clone();
     let mut guard = CampaignStore::lock_exclusive(store_path)?;
     guard.store.add(campaign)?;
     guard.save()?;
     println!("Added campaign '{name}'.");
+    Ok(())
+}
+
+fn validate_campaign_definition(campaign: &Campaign, registry_path: &Path) -> Result<()> {
+    campaign.validate()?;
+    let registry = Registry::load(registry_path)
+        .with_context(|| format!("load registry {}", registry_path.display()))?;
+    let project = registry.find_project(&campaign.project).ok_or_else(|| {
+        anyhow::anyhow!(
+            "campaign '{}' references unknown registered project '{}'",
+            campaign.name,
+            campaign.project
+        )
+    })?;
+    validate_context_paths(campaign, Path::new(&project.path))
+}
+
+fn validate_context_paths(campaign: &Campaign, repo_path: &Path) -> Result<()> {
+    let repo = repo_path.canonicalize().with_context(|| {
+        format!(
+            "campaign '{}' project '{}' checkout is unreadable: {}",
+            campaign.name,
+            campaign.project,
+            repo_path.display()
+        )
+    })?;
+    for context_path in &campaign.context_paths {
+        validate_context_path(campaign, &repo, context_path)?;
+    }
+    Ok(())
+}
+
+fn validate_context_path(campaign: &Campaign, repo: &Path, context_path: &str) -> Result<()> {
+    let relative = Path::new(context_path);
+    if relative.is_absolute() {
+        bail!(
+            "campaign '{}' context path must be repository-relative: {}",
+            campaign.name,
+            context_path
+        );
+    }
+    if relative.components().any(|component| matches!(component, Component::ParentDir)) {
+        bail!(
+            "campaign '{}' context path must not traverse parent directories: {}",
+            campaign.name,
+            context_path
+        );
+    }
+
+    let candidate = repo.join(relative);
+    if !candidate.exists() {
+        bail!("campaign '{}' context path missing: {}", campaign.name, context_path);
+    }
+
+    let canonical = candidate.canonicalize().with_context(|| {
+        format!("campaign '{}' context path is unreadable: {}", campaign.name, context_path)
+    })?;
+    if !canonical.starts_with(repo) {
+        bail!(
+            "campaign '{}' context path escapes project checkout: {}",
+            campaign.name,
+            context_path
+        );
+    }
+    if !canonical.is_file() {
+        bail!("campaign '{}' context path must be a file: {}", campaign.name, context_path);
+    }
     Ok(())
 }
 
@@ -323,6 +392,38 @@ pub async fn advance(addr: &str, store_path: &Path, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
+
+    fn write_registry(dir: &tempfile::TempDir, project: &str, repo: &Path) -> std::path::PathBuf {
+        let registry_path = dir.path().join("registry.json");
+        Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: project.to_string(),
+                path: repo.display().to_string(),
+                stack: Stack::Rust,
+                agent: "codex".to_string(),
+                repo: "owner/repo".to_string(),
+                branch: "main".to_string(),
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+                installs_skill: None,
+                notes: None,
+                timeout_secs: None,
+                audit_exceptions: vec![],
+            }],
+        }
+        .save(&registry_path)
+        .unwrap();
+        registry_path
+    }
+
+    fn write_campaign_file(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
+        let path = dir.path().join("campaign.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
 
     // Offline path: pause_and_render with offline=true must not touch gRPC
     // and must flip the status to Paused in the store file.
@@ -330,17 +431,18 @@ mod tests {
     async fn offline_pause_sets_status_paused_in_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
-        let file = dir.path().join("campaign.json");
-        std::fs::write(
-            &file,
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
             r#"{
                 "name":"c", "project":"p", "mission":"ship",
                 "done_evidence":[{"kind":"review","statement":"shipped"}],
                 "authorized_by":"tester"
             }"#,
-        )
-        .unwrap();
-        add(&store, &file).unwrap();
+        );
+        add(&store, &registry_path, &file).unwrap();
 
         let output = pause_and_render(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
 
@@ -361,17 +463,18 @@ mod tests {
     async fn add_list_show_pause_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
-        let file = dir.path().join("campaign.json");
-        std::fs::write(
-            &file,
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
             r#"{
                 "name":"c", "project":"p", "mission":"ship",
                 "done_evidence":[{"kind":"review","statement":"shipped"}],
                 "authorized_by":"tester"
             }"#,
-        )
-        .unwrap();
-        add(&store, &file).unwrap();
+        );
+        add(&store, &registry_path, &file).unwrap();
         list(&store).unwrap();
         show(&store, "c").unwrap();
         pause(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
@@ -433,10 +536,12 @@ mod tests {
     async fn offline_resume_mutates_store_and_rejects_exhausted_with_zero_add_cycles() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
-        let file = dir.path().join("campaign.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
         // Seed a paused campaign with an exhausted budget.
-        std::fs::write(
-            &file,
+        let file = write_campaign_file(
+            &dir,
             r#"{
                 "name":"c", "project":"p", "mission":"ship",
                 "done_evidence":[{"kind":"review","statement":"shipped"}],
@@ -445,9 +550,8 @@ mod tests {
                 "cycles_completed":2,
                 "status":"paused"
             }"#,
-        )
-        .unwrap();
-        add(&store, &file).unwrap();
+        );
+        add(&store, &registry_path, &file).unwrap();
 
         // Exhausted + add_cycles=0 must be rejected — store must be unchanged.
         let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
@@ -471,6 +575,128 @@ mod tests {
         let campaign = after.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Active);
         assert_eq!(campaign.budget.max_cycles, 3, "budget must be extended by add_cycles");
+    }
+
+    #[test]
+    fn add_rejects_unknown_registered_project_distinctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "known-project", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"missing-project", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}]
+            }"#,
+        );
+
+        let err = add(&store, &registry_path, &file).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "campaign 'c' references unknown registered project 'missing-project'"
+        );
+        assert!(!store.exists(), "rejected add must not create the store");
+    }
+
+    #[test]
+    fn add_rejects_invalid_context_paths_without_mutating_existing_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let outside_file = dir.path().join("outside.md");
+        std::fs::write(&outside_file, "outside").unwrap();
+        let linked_escape = repo.join("linked-outside.md");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, &linked_escape).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside_file, &linked_escape).unwrap();
+        let original = concat!(
+            "{\n",
+            "  \"version\": 1,\n",
+            "  \"campaigns\": [\n",
+            "    {\n",
+            "      \"name\": \"existing\",\n",
+            "      \"project\": \"p\",\n",
+            "      \"mission\": \"keep\",\n",
+            "      \"done_evidence\": [\n",
+            "        {\n",
+            "          \"kind\": \"review\",\n",
+            "          \"statement\": \"kept\"\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n",
+            "  ]\n",
+            "}\n"
+        );
+        std::fs::write(&store, original).unwrap();
+
+        let cases = [
+            ("missing.md", "campaign 'c' context path missing: missing.md"),
+            (
+                "/tmp/absolute.md",
+                "campaign 'c' context path must be repository-relative: /tmp/absolute.md",
+            ),
+            (
+                "../parent.md",
+                "campaign 'c' context path must not traverse parent directories: ../parent.md",
+            ),
+            (
+                "linked-outside.md",
+                "campaign 'c' context path escapes project checkout: linked-outside.md",
+            ),
+        ];
+
+        for (context_path, expected_error) in cases {
+            let file = write_campaign_file(
+                &dir,
+                &format!(
+                    "{{\n  \"name\":\"c\",\n  \"project\":\"p\",\n  \"mission\":\"ship\",\n  \"context_paths\":[\"{context_path}\"],\n  \"done_evidence\":[{{\"kind\":\"review\",\"statement\":\"shipped\"}}]\n}}"
+                ),
+            );
+
+            let err = add(&store, &registry_path, &file).unwrap_err();
+
+            assert_eq!(err.to_string(), expected_error);
+            assert_eq!(
+                std::fs::read(&store).unwrap(),
+                original.as_bytes(),
+                "rejected add must leave campaigns.json byte-identical for {context_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn add_persists_when_all_context_paths_are_existing_repository_relative_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        let docs = repo.join("docs");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&docs).unwrap();
+        std::fs::write(repo.join("CHARTER.md"), "charter").unwrap();
+        std::fs::write(docs.join("context.md"), "context").unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c",
+                "project":"p",
+                "mission":"ship",
+                "context_paths":["CHARTER.md","docs/context.md"],
+                "done_evidence":[{"kind":"review","statement":"shipped"}]
+            }"#,
+        );
+
+        add(&store, &registry_path, &file).unwrap();
+
+        let stored = CampaignStore::load(&store).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.context_paths, vec!["CHARTER.md", "docs/context.md"]);
     }
 
     #[tokio::test]
