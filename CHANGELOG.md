@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-07-20
+
 ### Changed
 
 - Claude's balanced model tier now uses `claude-sonnet-5`, replacing the
   outdated `claude-sonnet-4-6` mapping for coding-agent work and gate
   derivation.
+
+### Fixed
+
+- Campaign formation now rejects decisions with blank reasons or objectives,
+  and provider failures without diagnostic output receive an explicit fallback
+  reason instead of creating an unexplained owner-decision escalation.
 
 ## [0.30.1] - 2026-07-19
 
