@@ -11,8 +11,9 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    AdvanceCampaignRequest, AdvanceCampaignResponse, DecideCampaignRequest, DecideCampaignResponse,
-    EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
+    AdvanceCampaignRequest, AdvanceCampaignResponse, CompleteCampaignRequest,
+    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
+    EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
     ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
     RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
     RegistryRemoveResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
@@ -189,6 +190,13 @@ impl Foundry for FoundryService {
         request: Request<DecideCampaignRequest>,
     ) -> Result<Response<DecideCampaignResponse>, Status> {
         campaign_ops::decide(&self.campaigns_path, request)
+    }
+
+    async fn complete_campaign(
+        &self,
+        request: Request<CompleteCampaignRequest>,
+    ) -> Result<Response<CompleteCampaignResponse>, Status> {
+        campaign_ops::complete(&self.campaigns_path, &self.ctx, request)
     }
 
     async fn advance_campaign(

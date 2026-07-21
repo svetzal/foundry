@@ -344,6 +344,18 @@ message DecideCampaignResponse {
     CampaignDetail campaign = 1;
 }
 
+// Mark an authorized campaign complete from outside the formation loop.
+// The non-empty reason is retained as an append-only owner record and the
+// daemon emits CampaignCompleted so terminal observers see the transition.
+message CompleteCampaignRequest {
+    string name = 1;
+    string reason = 2;
+}
+
+message CompleteCampaignResponse {
+    CampaignDetail campaign = 1;
+}
+
 // Manually dispatch one advance iteration for an active campaign.
 // Valid only when the campaign is `active` or `staged`; returns
 // FAILED_PRECONDITION for `paused`, `escalated`, or `completed` campaigns.
@@ -433,6 +445,9 @@ service Foundry {
 
     // Record an owner decision on an escalated campaign and return it to active state.
     rpc DecideCampaign(DecideCampaignRequest) returns (DecideCampaignResponse);
+
+    // Mark an authorized campaign complete with an auditable owner reason.
+    rpc CompleteCampaign(CompleteCampaignRequest) returns (CompleteCampaignResponse);
 
     // Manually dispatch one advance iteration for an active campaign.
     rpc AdvanceCampaign(AdvanceCampaignRequest) returns (AdvanceCampaignResponse);

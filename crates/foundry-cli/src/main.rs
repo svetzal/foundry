@@ -247,6 +247,12 @@ enum CampaignCommands {
         #[arg(long)]
         decision: String,
     },
+    /// Mark an authorized campaign complete with an auditable reason
+    Complete {
+        name: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Resume an authorized paused or escalated campaign
     Resume {
         name: String,
@@ -557,6 +563,9 @@ async fn handle_campaign_command(
         }
         CampaignCommands::Decide { name, decision } => {
             campaign_commands::decide(campaigns_path, addr, offline, &name, &decision).await
+        }
+        CampaignCommands::Complete { name, reason } => {
+            campaign_commands::complete(campaigns_path, addr, offline, &name, &reason).await
         }
         CampaignCommands::Resume { name, add_cycles } => {
             campaign_commands::resume(campaigns_path, addr, offline, &name, add_cycles).await

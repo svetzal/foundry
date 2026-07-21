@@ -177,6 +177,21 @@ foundry campaign decide parite-phase-2d \
   --offline
 ```
 
+### External completion
+
+When production or other owner-reviewed evidence proves the mission shipped
+without another formation cycle, close the campaign explicitly:
+
+```bash
+foundry campaign complete parite-phase-2d \
+  --reason "Production verification confirms every required outcome shipped."
+```
+
+This is an owner-authorized terminal transition. Foundry retains the reason and
+timestamp, clears any stale pending result, and emits the same completion event
+used by an internally completed campaign. Use `--offline` only while the daemon
+is stopped; the direct-file path cannot emit the terminal event.
+
 ### Pause and the daemon boundary
 
 `foundry campaign pause` routes the mutation through `foundryd` via the

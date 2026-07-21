@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.30.3] - 2026-07-21
+
+### Added
+
+- `foundry campaign complete <name> --reason <evidence>` now provides an
+  owner-authorized external completion path. It records the reason, clears
+  stale pending results, and emits the normal campaign terminal event so
+  automation and operations digests observe the transition.
+
 ## [0.30.2] - 2026-07-20
 
 ### Changed

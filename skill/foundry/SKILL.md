@@ -15,7 +15,7 @@ description: >
 license: MIT
 compatibility: Requires foundryd daemon running locally (Rust binary, gRPC on 127.0.0.1:50051)
 metadata:
-  version: "0.30.2"
+  version: "0.30.3"
   author: Stacey Vetzal
 ---
 
@@ -143,6 +143,7 @@ foundry campaign show <name>
 foundry campaign advance <name>
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
+foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign resume <name> [--add-cycles N]
 ```
 
@@ -153,6 +154,11 @@ budget. The formation chooses exactly one of done, one next objective, or
 escalation. A task result automatically requests the next advance; remainders
 and defects continue from preserved work, while human decisions and runner
 errors escalate. Completion and escalation are forced into the ops digest.
+
+When owner-reviewed evidence proves a mission shipped outside the formation
+loop, use `campaign complete` with a non-empty reason. Foundry records the
+authorizing owner and reason, clears stale pending results, and emits the normal
+campaign completion event. Pass `--offline` only when the daemon is stopped.
 
 A final budgeted task still receives completion evaluation. Only an attempted
 dispatch beyond the authorized cycle budget escalates the campaign.

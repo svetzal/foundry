@@ -25,7 +25,9 @@ use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecisi
 use foundry_sdk::registry::Registry;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow, with_daemon_or_offline_render};
-use crate::proto::{DecideCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest};
+use crate::proto::{
+    CompleteCampaignRequest, DecideCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest,
+};
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
@@ -222,6 +224,48 @@ pub async fn decide(
     Ok(())
 }
 
+/// Mark an authorized campaign complete and retain the owner's reason.
+pub async fn complete_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+) -> Result<String> {
+    if offline {
+        return complete_offline_and_render(store_path, name, reason);
+    }
+
+    let mut client = connect_daemon_required(
+        addr,
+        &format!("foundry campaign complete {name} --reason <reason> --offline"),
+    )
+    .await?;
+    let resp = client
+        .complete_campaign(CompleteCampaignRequest {
+            name: name.to_string(),
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?;
+    let detail = resp.into_inner().campaign.ok_or_else(|| {
+        anyhow::anyhow!("daemon returned no campaign in CompleteCampaignResponse")
+    })?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+pub async fn complete(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+) -> Result<()> {
+    let output = complete_and_render(store_path, addr, offline, name, reason).await?;
+    print!("{output}");
+    Ok(())
+}
+
 /// Direct-store pause used by the offline / fallback path.
 ///
 /// Acquires an exclusive lock, sets `status = Paused`, and saves.
@@ -259,6 +303,36 @@ fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> R
         decided_at: Utc::now(),
     });
     campaign.status = CampaignStatus::Active;
+    let rendered = render::campaign::campaign_detail(campaign);
+    guard.save()?;
+    Ok(rendered)
+}
+
+fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Result<String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        bail!("reason must be non-empty");
+    }
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "campaign '{name}' has not been authorized; complete requires authorized_by"
+        )
+    })?;
+    if campaign.status == CampaignStatus::Completed {
+        return Ok(render::campaign::campaign_detail(campaign));
+    }
+    campaign.owner_decisions.push(OwnerDecision {
+        decision: format!("Completed externally: {reason}"),
+        authorized_by,
+        decided_at: Utc::now(),
+    });
+    campaign.status = CampaignStatus::Completed;
+    campaign.pending_run_result = None;
     let rendered = render::campaign::campaign_detail(campaign);
     guard.save()?;
     Ok(rendered)
@@ -482,6 +556,78 @@ mod tests {
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused
         );
+    }
+
+    #[tokio::test]
+    async fn offline_complete_records_reason_and_clears_pending_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester", "status":"paused",
+                "pending_run_result":{
+                    "project":"p", "success":true, "landed":true,
+                    "summary":"done", "preservation_ref":null,
+                    "verdict":"complete", "campaign":"c"
+                }
+            }"#,
+        );
+        add(&store, &registry_path, &file).unwrap();
+
+        let output = complete_and_render(
+            &store,
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            "Production evidence confirms the mission shipped.",
+        )
+        .await
+        .unwrap();
+
+        let saved = CampaignStore::load(&store).unwrap();
+        let campaign = saved.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Completed);
+        assert!(campaign.pending_run_result.is_none());
+        assert_eq!(campaign.owner_decisions.len(), 1);
+        assert_eq!(
+            campaign.owner_decisions[0].decision,
+            "Completed externally: Production evidence confirms the mission shipped."
+        );
+        assert!(output.contains("completed"));
+    }
+
+    #[tokio::test]
+    async fn offline_complete_requires_owner_authorization_and_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "status":"paused"
+            }"#,
+        );
+        add(&store, &registry_path, &file).unwrap();
+
+        let unauthorized = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "shipped")
+            .await
+            .unwrap_err();
+        assert!(unauthorized.to_string().contains("authorized"));
+
+        let empty = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "   ")
+            .await
+            .unwrap_err();
+        assert!(empty.to_string().contains("non-empty"));
     }
 
     #[tokio::test]

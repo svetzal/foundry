@@ -8,13 +8,14 @@ use foundry_sdk::campaign::{
 };
 use foundry_sdk::error::StoreError;
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::CampaignAdvanceRequestedPayload;
+use foundry_sdk::payload::{CampaignAdvanceRequestedPayload, CampaignTerminalPayload};
 use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     AdvanceCampaignRequest, AdvanceCampaignResponse, Campaign as ProtoCampaign, CampaignDetail,
-    DecideCampaignRequest, DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence,
-    GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
+    DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence, GetCampaignRequest,
+    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
     OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
     ResumeCampaignRequest, ResumeCampaignResponse,
 };
@@ -268,6 +269,70 @@ pub(super) fn decide(
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
     Ok(Response::new(DecideCampaignResponse {
+        campaign: Some(detail),
+    }))
+}
+
+/// Mark an authorized campaign complete outside the formation loop.
+///
+/// The reason is retained in the append-only owner record and a terminal event
+/// is emitted so existing digest and observability blocks see the completion.
+pub(super) fn complete(
+    campaigns_path: &Path,
+    ctx: &super::RuntimeContext,
+    request: Request<CompleteCampaignRequest>,
+) -> Result<Response<CompleteCampaignResponse>, Status> {
+    let req = request.into_inner();
+    let name = req.name;
+    let reason = req.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(Status::invalid_argument("reason must be non-empty"));
+    }
+
+    let (detail, event) = {
+        let mut guard = lock_store_exclusive(campaigns_path)?;
+        let campaign = guard
+            .store
+            .find_mut(&name)
+            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+        let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
+            invalid_state(&name, "has not been authorized; complete requires authorized_by")
+        })?;
+
+        if campaign.status == CampaignStatus::Completed {
+            return Ok(Response::new(CompleteCampaignResponse {
+                campaign: Some(campaign_to_detail(campaign)),
+            }));
+        }
+
+        campaign.owner_decisions.push(OwnerDecision {
+            decision: format!("Completed externally: {reason}"),
+            authorized_by,
+            decided_at: Utc::now(),
+        });
+        campaign.status = CampaignStatus::Completed;
+        campaign.pending_run_result = None;
+        let detail = campaign_to_detail(campaign);
+        let payload = Event::serialize_payload(&CampaignTerminalPayload {
+            campaign: campaign.name.clone(),
+            project: campaign.project.clone(),
+            reason,
+            cycles_completed: campaign.cycles_completed,
+            cycles_landed: campaign.cycles_landed,
+        })
+        .map_err(|e| Status::internal(format!("failed to serialize completion payload: {e}")))?;
+        let event = Event::new(
+            EventType::CampaignCompleted,
+            campaign.project.clone(),
+            Throttle::Full,
+            payload,
+        );
+        guard.save().map_err(map_save_error)?;
+        (detail, event)
+    };
+
+    super::spawn_workflow(event, ctx);
+    Ok(Response::new(CompleteCampaignResponse {
         campaign: Some(detail),
     }))
 }

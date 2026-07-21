@@ -268,6 +268,24 @@ The persisted owner decision carries the decision text, the campaign's current
 `authorized_by` identity, and the daemon timestamp. Existing counters and any
 stored `pending_run_result` are preserved.
 
+### `CompleteCampaign(CompleteCampaignRequest) → CompleteCampaignResponse`
+
+Mark an authorized campaign complete from outside the formation loop. The
+request requires a non-empty reason and an existing `authorized_by` owner. The
+daemon stores the reason as an append-only owner record, clears any pending run
+result, changes the status to `completed`, and emits the normal
+`CampaignCompleted` event for terminal observers. Calling it on an already
+completed campaign is idempotent.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to complete |
+| `reason` | string | Evidence-backed owner reason for external completion |
+
+The response contains the full updated `CampaignDetail`. Errors are
+`INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown campaign,
+and `FAILED_PRECONDITION` when the campaign has no authorizing owner.
+
 **Request:**
 
 | Field | Type | Description |

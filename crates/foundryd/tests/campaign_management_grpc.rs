@@ -22,8 +22,8 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
     proto::{
-        AdvanceCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest,
-        foundry_server::Foundry,
+        AdvanceCampaignRequest, CompleteCampaignRequest, PauseCampaignRequest,
+        ResumeCampaignRequest, foundry_server::Foundry,
     },
     service::{FoundryService, RuntimeContext, StoreConfig},
     trace_store::TraceStore,
@@ -139,6 +139,87 @@ fn write_campaigns(file: &NamedTempFile, campaigns: Vec<Campaign>) {
 
 fn write_single(file: &NamedTempFile, campaign: Campaign) {
     write_campaigns(file, vec![campaign]);
+}
+
+// ── CompleteCampaign ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn complete_paused_campaign_persists_audit_record_and_emits_terminal_event() {
+    let (service, tmp_campaigns, mut rx, _tmp_traces) = make_service();
+    let mut campaign = paused_campaign("c", 10);
+    campaign.pending_run_result = Some(TaskRunCompletedPayload {
+        project: "test-project".to_string(),
+        success: true,
+        landed: true,
+        summary: "shipped".to_string(),
+        preservation_ref: Some("abc123".to_string()),
+        verdict: TaskVerdict::Complete,
+        context: LoopContext {
+            campaign: Some("c".to_string()),
+            ..LoopContext::default()
+        },
+    });
+    write_single(&tmp_campaigns, campaign);
+
+    let response = service
+        .complete_campaign(Request::new(CompleteCampaignRequest {
+            name: "c".to_string(),
+            reason: "Production evidence confirms the mission shipped.".to_string(),
+        }))
+        .await
+        .expect("complete should succeed");
+    assert_eq!(response.into_inner().campaign.unwrap().status, "completed");
+
+    let stored = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+    let completed = stored.find("c").expect("campaign exists");
+    assert_eq!(completed.status, CampaignStatus::Completed);
+    assert!(completed.pending_run_result.is_none());
+    assert_eq!(completed.owner_decisions.len(), 1);
+    assert_eq!(
+        completed.owner_decisions[0].decision,
+        "Completed externally: Production evidence confirms the mission shipped."
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_completed = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(event)) if event.event_type == EventType::CampaignCompleted => {
+                saw_completed = true;
+                break;
+            }
+            Ok(Ok(_)) => continue,
+            _ => break,
+        }
+    }
+    assert!(saw_completed, "CampaignCompleted must be broadcast via the engine path");
+}
+
+#[tokio::test]
+async fn complete_requires_non_empty_reason_and_authorized_owner() {
+    let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
+    write_single(&tmp_campaigns, paused_campaign("c", 10));
+
+    let empty = service
+        .complete_campaign(Request::new(CompleteCampaignRequest {
+            name: "c".to_string(),
+            reason: "   ".to_string(),
+        }))
+        .await
+        .expect_err("blank reason must fail");
+    assert_eq!(empty.code(), Code::InvalidArgument);
+
+    let mut unauthorized = paused_campaign("c", 10);
+    unauthorized.authorized_by = None;
+    write_single(&tmp_campaigns, unauthorized);
+    let error = service
+        .complete_campaign(Request::new(CompleteCampaignRequest {
+            name: "c".to_string(),
+            reason: "shipped".to_string(),
+        }))
+        .await
+        .expect_err("unauthorized completion must fail");
+    assert_eq!(error.code(), Code::FailedPrecondition);
 }
 
 // ── PauseCampaign ─────────────────────────────────────────────────────────────
