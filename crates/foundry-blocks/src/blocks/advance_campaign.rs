@@ -187,8 +187,32 @@ fn decision_prompt(
 }
 
 fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
-    serde_json::from_str(&super::extract_json(output))
-        .map_err(|e| anyhow::anyhow!("campaign agent returned no valid decision: {e}"))
+    let decision: CampaignDecision = serde_json::from_str(&super::extract_json(output))
+        .map_err(|e| anyhow::anyhow!("campaign agent returned no valid decision: {e}"))?;
+
+    match &decision {
+        CampaignDecision::Done { reason } | CampaignDecision::Escalate { reason }
+            if reason.trim().is_empty() =>
+        {
+            anyhow::bail!("campaign agent returned a decision without a reason")
+        }
+        CampaignDecision::Advance { objective, .. } if objective.trim().is_empty() => {
+            anyhow::bail!("campaign agent returned an advance decision without an objective")
+        }
+        CampaignDecision::Advance { reason, .. } if reason.trim().is_empty() => {
+            anyhow::bail!("campaign agent returned an advance decision without a reason")
+        }
+        _ => Ok(decision),
+    }
+}
+
+fn agent_failure_decision(context: &str, detail: String) -> CampaignDecision {
+    let reason = if detail.trim().is_empty() {
+        format!("{context} without diagnostic output")
+    } else {
+        detail
+    };
+    CampaignDecision::Escalate { reason }
 }
 
 fn completed_event(
@@ -442,10 +466,10 @@ async fn derive_campaign_decision(
     let decision = match outcome {
         crate::gateway::AgentOutcome::Success { stdout } => parse_decision(&stdout)?,
         crate::gateway::AgentOutcome::AgentFailed { stderr, .. } => {
-            CampaignDecision::Escalate { reason: stderr }
+            agent_failure_decision("campaign decision agent failed", stderr)
         }
         crate::gateway::AgentOutcome::Unavailable { error } => {
-            CampaignDecision::Escalate { reason: error }
+            agent_failure_decision("campaign decision agent unavailable", error)
         }
     };
     Ok(enforce_done_gate_truth(decision, &gate_results))
@@ -732,7 +756,10 @@ mod tests {
 
     use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
 
-    use super::{AdvanceCampaign, enforce_campaign_budget, parse_decision, run_done_gates};
+    use super::{
+        AdvanceCampaign, agent_failure_decision, enforce_campaign_budget, parse_decision,
+        run_done_gates,
+    };
 
     #[test]
     fn parses_structural_advance_decision() {
@@ -742,6 +769,38 @@ mod tests {
             CampaignDecision::Advance {
                 objective: "one thing".to_string(),
                 reason: "gap".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_decisions_without_human_readable_context() {
+        for output in [
+            r#"{"decision":"done","reason":""}"#,
+            r#"{"decision":"escalate","reason":"   "}"#,
+            r#"{"decision":"advance","objective":"","reason":"gap"}"#,
+            r#"{"decision":"advance","objective":"next slice","reason":"\n"}"#,
+        ] {
+            assert!(parse_decision(output).is_err(), "accepted invalid decision: {output}");
+        }
+    }
+
+    #[test]
+    fn empty_agent_failure_carries_actionable_escalation_context() {
+        assert_eq!(
+            agent_failure_decision("campaign decision agent failed", String::new()),
+            CampaignDecision::Escalate {
+                reason: "campaign decision agent failed without diagnostic output".to_string(),
+            }
+        );
+
+        assert_eq!(
+            agent_failure_decision(
+                "campaign decision agent unavailable",
+                "rate limited".to_string()
+            ),
+            CampaignDecision::Escalate {
+                reason: "rate limited".to_string(),
             }
         );
     }
