@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:50051", global = true)]
     addr: String,
 
-    /// Skip gRPC and mutate the registry file directly (useful when daemon is not running)
+    /// Skip daemon RPCs and use explicit offline file access where supported
     #[arg(long, global = true)]
     offline: bool,
 

@@ -131,7 +131,7 @@ Registry commands are daemon-authoritative in normal online use. `list`, `show`,
 
 The gRPC RPCs are `RegistryList`, `RegistryShow`, `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
 
-> **Note for scripts/automation**: Online `foundry registry list/show/add/edit/remove` commands do not silently fall back. If `foundryd` is not listening, they fail and leave the client-side registry file untouched. Use `--offline` deliberately when you want direct file recovery semantics.
+> **Note for scripts/automation**: `foundry registry init` is offline-only recovery, and online `foundry registry list/show/add/edit/remove` commands do not silently fall back. If `foundryd` is not listening, they fail and leave the client-side registry file untouched. Use `--offline` deliberately when you want direct file recovery semantics.
 
 ### Sentinel commands
 

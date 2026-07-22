@@ -20,13 +20,15 @@ warning and continues with an empty registry (no projects will be processed).
 ## Single Source of Truth
 
 The running daemon holds an in-memory copy of the registry in a read-write lock.
-All mutations (`add`, `remove`, `edit`) go through the daemon's gRPC API so the
-in-memory state always matches `registry.json`. The CLI routes mutation commands
-to the daemon when it is reachable and falls back to direct file mutation when the
-daemon is not running (pass `--offline` to force the fallback regardless):
+Online `foundry registry list`, `show`, `add`, `edit`, and `remove` commands all
+go through the daemon's typed gRPC API so reads and writes observe the same
+daemon-owned state. Direct file access is reserved for explicit recovery with
+`--offline`. Without `--offline`, an unreachable daemon is an error and the
+client-side registry file is left untouched:
 
 ```bash
-foundry registry add --name my-tool … --offline   # write directly to registry.json
+foundry registry add --name my-tool …             # daemon-authoritative
+foundry --offline registry add --name my-tool …   # direct registry.json recovery
 ```
 
 ## Registry Format (v2)

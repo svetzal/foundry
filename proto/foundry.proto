@@ -178,7 +178,7 @@ message RegistryShowResponse {
     Project project = 1;
 }
 
-// Add a project to the registry.
+// Add a project to the daemon-owned registry.
 message RegistryAddRequest {
     string name = 1;
     string path = 2;
@@ -201,14 +201,14 @@ message RegistryAddResponse {
     Project project = 1;
 }
 
-// Remove a project from the registry.
+// Remove a project from the daemon-owned registry.
 message RegistryRemoveRequest {
     string name = 1;
 }
 
 message RegistryRemoveResponse {}
 
-// Edit a project in the registry.
+// Edit a project in the daemon-owned registry.
 // Only non-empty / non-zero fields are applied as updates.
 // Use clear_skip = true to explicitly clear the skip field.
 // Use clear_notes = true to explicitly clear the notes field.
@@ -442,7 +442,7 @@ service Foundry {
     // Retrieve the trace of a completed event chain.
     rpc Trace(TraceRequest) returns (TraceResponse);
 
-    // Add a project to the registry.
+    // Add a project to the daemon-owned registry.
     rpc RegistryAdd(RegistryAddRequest) returns (RegistryAddResponse);
 
     // List every project from the daemon-owned registry.
@@ -451,10 +451,10 @@ service Foundry {
     // Retrieve one project from the daemon-owned registry by exact name.
     rpc RegistryShow(RegistryShowRequest) returns (RegistryShowResponse);
 
-    // Remove a project from the registry.
+    // Remove a project from the daemon-owned registry.
     rpc RegistryRemove(RegistryRemoveRequest) returns (RegistryRemoveResponse);
 
-    // Edit a project in the registry.
+    // Edit a project in the daemon-owned registry.
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
 
     // List durable campaigns from the configured campaign store.

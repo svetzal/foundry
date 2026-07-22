@@ -309,7 +309,7 @@ foundry registry add \
   --iterate --maintain --push
 
 # Add without daemon (direct file write)
-foundry registry add --offline \
+foundry --offline registry add \
   --name my-project \
   --path /path/to/project \
   --stack rust \
