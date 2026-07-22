@@ -188,7 +188,7 @@ async fn complete_paused_campaign_persists_audit_record_and_emits_terminal_event
                 saw_completed = true;
                 break;
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {}
             _ => break,
         }
     }
@@ -252,7 +252,7 @@ async fn pause_active_campaign_returns_paused_and_persists_to_store() {
     );
 }
 
-/// PauseCampaign on a missing campaign must return NOT_FOUND.
+/// `PauseCampaign` on a missing campaign must return `NOT_FOUND`.
 #[tokio::test]
 async fn pause_missing_campaign_returns_not_found() {
     let (service, _tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -266,7 +266,7 @@ async fn pause_missing_campaign_returns_not_found() {
     assert_eq!(err.code(), Code::NotFound);
 }
 
-/// A malformed campaign store must return FAILED_PRECONDITION and the error
+/// A malformed campaign store must return `FAILED_PRECONDITION` and the error
 /// message must NOT expose the store file path.
 #[tokio::test]
 async fn pause_malformed_store_returns_failed_precondition_without_store_path() {
@@ -318,9 +318,9 @@ async fn pause_unreadable_store_returns_internal_without_store_path() {
 
 // ── pause-while-running preserves pending_run_result ─────────────────────────
 
-/// Pausing a campaign that has a pending_run_result must not clear or overwrite
-/// it.  After a subsequent resume the pending result must still be present and
-/// unconsumed so the AdvanceCampaign block can replay it.
+/// Pausing a campaign that has a `pending_run_result` must not clear or overwrite
+/// it. After a subsequent resume the pending result must still be present and
+/// unconsumed so the `AdvanceCampaign` block can replay it.
 #[tokio::test]
 async fn pause_preserves_pending_run_result_through_resume() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -387,7 +387,7 @@ async fn pause_preserves_pending_run_result_through_resume() {
 
 // ── ResumeCampaign ─────────────────────────────────────────────────────────────
 
-/// Resuming with add_cycles=0 must succeed and not change max_cycles.
+/// Resuming with `add_cycles=0` must succeed and not change `max_cycles`.
 #[tokio::test]
 async fn resume_with_add_cycles_zero_sets_active_without_changing_budget() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -406,12 +406,12 @@ async fn resume_with_add_cycles_zero_sets_active_without_changing_budget() {
     assert_eq!(detail.status, "active");
     assert_eq!(
         detail.max_cycles, original_max,
-        "max_cycles must be unchanged when add_cycles=0"
+        "max_cycles must be unchanged when `add_cycles=0`"
     );
 }
 
-/// Resuming with add_cycles=N must increase max_cycles by exactly N — not 0,
-/// not 2N.  An implementation that ignores add_cycles or applies it twice will
+/// Resuming with `add_cycles=N` must increase `max_cycles` by exactly N, not 0
+/// and not 2N. An implementation that ignores `add_cycles` or applies it twice will
 /// fail the exact-value assertion.
 #[tokio::test]
 async fn resume_with_add_cycles_extends_budget_by_exactly_n() {
@@ -433,7 +433,7 @@ async fn resume_with_add_cycles_extends_budget_by_exactly_n() {
     assert_eq!(
         detail.max_cycles,
         original_max + add,
-        "max_cycles must increase by exactly add_cycles"
+        "`max_cycles` must increase by exactly `add_cycles`"
     );
 
     // Persisted store must also reflect the new budget.
@@ -441,13 +441,13 @@ async fn resume_with_add_cycles_extends_budget_by_exactly_n() {
     assert_eq!(
         stored.find("c").expect("campaign").budget.max_cycles,
         original_max + add,
-        "persisted max_cycles must equal original + add_cycles"
+        "persisted `max_cycles` must equal original + `add_cycles`"
     );
 }
 
-/// A second resume must NOT double-apply add_cycles.  After the first resume
-/// the campaign is Active, so a second resume returns FAILED_PRECONDITION
-/// (invalid transition), and max_cycles remains exactly original + first_add.
+/// A second resume must NOT double-apply `add_cycles`. After the first resume
+/// the campaign is Active, so a second resume returns `FAILED_PRECONDITION`
+/// (invalid transition), and `max_cycles` remains exactly original + `first_add`.
 #[tokio::test]
 async fn second_resume_does_not_double_apply_add_cycles() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -472,16 +472,16 @@ async fn second_resume_does_not_double_apply_add_cycles() {
         .expect_err("second resume must fail (campaign is Active, not Paused)");
     assert_eq!(err.code(), Code::FailedPrecondition);
 
-    // max_cycles must be 15 (10 + 5), never 20 (which would indicate double-apply).
+    // `max_cycles` must be 15 (10 + 5), never 20 (which would indicate double-apply).
     let stored = CampaignStore::load(tmp_campaigns.path()).expect("load");
     assert_eq!(
         stored.find("c").expect("campaign").budget.max_cycles,
         15,
-        "max_cycles must be exactly 15 (10 + 5); double-apply would yield 20"
+        "`max_cycles` must be exactly 15 (10 + 5); double-apply would yield 20"
     );
 }
 
-/// Resuming without an authorized_by owner must return FAILED_PRECONDITION.
+/// Resuming without an `authorized_by` owner must return `FAILED_PRECONDITION`.
 #[tokio::test]
 async fn resume_without_authorized_by_returns_failed_precondition() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -499,7 +499,7 @@ async fn resume_without_authorized_by_returns_failed_precondition() {
     assert_eq!(err.code(), Code::FailedPrecondition);
 }
 
-/// add_cycles that would overflow u64 must return FAILED_PRECONDITION.
+/// `add_cycles` that would overflow `u64` must return `FAILED_PRECONDITION`.
 #[tokio::test]
 async fn resume_with_overflowing_add_cycles_returns_failed_precondition() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -516,7 +516,7 @@ async fn resume_with_overflowing_add_cycles_returns_failed_precondition() {
     assert_eq!(err.code(), Code::FailedPrecondition);
 }
 
-/// ResumeCampaign on a missing campaign must return NOT_FOUND.
+/// `ResumeCampaign` on a missing campaign must return `NOT_FOUND`.
 #[tokio::test]
 async fn resume_missing_campaign_returns_not_found() {
     let (service, _tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -531,7 +531,7 @@ async fn resume_missing_campaign_returns_not_found() {
     assert_eq!(err.code(), Code::NotFound);
 }
 
-/// A malformed store on ResumeCampaign must return FAILED_PRECONDITION without
+/// A malformed store on `ResumeCampaign` must return `FAILED_PRECONDITION` without
 /// exposing the store path.
 #[tokio::test]
 async fn resume_malformed_store_returns_failed_precondition_without_store_path() {
@@ -554,7 +554,7 @@ async fn resume_malformed_store_returns_failed_precondition_without_store_path()
     );
 }
 
-/// An unreadable store on ResumeCampaign must return INTERNAL without exposing
+/// An unreadable store on `ResumeCampaign` must return `INTERNAL` without exposing
 /// the store path.
 #[tokio::test]
 async fn resume_unreadable_store_returns_internal_without_store_path() {
@@ -583,7 +583,7 @@ async fn resume_unreadable_store_returns_internal_without_store_path() {
 
 // ── AdvanceCampaign ───────────────────────────────────────────────────────────
 
-/// Advancing an active campaign must dispatch a CampaignAdvanceRequested event
+/// Advancing an active campaign must dispatch a `CampaignAdvanceRequested` event
 /// and return the current campaign state.  The advance itself is asynchronous;
 /// we verify the event was broadcast, not the outcome.
 #[tokio::test]
@@ -603,7 +603,7 @@ async fn advance_active_campaign_dispatches_event_and_returns_current_state() {
     assert_eq!(detail.name, "c");
     assert_eq!(detail.status, "active", "response must reflect active status at dispatch time");
 
-    // CampaignAdvanceRequested must be broadcast through the engine path.
+    // `CampaignAdvanceRequested` must be broadcast through the engine path.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut saw_advance = false;
     loop {
@@ -616,10 +616,10 @@ async fn advance_active_campaign_dispatches_event_and_returns_current_state() {
             _ => break,
         }
     }
-    assert!(saw_advance, "CampaignAdvanceRequested must be broadcast via the engine path");
+    assert!(saw_advance, "`CampaignAdvanceRequested` must be broadcast via the engine path");
 }
 
-/// Advancing a paused campaign must return FAILED_PRECONDITION (invalid
+/// Advancing a paused campaign must return `FAILED_PRECONDITION` (invalid
 /// transition).
 #[tokio::test]
 async fn advance_paused_campaign_returns_failed_precondition() {
@@ -635,7 +635,7 @@ async fn advance_paused_campaign_returns_failed_precondition() {
     assert_eq!(err.code(), Code::FailedPrecondition);
 }
 
-/// Advancing an escalated campaign must return FAILED_PRECONDITION.
+/// Advancing an escalated campaign must return `FAILED_PRECONDITION`.
 #[tokio::test]
 async fn advance_escalated_campaign_returns_failed_precondition() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -652,7 +652,7 @@ async fn advance_escalated_campaign_returns_failed_precondition() {
     assert_eq!(err.code(), Code::FailedPrecondition);
 }
 
-/// Advancing a completed campaign must return FAILED_PRECONDITION.
+/// Advancing a completed campaign must return `FAILED_PRECONDITION`.
 #[tokio::test]
 async fn advance_completed_campaign_returns_failed_precondition() {
     let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
@@ -669,7 +669,7 @@ async fn advance_completed_campaign_returns_failed_precondition() {
     assert_eq!(err.code(), Code::FailedPrecondition);
 }
 
-/// AdvanceCampaign on a missing campaign must return NOT_FOUND.
+/// `AdvanceCampaign` on a missing campaign must return `NOT_FOUND`.
 #[tokio::test]
 async fn advance_missing_campaign_returns_not_found() {
     let (service, _tmp_campaigns, _rx, _tmp_traces) = make_service();

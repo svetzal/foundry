@@ -156,6 +156,26 @@ message Project {
     string install_brew = 14;     // Empty means not set.
     string notes = 15;            // Empty means not set.
     uint64 timeout_secs = 16;     // 0 means use default (3600).
+    bool installs_skill_default = 17;          // true => derive default init command.
+    bool installs_skill_explicitly_disabled = 18; // true => explicit "off".
+    string installs_skill_command = 19;        // Empty means not set.
+    repeated string audit_exceptions = 20;     // Empty means none configured.
+}
+
+// List every project from the daemon-owned registry.
+message RegistryListRequest {}
+
+message RegistryListResponse {
+    repeated Project projects = 1;
+}
+
+// Retrieve one exact-name project from the daemon-owned registry.
+message RegistryShowRequest {
+    string name = 1;
+}
+
+message RegistryShowResponse {
+    Project project = 1;
 }
 
 // Add a project to the registry.
@@ -424,6 +444,12 @@ service Foundry {
 
     // Add a project to the registry.
     rpc RegistryAdd(RegistryAddRequest) returns (RegistryAddResponse);
+
+    // List every project from the daemon-owned registry.
+    rpc RegistryList(RegistryListRequest) returns (RegistryListResponse);
+
+    // Retrieve one project from the daemon-owned registry by exact name.
+    rpc RegistryShow(RegistryShowRequest) returns (RegistryShowResponse);
 
     // Remove a project from the registry.
     rpc RegistryRemove(RegistryRemoveRequest) returns (RegistryRemoveResponse);

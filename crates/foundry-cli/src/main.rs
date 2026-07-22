@@ -443,9 +443,11 @@ async fn handle_registry_command(
     offline: bool,
 ) -> Result<()> {
     match sub {
-        RegistryCommands::Init => registry_commands::init(path),
-        RegistryCommands::List => registry_commands::list(path),
-        RegistryCommands::Show { name } => registry_commands::show(path, &name),
+        RegistryCommands::Init => registry_commands::init(path, offline),
+        RegistryCommands::List => registry_commands::list(path, addr, offline).await,
+        RegistryCommands::Show { name } => {
+            registry_commands::show(path, addr, offline, &name).await
+        }
         RegistryCommands::Add {
             name,
             path: project_path,

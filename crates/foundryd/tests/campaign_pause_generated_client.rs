@@ -353,7 +353,7 @@ async fn generated_client_pause_preserves_pending_run_result_byte_for_byte() {
 /// `Code::NotFound` and leave the store byte-identical to before the call.
 ///
 /// Using a non-empty store (seeded with a different campaign) distinguishes a
-/// genuine NOT_FOUND from a misconfigured empty-store error path.
+/// genuine `NOT_FOUND` from a misconfigured empty-store error path.
 #[tokio::test]
 async fn generated_client_pause_missing_name_returns_not_found_and_store_unchanged() {
     let (service, tmp_campaigns, _tmp_traces) = make_service();
@@ -586,8 +586,8 @@ async fn concurrent_pause_of_two_campaigns_does_not_lose_either_update() {
 /// Error messages returned by `PauseCampaign` must never expose the campaign
 /// store filesystem path, regardless of the failure mode.
 ///
-/// Verified for NOT_FOUND (missing campaign in a non-empty store) and
-/// FailedPrecondition (malformed store).
+/// Verified for `NOT_FOUND` (missing campaign in a non-empty store) and
+/// `FailedPrecondition` (malformed store).
 #[tokio::test]
 async fn generated_client_pause_error_messages_do_not_contain_store_path() {
     // ── NOT_FOUND: pausing a missing campaign ────────────────────────────────

@@ -19,6 +19,7 @@ use foundry_engine::engine::Engine;
 use foundry_sdk::gateway::fakes::FakeShellGateway;
 
 /// Build the full strategic loop engine with inner iterate chain.
+#[allow(clippy::needless_pass_by_value)]
 fn strategic_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,

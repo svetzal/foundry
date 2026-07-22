@@ -1,10 +1,15 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use foundry_sdk::registry::{ProjectEdits, ProjectSpec, Registry, parse_stack};
+use foundry_sdk::registry::{
+    InstallConfig, InstallsSkill, ProjectEdits, ProjectEntry, ProjectSpec, Registry, parse_stack,
+};
 
-use crate::daemon::{status_to_anyhow, with_daemon_or_offline};
-use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
+use crate::daemon::{connect_daemon_required, status_to_anyhow};
+use crate::proto::{
+    Project, RegistryAddRequest, RegistryEditRequest, RegistryListRequest, RegistryRemoveRequest,
+    RegistryShowRequest,
+};
 use crate::render;
 
 /// Parameters for constructing a `ProjectSpec` from CLI arguments.
@@ -47,7 +52,11 @@ pub struct EditArgs {
     pub timeout_secs: Option<u64>,
 }
 
-pub fn init(registry_path: &Path) -> Result<()> {
+pub fn init(registry_path: &Path, offline: bool) -> Result<()> {
+    if !offline {
+        bail!("`foundry registry init` is an offline recovery command; rerun with `--offline`");
+    }
+
     if registry_path.exists() {
         println!("Registry already exists at {}", registry_path.display());
         return Ok(());
@@ -62,7 +71,22 @@ pub fn init(registry_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn list(registry_path: &Path) -> Result<()> {
+pub async fn list(registry_path: &Path, addr: &str, offline: bool) -> Result<()> {
+    if offline {
+        return list_offline(registry_path);
+    }
+
+    let mut client = connect_daemon_required(addr, "foundry registry list --offline").await?;
+    let response = client
+        .registry_list(RegistryListRequest {})
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+
+    render_project_table(&response.projects)
+}
+
+fn list_offline(registry_path: &Path) -> Result<()> {
     let registry = Registry::load(registry_path)?;
 
     if registry.projects.is_empty() {
@@ -71,11 +95,32 @@ pub fn list(registry_path: &Path) -> Result<()> {
     }
 
     print!("{}", render::registry::project_table(&registry.projects));
-
     Ok(())
 }
 
-pub fn show(registry_path: &Path, name: &str) -> Result<()> {
+pub async fn show(registry_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+    if offline {
+        return show_offline(registry_path, name);
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &format!("foundry registry show {name} --offline")).await?;
+    let response = client
+        .registry_show(RegistryShowRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    let project = response
+        .project
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no project for '{name}'"))?;
+
+    print!("{}", render::registry::project_detail(&project_from_proto(&project)?));
+    Ok(())
+}
+
+fn show_offline(registry_path: &Path, name: &str) -> Result<()> {
     let registry = Registry::load(registry_path)?;
 
     let Some(project) = registry.projects.iter().find(|p| p.name == name) else {
@@ -89,34 +134,35 @@ pub fn show(registry_path: &Path, name: &str) -> Result<()> {
 
 pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectSpec) -> Result<()> {
     let name = spec.name.clone();
-    let spec_for_offline = spec.clone();
-    with_daemon_or_offline(
-        addr,
-        offline,
-        &format!("Added project '{name}' to registry."),
-        |mut client| async move {
-            let req = RegistryAddRequest {
-                name: spec.name,
-                path: spec.path,
-                stack: spec.stack.to_string(),
-                agent: spec.agent,
-                repo: spec.repo,
-                branch: spec.branch,
-                iterate: spec.iterate,
-                maintain: spec.maintain,
-                push: spec.push,
-                audit: spec.audit,
-                release: spec.release,
-                install_command: spec.install_command.unwrap_or_default(),
-                install_brew: spec.install_brew.unwrap_or_default(),
-                notes: spec.notes.unwrap_or_default(),
-                timeout_secs: spec.timeout_secs.unwrap_or(0),
-            };
-            client.registry_add(req).await.map(|_| ()).map_err(status_to_anyhow)
-        },
-        || add_offline(registry_path, spec_for_offline),
-    )
-    .await
+    if offline {
+        add_offline(registry_path, spec)?;
+        println!("Added project '{name}' to registry.");
+        return Ok(());
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &format!("foundry registry add --name {name} --offline"))
+            .await?;
+    let req = RegistryAddRequest {
+        name: spec.name,
+        path: spec.path,
+        stack: spec.stack.to_string(),
+        agent: spec.agent,
+        repo: spec.repo,
+        branch: spec.branch,
+        iterate: spec.iterate,
+        maintain: spec.maintain,
+        push: spec.push,
+        audit: spec.audit,
+        release: spec.release,
+        install_command: spec.install_command.unwrap_or_default(),
+        install_brew: spec.install_brew.unwrap_or_default(),
+        notes: spec.notes.unwrap_or_default(),
+        timeout_secs: spec.timeout_secs.unwrap_or(0),
+    };
+    client.registry_add(req).await.map_err(status_to_anyhow)?;
+    println!("Added project '{name}' to registry.");
+    Ok(())
 }
 
 fn add_offline(registry_path: &Path, spec: ProjectSpec) -> Result<()> {
@@ -127,19 +173,20 @@ fn add_offline(registry_path: &Path, spec: ProjectSpec) -> Result<()> {
 }
 
 pub async fn remove(registry_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
-    with_daemon_or_offline(
-        addr,
-        offline,
-        &format!("Removed project '{name}' from registry."),
-        |mut client| async move {
-            let req = RegistryRemoveRequest {
-                name: name.to_string(),
-            };
-            client.registry_remove(req).await.map(|_| ()).map_err(status_to_anyhow)
-        },
-        || remove_offline(registry_path, name),
-    )
-    .await
+    if offline {
+        remove_offline(registry_path, name)?;
+        println!("Removed project '{name}' from registry.");
+        return Ok(());
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &format!("foundry registry remove {name} --offline")).await?;
+    let req = RegistryRemoveRequest {
+        name: name.to_string(),
+    };
+    client.registry_remove(req).await.map_err(status_to_anyhow)?;
+    println!("Removed project '{name}' from registry.");
+    Ok(())
 }
 
 fn remove_offline(registry_path: &Path, name: &str) -> Result<()> {
@@ -161,16 +208,17 @@ pub async fn edit(
     edits: ProjectEdits,
 ) -> Result<()> {
     let req = edit_request(name, &edits);
-    with_daemon_or_offline(
-        addr,
-        offline,
-        &format!("Updated project '{name}'."),
-        |mut client| async move {
-            client.registry_edit(req).await.map(|_| ()).map_err(status_to_anyhow)
-        },
-        || edit_offline(registry_path, name, edits),
-    )
-    .await
+    if offline {
+        edit_offline(registry_path, name, edits)?;
+        println!("Updated project '{name}'.");
+        return Ok(());
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &format!("foundry registry edit {name} --offline")).await?;
+    client.registry_edit(req).await.map_err(status_to_anyhow)?;
+    println!("Updated project '{name}'.");
+    Ok(())
 }
 
 /// Build a `RegistryEditRequest` from a project name and its edit set.
@@ -279,6 +327,73 @@ fn load_or_init(path: &Path) -> Result<Registry> {
             projects: vec![],
         })
     }
+}
+
+fn render_project_table(projects: &[Project]) -> Result<()> {
+    if projects.is_empty() {
+        println!("No projects in registry.");
+        return Ok(());
+    }
+
+    let entries = projects.iter().map(project_from_proto).collect::<Result<Vec<_>>>()?;
+    print!("{}", render::registry::project_table(&entries));
+    Ok(())
+}
+
+fn project_from_proto(project: &Project) -> Result<ProjectEntry> {
+    let stack = parse_stack(&project.stack).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let install = if !project.install_command.is_empty() {
+        Some(InstallConfig::Command(project.install_command.clone()))
+    } else if !project.install_brew.is_empty() {
+        Some(InstallConfig::Brew(project.install_brew.clone()))
+    } else {
+        None
+    };
+    let installs_skill = if !project.installs_skill_command.is_empty() {
+        Some(InstallsSkill::Custom {
+            command: project.installs_skill_command.clone(),
+        })
+    } else if project.installs_skill_explicitly_disabled {
+        Some(InstallsSkill::Default(false))
+    } else if project.installs_skill_default {
+        Some(InstallsSkill::Default(true))
+    } else {
+        None
+    };
+
+    Ok(ProjectEntry {
+        name: project.name.clone(),
+        path: project.path.clone(),
+        stack,
+        agent: project.agent.clone(),
+        repo: project.repo.clone(),
+        branch: project.branch.clone(),
+        skip: if project.skip.is_empty() {
+            None
+        } else {
+            Some(project.skip.clone())
+        },
+        actions: foundry_sdk::registry::ActionFlags {
+            iterate: project.iterate,
+            maintain: project.maintain,
+            push: project.push,
+            audit: project.audit,
+            release: project.release,
+        },
+        install,
+        installs_skill,
+        notes: if project.notes.is_empty() {
+            None
+        } else {
+            Some(project.notes.clone())
+        },
+        timeout_secs: if project.timeout_secs == 0 {
+            None
+        } else {
+            Some(project.timeout_secs)
+        },
+        audit_exceptions: project.audit_exceptions.clone(),
+    })
 }
 
 #[cfg(test)]

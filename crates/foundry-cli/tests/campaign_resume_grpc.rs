@@ -221,7 +221,7 @@ async fn online_resume_paused_with_add_cycles_extends_budget_and_sets_active() {
         "rendered output must contain 'active'; got: {rendered:?}"
     );
     assert!(
-        rendered.contains("c"),
+        rendered.contains('c'),
         "rendered output must contain the campaign name; got: {rendered:?}"
     );
 }

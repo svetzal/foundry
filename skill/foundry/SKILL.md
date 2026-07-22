@@ -287,15 +287,16 @@ foundry emit <event_type> --project <name> [--throttle full|dry_run] [--payload 
 ## Registry Management
 
 The registry (`~/.foundry/registry.json`) tracks which projects Foundry manages.
-Mutations (`add`, `remove`, `edit`) are routed through the daemon's gRPC API when
-the daemon is reachable, keeping the in-memory state consistent. Add `--offline`
-to write directly to the file when the daemon is not running.
+`list`, `show`, `add`, `remove`, and `edit` are daemon-authoritative in normal
+online use: they go through `foundryd`'s typed gRPC API and operate on the
+daemon-owned registry state. Add `--offline` only for explicit recovery when
+the daemon is not running and you need to read or mutate the file directly.
 
 ```bash
-# Initialize empty registry
-foundry registry init
+# Initialize an empty registry during offline recovery
+foundry --offline registry init
 
-# Add a project (routes through daemon when running)
+# Add a project through the daemon
 foundry registry add \
   --name my-project \
   --path /path/to/project \
@@ -313,10 +314,10 @@ foundry registry add --offline \
   --agent claude \
   --repo owner/repo
 
-# List projects (always reads directly from file)
+# List projects from the daemon-owned registry
 foundry registry list
 
-# Show project details
+# Show project details from the daemon-owned registry
 foundry registry show my-project
 
 # Edit project flags (use true/false)

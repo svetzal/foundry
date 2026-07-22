@@ -181,7 +181,7 @@ async fn start_server(service: FoundryService) -> String {
 /// 3. Persist `max_cycles = original + N` to the store (reloaded assertion).
 ///
 /// An implementation that ignores `add_cycles`, applies it twice, or returns
-/// the old max_cycles will fail one of these assertions.
+/// the old `max_cycles` will fail one of these assertions.
 #[tokio::test]
 async fn generated_client_resume_paused_with_add_cycles_increases_budget_by_exactly_n() {
     let (service, tmp_campaigns, _tmp_traces) = make_service();

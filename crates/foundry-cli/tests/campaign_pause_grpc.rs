@@ -237,7 +237,7 @@ async fn online_pause_preserves_pending_run_result_and_status() {
         "rendered output must contain 'paused' (from PauseCampaignResponse); got: {rendered:?}"
     );
     assert!(
-        rendered.contains("c"),
+        rendered.contains('c'),
         "rendered output must contain the campaign name; got: {rendered:?}"
     );
 }

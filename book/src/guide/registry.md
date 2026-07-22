@@ -190,17 +190,22 @@ Rather than editing `registry.json` by hand, use the `foundry registry`
 subcommands. All commands respect `FOUNDRY_REGISTRY_PATH` for non-default
 locations.
 
-```bash
-# Create an empty registry
-foundry registry init
+`foundry registry list`, `show`, `add`, `edit`, and `remove` are
+daemon-authoritative in normal online use: they talk to `foundryd` over gRPC
+and operate on the daemon-owned in-memory registry state. Direct filesystem
+access is reserved for explicit offline recovery with `--offline`.
 
-# List all projects
+```bash
+# Create an empty registry during offline recovery
+foundry --offline registry init
+
+# List all projects from the daemon-owned registry
 foundry registry list
 
-# Inspect one project
+# Inspect one project from the daemon-owned registry
 foundry registry show my-tool
 
-# Add a new project
+# Add a new project through the daemon
 foundry registry add \
   --name my-tool \
   --path /Users/alice/projects/my-tool \
@@ -210,6 +215,14 @@ foundry registry add \
   --iterate --maintain --push \
   --install-command "cargo install --path ." \
   --notes "Main CLI toolchain"
+
+# Offline recovery: mutate the file directly while the daemon is stopped
+foundry --offline registry add \
+  --name my-tool \
+  --path /Users/alice/projects/my-tool \
+  --stack rust \
+  --agent claude \
+  --repo alice/my-tool
 
 # Edit an existing project
 foundry registry edit my-tool --timeout-secs 3600

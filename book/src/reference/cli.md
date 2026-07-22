@@ -346,15 +346,18 @@ foundry registry <subcommand>
 ### `foundry registry init`
 
 Create an empty registry file at the default path (`~/.foundry/registry.json`).
+This is an explicit offline recovery command and requires `--offline`.
 Does nothing if the file already exists.
 
 ```bash
-foundry registry init
+foundry --offline registry init
 ```
 
 ### `foundry registry list`
 
-List all projects in the registry as a table.
+List all projects in the daemon-owned registry as a table. By default this
+requires a reachable `foundryd` daemon. Use `--offline` to read the local
+registry file directly for recovery.
 
 ```bash
 foundry registry list
@@ -375,7 +378,9 @@ The `Skill` column shows `auto` (default derived command), `cmd` (custom command
 
 ### `foundry registry show <name>`
 
-Show all details for a single project.
+Show all details for a single project from the daemon-owned registry. By
+default this requires a reachable `foundryd` daemon. Use `--offline` to read
+the local registry file directly for recovery.
 
 ```bash
 foundry registry show my-tool
@@ -399,8 +404,10 @@ Timeout:   3600s (default)
 
 ### `foundry registry add`
 
-Add a new project to the registry. If the registry file does not exist, it
-is created automatically.
+Add a new project to the daemon-owned registry. By default this requires a
+reachable `foundryd` daemon. Use `--offline` to write the local registry file
+directly for recovery. In offline mode, if the registry file does not exist,
+it is created automatically.
 
 ```bash
 foundry registry add \

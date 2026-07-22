@@ -39,6 +39,7 @@ fn git_ok(cwd: Option<&std::path::Path>, args: &[&str]) -> bool {
     command.status().unwrap().success()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn prompt_engine(
     shell: Arc<dyn ShellGateway>,
     agent: Arc<dyn AgentGateway>,
@@ -83,7 +84,7 @@ fn prompt_engine(
     )));
     // Terminal blocks
     engine.register(Box::new(foundry_blocks::blocks::SummarizeResult::new(
-        agent.clone(),
+        Arc::clone(&agent),
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::new(registry)));

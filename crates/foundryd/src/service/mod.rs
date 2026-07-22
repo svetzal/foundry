@@ -15,8 +15,9 @@ use crate::proto::{
     CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
     EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
     ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryRemoveRequest,
-    RegistryRemoveResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
+    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
+    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
+    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
     SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
     SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
     WatchResponse, foundry_server::Foundry,
@@ -141,6 +142,20 @@ impl Foundry for FoundryService {
         request: Request<RegistryAddRequest>,
     ) -> Result<Response<RegistryAddResponse>, Status> {
         registry_ops::add(&self.ctx.registry, &self.registry_path, request)
+    }
+
+    async fn registry_list(
+        &self,
+        request: Request<RegistryListRequest>,
+    ) -> Result<Response<RegistryListResponse>, Status> {
+        Ok(registry_ops::list(&self.ctx.registry, request))
+    }
+
+    async fn registry_show(
+        &self,
+        request: Request<RegistryShowRequest>,
+    ) -> Result<Response<RegistryShowResponse>, Status> {
+        registry_ops::show(&self.ctx.registry, request)
     }
 
     async fn registry_remove(

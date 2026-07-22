@@ -10,7 +10,8 @@ use foundry_sdk::registry::{
 
 use crate::proto::{
     Project, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
-    RegistryRemoveRequest, RegistryRemoveResponse,
+    RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
+    RegistryShowRequest, RegistryShowResponse,
 };
 
 fn mutation_error_to_status(err: RegistryMutationError) -> Status {
@@ -36,13 +37,6 @@ pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> P
         Some(InstallConfig::Brew(formula)) => (String::new(), formula.clone()),
         None => (String::new(), String::new()),
     };
-    let (installs_skill_bool, installs_skill_command) = match &entry.installs_skill {
-        Some(InstallsSkill::Default(true)) => (true, String::new()),
-        Some(InstallsSkill::Custom { command }) => (false, command.clone()),
-        _ => (false, String::new()),
-    };
-    let _ = installs_skill_bool; // not in proto yet — silence lint
-    let _ = installs_skill_command;
     Project {
         name: entry.name.clone(),
         path: entry.path.clone(),
@@ -60,7 +54,47 @@ pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> P
         install_brew,
         notes: entry.notes.clone().unwrap_or_default(),
         timeout_secs: entry.timeout_secs.unwrap_or(0),
+        installs_skill_default: matches!(entry.installs_skill, Some(InstallsSkill::Default(true))),
+        installs_skill_explicitly_disabled: matches!(
+            entry.installs_skill,
+            Some(InstallsSkill::Default(false))
+        ),
+        installs_skill_command: match &entry.installs_skill {
+            Some(InstallsSkill::Custom { command }) => command.clone(),
+            _ => String::new(),
+        },
+        audit_exceptions: entry.audit_exceptions.clone(),
     }
+}
+
+pub(super) fn list(
+    registry: &Arc<RwLock<Registry>>,
+    _request: Request<RegistryListRequest>,
+) -> Response<RegistryListResponse> {
+    let projects = registry
+        .read()
+        .expect("registry lock poisoned")
+        .projects
+        .iter()
+        .map(project_to_proto)
+        .collect();
+    Response::new(RegistryListResponse { projects })
+}
+
+pub(super) fn show(
+    registry: &Arc<RwLock<Registry>>,
+    request: Request<RegistryShowRequest>,
+) -> Result<Response<RegistryShowResponse>, Status> {
+    let req = request.into_inner();
+    let project = registry
+        .read()
+        .expect("registry lock poisoned")
+        .find_project(&req.name)
+        .map(project_to_proto)
+        .ok_or_else(|| Status::not_found(format!("project '{}' not found", req.name)))?;
+    Ok(Response::new(RegistryShowResponse {
+        project: Some(project),
+    }))
 }
 
 pub(super) fn add(
@@ -297,13 +331,18 @@ mod tests {
     use tonic::Request;
 
     use foundry_sdk::registry::{
-        ActionFlags, InstallConfig, ProjectEntry, Registry, RegistryMutationError, Stack,
+        ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, Registry, RegistryMutationError,
+        Stack,
     };
 
-    use crate::proto::{RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest};
+    use crate::proto::{
+        RegistryAddRequest, RegistryEditRequest, RegistryListRequest, RegistryRemoveRequest,
+        RegistryShowRequest,
+    };
 
     use super::{
-        add, edit, edits_from_request, mutation_error_to_status, project_to_proto, remove,
+        add, edit, edits_from_request, list, mutation_error_to_status, project_to_proto, remove,
+        show,
     };
 
     fn empty_registry() -> Arc<RwLock<Registry>> {
@@ -387,6 +426,10 @@ mod tests {
         assert_eq!(proto.skip, "");
         assert_eq!(proto.notes, "");
         assert_eq!(proto.timeout_secs, 0);
+        assert!(!proto.installs_skill_default);
+        assert!(!proto.installs_skill_explicitly_disabled);
+        assert_eq!(proto.installs_skill_command, "");
+        assert!(proto.audit_exceptions.is_empty());
     }
 
     #[test]
@@ -433,6 +476,137 @@ mod tests {
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "");
         assert_eq!(proto.install_brew, "svetzal/tap/foundry");
+    }
+
+    #[test]
+    fn project_to_proto_preserves_installs_skill_and_audit_exceptions() {
+        let entry = ProjectEntry {
+            name: "delta".to_string(),
+            path: "/tmp/delta".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: "owner/delta".to_string(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: Some(InstallsSkill::Custom {
+                command: "foundry init --global --force".to_string(),
+            }),
+            notes: None,
+            timeout_secs: None,
+            audit_exceptions: vec!["RUSTSEC-2026-0001".to_string()],
+        };
+
+        let proto = project_to_proto(&entry);
+
+        assert_eq!(proto.installs_skill_command, "foundry init --global --force");
+        assert!(!proto.installs_skill_default);
+        assert!(!proto.installs_skill_explicitly_disabled);
+        assert_eq!(proto.audit_exceptions, vec!["RUSTSEC-2026-0001"]);
+    }
+
+    #[test]
+    fn list_returns_all_projects_from_registry_state() {
+        let registry = Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![
+                ProjectEntry {
+                    name: "alpha".to_string(),
+                    path: "/tmp/alpha".to_string(),
+                    stack: Stack::Rust,
+                    agent: "claude".to_string(),
+                    repo: "owner/alpha".to_string(),
+                    branch: "main".to_string(),
+                    skip: None,
+                    actions: ActionFlags::default(),
+                    install: None,
+                    installs_skill: None,
+                    notes: Some("daemon-owned".to_string()),
+                    timeout_secs: None,
+                    audit_exceptions: vec![],
+                },
+                ProjectEntry {
+                    name: "beta".to_string(),
+                    path: "/tmp/beta".to_string(),
+                    stack: Stack::Python,
+                    agent: "codex".to_string(),
+                    repo: "owner/beta".to_string(),
+                    branch: "develop".to_string(),
+                    skip: Some("hold".to_string()),
+                    actions: ActionFlags::default(),
+                    install: None,
+                    installs_skill: Some(InstallsSkill::Default(false)),
+                    notes: None,
+                    timeout_secs: None,
+                    audit_exceptions: vec![],
+                },
+            ],
+        }));
+
+        let response = list(&registry, Request::new(RegistryListRequest {})).into_inner();
+
+        assert_eq!(response.projects.len(), 2);
+        assert_eq!(response.projects[0].name, "alpha");
+        assert_eq!(response.projects[0].notes, "daemon-owned");
+        assert_eq!(response.projects[1].name, "beta");
+        assert_eq!(response.projects[1].skip, "hold");
+        assert!(response.projects[1].installs_skill_explicitly_disabled);
+    }
+
+    #[test]
+    fn show_returns_exact_name_match() {
+        let registry = Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![ProjectEntry {
+                name: "alpha".to_string(),
+                path: "/tmp/alpha".to_string(),
+                stack: Stack::Rust,
+                agent: "claude".to_string(),
+                repo: "owner/alpha".to_string(),
+                branch: "main".to_string(),
+                skip: None,
+                actions: ActionFlags::default(),
+                install: None,
+                installs_skill: Some(InstallsSkill::Default(true)),
+                notes: Some("server only".to_string()),
+                timeout_secs: None,
+                audit_exceptions: vec!["RUSTSEC-2026-0002".to_string()],
+            }],
+        }));
+
+        let response = show(
+            &registry,
+            Request::new(RegistryShowRequest {
+                name: "alpha".to_string(),
+            }),
+        )
+        .expect("show should succeed")
+        .into_inner();
+        let project = response.project.expect("project payload");
+
+        assert_eq!(project.name, "alpha");
+        assert_eq!(project.path, "/tmp/alpha");
+        assert_eq!(project.repo, "owner/alpha");
+        assert_eq!(project.notes, "server only");
+        assert!(project.installs_skill_default);
+        assert_eq!(project.audit_exceptions, vec!["RUSTSEC-2026-0002"]);
+    }
+
+    #[test]
+    fn show_missing_project_returns_not_found() {
+        let registry = empty_registry();
+
+        let err = show(
+            &registry,
+            Request::new(RegistryShowRequest {
+                name: "ghost".to_string(),
+            }),
+        )
+        .expect_err("missing project should fail");
+
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        assert_eq!(err.message(), "project 'ghost' not found");
     }
 
     #[test]

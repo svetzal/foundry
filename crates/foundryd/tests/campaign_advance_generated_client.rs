@@ -173,17 +173,12 @@ async fn start_server(service: FoundryService) -> String {
 /// before dispatching any event, so the channel must be empty (or contain only
 /// unrelated events).
 fn assert_no_advance_event_dispatched(rx: &mut broadcast::Receiver<Event>) {
-    loop {
-        match rx.try_recv() {
-            Ok(event) => {
-                assert_ne!(
-                    event.event_type,
-                    EventType::CampaignAdvanceRequested,
-                    "CampaignAdvanceRequested must NOT be broadcast for a rejected advance"
-                );
-            }
-            Err(_) => break,
-        }
+    while let Ok(event) = rx.try_recv() {
+        assert_ne!(
+            event.event_type,
+            EventType::CampaignAdvanceRequested,
+            "CampaignAdvanceRequested must NOT be broadcast for a rejected advance"
+        );
     }
 }
 
@@ -357,7 +352,7 @@ async fn generated_client_advance_completed_returns_failed_precondition_store_un
 /// `CampaignAdvanceRequested` event must be broadcast.
 ///
 /// Using a non-empty store (seeded with a different campaign) distinguishes a
-/// genuine NOT_FOUND from a misconfigured empty-store error path.
+/// genuine `NOT_FOUND` from a misconfigured empty-store error path.
 #[tokio::test]
 async fn generated_client_advance_missing_name_returns_not_found_store_unchanged_no_event() {
     let (service, tmp_campaigns, mut rx, _tmp_traces) = make_service();
