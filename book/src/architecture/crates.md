@@ -114,9 +114,10 @@ The CLI controller. Connects to `foundryd` over gRPC.
 - `commands.rs` — async implementations of each subcommand via `tonic` gRPC
   client; also contains the `history` command which reads on-disk traces
   directly from `~/.foundry/traces/` without a daemon connection
-- `registry_commands.rs` — pure I/O implementations of the `registry`
-  subcommands (`init`, `list`, `show`, `add`, `remove`, `edit`); reads and
-  writes `~/.foundry/registry.json` using `foundry_sdk::registry` types
+- `registry_commands.rs` — registry CLI handlers. `init` is explicit
+  offline-only recovery; `list`, `show`, `add`, `remove`, and `edit` use
+  typed gRPC against `foundryd` by default and touch
+  `~/.foundry/registry.json` only when `--offline` is set
 
 ## proto/foundry.proto
 

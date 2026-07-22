@@ -31,6 +31,10 @@ fn mutation_error_to_status(err: RegistryMutationError) -> Status {
     }
 }
 
+fn registry_persist_failed_status() -> Status {
+    Status::internal("failed to persist registry state")
+}
+
 pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> Project {
     let (install_command, install_brew) = match &entry.install {
         Some(InstallConfig::Command(cmd)) => (cmd.clone(), String::new()),
@@ -158,10 +162,11 @@ pub(super) fn add(
 
     let entry_proto = {
         let mut reg = registry.write().expect("registry lock poisoned");
-        let entry = reg.add_project(spec).map_err(mutation_error_to_status)?;
+        let mut updated = reg.clone();
+        let entry = updated.add_project(spec).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
-        reg.save(registry_path)
-            .map_err(|e| Status::internal(format!("failed to save registry: {e}")))?;
+        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        *reg = updated;
         proto
     };
 
@@ -181,9 +186,10 @@ pub(super) fn remove(
 
     {
         let mut reg = registry.write().expect("registry lock poisoned");
-        reg.remove_project(&req.name).map_err(mutation_error_to_status)?;
-        reg.save(registry_path)
-            .map_err(|e| Status::internal(format!("failed to save registry: {e}")))?;
+        let mut updated = reg.clone();
+        updated.remove_project(&req.name).map_err(mutation_error_to_status)?;
+        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        *reg = updated;
     }
 
     tracing::info!(project = %req.name, "registry_remove: project removed");
@@ -309,10 +315,11 @@ pub(super) fn edit(
 
     let entry_proto = {
         let mut reg = registry.write().expect("registry lock poisoned");
-        let entry = reg.edit_project(&req.name, edits).map_err(mutation_error_to_status)?;
+        let mut updated = reg.clone();
+        let entry = updated.edit_project(&req.name, edits).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
-        reg.save(registry_path)
-            .map_err(|e| Status::internal(format!("failed to save registry: {e}")))?;
+        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        *reg = updated;
         proto
     };
 

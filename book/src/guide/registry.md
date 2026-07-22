@@ -199,7 +199,9 @@ and operate on the daemon-owned in-memory registry state. Direct filesystem
 access is reserved for explicit offline recovery with `--offline`. Without
 `--offline`, an unreachable daemon is an error and leaves the client-side
 registry file untouched. If `FOUNDRY_REGISTRY_PATH` is absent, the online path
-still leaves it absent.
+still leaves it absent. If daemon persistence fails during an online
+add/edit/remove, the RPC returns a stable `INTERNAL` error and leaves the
+daemon-owned registry unchanged.
 
 ```bash
 # Create an empty registry during offline recovery

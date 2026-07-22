@@ -184,7 +184,9 @@ message RegistryShowResponse {
 
 // Add a project to the daemon-owned registry.
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
-// client-side registry file writes unless `--offline` is explicit.
+// client-side registry file writes unless `--offline` is explicit. If daemon
+// persistence fails, the RPC returns INTERNAL and leaves the in-memory
+// registry unchanged.
 message RegistryAddRequest {
     string name = 1;
     string path = 2;
@@ -209,7 +211,9 @@ message RegistryAddResponse {
 
 // Remove a project from the daemon-owned registry.
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
-// client-side registry file writes unless `--offline` is explicit.
+// client-side registry file writes unless `--offline` is explicit. If daemon
+// persistence fails, the RPC returns INTERNAL and leaves the in-memory
+// registry unchanged.
 message RegistryRemoveRequest {
     string name = 1;
 }
@@ -223,7 +227,9 @@ message RegistryRemoveResponse {}
 // Use clear_install = true to explicitly clear the install config.
 // Use clear_timeout = true to explicitly clear the timeout (revert to default).
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
-// client-side registry file writes unless `--offline` is explicit.
+// client-side registry file writes unless `--offline` is explicit. If daemon
+// persistence fails, the RPC returns INTERNAL and leaves the in-memory
+// registry unchanged.
 message RegistryEditRequest {
     string name = 1;
     string path = 2;

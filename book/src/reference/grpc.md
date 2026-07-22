@@ -102,7 +102,9 @@ therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
 and mutate the registry file directly. Without `--offline`, an unreachable
 daemon returns an error and leaves the client-side registry file unchanged. The
 online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`.
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
+`INTERNAL` with a stable `failed to persist registry state` message and leaves
+the daemon's in-memory registry unchanged.
 
 ### `RegistryList(RegistryListRequest) → RegistryListResponse`
 
@@ -175,7 +177,9 @@ and therefore requires a reachable daemon. Pass `--offline` to bypass the
 daemon and mutate the registry file directly. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side registry file
 unchanged. The online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`.
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
+`INTERNAL` with a stable `failed to persist registry state` message and leaves
+the daemon's in-memory registry unchanged.
 
 ### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
 
@@ -227,7 +231,9 @@ and therefore requires a reachable daemon. Pass `--offline` to bypass the
 daemon and mutate the registry file directly. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side registry file
 unchanged. The online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`.
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
+`INTERNAL` with a stable `failed to persist registry state` message and leaves
+the daemon's in-memory registry unchanged.
 
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 

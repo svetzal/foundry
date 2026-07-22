@@ -15,7 +15,9 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
     proto::{
-        RegistryAddRequest, RegistryEditRequest, RegistryRemoveRequest, foundry_server::Foundry,
+        RegistryAddRequest, RegistryEditRequest, RegistryListRequest, RegistryRemoveRequest,
+        RegistryShowRequest, foundry_client::FoundryClient, foundry_server::Foundry,
+        foundry_server::FoundryServer,
     },
     service::{FoundryService, RuntimeContext, StoreConfig},
     trace_store::TraceStore,
@@ -23,6 +25,8 @@ use foundryd::{
 };
 use tempfile::{NamedTempFile, TempDir};
 use tokio::sync::{Notify, broadcast};
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 use tonic::{Code, Request};
 
 /// Construct a minimal `FoundryService` with temporary backing files.
@@ -31,6 +35,13 @@ use tonic::{Code, Request};
 /// directory for trace files.  The caller must keep all three alive for the
 /// duration of the test.
 fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
+    make_service_with(Registry {
+        version: 2,
+        projects: vec![],
+    })
+}
+
+fn make_service_with(registry_data: Registry) -> (FoundryService, NamedTempFile, TempDir) {
     let (event_tx, _rx) = broadcast::channel(64);
     let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
 
@@ -42,10 +53,7 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
         Arc::clone(&trace_writer),
     ));
     let workflow_tracker = Arc::new(WorkflowTracker::new());
-    let registry = Arc::new(RwLock::new(Registry {
-        version: 2,
-        projects: vec![],
-    }));
+    let registry = Arc::new(RwLock::new(registry_data));
 
     let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
     let registry_path = tmp_registry.path().to_path_buf();
@@ -75,6 +83,51 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
     let service = FoundryService::new(ctx, stores);
 
     (service, tmp_registry, tmp_traces)
+}
+
+fn make_service_with_registry_path(
+    registry_data: Registry,
+    registry_path: std::path::PathBuf,
+) -> (FoundryService, TempDir) {
+    let (event_tx, _rx) = broadcast::channel(64);
+    let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+
+    let tmp_traces = tempfile::tempdir().expect("tempdir for traces");
+    let trace_writer =
+        Arc::new(TraceWriter::new(tmp_traces.path().to_str().expect("trace dir must be UTF-8")));
+    let trace_store = Arc::new(TraceStore::with_trace_writer(
+        Duration::from_secs(60),
+        Arc::clone(&trace_writer),
+    ));
+    let workflow_tracker = Arc::new(WorkflowTracker::new());
+    let registry = Arc::new(RwLock::new(registry_data));
+
+    let tmp_campaigns = NamedTempFile::new().expect("tempfile for campaigns");
+    let campaigns_path = tmp_campaigns.path().to_path_buf();
+
+    let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+    let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
+    let sentinels_path = tmp_sentinels.path().to_path_buf();
+    let scheduler_reload = Arc::new(Notify::new());
+
+    let ctx = RuntimeContext {
+        engine,
+        trace_store,
+        workflow_tracker,
+        trace_writer,
+        event_tx,
+        registry,
+    };
+    let stores = StoreConfig {
+        campaigns_path,
+        registry_path,
+        sentinels,
+        sentinels_path,
+        scheduler_reload,
+    };
+    let service = FoundryService::new(ctx, stores);
+
+    (service, tmp_traces)
 }
 
 /// Read and deserialise the registry JSON written to disk by the service.
@@ -116,6 +169,37 @@ fn add_request(name: &str) -> RegistryAddRequest {
     }
 }
 
+fn seeded_registry(name: &str) -> Registry {
+    Registry {
+        version: 2,
+        projects: vec![read_registry_entry(name)],
+    }
+}
+
+fn read_registry_entry(name: &str) -> foundry_sdk::registry::ProjectEntry {
+    foundry_sdk::registry::ProjectEntry {
+        name: name.to_string(),
+        path: format!("/tmp/{name}"),
+        stack: foundry_sdk::registry::Stack::Rust,
+        agent: "claude".to_string(),
+        repo: format!("owner/{name}"),
+        branch: "main".to_string(),
+        skip: None,
+        actions: foundry_sdk::registry::ActionFlags {
+            iterate: true,
+            maintain: false,
+            push: true,
+            audit: false,
+            release: false,
+        },
+        install: None,
+        installs_skill: None,
+        notes: Some("seed note".to_string()),
+        timeout_secs: Some(60),
+        audit_exceptions: vec![],
+    }
+}
+
 /// Helper: a `RegistryEditRequest` that changes only the `branch` field.
 fn edit_branch_request(name: &str, branch: &str) -> RegistryEditRequest {
     RegistryEditRequest {
@@ -146,6 +230,23 @@ fn edit_branch_request(name: &str, branch: &str) -> RegistryEditRequest {
         timeout_secs: 0,
         clear_timeout: false,
     }
+}
+
+async fn start_server(service: FoundryService) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let incoming = TcpListenerStream::new(listener);
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(FoundryServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .expect("gRPC server error");
+    });
+    tokio::task::yield_now().await;
+
+    format!("http://127.0.0.1:{port}")
 }
 
 // ---------------------------------------------------------------------------
@@ -352,4 +453,151 @@ async fn show_returns_full_daemon_owned_project_fields() {
     assert!(project.maintain);
     assert!(project.push);
     assert!(project.release);
+}
+
+#[tokio::test]
+async fn generated_client_list_and_show_round_trip_exact_fields() {
+    let (service, _tmp_registry, _tmp_traces) = make_service_with(seeded_registry("alpha"));
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let list = client
+        .registry_list(RegistryListRequest {})
+        .await
+        .expect("registry_list should succeed")
+        .into_inner();
+    assert_eq!(list.projects.len(), 1);
+    let listed = &list.projects[0];
+    assert_eq!(listed.name, "alpha");
+    assert_eq!(listed.path, "/tmp/alpha");
+    assert_eq!(listed.repo, "owner/alpha");
+    assert_eq!(listed.notes, "seed note");
+    assert!(listed.iterate);
+    assert!(listed.push);
+
+    let shown = client
+        .registry_show(RegistryShowRequest {
+            name: "alpha".to_string(),
+        })
+        .await
+        .expect("registry_show should succeed")
+        .into_inner()
+        .project
+        .expect("project payload");
+    assert_eq!(shown.name, "alpha");
+    assert_eq!(shown.path, "/tmp/alpha");
+    assert_eq!(shown.repo, "owner/alpha");
+    assert_eq!(shown.notes, "seed note");
+    assert_eq!(shown.branch, "main");
+}
+
+#[tokio::test]
+async fn generated_client_registry_add_persist_failure_returns_internal_without_path_and_no_mutation()
+ {
+    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
+    let registry_path = unreadable_dir.path().to_path_buf();
+    let (service, _tmp_traces) = make_service_with_registry_path(
+        Registry {
+            version: 2,
+            projects: vec![],
+        },
+        registry_path.clone(),
+    );
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_add(add_request("alpha"))
+        .await
+        .expect_err("registry_add should fail when registry path is unreadable");
+    assert_eq!(err.code(), Code::Internal);
+    assert_eq!(err.message(), "failed to persist registry state");
+    assert!(
+        !err.message().contains(registry_path.to_string_lossy().as_ref()),
+        "status message must not leak the registry path"
+    );
+
+    let list = client
+        .registry_list(RegistryListRequest {})
+        .await
+        .expect("registry_list after failed add should succeed")
+        .into_inner();
+    assert!(
+        list.projects.is_empty(),
+        "failed add must not mutate daemon-owned in-memory registry state"
+    );
+}
+
+#[tokio::test]
+async fn generated_client_registry_edit_persist_failure_returns_internal_without_path_and_no_mutation()
+ {
+    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
+    let registry_path = unreadable_dir.path().to_path_buf();
+    let (service, _tmp_traces) =
+        make_service_with_registry_path(seeded_registry("alpha"), registry_path.clone());
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_edit(edit_branch_request("alpha", "develop"))
+        .await
+        .expect_err("registry_edit should fail when registry path is unreadable");
+    assert_eq!(err.code(), Code::Internal);
+    assert_eq!(err.message(), "failed to persist registry state");
+    assert!(
+        !err.message().contains(registry_path.to_string_lossy().as_ref()),
+        "status message must not leak the registry path"
+    );
+
+    let shown = client
+        .registry_show(RegistryShowRequest {
+            name: "alpha".to_string(),
+        })
+        .await
+        .expect("registry_show after failed edit should succeed")
+        .into_inner()
+        .project
+        .expect("project payload");
+    assert_eq!(
+        shown.branch, "main",
+        "failed edit must leave daemon-owned in-memory registry state unchanged"
+    );
+}
+
+#[tokio::test]
+async fn generated_client_registry_remove_persist_failure_returns_internal_without_path_and_no_mutation()
+ {
+    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
+    let registry_path = unreadable_dir.path().to_path_buf();
+    let (service, _tmp_traces) =
+        make_service_with_registry_path(seeded_registry("alpha"), registry_path.clone());
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_remove(RegistryRemoveRequest {
+            name: "alpha".to_string(),
+        })
+        .await
+        .expect_err("registry_remove should fail when registry path is unreadable");
+    assert_eq!(err.code(), Code::Internal);
+    assert_eq!(err.message(), "failed to persist registry state");
+    assert!(
+        !err.message().contains(registry_path.to_string_lossy().as_ref()),
+        "status message must not leak the registry path"
+    );
+
+    let shown = client
+        .registry_show(RegistryShowRequest {
+            name: "alpha".to_string(),
+        })
+        .await
+        .expect("registry_show after failed remove should succeed")
+        .into_inner()
+        .project
+        .expect("project payload");
+    assert_eq!(
+        shown.name, "alpha",
+        "failed remove must leave daemon-owned in-memory registry state unchanged"
+    );
 }
