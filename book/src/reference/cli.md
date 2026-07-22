@@ -420,7 +420,8 @@ error and leaves the client-side registry file untouched. In offline mode, if
 the registry file does not exist, it is created automatically. The online path
 mutates daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`.
 If daemon persistence fails, the command surfaces the daemon's stable
-`INTERNAL` error and leaves the daemon-owned registry unchanged. Duplicate
+`INTERNAL` error and leaves the daemon-owned registry unchanged in memory and
+on disk. Duplicate
 names and invalid inputs surface the daemon's typed `AlreadyExists` and
 `InvalidArgument` statuses.
 
@@ -465,7 +466,8 @@ directly for recovery. Without `--offline`, an unreachable daemon returns an
 error and leaves the client-side registry file untouched. The online path
 mutates daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`.
 If daemon persistence fails, the command surfaces the daemon's stable
-`INTERNAL` error and leaves the daemon-owned registry unchanged. Missing
+`INTERNAL` error and leaves the daemon-owned registry unchanged in memory and
+on disk. Missing
 projects surface the daemon's typed `NotFound` status.
 
 ```bash
@@ -481,8 +483,8 @@ recovery. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file untouched. The online path mutates
 daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`. If daemon
 persistence fails, the command surfaces the daemon's stable `INTERNAL` error
-and leaves the daemon-owned registry unchanged. Missing projects surface the
-daemon's typed `NotFound` status.
+and leaves the daemon-owned registry unchanged in memory and on disk. Missing
+projects surface the daemon's typed `NotFound` status.
 
 ```bash
 foundry registry edit my-tool \

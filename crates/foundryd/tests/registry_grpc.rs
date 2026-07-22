@@ -273,6 +273,7 @@ fn assert_project_proto_matches_entry(
             assert!(actual.install_brew.is_empty());
         }
     }
+    assert_eq!(actual.audit_exceptions, expected.audit_exceptions);
 }
 
 /// Helper: a `RegistryEditRequest` that changes only the `branch` field.
@@ -762,6 +763,46 @@ async fn generated_client_registry_add_conflicting_install_returns_exact_invalid
             install_command: "./install.sh".to_string(),
             install_brew: "foundry".to_string(),
             ..add_request("alpha")
+        })
+        .await
+        .expect_err("conflicting install config must fail");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(err.message(), "provide at most one of install_command or install_brew");
+}
+
+#[tokio::test]
+async fn generated_client_registry_edit_invalid_stack_returns_exact_invalid_argument_status() {
+    let seeded_registry = seeded_registry("alpha");
+    let (service, _tmp_registry, _tmp_traces) = make_service_with(seeded_registry);
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_edit(RegistryEditRequest {
+            stack: "cobol".to_string(),
+            ..edit_branch_request("alpha", "main")
+        })
+        .await
+        .expect_err("invalid stack must fail");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(err.message(), "invalid stack 'cobol'");
+}
+
+#[tokio::test]
+async fn generated_client_registry_edit_conflicting_install_returns_exact_invalid_argument_status()
+{
+    let seeded_registry = seeded_registry("alpha");
+    let (service, _tmp_registry, _tmp_traces) = make_service_with(seeded_registry);
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_edit(RegistryEditRequest {
+            install_command: "./install.sh".to_string(),
+            install_brew: "foundry".to_string(),
+            ..edit_branch_request("alpha", "main")
         })
         .await
         .expect_err("conflicting install config must fail");

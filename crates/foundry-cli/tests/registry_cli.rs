@@ -346,6 +346,7 @@ fn assert_project_entry_matches_exact(actual: &ProjectEntry, expected: &ProjectE
     }
     assert_eq!(actual.notes, expected.notes);
     assert_eq!(actual.timeout_secs, expected.timeout_secs);
+    assert_eq!(actual.audit_exceptions, expected.audit_exceptions);
 }
 
 fn assert_registry_file_absent(path: &std::path::Path, context: &str) {
@@ -1280,6 +1281,36 @@ async fn online_cli_surfaces_typed_registry_errors_and_preserves_daemon_state() 
     );
     assert_eq!(
         stderr_string(&conflicting_install).trim(),
+        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew"
+    );
+
+    let invalid_edit_stack = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &["registry", "edit", "alpha", "--stack", "cobol"],
+    );
+    assert_eq!(
+        stderr_string(&invalid_edit_stack).trim(),
+        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'"
+    );
+
+    let conflicting_edit_install = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &[
+            "registry",
+            "edit",
+            "alpha",
+            "--install-command",
+            "./install.sh",
+            "--install-brew",
+            "foundry",
+        ],
+    );
+    assert_eq!(
+        stderr_string(&conflicting_edit_install).trim(),
         "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew"
     );
 

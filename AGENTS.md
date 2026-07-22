@@ -131,8 +131,8 @@ Registry commands are daemon-authoritative in normal online use. `list`, `show`,
 
 The gRPC RPCs are `RegistryList`, `RegistryShow`, `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
 
-> **Note for scripts/automation**: `foundry registry init` is offline-only recovery and rejects runs without `--offline` before any daemon or filesystem mutation. Online `foundry registry list/show/add/edit/remove` commands do not silently fall back and surface stable typed gRPC status errors instead. If `foundryd` is not listening, they fail and leave any existing client-side registry file untouched byte-for-byte; if `FOUNDRY_REGISTRY_PATH` is absent, the online path leaves it absent. Use `--offline` deliberately when you want direct file recovery semantics.
-> Online `add`/`edit`/`remove` are also persistence-atomic: if the daemon cannot save the registry, the RPC returns `INTERNAL`, reports a stable `failed to persist registry state` message, and leaves the daemon-owned registry unchanged.
+> **Note for scripts/automation**: `foundry registry init` is offline-only recovery and rejects runs without `--offline` before any daemon or filesystem mutation. Online `foundry registry list/show/add/edit/remove` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side registry file, and if `FOUNDRY_REGISTRY_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, all five commands fail and leave any existing client-side registry file untouched byte-for-byte. Use `--offline` deliberately when you want direct file recovery semantics.
+> Online `add`/`edit`/`remove` are also persistence-atomic: if the daemon cannot save the registry, the RPC returns `INTERNAL`, reports a stable `failed to persist registry state` message, and leaves the daemon-owned registry unchanged in memory and on disk.
 
 ### Sentinel commands
 

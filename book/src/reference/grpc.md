@@ -74,7 +74,7 @@ Add a project to the daemon's in-memory registry and persist the change to
 |-------|------|-------------|
 | `name` | string | Unique project name |
 | `path` | string | Absolute path on the local filesystem |
-| `stack` | string | Technology stack: `rust`, `python`, `typescript`, `elixir` |
+| `stack` | string | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp` |
 | `agent` | string | AI agent name |
 | `repo` | string | GitHub repo slug (`owner/repo`) |
 | `branch` | string | Default branch (empty → `main`) |
@@ -106,7 +106,7 @@ daemon returns an error and leaves the client-side registry file unchanged. The
 online path mutates daemon-owned state only and does not create
 `FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
 `INTERNAL` with a stable `failed to persist registry state` message and leaves
-the daemon's in-memory registry unchanged.
+both the daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `RegistryList(RegistryListRequest) → RegistryListResponse`
 
@@ -184,7 +184,7 @@ unreachable daemon returns an error and leaves the client-side registry file
 unchanged. The online path mutates daemon-owned state only and does not create
 `FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
 `INTERNAL` with a stable `failed to persist registry state` message and leaves
-the daemon's in-memory registry unchanged.
+both the daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
 
@@ -239,7 +239,7 @@ unreachable daemon returns an error and leaves the client-side registry file
 unchanged. The online path mutates daemon-owned state only and does not create
 `FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
 `INTERNAL` with a stable `failed to persist registry state` message and leaves
-the daemon's in-memory registry unchanged.
+both the daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 

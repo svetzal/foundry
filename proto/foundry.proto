@@ -163,8 +163,9 @@ message Project {
 }
 
 // List every project from the daemon-owned registry.
-// Online CLI callers render this response directly and do not read or create
-// a client-side registry file.
+// Online CLI callers render this response directly and do not read, create,
+// or mutate a client-side registry file; if the client-side path is absent,
+// the online path leaves it absent.
 message RegistryListRequest {}
 
 message RegistryListResponse {
@@ -172,8 +173,9 @@ message RegistryListResponse {
 }
 
 // Retrieve one exact-name project from the daemon-owned registry.
-// Online CLI callers render this response directly and do not read or create
-// a client-side registry file.
+// Online CLI callers render this response directly and do not read, create,
+// or mutate a client-side registry file; if the client-side path is absent,
+// the online path leaves it absent.
 message RegistryShowRequest {
     string name = 1;
 }
@@ -185,8 +187,8 @@ message RegistryShowResponse {
 // Add a project to the daemon-owned registry.
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
 // client-side registry file writes unless `--offline` is explicit. If daemon
-// persistence fails, the RPC returns INTERNAL and leaves the in-memory
-// registry unchanged.
+// persistence fails, the RPC returns INTERNAL and leaves both the in-memory
+// registry and on-disk daemon-owned registry bytes unchanged.
 message RegistryAddRequest {
     string name = 1;
     string path = 2;
@@ -212,8 +214,8 @@ message RegistryAddResponse {
 // Remove a project from the daemon-owned registry by exact name.
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
 // client-side registry file writes unless `--offline` is explicit. If daemon
-// persistence fails, the RPC returns INTERNAL and leaves the in-memory
-// registry unchanged.
+// persistence fails, the RPC returns INTERNAL and leaves both the in-memory
+// registry and on-disk daemon-owned registry bytes unchanged.
 message RegistryRemoveRequest {
     string name = 1;
 }
@@ -228,8 +230,8 @@ message RegistryRemoveResponse {}
 // Use clear_timeout = true to explicitly clear the timeout (revert to default).
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
 // client-side registry file writes unless `--offline` is explicit. If daemon
-// persistence fails, the RPC returns INTERNAL and leaves the in-memory
-// registry unchanged.
+// persistence fails, the RPC returns INTERNAL and leaves both the in-memory
+// registry and on-disk daemon-owned registry bytes unchanged.
 message RegistryEditRequest {
     string name = 1;
     string path = 2;
