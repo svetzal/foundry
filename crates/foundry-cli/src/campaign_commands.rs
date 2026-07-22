@@ -3,7 +3,7 @@
 //! Inspection commands (`add`, `list`, `show`) always operate on `campaigns.json`
 //! directly — they never need the daemon.
 //!
-//! The `pause` and `resume` mutation commands mirror the registry/sentinel
+//! The `pause` and `resume` mutation commands mirror the sentinel
 //! daemon-or-offline protocol: the online path calls the `PauseCampaign` /
 //! `ResumeCampaign` gRPC RPC and renders the response from the typed detail
 //! field; the offline fallback (and graceful-degradation path when the daemon

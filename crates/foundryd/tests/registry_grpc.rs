@@ -601,3 +601,35 @@ async fn generated_client_registry_remove_persist_failure_returns_internal_witho
         "failed remove must leave daemon-owned in-memory registry state unchanged"
     );
 }
+
+#[tokio::test]
+async fn generated_client_registry_edit_missing_project_returns_exact_not_found_status() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_edit(edit_branch_request("ghost", "develop"))
+        .await
+        .expect_err("editing a missing project must fail");
+
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(err.message(), "project 'ghost' not found");
+}
+
+#[tokio::test]
+async fn generated_client_registry_remove_missing_project_returns_exact_not_found_status() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_remove(RegistryRemoveRequest {
+            name: "ghost".to_string(),
+        })
+        .await
+        .expect_err("removing a missing project must fail");
+
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(err.message(), "project 'ghost' not found");
+}

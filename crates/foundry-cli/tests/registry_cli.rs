@@ -218,7 +218,13 @@ fn seed_offline_registry(home: &std::path::Path) -> std::path::PathBuf {
             repo: "offline/seeded".to_string(),
             branch: "main".to_string(),
             skip: None,
-            actions: ActionFlags::default(),
+            actions: ActionFlags {
+                iterate: true,
+                maintain: false,
+                push: true,
+                audit: true,
+                release: false,
+            },
             install: None,
             installs_skill: None,
             notes: Some("seeded directly".to_string()),
@@ -229,93 +235,6 @@ fn seed_offline_registry(home: &std::path::Path) -> std::path::PathBuf {
     .save(&registry_path)
     .expect("save initial offline registry");
     registry_path
-}
-
-fn assert_offline_cli_list_and_show(
-    client_home: &std::path::Path,
-    registry_path: &std::path::Path,
-) {
-    let list_output =
-        run_foundry(client_home, registry_path, DUMMY_ADDR, &["--offline", "registry", "list"]);
-    assert_command_succeeded(&list_output);
-    assert!(stdout_string(&list_output).contains("offline-seeded"));
-
-    let show_output = run_foundry(
-        client_home,
-        registry_path,
-        DUMMY_ADDR,
-        &["--offline", "registry", "show", "offline-seeded"],
-    );
-    assert_command_succeeded(&show_output);
-    let show_stdout = stdout_string(&show_output);
-    assert!(show_stdout.contains("Name:      offline-seeded"));
-    assert!(show_stdout.contains("Path:      /offline/seeded"));
-    assert!(show_stdout.contains("Repo:      offline/seeded"));
-    assert!(show_stdout.contains("Notes:     seeded directly"));
-}
-
-fn run_offline_cli_mutations(client_home: &std::path::Path, registry_path: &std::path::Path) {
-    let add_output = run_foundry(
-        client_home,
-        registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline",
-            "registry",
-            "add",
-            "--name",
-            "offline-added",
-            "--path",
-            "/offline/added",
-            "--stack",
-            "rust",
-            "--agent",
-            "claude",
-            "--repo",
-            "offline/added",
-            "--branch",
-            "main",
-            "--notes",
-            "added via offline cli",
-        ],
-    );
-    assert_command_succeeded(&add_output);
-
-    let edit_output = run_foundry(
-        client_home,
-        registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline",
-            "registry",
-            "edit",
-            "offline-added",
-            "--branch",
-            "develop",
-            "--notes",
-            "edited via offline cli",
-        ],
-    );
-    assert_command_succeeded(&edit_output);
-
-    let remove_output = run_foundry(
-        client_home,
-        registry_path,
-        DUMMY_ADDR,
-        &["--offline", "registry", "remove", "offline-seeded"],
-    );
-    assert_command_succeeded(&remove_output);
-}
-
-fn assert_offline_registry_final_state(registry_path: &std::path::Path) {
-    let registry = Registry::load(registry_path).expect("load registry after offline CLI flow");
-    assert_eq!(registry.projects.len(), 1, "exactly one project should remain");
-    let project = &registry.projects[0];
-    assert_eq!(project.name, "offline-added");
-    assert_eq!(project.path, "/offline/added");
-    assert_eq!(project.repo, "offline/added");
-    assert_eq!(project.branch, "develop");
-    assert_eq!(project.notes.as_deref(), Some("edited via offline cli"));
 }
 
 fn assert_registry_file_absent(path: &std::path::Path, context: &str) {
@@ -403,6 +322,25 @@ fn assert_online_unreachable_keeps_client_registry_absent(
     assert!(!output.status.success(), "{context}: command should fail");
     assert_eq!(stderr_string(&output).trim(), expected_stderr);
     assert_registry_file_absent(&client_registry, context);
+}
+
+fn assert_online_unreachable_keeps_client_registry_byte_identical(
+    client_home: &std::path::Path,
+    args: &[&str],
+    expected_stderr: &str,
+    context: &str,
+) {
+    let (client_registry, before) = seed_client_registry_trap(client_home);
+
+    let output = run_foundry(client_home, &client_registry, DUMMY_ADDR, args);
+
+    assert!(!output.status.success(), "{context}: command should fail");
+    assert_eq!(stderr_string(&output).trim(), expected_stderr);
+    assert_eq!(
+        std::fs::read(&client_registry).expect("read trap registry after failed online command"),
+        before,
+        "{context}: command must not read or mutate the client-side registry file"
+    );
 }
 
 fn run_online_registry_add(
@@ -803,20 +741,11 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
 #[tokio::test]
 async fn online_list_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
-
-    let output =
-        run_foundry(client_home.path(), &client_registry, DUMMY_ADDR, &["registry", "list"]);
-
-    assert!(!output.status.success(), "online list should fail when daemon is unreachable");
-    assert_eq!(
-        stderr_string(&output).trim(),
-        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry list --offline`"
-    );
-    assert_eq!(
-        std::fs::read(&client_registry).expect("read client trap bytes after failed online list"),
-        before,
-        "online registry list must not read or mutate the client-side registry file"
+    assert_online_unreachable_keeps_client_registry_byte_identical(
+        client_home.path(),
+        &["registry", "list"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry list --offline`",
+        "online registry list",
     );
 }
 
@@ -834,24 +763,11 @@ async fn online_list_unreachable_daemon_leaves_absent_client_registry_absent() {
 #[tokio::test]
 async fn online_show_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
-
-    let output = run_foundry(
+    assert_online_unreachable_keeps_client_registry_byte_identical(
         client_home.path(),
-        &client_registry,
-        DUMMY_ADDR,
         &["registry", "show", "alpha"],
-    );
-
-    assert!(!output.status.success(), "online show should fail when daemon is unreachable");
-    assert_eq!(
-        stderr_string(&output).trim(),
-        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry show alpha --offline`"
-    );
-    assert_eq!(
-        std::fs::read(&client_registry).expect("read client trap bytes after failed online show"),
-        before,
-        "online registry show must not read or mutate the client-side registry file"
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry show alpha --offline`",
+        "online registry show",
     );
 }
 
@@ -869,11 +785,8 @@ async fn online_show_unreachable_daemon_leaves_absent_client_registry_absent() {
 #[tokio::test]
 async fn online_add_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
-    let output = run_foundry(
+    assert_online_unreachable_keeps_client_registry_byte_identical(
         client_home.path(),
-        &client_registry,
-        DUMMY_ADDR,
         &[
             "registry",
             "add",
@@ -890,15 +803,9 @@ async fn online_add_unreachable_daemon_leaves_client_registry_byte_identical() {
             "--branch",
             "main",
         ],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry add --name alpha --offline`",
+        "online registry add",
     );
-
-    assert!(!output.status.success(), "online add should fail when daemon is unreachable");
-    assert_eq!(
-        stderr_string(&output).trim(),
-        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry add --name alpha --offline`"
-    );
-    let after = std::fs::read(&client_registry).expect("read registry after failed online add");
-    assert_eq!(after, before);
 }
 
 #[tokio::test]
@@ -930,21 +837,12 @@ async fn online_add_unreachable_daemon_leaves_absent_client_registry_absent() {
 #[tokio::test]
 async fn online_remove_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
-    let output = run_foundry(
+    assert_online_unreachable_keeps_client_registry_byte_identical(
         client_home.path(),
-        &client_registry,
-        DUMMY_ADDR,
         &["registry", "remove", "alpha"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry remove alpha --offline`",
+        "online registry remove",
     );
-
-    assert!(!output.status.success(), "online remove should fail when daemon is unreachable");
-    assert_eq!(
-        stderr_string(&output).trim(),
-        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry remove alpha --offline`"
-    );
-    let after = std::fs::read(&client_registry).expect("read registry after failed online remove");
-    assert_eq!(after, before);
 }
 
 #[tokio::test]
@@ -961,21 +859,12 @@ async fn online_remove_unreachable_daemon_leaves_absent_client_registry_absent()
 #[tokio::test]
 async fn online_edit_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
-    let output = run_foundry(
+    assert_online_unreachable_keeps_client_registry_byte_identical(
         client_home.path(),
-        &client_registry,
-        DUMMY_ADDR,
         &["registry", "edit", "alpha", "--branch", "develop"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry edit alpha --offline`",
+        "online registry edit",
     );
-
-    assert!(!output.status.success(), "online edit should fail when daemon is unreachable");
-    assert_eq!(
-        stderr_string(&output).trim(),
-        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry edit alpha --offline`"
-    );
-    let after = std::fs::read(&client_registry).expect("read registry after failed online edit");
-    assert_eq!(after, before);
 }
 
 #[test]
@@ -990,37 +879,193 @@ fn online_edit_unreachable_daemon_leaves_absent_client_registry_absent() {
 }
 
 #[test]
-fn init_requires_explicit_offline_recovery_flag() {
-    let tmp = NamedTempFile::new().expect("registry tempfile");
-    std::fs::remove_file(tmp.path()).expect("remove empty tempfile path");
-
-    let err = registry_commands::init(tmp.path(), false).expect_err("online init must fail");
-
-    assert_eq!(
-        err.to_string(),
-        "`foundry registry init` is an offline recovery command; rerun with `--offline`"
+fn online_init_without_offline_leaves_client_registry_byte_identical() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_byte_identical(
+        client_home.path(),
+        &["registry", "init"],
+        "Error: `foundry registry init` is an offline recovery command; rerun with `--offline`",
+        "online registry init",
     );
-    assert!(!tmp.path().exists());
 }
 
 #[test]
-fn offline_init_creates_recovery_registry_file() {
-    let tmp = NamedTempFile::new().expect("registry tempfile");
-    std::fs::remove_file(tmp.path()).expect("remove empty tempfile path");
+fn online_init_without_offline_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &["registry", "init"],
+        "Error: `foundry registry init` is an offline recovery command; rerun with `--offline`",
+        "online registry init must leave an absent client-side registry file absent",
+    );
+}
 
-    registry_commands::init(tmp.path(), true).expect("offline init should succeed");
+#[test]
+fn offline_init_creates_recovery_registry_file_via_cli() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let registry_path = missing_client_registry_path(client_home.path());
+    assert_registry_file_absent(&registry_path, "offline init precondition");
 
-    let registry = Registry::load(tmp.path()).expect("load created registry");
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &["--offline", "registry", "init"],
+    );
+    assert_command_succeeded(&output);
+
+    let registry = Registry::load(&registry_path).expect("load created offline registry");
     assert_eq!(registry.version, 2);
     assert!(registry.projects.is_empty());
 }
 
 #[test]
-fn offline_cli_list_show_add_edit_and_remove_work_against_direct_file_store() {
+fn offline_list_reads_direct_registry_file_via_cli() {
     let client_home = tempfile::tempdir().expect("client home");
     let registry_path = seed_offline_registry(client_home.path());
 
-    assert_offline_cli_list_and_show(client_home.path(), &registry_path);
-    run_offline_cli_mutations(client_home.path(), &registry_path);
-    assert_offline_registry_final_state(&registry_path);
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &["--offline", "registry", "list"],
+    );
+    assert_command_succeeded(&output);
+    let stdout = stdout_string(&output);
+    assert!(stdout.contains("offline-seeded"));
+    assert!(stdout.contains("iterate, push, audit"));
+}
+
+#[test]
+fn offline_show_reads_exact_registry_fields_via_cli() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let registry_path = seed_offline_registry(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &["--offline", "registry", "show", "offline-seeded"],
+    );
+    assert_show_displays_exact_fields_and_actions(
+        &output,
+        "offline-seeded",
+        "/offline/seeded",
+        "offline/seeded",
+        "seeded directly",
+        "iterate, push, audit",
+    );
+}
+
+#[test]
+fn offline_add_writes_exact_registry_fields_via_cli() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let registry_path = seed_offline_registry(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &[
+            "--offline",
+            "registry",
+            "add",
+            "--name",
+            "offline-added",
+            "--path",
+            "/offline/added",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "offline/added",
+            "--branch",
+            "main",
+            "--iterate",
+            "--maintain",
+            "--notes",
+            "added via offline cli",
+        ],
+    );
+    assert_command_succeeded(&output);
+
+    let registry = Registry::load(&registry_path).expect("load registry after offline add");
+    let project = registry
+        .projects
+        .iter()
+        .find(|project| project.name == "offline-added")
+        .expect("offline-added project must exist");
+    assert_eq!(project.path, "/offline/added");
+    assert_eq!(project.repo, "offline/added");
+    assert_eq!(project.notes.as_deref(), Some("added via offline cli"));
+    assert!(project.actions.iterate);
+    assert!(project.actions.maintain);
+    assert!(!project.actions.push);
+    assert!(!project.actions.audit);
+    assert!(!project.actions.release);
+}
+
+#[test]
+fn offline_edit_updates_exact_registry_fields_via_cli() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let registry_path = seed_offline_registry(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &[
+            "--offline",
+            "registry",
+            "edit",
+            "offline-seeded",
+            "--path",
+            "/offline/seeded-edited",
+            "--repo",
+            "offline/seeded-edited",
+            "--notes",
+            "edited via offline cli",
+            "--maintain",
+            "true",
+            "--release",
+            "true",
+        ],
+    );
+    assert_command_succeeded(&output);
+
+    let registry = Registry::load(&registry_path).expect("load registry after offline edit");
+    let project = registry
+        .projects
+        .iter()
+        .find(|project| project.name == "offline-seeded")
+        .expect("offline-seeded project must exist");
+    assert_eq!(project.path, "/offline/seeded-edited");
+    assert_eq!(project.repo, "offline/seeded-edited");
+    assert_eq!(project.notes.as_deref(), Some("edited via offline cli"));
+    assert!(project.actions.iterate);
+    assert!(project.actions.maintain);
+    assert!(project.actions.push);
+    assert!(project.actions.audit);
+    assert!(project.actions.release);
+}
+
+#[test]
+fn offline_remove_mutates_direct_registry_file_via_cli() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let registry_path = seed_offline_registry(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &registry_path,
+        DUMMY_ADDR,
+        &["--offline", "registry", "remove", "offline-seeded"],
+    );
+    assert_command_succeeded(&output);
+
+    let registry = Registry::load(&registry_path).expect("load registry after offline remove");
+    assert!(
+        registry.projects.is_empty(),
+        "offline remove must delete the exact project from the direct file store"
+    );
 }

@@ -133,7 +133,8 @@ registry state.
 therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file unchanged. The online path renders the RPC
-response directly and does not create `FOUNDRY_REGISTRY_PATH`.
+response directly and does not create `FOUNDRY_REGISTRY_PATH`; if that path is
+absent, the online path leaves it absent.
 
 ### `RegistryShow(RegistryShowRequest) → RegistryShowResponse`
 
@@ -158,7 +159,8 @@ is exact and does not perform prefix or substring lookup.
 therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file unchanged. The online path renders the RPC
-response directly and does not create `FOUNDRY_REGISTRY_PATH`.
+response directly and does not create `FOUNDRY_REGISTRY_PATH`; if that path is
+absent, the online path leaves it absent.
 
 ### `RegistryRemove(RegistryRemoveRequest) → RegistryRemoveResponse`
 

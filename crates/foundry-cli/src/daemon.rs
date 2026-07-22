@@ -1,14 +1,21 @@
-//! Shared daemon-or-offline fallback helper.
+//! Shared daemon/offline helpers for CLI commands.
 //!
-//! The fallback protocol — try gRPC, warn on unreachable, fall back to
-//! direct file mutation — is one decision that applies to every registry,
-//! sentinel, and campaign mutation command.  This module is the single home
-//! for that decision.
+//! Two control-plane policies coexist in the CLI:
+//!
+//! - Mutation commands such as sentinel enable/disable and campaign
+//!   pause/resume use a graceful-degradation policy: try gRPC first, warn on
+//!   unreachable daemon, then fall back to direct store mutation.
+//! - Commands whose default online path must remain daemon-authoritative use
+//!   [`connect_daemon_required`] and fail cleanly when the daemon is
+//!   unreachable. The registry online path is in this category.
+//!
+//! This module is the single home for both policies so command modules do not
+//! duplicate connection or error-shaping logic.
 //!
 //! Two variants are provided:
 //!
 //! - [`with_daemon_or_offline`] — for commands whose success message is a
-//!   fixed confirmation string (registry, sentinel mutations).
+//!   fixed confirmation string (sentinel mutations).
 //! - [`with_daemon_or_offline_render`] — for commands whose output is built
 //!   from the typed RPC response (e.g. `campaign pause`, which renders the
 //!   full `PauseCampaignResponse.campaign` detail).
