@@ -346,10 +346,8 @@ fn assert_project_entry_matches_exact(actual: &ProjectEntry, expected: &ProjectE
     assert_eq!(actual.actions.audit, expected.actions.audit);
     assert_eq!(actual.actions.release, expected.actions.release);
     match (&actual.install, &expected.install) {
-        (Some(InstallConfig::Command(actual)), Some(InstallConfig::Command(expected))) => {
-            assert_eq!(actual, expected);
-        }
-        (Some(InstallConfig::Brew(actual)), Some(InstallConfig::Brew(expected))) => {
+        (Some(InstallConfig::Command(actual)), Some(InstallConfig::Command(expected)))
+        | (Some(InstallConfig::Brew(actual)), Some(InstallConfig::Brew(expected))) => {
             assert_eq!(actual, expected);
         }
         (None, None) => {}
@@ -374,6 +372,138 @@ fn assert_stdout_contains(output: &std::process::Output, needle: &str, context: 
         "{context}\nstdout: {}\nstderr: {}",
         stdout_string(output),
         stderr_string(output)
+    );
+}
+
+fn assert_daemon_error(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+    args: &[&str],
+    expected_stderr: &str,
+) {
+    let output = run_foundry(client_home, client_registry, addr, args);
+    assert_eq!(stderr_string(&output).trim(), expected_stderr);
+}
+
+fn assert_registry_add_and_show_errors(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+) {
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "alpha",
+            "--path",
+            "/dup/alpha",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "dup/alpha",
+        ],
+        "Error: daemon error: Some entity that we attempted to create already exists — project 'alpha' already exists",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &["registry", "show", "ghost"],
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "beta",
+            "--path",
+            "/srv/beta",
+            "--stack",
+            "cobol",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/beta",
+        ],
+        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "beta",
+            "--path",
+            "/srv/beta",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/beta",
+            "--install-command",
+            "./install.sh",
+            "--install-brew",
+            "foundry",
+        ],
+        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew",
+    );
+}
+
+fn assert_registry_edit_and_remove_errors(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+) {
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &["registry", "edit", "alpha", "--stack", "cobol"],
+        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "edit",
+            "alpha",
+            "--install-command",
+            "./install.sh",
+            "--install-brew",
+            "foundry",
+        ],
+        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &["registry", "remove", "ghost"],
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found",
+    );
+    assert_daemon_error(
+        client_home,
+        client_registry,
+        addr,
+        &["registry", "edit", "ghost", "--branch", "develop"],
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found",
     );
 }
 
@@ -1212,136 +1342,8 @@ async fn online_cli_surfaces_typed_registry_errors_and_preserves_daemon_state() 
     let client_home = tempfile::tempdir().expect("client home");
     let client_registry = missing_client_registry_path(client_home.path());
 
-    let duplicate_add = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &[
-            "registry",
-            "add",
-            "--name",
-            "alpha",
-            "--path",
-            "/dup/alpha",
-            "--stack",
-            "rust",
-            "--agent",
-            "claude",
-            "--repo",
-            "dup/alpha",
-        ],
-    );
-    assert_eq!(
-        stderr_string(&duplicate_add).trim(),
-        "Error: daemon error: Some entity that we attempted to create already exists — project 'alpha' already exists"
-    );
-
-    let missing_show =
-        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "show", "ghost"]);
-    assert_eq!(
-        stderr_string(&missing_show).trim(),
-        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
-    );
-
-    let invalid_stack = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &[
-            "registry",
-            "add",
-            "--name",
-            "beta",
-            "--path",
-            "/srv/beta",
-            "--stack",
-            "cobol",
-            "--agent",
-            "claude",
-            "--repo",
-            "daemon/beta",
-        ],
-    );
-    assert_eq!(
-        stderr_string(&invalid_stack).trim(),
-        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'"
-    );
-
-    let conflicting_install = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &[
-            "registry",
-            "add",
-            "--name",
-            "beta",
-            "--path",
-            "/srv/beta",
-            "--stack",
-            "rust",
-            "--agent",
-            "claude",
-            "--repo",
-            "daemon/beta",
-            "--install-command",
-            "./install.sh",
-            "--install-brew",
-            "foundry",
-        ],
-    );
-    assert_eq!(
-        stderr_string(&conflicting_install).trim(),
-        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew"
-    );
-
-    let invalid_edit_stack = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &["registry", "edit", "alpha", "--stack", "cobol"],
-    );
-    assert_eq!(
-        stderr_string(&invalid_edit_stack).trim(),
-        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'"
-    );
-
-    let conflicting_edit_install = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &[
-            "registry",
-            "edit",
-            "alpha",
-            "--install-command",
-            "./install.sh",
-            "--install-brew",
-            "foundry",
-        ],
-    );
-    assert_eq!(
-        stderr_string(&conflicting_edit_install).trim(),
-        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew"
-    );
-
-    let missing_remove =
-        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "remove", "ghost"]);
-    assert_eq!(
-        stderr_string(&missing_remove).trim(),
-        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
-    );
-
-    let missing_edit = run_foundry(
-        client_home.path(),
-        &client_registry,
-        &addr,
-        &["registry", "edit", "ghost", "--branch", "develop"],
-    );
-    assert_eq!(
-        stderr_string(&missing_edit).trim(),
-        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
-    );
+    assert_registry_add_and_show_errors(client_home.path(), &client_registry, &addr);
+    assert_registry_edit_and_remove_errors(client_home.path(), &client_registry, &addr);
 
     assert_registry_file_absent(
         &client_registry,
