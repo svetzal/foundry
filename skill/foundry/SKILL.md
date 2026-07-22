@@ -292,7 +292,8 @@ online use: they go through `foundryd`'s typed gRPC API and operate on the
 daemon-owned registry state. Add `--offline` only for explicit recovery when
 the daemon is not running and you need to read or mutate the file directly.
 Without `--offline`, an unreachable daemon is an error and the client-side
-registry file remains untouched.
+registry file remains untouched. If `FOUNDRY_REGISTRY_PATH` does not exist, the
+online path leaves it absent rather than creating it.
 
 ```bash
 # Initialize an empty registry during offline recovery

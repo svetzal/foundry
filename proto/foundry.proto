@@ -163,6 +163,8 @@ message Project {
 }
 
 // List every project from the daemon-owned registry.
+// Online CLI callers render this response directly and do not read or create
+// a client-side registry file.
 message RegistryListRequest {}
 
 message RegistryListResponse {
@@ -170,6 +172,8 @@ message RegistryListResponse {
 }
 
 // Retrieve one exact-name project from the daemon-owned registry.
+// Online CLI callers render this response directly and do not read or create
+// a client-side registry file.
 message RegistryShowRequest {
     string name = 1;
 }
@@ -179,6 +183,8 @@ message RegistryShowResponse {
 }
 
 // Add a project to the daemon-owned registry.
+// Online CLI callers mutate daemon-owned state only; they do not fall back to
+// client-side registry file writes unless `--offline` is explicit.
 message RegistryAddRequest {
     string name = 1;
     string path = 2;
@@ -202,6 +208,8 @@ message RegistryAddResponse {
 }
 
 // Remove a project from the daemon-owned registry.
+// Online CLI callers mutate daemon-owned state only; they do not fall back to
+// client-side registry file writes unless `--offline` is explicit.
 message RegistryRemoveRequest {
     string name = 1;
 }
@@ -214,6 +222,8 @@ message RegistryRemoveResponse {}
 // Use clear_notes = true to explicitly clear the notes field.
 // Use clear_install = true to explicitly clear the install config.
 // Use clear_timeout = true to explicitly clear the timeout (revert to default).
+// Online CLI callers mutate daemon-owned state only; they do not fall back to
+// client-side registry file writes unless `--offline` is explicit.
 message RegistryEditRequest {
     string name = 1;
     string path = 2;

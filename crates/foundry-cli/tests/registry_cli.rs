@@ -168,6 +168,10 @@ fn seed_client_registry_trap(home: &std::path::Path) -> (std::path::PathBuf, Vec
     (registry_path, bytes)
 }
 
+fn missing_client_registry_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".foundry/registry.json")
+}
+
 fn stdout_string(output: &std::process::Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("stdout must be valid UTF-8")
 }
@@ -299,6 +303,126 @@ fn assert_offline_registry_final_state(registry_path: &std::path::Path) {
     assert_eq!(project.repo, "offline/added");
     assert_eq!(project.branch, "develop");
     assert_eq!(project.notes.as_deref(), Some("edited via offline cli"));
+}
+
+fn assert_registry_file_absent(path: &std::path::Path, context: &str) {
+    assert!(
+        !path.exists(),
+        "{context}: expected client registry file to remain absent at {}",
+        path.display()
+    );
+}
+
+fn assert_stdout_contains(output: &std::process::Output, needle: &str, context: &str) {
+    assert!(
+        stdout_string(output).contains(needle),
+        "{context}\nstdout: {}\nstderr: {}",
+        stdout_string(output),
+        stderr_string(output)
+    );
+}
+
+fn assert_daemon_project_fields(
+    registry_path: &std::path::Path,
+    name: &str,
+    path: &str,
+    repo: &str,
+    notes: &str,
+) {
+    let daemon_registry = Registry::load(registry_path).expect("load daemon registry");
+    let project = daemon_registry
+        .projects
+        .iter()
+        .find(|project| project.name == name)
+        .expect("daemon registry should contain expected project");
+    assert_eq!(project.path, path);
+    assert_eq!(project.repo, repo);
+    assert_eq!(project.notes.as_deref(), Some(notes));
+}
+
+fn run_online_registry_show(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+    name: &str,
+) -> std::process::Output {
+    run_foundry(client_home, client_registry, addr, &["registry", "show", name])
+}
+
+fn assert_show_displays_exact_fields(
+    output: &std::process::Output,
+    name: &str,
+    path: &str,
+    repo: &str,
+    notes: &str,
+) {
+    assert_command_succeeded(output);
+    let stdout = stdout_string(output);
+    assert!(stdout.contains(&format!("Name:      {name}")));
+    assert!(stdout.contains(&format!("Path:      {path}")));
+    assert!(stdout.contains(&format!("Repo:      {repo}")));
+    assert!(stdout.contains(&format!("Notes:     {notes}")));
+}
+
+fn run_online_registry_add(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+) -> std::process::Output {
+    run_foundry(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "alpha",
+            "--path",
+            "/srv/alpha",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/alpha",
+            "--branch",
+            "main",
+            "--notes",
+            "daemon-owned add",
+        ],
+    )
+}
+
+fn run_online_registry_edit(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+) -> std::process::Output {
+    run_foundry(
+        client_home,
+        client_registry,
+        addr,
+        &[
+            "registry",
+            "edit",
+            "alpha",
+            "--path",
+            "/srv/alpha-edited",
+            "--repo",
+            "daemon/alpha-edited",
+            "--notes",
+            "daemon-owned edit",
+        ],
+    )
+}
+
+fn run_online_registry_remove(
+    client_home: &std::path::Path,
+    client_registry: &std::path::Path,
+    addr: &str,
+) -> std::process::Output {
+    run_foundry(client_home, client_registry, addr, &["registry", "remove", "alpha"])
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +589,7 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
     let addr = start_server(service).await;
 
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
+    let client_registry = missing_client_registry_path(client_home.path());
     let output = run_foundry(client_home.path(), &client_registry, &addr, &["registry", "list"]);
 
     assert!(
@@ -476,10 +600,9 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("server-only"));
-    assert!(
-        std::fs::read(&client_registry).expect("read client trap bytes after online list")
-            == before,
-        "online registry list must not read or mutate the client-side registry file"
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry list must not create a client-side registry file",
     );
 }
 
@@ -496,7 +619,7 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     let addr = start_server(service).await;
 
     let client_home = tempfile::tempdir().expect("client home");
-    let (client_registry, before) = seed_client_registry_trap(client_home.path());
+    let client_registry = missing_client_registry_path(client_home.path());
     let output = run_foundry(
         client_home.path(),
         &client_registry,
@@ -515,11 +638,119 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     assert!(stdout.contains("Path:      /srv/server-only"));
     assert!(stdout.contains("Repo:      daemon/server-only"));
     assert!(stdout.contains("Notes:     notes from daemon for server-only"));
-    assert!(
-        std::fs::read(&client_registry).expect("read client trap bytes after online show")
-            == before,
-        "online registry show must not read or mutate the client-side registry file"
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry show must not create a client-side registry file",
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_cli_mutations_target_daemon_registry_without_creating_client_registry_file() {
+    let daemon_registry_file = NamedTempFile::new().expect("daemon registry tempfile");
+    Registry {
+        version: 2,
+        projects: vec![],
+    }
+    .save(daemon_registry_file.path())
+    .expect("save empty daemon registry");
+    let (service, _tmp_traces) = make_service_with_registry(
+        Registry {
+            version: 2,
+            projects: vec![],
+        },
+        daemon_registry_file.path().to_path_buf(),
+    );
+    let addr = start_server(service).await;
+
+    let client_home = tempfile::tempdir().expect("client home");
+    let client_registry = missing_client_registry_path(client_home.path());
+
+    let add_output = run_online_registry_add(client_home.path(), &client_registry, &addr);
+    assert_command_succeeded(&add_output);
+    assert_stdout_contains(
+        &add_output,
+        "Added project 'alpha' to registry.",
+        "online add should confirm the daemon mutation",
+    );
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry add must not create a client-side registry file",
+    );
+    assert_daemon_project_fields(
+        daemon_registry_file.path(),
+        "alpha",
+        "/srv/alpha",
+        "daemon/alpha",
+        "daemon-owned add",
+    );
+
+    let list_output =
+        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "list"]);
+    assert_command_succeeded(&list_output);
+    assert_stdout_contains(
+        &list_output,
+        "alpha",
+        "online list should reflect daemon-owned registry state",
+    );
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry list must not create a client-side registry file after add",
+    );
+
+    let show_output =
+        run_online_registry_show(client_home.path(), &client_registry, &addr, "alpha");
+    assert_show_displays_exact_fields(
+        &show_output,
+        "alpha",
+        "/srv/alpha",
+        "daemon/alpha",
+        "daemon-owned add",
+    );
+
+    let edit_output = run_online_registry_edit(client_home.path(), &client_registry, &addr);
+    assert_command_succeeded(&edit_output);
+    assert_stdout_contains(
+        &edit_output,
+        "Updated project 'alpha'.",
+        "online edit should confirm the daemon mutation",
+    );
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry edit must not create a client-side registry file",
+    );
+    assert_daemon_project_fields(
+        daemon_registry_file.path(),
+        "alpha",
+        "/srv/alpha-edited",
+        "daemon/alpha-edited",
+        "daemon-owned edit",
+    );
+
+    let show_after_edit =
+        run_online_registry_show(client_home.path(), &client_registry, &addr, "alpha");
+    assert_show_displays_exact_fields(
+        &show_after_edit,
+        "alpha",
+        "/srv/alpha-edited",
+        "daemon/alpha-edited",
+        "daemon-owned edit",
+    );
+
+    let remove_output = run_online_registry_remove(client_home.path(), &client_registry, &addr);
+    assert_command_succeeded(&remove_output);
+    assert_stdout_contains(
+        &remove_output,
+        "Removed project 'alpha' from registry.",
+        "online remove should confirm the daemon mutation",
+    );
+    assert_registry_file_absent(
+        &client_registry,
+        "online registry remove must not create a client-side registry file",
+    );
+
+    let daemon_registry =
+        Registry::load(daemon_registry_file.path()).expect("load daemon registry after remove");
+    assert!(daemon_registry.projects.is_empty());
 }
 
 #[tokio::test]
@@ -568,82 +799,76 @@ async fn online_show_unreachable_daemon_leaves_client_registry_byte_identical() 
 
 #[tokio::test]
 async fn online_add_unreachable_daemon_leaves_client_registry_byte_identical() {
-    let tmp = init_registry();
-    let before = std::fs::read(tmp.path()).expect("read seeded registry");
-
-    let err = registry_commands::add(
-        tmp.path(),
+    let client_home = tempfile::tempdir().expect("client home");
+    let (client_registry, before) = seed_client_registry_trap(client_home.path());
+    let output = run_foundry(
+        client_home.path(),
+        &client_registry,
         DUMMY_ADDR,
-        false,
-        simple_spec("alpha", "/tmp/alpha", Stack::Rust),
-    )
-    .await
-    .expect_err("unreachable daemon must fail");
-
-    assert_eq!(
-        err.to_string(),
-        "foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry add --name alpha --offline`"
+        &[
+            "registry",
+            "add",
+            "--name",
+            "alpha",
+            "--path",
+            "/tmp/alpha",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "o/alpha",
+            "--branch",
+            "main",
+        ],
     );
-    let after = std::fs::read(tmp.path()).expect("read registry after failure");
+
+    assert!(!output.status.success(), "online add should fail when daemon is unreachable");
+    assert_eq!(
+        stderr_string(&output).trim(),
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry add --name alpha --offline`"
+    );
+    let after = std::fs::read(&client_registry).expect("read registry after failed online add");
     assert_eq!(after, before);
 }
 
 #[tokio::test]
 async fn online_remove_unreachable_daemon_leaves_client_registry_byte_identical() {
-    let tmp = init_registry();
-    registry_commands::add(
-        tmp.path(),
+    let client_home = tempfile::tempdir().expect("client home");
+    let (client_registry, before) = seed_client_registry_trap(client_home.path());
+    let output = run_foundry(
+        client_home.path(),
+        &client_registry,
         DUMMY_ADDR,
-        true,
-        simple_spec("alpha", "/tmp/alpha", Stack::Rust),
-    )
-    .await
-    .expect("seed offline add");
-    let before = std::fs::read(tmp.path()).expect("read seeded registry");
-
-    let err = registry_commands::remove(tmp.path(), DUMMY_ADDR, false, "alpha")
-        .await
-        .expect_err("unreachable daemon must fail");
-
-    assert_eq!(
-        err.to_string(),
-        "foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry remove alpha --offline`"
+        &["registry", "remove", "alpha"],
     );
-    let after = std::fs::read(tmp.path()).expect("read registry after failure");
+
+    assert!(!output.status.success(), "online remove should fail when daemon is unreachable");
+    assert_eq!(
+        stderr_string(&output).trim(),
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry remove alpha --offline`"
+    );
+    let after = std::fs::read(&client_registry).expect("read registry after failed online remove");
     assert_eq!(after, before);
 }
 
 #[tokio::test]
 async fn online_edit_unreachable_daemon_leaves_client_registry_byte_identical() {
-    let tmp = init_registry();
-    registry_commands::add(
-        tmp.path(),
+    let client_home = tempfile::tempdir().expect("client home");
+    let (client_registry, before) = seed_client_registry_trap(client_home.path());
+    let output = run_foundry(
+        client_home.path(),
+        &client_registry,
         DUMMY_ADDR,
-        true,
-        simple_spec("alpha", "/tmp/alpha", Stack::Rust),
-    )
-    .await
-    .expect("seed offline add");
-    let before = std::fs::read(tmp.path()).expect("read seeded registry");
-
-    let err = registry_commands::edit(
-        tmp.path(),
-        DUMMY_ADDR,
-        false,
-        "alpha",
-        ProjectEdits {
-            branch: Some("develop".to_string()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect_err("unreachable daemon must fail");
-
-    assert_eq!(
-        err.to_string(),
-        "foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry edit alpha --offline`"
+        &["registry", "edit", "alpha", "--branch", "develop"],
     );
-    let after = std::fs::read(tmp.path()).expect("read registry after failure");
+
+    assert!(!output.status.success(), "online edit should fail when daemon is unreachable");
+    assert_eq!(
+        stderr_string(&output).trim(),
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry edit alpha --offline`"
+    );
+    let after = std::fs::read(&client_registry).expect("read registry after failed online edit");
     assert_eq!(after, before);
 }
 

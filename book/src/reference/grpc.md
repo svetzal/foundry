@@ -100,7 +100,9 @@ Add a project to the daemon's in-memory registry and persist the change to
 **CLI:** `foundry registry add ...` routes through this RPC by default and
 therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
 and mutate the registry file directly. Without `--offline`, an unreachable
-daemon returns an error and leaves the client-side registry file unchanged.
+daemon returns an error and leaves the client-side registry file unchanged. The
+online path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`.
 
 ### `RegistryList(RegistryListRequest) → RegistryListResponse`
 
@@ -128,7 +130,8 @@ registry state.
 **CLI:** `foundry registry list` routes through this RPC by default and
 therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
-leaves the client-side registry file unchanged.
+leaves the client-side registry file unchanged. The online path renders the RPC
+response directly and does not create `FOUNDRY_REGISTRY_PATH`.
 
 ### `RegistryShow(RegistryShowRequest) → RegistryShowResponse`
 
@@ -152,7 +155,8 @@ is exact and does not perform prefix or substring lookup.
 **CLI:** `foundry registry show <name>` routes through this RPC by default and
 therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
-leaves the client-side registry file unchanged.
+leaves the client-side registry file unchanged. The online path renders the RPC
+response directly and does not create `FOUNDRY_REGISTRY_PATH`.
 
 ### `RegistryRemove(RegistryRemoveRequest) → RegistryRemoveResponse`
 
@@ -170,7 +174,8 @@ Remove a project from the registry by name.
 and therefore requires a reachable daemon. Pass `--offline` to bypass the
 daemon and mutate the registry file directly. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side registry file
-unchanged.
+unchanged. The online path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`.
 
 ### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
 
@@ -221,7 +226,8 @@ unknown stack.
 and therefore requires a reachable daemon. Pass `--offline` to bypass the
 daemon and mutate the registry file directly. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side registry file
-unchanged.
+unchanged. The online path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`.
 
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 
