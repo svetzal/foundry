@@ -165,7 +165,8 @@ message Project {
 // List every project from the daemon-owned registry.
 // Online CLI callers render this response directly and do not read, create,
 // or mutate a client-side registry file; if the client-side path is absent,
-// the online path leaves it absent.
+// the online path leaves it absent. `foundry registry init` remains offline-
+// only recovery and never contacts this RPC surface.
 message RegistryListRequest {}
 
 message RegistryListResponse {

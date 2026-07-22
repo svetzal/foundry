@@ -65,7 +65,7 @@ impl Registry {
     pub fn save(&self, path: &Path) -> Result<(), StoreError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
-                path: path.to_owned(),
+                path: parent.to_owned(),
                 source,
             })?;
         }
@@ -73,11 +73,15 @@ impl Registry {
             path: path.to_owned(),
             source,
         })?;
-        std::fs::write(path, content).map_err(|source| StoreError::Io {
-            path: path.to_owned(),
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, content).map_err(|source| StoreError::Io {
+            path: tmp.clone(),
             source,
         })?;
-        Ok(())
+        std::fs::rename(&tmp, path).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })
     }
 
     /// Return only the projects that are not marked as skipped.
@@ -691,6 +695,27 @@ mod tests {
         };
         registry.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn save_replaces_file_atomically_without_leaving_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        let original: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        original.save(&path).unwrap();
+
+        let updated = Registry {
+            version: 2,
+            projects: vec![],
+        };
+        updated.save(&path).unwrap();
+
+        let loaded = Registry::load(&path).unwrap();
+        assert_eq!(loaded.projects.len(), 0);
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "atomic save should not leave a temporary registry file behind"
+        );
     }
 
     #[test]

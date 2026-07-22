@@ -289,6 +289,7 @@ foundry emit <event_type> --project <name> [--throttle full|dry_run] [--payload 
 The registry (`~/.foundry/registry.json`) tracks which projects Foundry manages.
 `init` is an explicit offline recovery command and rejects runs without
 `--offline` before contacting the daemon or touching the filesystem.
+It never uses the daemon, even when `foundryd` is running.
 `list`, `show`, `add`, `remove`, and `edit` are daemon-authoritative in normal
 online use: they go through `foundryd`'s typed gRPC API and operate on the
 daemon-owned registry state. Add `--offline` only for explicit recovery when

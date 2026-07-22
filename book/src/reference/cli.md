@@ -348,7 +348,8 @@ foundry registry <subcommand>
 Create an empty registry file at the default path (`~/.foundry/registry.json`).
 This is an explicit offline recovery command and requires `--offline`.
 It rejects runs without `--offline` before contacting the daemon or touching
-the registry path. Does nothing if the file already exists.
+the registry path. Does nothing if the file already exists. This command never
+uses the daemon, even when `foundryd` is running.
 
 ```bash
 foundry --offline registry init

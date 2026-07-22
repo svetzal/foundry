@@ -234,11 +234,22 @@ fn make_persist_failure_registry_fixture(
     let registry_path = tempdir.path().join("registry.json");
     registry.save(&registry_path).expect("save seeded registry");
     let before = std::fs::read(&registry_path).expect("read seeded registry");
-    let mut permissions =
-        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
-    permissions.set_mode(0o444);
-    std::fs::set_permissions(&registry_path, permissions).expect("set registry readonly");
+    let mut permissions = std::fs::metadata(tempdir.path())
+        .expect("stat registry directory")
+        .permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(tempdir.path(), permissions).expect("set registry directory readonly");
     (tempdir, registry_path, before)
+}
+
+#[cfg(unix)]
+fn restore_persist_failure_fixture_permissions(tempdir: &TempDir) {
+    let mut permissions = std::fs::metadata(tempdir.path())
+        .expect("stat registry directory")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(tempdir.path(), permissions)
+        .expect("restore registry directory permissions");
 }
 
 fn assert_project_proto_matches_entry(
@@ -600,10 +611,7 @@ async fn generated_client_registry_add_persist_failure_returns_internal_without_
         registry_before,
         "failed add must leave daemon-owned registry bytes unchanged"
     );
-    let mut permissions =
-        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
-    permissions.set_mode(0o644);
-    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    restore_persist_failure_fixture_permissions(&tempdir);
     drop(tempdir);
 }
 
@@ -647,10 +655,7 @@ async fn generated_client_registry_edit_persist_failure_returns_internal_without
         registry_before,
         "failed edit must leave daemon-owned registry bytes unchanged"
     );
-    let mut permissions =
-        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
-    permissions.set_mode(0o644);
-    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    restore_persist_failure_fixture_permissions(&tempdir);
     drop(tempdir);
 }
 
@@ -696,10 +701,7 @@ async fn generated_client_registry_remove_persist_failure_returns_internal_witho
         registry_before,
         "failed remove must leave daemon-owned registry bytes unchanged"
     );
-    let mut permissions =
-        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
-    permissions.set_mode(0o644);
-    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    restore_persist_failure_fixture_permissions(&tempdir);
     drop(tempdir);
 }
 

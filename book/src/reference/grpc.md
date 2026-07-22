@@ -136,7 +136,8 @@ therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file unchanged. The online path renders the RPC
 response directly and does not create `FOUNDRY_REGISTRY_PATH`; if that path is
-absent, the online path leaves it absent.
+absent, the online path leaves it absent. `foundry registry init` is not part
+of this RPC surface and remains an offline-only recovery command.
 
 ### `RegistryShow(RegistryShowRequest) → RegistryShowResponse`
 

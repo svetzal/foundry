@@ -25,7 +25,9 @@ go through the daemon's typed gRPC API so reads and writes observe the same
 daemon-owned state. Direct file access is reserved for explicit recovery with
 `--offline`. Without `--offline`, an unreachable daemon is an error and the
 client-side registry file is left untouched. Online registry commands also do
-not create `FOUNDRY_REGISTRY_PATH` when it does not already exist:
+not create `FOUNDRY_REGISTRY_PATH` when it does not already exist. The one
+exception is `foundry registry init`, which is always an explicit offline-only
+recovery command:
 
 ```bash
 foundry registry add --name my-tool …             # daemon-authoritative
