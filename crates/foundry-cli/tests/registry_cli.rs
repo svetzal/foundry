@@ -55,6 +55,19 @@ fn daemon_project(name: &str) -> ProjectEntry {
     }
 }
 
+fn daemon_project_with_actions(name: &str) -> ProjectEntry {
+    ProjectEntry {
+        actions: ActionFlags {
+            iterate: true,
+            maintain: true,
+            push: false,
+            audit: true,
+            release: false,
+        },
+        ..daemon_project(name)
+    }
+}
+
 fn simple_spec(name: &str, path: &str, stack: Stack) -> ProjectSpec {
     ProjectSpec {
         name: name.to_string(),
@@ -364,6 +377,34 @@ fn assert_show_displays_exact_fields(
     assert!(stdout.contains(&format!("Notes:     {notes}")));
 }
 
+fn assert_show_displays_exact_fields_and_actions(
+    output: &std::process::Output,
+    name: &str,
+    path: &str,
+    repo: &str,
+    notes: &str,
+    actions: &str,
+) {
+    assert_show_displays_exact_fields(output, name, path, repo, notes);
+    assert!(stdout_string(output).contains(&format!("Actions:   {actions}")));
+}
+
+fn assert_online_unreachable_keeps_client_registry_absent(
+    client_home: &std::path::Path,
+    args: &[&str],
+    expected_stderr: &str,
+    context: &str,
+) {
+    let client_registry = missing_client_registry_path(client_home);
+    assert_registry_file_absent(&client_registry, context);
+
+    let output = run_foundry(client_home, &client_registry, DUMMY_ADDR, args);
+
+    assert!(!output.status.success(), "{context}: command should fail");
+    assert_eq!(stderr_string(&output).trim(), expected_stderr);
+    assert_registry_file_absent(&client_registry, context);
+}
+
 fn run_online_registry_add(
     client_home: &std::path::Path,
     client_registry: &std::path::Path,
@@ -578,7 +619,7 @@ async fn edit_offline_nonexistent_returns_error() {
 async fn online_list_reads_daemon_registry_without_creating_client_registry_file() {
     let daemon_registry = Registry {
         version: 2,
-        projects: vec![daemon_project("server-only")],
+        projects: vec![daemon_project_with_actions("server-only")],
     };
     let daemon_registry_file = NamedTempFile::new().expect("daemon registry tempfile");
     daemon_registry.save(daemon_registry_file.path()).expect("save daemon registry");
@@ -600,6 +641,7 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("server-only"));
+    assert!(stdout.contains("iterate, maintain, audit"));
     assert_registry_file_absent(
         &client_registry,
         "online registry list must not create a client-side registry file",
@@ -610,7 +652,7 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
 async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     let daemon_registry = Registry {
         version: 2,
-        projects: vec![daemon_project("server-only")],
+        projects: vec![daemon_project_with_actions("server-only")],
     };
     let daemon_registry_file = NamedTempFile::new().expect("daemon registry tempfile");
     daemon_registry.save(daemon_registry_file.path()).expect("save daemon registry");
@@ -633,11 +675,14 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Name:      server-only"));
-    assert!(stdout.contains("Path:      /srv/server-only"));
-    assert!(stdout.contains("Repo:      daemon/server-only"));
-    assert!(stdout.contains("Notes:     notes from daemon for server-only"));
+    assert_show_displays_exact_fields_and_actions(
+        &output,
+        "server-only",
+        "/srv/server-only",
+        "daemon/server-only",
+        "notes from daemon for server-only",
+        "iterate, maintain, audit",
+    );
     assert_registry_file_absent(
         &client_registry,
         "online registry show must not create a client-side registry file",
@@ -706,6 +751,7 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
         "daemon/alpha",
         "daemon-owned add",
     );
+    assert!(stdout_string(&show_output).contains("Actions:   none"));
 
     let edit_output = run_online_registry_edit(client_home.path(), &client_registry, &addr);
     assert_command_succeeded(&edit_output);
@@ -735,6 +781,7 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
         "daemon/alpha-edited",
         "daemon-owned edit",
     );
+    assert!(stdout_string(&show_after_edit).contains("Actions:   none"));
 
     let remove_output = run_online_registry_remove(client_home.path(), &client_registry, &addr);
     assert_command_succeeded(&remove_output);
@@ -774,6 +821,17 @@ async fn online_list_unreachable_daemon_leaves_client_registry_byte_identical() 
 }
 
 #[tokio::test]
+async fn online_list_unreachable_daemon_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &["registry", "list"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry list --offline`",
+        "online registry list must leave an absent client-side registry file absent",
+    );
+}
+
+#[tokio::test]
 async fn online_show_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
     let (client_registry, before) = seed_client_registry_trap(client_home.path());
@@ -794,6 +852,17 @@ async fn online_show_unreachable_daemon_leaves_client_registry_byte_identical() 
         std::fs::read(&client_registry).expect("read client trap bytes after failed online show"),
         before,
         "online registry show must not read or mutate the client-side registry file"
+    );
+}
+
+#[tokio::test]
+async fn online_show_unreachable_daemon_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &["registry", "show", "alpha"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry show alpha --offline`",
+        "online registry show must leave an absent client-side registry file absent",
     );
 }
 
@@ -833,6 +902,32 @@ async fn online_add_unreachable_daemon_leaves_client_registry_byte_identical() {
 }
 
 #[tokio::test]
+async fn online_add_unreachable_daemon_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &[
+            "registry",
+            "add",
+            "--name",
+            "alpha",
+            "--path",
+            "/tmp/alpha",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "o/alpha",
+            "--branch",
+            "main",
+        ],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry add --name alpha --offline`",
+        "online registry add must leave an absent client-side registry file absent",
+    );
+}
+
+#[tokio::test]
 async fn online_remove_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
     let (client_registry, before) = seed_client_registry_trap(client_home.path());
@@ -853,6 +948,17 @@ async fn online_remove_unreachable_daemon_leaves_client_registry_byte_identical(
 }
 
 #[tokio::test]
+async fn online_remove_unreachable_daemon_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &["registry", "remove", "alpha"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry remove alpha --offline`",
+        "online registry remove must leave an absent client-side registry file absent",
+    );
+}
+
+#[tokio::test]
 async fn online_edit_unreachable_daemon_leaves_client_registry_byte_identical() {
     let client_home = tempfile::tempdir().expect("client home");
     let (client_registry, before) = seed_client_registry_trap(client_home.path());
@@ -870,6 +976,17 @@ async fn online_edit_unreachable_daemon_leaves_client_registry_byte_identical() 
     );
     let after = std::fs::read(&client_registry).expect("read registry after failed online edit");
     assert_eq!(after, before);
+}
+
+#[test]
+fn online_edit_unreachable_daemon_leaves_absent_client_registry_absent() {
+    let client_home = tempfile::tempdir().expect("client home");
+    assert_online_unreachable_keeps_client_registry_absent(
+        client_home.path(),
+        &["registry", "edit", "alpha", "--branch", "develop"],
+        "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry registry edit alpha --offline`",
+        "online registry edit must leave an absent client-side registry file absent",
+    );
 }
 
 #[test]
