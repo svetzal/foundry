@@ -257,4 +257,24 @@ mod tests {
             it is owned exclusively by daemon.rs"
         );
     }
+
+    #[test]
+    fn registry_commands_never_use_daemon_fallback_helpers() {
+        let src = include_str!("registry_commands.rs");
+        assert!(
+            !src.contains("with_daemon_or_offline("),
+            "registry_commands.rs must not use with_daemon_or_offline; \
+            the online registry path is daemon-authoritative"
+        );
+        assert!(
+            !src.contains("with_daemon_or_offline_render("),
+            "registry_commands.rs must not use with_daemon_or_offline_render; \
+            the online registry path is daemon-authoritative"
+        );
+        assert!(
+            src.contains("connect_daemon_required"),
+            "registry_commands.rs must connect through connect_daemon_required \
+            so unreachable daemons fail cleanly without touching the file store"
+        );
+    }
 }

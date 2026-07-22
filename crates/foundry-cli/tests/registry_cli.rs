@@ -1,5 +1,7 @@
 //! Integration tests for `foundry registry` CLI behavior.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -8,7 +10,7 @@ use foundry_blocks::trace_writer::TraceWriter;
 use foundry_cli::registry_commands;
 use foundry_engine::engine::Engine;
 use foundry_sdk::registry::{
-    ActionFlags, ProjectEdits, ProjectEntry, ProjectSpec, Registry, Stack,
+    ActionFlags, InstallConfig, ProjectEdits, ProjectEntry, ProjectSpec, Registry, Stack,
 };
 use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
@@ -65,6 +67,73 @@ fn daemon_project_with_actions(name: &str) -> ProjectEntry {
             release: false,
         },
         ..daemon_project(name)
+    }
+}
+
+fn fully_populated_project(name: &str) -> ProjectEntry {
+    ProjectEntry {
+        name: name.to_string(),
+        path: format!("/srv/{name}"),
+        stack: Stack::Rust,
+        agent: "codex".to_string(),
+        repo: format!("daemon/{name}"),
+        branch: "release".to_string(),
+        skip: Some("Paused for rollout".to_string()),
+        actions: ActionFlags {
+            iterate: true,
+            maintain: true,
+            push: true,
+            audit: false,
+            release: true,
+        },
+        install: Some(InstallConfig::Command("./install.sh".to_string())),
+        installs_skill: None,
+        notes: Some(format!("daemon note for {name}")),
+        timeout_secs: Some(75),
+        audit_exceptions: vec![],
+    }
+}
+
+fn online_added_project() -> ProjectEntry {
+    ProjectEntry {
+        name: "alpha".to_string(),
+        path: "/srv/alpha".to_string(),
+        stack: Stack::Rust,
+        agent: "codex".to_string(),
+        repo: "daemon/alpha".to_string(),
+        branch: "release".to_string(),
+        skip: None,
+        actions: ActionFlags {
+            iterate: true,
+            maintain: true,
+            push: true,
+            audit: true,
+            release: true,
+        },
+        install: Some(InstallConfig::Command("./install.sh".to_string())),
+        installs_skill: None,
+        notes: Some("daemon-owned add".to_string()),
+        timeout_secs: Some(75),
+        audit_exceptions: vec![],
+    }
+}
+
+fn online_edited_project() -> ProjectEntry {
+    ProjectEntry {
+        skip: Some("Waiting for deploy".to_string()),
+        install: Some(InstallConfig::Brew("foundry".to_string())),
+        notes: Some("daemon-owned edit".to_string()),
+        timeout_secs: Some(90),
+        actions: ActionFlags {
+            iterate: true,
+            maintain: true,
+            push: false,
+            audit: true,
+            release: false,
+        },
+        path: "/srv/alpha-edited".to_string(),
+        repo: "daemon/alpha-edited".to_string(),
+        ..online_added_project()
     }
 }
 
@@ -237,6 +306,48 @@ fn seed_offline_registry(home: &std::path::Path) -> std::path::PathBuf {
     registry_path
 }
 
+#[cfg(unix)]
+fn make_persist_failure_registry_fixture(
+    registry: &Registry,
+) -> (TempDir, std::path::PathBuf, Vec<u8>) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let registry_path = tempdir.path().join("registry.json");
+    registry.save(&registry_path).expect("save seeded registry");
+    let before = std::fs::read(&registry_path).expect("read seeded registry");
+    let mut permissions =
+        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
+    permissions.set_mode(0o444);
+    std::fs::set_permissions(&registry_path, permissions).expect("set registry readonly");
+    (tempdir, registry_path, before)
+}
+
+fn assert_project_entry_matches_exact(actual: &ProjectEntry, expected: &ProjectEntry) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.path, expected.path);
+    assert_eq!(actual.stack, expected.stack);
+    assert_eq!(actual.agent, expected.agent);
+    assert_eq!(actual.repo, expected.repo);
+    assert_eq!(actual.branch, expected.branch);
+    assert_eq!(actual.skip, expected.skip);
+    assert_eq!(actual.actions.iterate, expected.actions.iterate);
+    assert_eq!(actual.actions.maintain, expected.actions.maintain);
+    assert_eq!(actual.actions.push, expected.actions.push);
+    assert_eq!(actual.actions.audit, expected.actions.audit);
+    assert_eq!(actual.actions.release, expected.actions.release);
+    match (&actual.install, &expected.install) {
+        (Some(InstallConfig::Command(actual)), Some(InstallConfig::Command(expected))) => {
+            assert_eq!(actual, expected);
+        }
+        (Some(InstallConfig::Brew(actual)), Some(InstallConfig::Brew(expected))) => {
+            assert_eq!(actual, expected);
+        }
+        (None, None) => {}
+        other => panic!("install config mismatch: {other:?}"),
+    }
+    assert_eq!(actual.notes, expected.notes);
+    assert_eq!(actual.timeout_secs, expected.timeout_secs);
+}
+
 fn assert_registry_file_absent(path: &std::path::Path, context: &str) {
     assert!(
         !path.exists(),
@@ -254,22 +365,14 @@ fn assert_stdout_contains(output: &std::process::Output, needle: &str, context: 
     );
 }
 
-fn assert_daemon_project_fields(
-    registry_path: &std::path::Path,
-    name: &str,
-    path: &str,
-    repo: &str,
-    notes: &str,
-) {
+fn assert_daemon_project_fields(registry_path: &std::path::Path, expected: &ProjectEntry) {
     let daemon_registry = Registry::load(registry_path).expect("load daemon registry");
     let project = daemon_registry
         .projects
         .iter()
-        .find(|project| project.name == name)
+        .find(|project| project.name == expected.name)
         .expect("daemon registry should contain expected project");
-    assert_eq!(project.path, path);
-    assert_eq!(project.repo, repo);
-    assert_eq!(project.notes.as_deref(), Some(notes));
+    assert_project_entry_matches_exact(project, expected);
 }
 
 fn run_online_registry_show(
@@ -281,31 +384,35 @@ fn run_online_registry_show(
     run_foundry(client_home, client_registry, addr, &["registry", "show", name])
 }
 
-fn assert_show_displays_exact_fields(
-    output: &std::process::Output,
-    name: &str,
-    path: &str,
-    repo: &str,
-    notes: &str,
-) {
+fn assert_show_displays_exact_fields(output: &std::process::Output, expected: &ProjectEntry) {
     assert_command_succeeded(output);
     let stdout = stdout_string(output);
-    assert!(stdout.contains(&format!("Name:      {name}")));
-    assert!(stdout.contains(&format!("Path:      {path}")));
-    assert!(stdout.contains(&format!("Repo:      {repo}")));
-    assert!(stdout.contains(&format!("Notes:     {notes}")));
-}
-
-fn assert_show_displays_exact_fields_and_actions(
-    output: &std::process::Output,
-    name: &str,
-    path: &str,
-    repo: &str,
-    notes: &str,
-    actions: &str,
-) {
-    assert_show_displays_exact_fields(output, name, path, repo, notes);
-    assert!(stdout_string(output).contains(&format!("Actions:   {actions}")));
+    assert!(stdout.contains(&format!("Name:      {}", expected.name)));
+    assert!(stdout.contains(&format!("Path:      {}", expected.path)));
+    assert!(stdout.contains(&format!("Stack:     {}", expected.stack)));
+    assert!(stdout.contains(&format!("Agent:     {}", expected.agent)));
+    assert!(stdout.contains(&format!("Repo:      {}", expected.repo)));
+    assert!(stdout.contains(&format!("Branch:    {}", expected.branch)));
+    match &expected.skip {
+        Some(skip) => assert!(stdout.contains(&format!("Skip:      {skip}"))),
+        None => assert!(stdout.contains("Skip:      no")),
+    }
+    if let Some(notes) = &expected.notes {
+        assert!(stdout.contains(&format!("Notes:     {notes}")));
+    }
+    match &expected.install {
+        Some(InstallConfig::Command(command)) => {
+            assert!(stdout.contains(&format!("Install:   command: {command}")));
+        }
+        Some(InstallConfig::Brew(formula)) => {
+            assert!(stdout.contains(&format!("Install:   brew: {formula}")));
+        }
+        None => {}
+    }
+    match expected.timeout_secs {
+        Some(timeout_secs) => assert!(stdout.contains(&format!("Timeout:   {timeout_secs}s"))),
+        None => assert!(stdout.contains("Timeout:   3600s (default)")),
+    }
 }
 
 fn assert_online_unreachable_keeps_client_registry_absent(
@@ -362,11 +469,20 @@ fn run_online_registry_add(
             "--stack",
             "rust",
             "--agent",
-            "claude",
+            "codex",
             "--repo",
             "daemon/alpha",
             "--branch",
-            "main",
+            "release",
+            "--iterate",
+            "--maintain",
+            "--push",
+            "--audit",
+            "--release",
+            "--install-command",
+            "./install.sh",
+            "--timeout-secs",
+            "75",
             "--notes",
             "daemon-owned add",
         ],
@@ -390,6 +506,16 @@ fn run_online_registry_edit(
             "/srv/alpha-edited",
             "--repo",
             "daemon/alpha-edited",
+            "--skip",
+            "Waiting for deploy",
+            "--push",
+            "false",
+            "--release",
+            "false",
+            "--install-brew",
+            "foundry",
+            "--timeout-secs",
+            "90",
             "--notes",
             "daemon-owned edit",
         ],
@@ -588,9 +714,10 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
 
 #[tokio::test(flavor = "multi_thread")]
 async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
+    let expected = fully_populated_project("server-only");
     let daemon_registry = Registry {
         version: 2,
-        projects: vec![daemon_project_with_actions("server-only")],
+        projects: vec![expected.clone()],
     };
     let daemon_registry_file = NamedTempFile::new().expect("daemon registry tempfile");
     daemon_registry.save(daemon_registry_file.path()).expect("save daemon registry");
@@ -613,14 +740,8 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_show_displays_exact_fields_and_actions(
-        &output,
-        "server-only",
-        "/srv/server-only",
-        "daemon/server-only",
-        "notes from daemon for server-only",
-        "iterate, maintain, audit",
-    );
+    assert_show_displays_exact_fields(&output, &expected);
+    assert!(stdout_string(&output).contains("Actions:   iterate, maintain, push, release"));
     assert_registry_file_absent(
         &client_registry,
         "online registry show must not create a client-side registry file",
@@ -659,13 +780,7 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
         &client_registry,
         "online registry add must not create a client-side registry file",
     );
-    assert_daemon_project_fields(
-        daemon_registry_file.path(),
-        "alpha",
-        "/srv/alpha",
-        "daemon/alpha",
-        "daemon-owned add",
-    );
+    assert_daemon_project_fields(daemon_registry_file.path(), &online_added_project());
 
     let list_output =
         run_foundry(client_home.path(), &client_registry, &addr, &["registry", "list"]);
@@ -682,14 +797,10 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
 
     let show_output =
         run_online_registry_show(client_home.path(), &client_registry, &addr, "alpha");
-    assert_show_displays_exact_fields(
-        &show_output,
-        "alpha",
-        "/srv/alpha",
-        "daemon/alpha",
-        "daemon-owned add",
+    assert_show_displays_exact_fields(&show_output, &online_added_project());
+    assert!(
+        stdout_string(&show_output).contains("Actions:   iterate, maintain, push, audit, release")
     );
-    assert!(stdout_string(&show_output).contains("Actions:   none"));
 
     let edit_output = run_online_registry_edit(client_home.path(), &client_registry, &addr);
     assert_command_succeeded(&edit_output);
@@ -702,24 +813,12 @@ async fn online_cli_mutations_target_daemon_registry_without_creating_client_reg
         &client_registry,
         "online registry edit must not create a client-side registry file",
     );
-    assert_daemon_project_fields(
-        daemon_registry_file.path(),
-        "alpha",
-        "/srv/alpha-edited",
-        "daemon/alpha-edited",
-        "daemon-owned edit",
-    );
+    assert_daemon_project_fields(daemon_registry_file.path(), &online_edited_project());
 
     let show_after_edit =
         run_online_registry_show(client_home.path(), &client_registry, &addr, "alpha");
-    assert_show_displays_exact_fields(
-        &show_after_edit,
-        "alpha",
-        "/srv/alpha-edited",
-        "daemon/alpha-edited",
-        "daemon-owned edit",
-    );
-    assert!(stdout_string(&show_after_edit).contains("Actions:   none"));
+    assert_show_displays_exact_fields(&show_after_edit, &online_edited_project());
+    assert!(stdout_string(&show_after_edit).contains("Actions:   iterate, maintain, audit"));
 
     let remove_output = run_online_registry_remove(client_home.path(), &client_registry, &addr);
     assert_command_succeeded(&remove_output);
@@ -947,14 +1046,11 @@ fn offline_show_reads_exact_registry_fields_via_cli() {
         DUMMY_ADDR,
         &["--offline", "registry", "show", "offline-seeded"],
     );
-    assert_show_displays_exact_fields_and_actions(
+    assert_show_displays_exact_fields(
         &output,
-        "offline-seeded",
-        "/offline/seeded",
-        "offline/seeded",
-        "seeded directly",
-        "iterate, push, audit",
+        &Registry::load(&registry_path).expect("load seeded offline registry").projects[0],
     );
+    assert!(stdout_string(&output).contains("Actions:   iterate, push, audit"));
 }
 
 #[test]
@@ -996,14 +1092,30 @@ fn offline_add_writes_exact_registry_fields_via_cli() {
         .iter()
         .find(|project| project.name == "offline-added")
         .expect("offline-added project must exist");
-    assert_eq!(project.path, "/offline/added");
-    assert_eq!(project.repo, "offline/added");
-    assert_eq!(project.notes.as_deref(), Some("added via offline cli"));
-    assert!(project.actions.iterate);
-    assert!(project.actions.maintain);
-    assert!(!project.actions.push);
-    assert!(!project.actions.audit);
-    assert!(!project.actions.release);
+    assert_project_entry_matches_exact(
+        project,
+        &ProjectEntry {
+            name: "offline-added".to_string(),
+            path: "/offline/added".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: "offline/added".to_string(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags {
+                iterate: true,
+                maintain: true,
+                push: false,
+                audit: false,
+                release: false,
+            },
+            install: None,
+            installs_skill: None,
+            notes: Some("added via offline cli".to_string()),
+            timeout_secs: None,
+            audit_exceptions: vec![],
+        },
+    );
 }
 
 #[test]
@@ -1040,14 +1152,250 @@ fn offline_edit_updates_exact_registry_fields_via_cli() {
         .iter()
         .find(|project| project.name == "offline-seeded")
         .expect("offline-seeded project must exist");
-    assert_eq!(project.path, "/offline/seeded-edited");
-    assert_eq!(project.repo, "offline/seeded-edited");
-    assert_eq!(project.notes.as_deref(), Some("edited via offline cli"));
-    assert!(project.actions.iterate);
-    assert!(project.actions.maintain);
-    assert!(project.actions.push);
-    assert!(project.actions.audit);
-    assert!(project.actions.release);
+    assert_project_entry_matches_exact(
+        project,
+        &ProjectEntry {
+            name: "offline-seeded".to_string(),
+            path: "/offline/seeded-edited".to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: "offline/seeded-edited".to_string(),
+            branch: "main".to_string(),
+            skip: None,
+            actions: ActionFlags {
+                iterate: true,
+                maintain: true,
+                push: true,
+                audit: true,
+                release: true,
+            },
+            install: None,
+            installs_skill: None,
+            notes: Some("edited via offline cli".to_string()),
+            timeout_secs: Some(90),
+            audit_exceptions: vec![],
+        },
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_cli_surfaces_typed_registry_errors_and_preserves_daemon_state() {
+    let daemon_registry_file = NamedTempFile::new().expect("daemon registry tempfile");
+    let seeded = fully_populated_project("alpha");
+    Registry {
+        version: 2,
+        projects: vec![seeded.clone()],
+    }
+    .save(daemon_registry_file.path())
+    .expect("save daemon registry");
+    let (service, _tmp_traces) = make_service_with_registry(
+        Registry {
+            version: 2,
+            projects: vec![seeded.clone()],
+        },
+        daemon_registry_file.path().to_path_buf(),
+    );
+    let addr = start_server(service).await;
+
+    let client_home = tempfile::tempdir().expect("client home");
+    let client_registry = missing_client_registry_path(client_home.path());
+
+    let duplicate_add = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "alpha",
+            "--path",
+            "/dup/alpha",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "dup/alpha",
+        ],
+    );
+    assert_eq!(
+        stderr_string(&duplicate_add).trim(),
+        "Error: daemon error: Some entity that we attempted to create already exists — project 'alpha' already exists"
+    );
+
+    let missing_show =
+        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "show", "ghost"]);
+    assert_eq!(
+        stderr_string(&missing_show).trim(),
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
+    );
+
+    let invalid_stack = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "beta",
+            "--path",
+            "/srv/beta",
+            "--stack",
+            "cobol",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/beta",
+        ],
+    );
+    assert_eq!(
+        stderr_string(&invalid_stack).trim(),
+        "Error: daemon error: Client specified an invalid argument — invalid stack 'cobol'"
+    );
+
+    let conflicting_install = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "beta",
+            "--path",
+            "/srv/beta",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/beta",
+            "--install-command",
+            "./install.sh",
+            "--install-brew",
+            "foundry",
+        ],
+    );
+    assert_eq!(
+        stderr_string(&conflicting_install).trim(),
+        "Error: daemon error: Client specified an invalid argument — provide at most one of install_command or install_brew"
+    );
+
+    let missing_remove =
+        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "remove", "ghost"]);
+    assert_eq!(
+        stderr_string(&missing_remove).trim(),
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
+    );
+
+    let missing_edit = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &["registry", "edit", "ghost", "--branch", "develop"],
+    );
+    assert_eq!(
+        stderr_string(&missing_edit).trim(),
+        "Error: daemon error: Some requested entity was not found — project 'ghost' not found"
+    );
+
+    assert_registry_file_absent(
+        &client_registry,
+        "typed online daemon errors must not create a client-side registry file",
+    );
+    assert_daemon_project_fields(daemon_registry_file.path(), &seeded);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_cli_persist_failures_surface_internal_error_and_leave_daemon_registry_byte_identical()
+ {
+    let seeded = online_added_project();
+    let seeded_registry = Registry {
+        version: 2,
+        projects: vec![seeded.clone()],
+    };
+    let (tempdir, daemon_registry_path, registry_before) =
+        make_persist_failure_registry_fixture(&seeded_registry);
+    let (service, _tmp_traces) =
+        make_service_with_registry(seeded_registry, daemon_registry_path.clone());
+    let addr = start_server(service).await;
+
+    let client_home = tempfile::tempdir().expect("client home");
+    let client_registry = missing_client_registry_path(client_home.path());
+
+    let add_output = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &[
+            "registry",
+            "add",
+            "--name",
+            "beta",
+            "--path",
+            "/srv/beta",
+            "--stack",
+            "rust",
+            "--agent",
+            "claude",
+            "--repo",
+            "daemon/beta",
+        ],
+    );
+    assert_eq!(
+        stderr_string(&add_output).trim(),
+        "Error: daemon error: Internal error — failed to persist registry state"
+    );
+
+    let edit_output = run_foundry(
+        client_home.path(),
+        &client_registry,
+        &addr,
+        &["registry", "edit", "alpha", "--repo", "daemon/alpha-edited"],
+    );
+    assert_eq!(
+        stderr_string(&edit_output).trim(),
+        "Error: daemon error: Internal error — failed to persist registry state"
+    );
+
+    let remove_output =
+        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "remove", "alpha"]);
+    assert_eq!(
+        stderr_string(&remove_output).trim(),
+        "Error: daemon error: Internal error — failed to persist registry state"
+    );
+
+    let show_output =
+        run_online_registry_show(client_home.path(), &client_registry, &addr, "alpha");
+    assert_show_displays_exact_fields(&show_output, &seeded);
+    let list_output =
+        run_foundry(client_home.path(), &client_registry, &addr, &["registry", "list"]);
+    assert_command_succeeded(&list_output);
+    assert_stdout_contains(
+        &list_output,
+        "alpha",
+        "daemon state must remain readable after persistence failures",
+    );
+
+    assert_registry_file_absent(
+        &client_registry,
+        "persistence failures must not create a client-side registry file",
+    );
+    assert_daemon_project_fields(&daemon_registry_path, &seeded);
+    assert_eq!(
+        std::fs::read(&daemon_registry_path).expect("read daemon registry after failed mutations"),
+        registry_before,
+        "failed online mutations must leave the daemon-owned registry bytes unchanged"
+    );
+    let mut permissions = std::fs::metadata(&daemon_registry_path)
+        .expect("stat registry file")
+        .permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&daemon_registry_path, permissions)
+        .expect("restore registry permissions");
+    drop(tempdir);
 }
 
 #[test]

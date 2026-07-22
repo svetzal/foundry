@@ -6,12 +6,14 @@
 //! transport layer), and assert that both the in-memory registry state and the
 //! on-disk JSON file are updated correctly after each operation.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
-use foundry_sdk::registry::Registry;
+use foundry_sdk::registry::{InstallConfig, Registry};
 use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
     proto::{
@@ -197,6 +199,79 @@ fn read_registry_entry(name: &str) -> foundry_sdk::registry::ProjectEntry {
         notes: Some("seed note".to_string()),
         timeout_secs: Some(60),
         audit_exceptions: vec![],
+    }
+}
+
+fn fully_populated_registry_entry(name: &str) -> foundry_sdk::registry::ProjectEntry {
+    foundry_sdk::registry::ProjectEntry {
+        name: name.to_string(),
+        path: format!("/srv/{name}"),
+        stack: foundry_sdk::registry::Stack::Rust,
+        agent: "codex".to_string(),
+        repo: format!("daemon/{name}"),
+        branch: "release".to_string(),
+        skip: Some("Paused for rollout".to_string()),
+        actions: foundry_sdk::registry::ActionFlags {
+            iterate: true,
+            maintain: true,
+            push: true,
+            audit: false,
+            release: true,
+        },
+        install: Some(InstallConfig::Command("./install.sh".to_string())),
+        installs_skill: None,
+        notes: Some(format!("daemon note for {name}")),
+        timeout_secs: Some(75),
+        audit_exceptions: vec![],
+    }
+}
+
+#[cfg(unix)]
+fn make_persist_failure_registry_fixture(
+    registry: &Registry,
+) -> (TempDir, std::path::PathBuf, Vec<u8>) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let registry_path = tempdir.path().join("registry.json");
+    registry.save(&registry_path).expect("save seeded registry");
+    let before = std::fs::read(&registry_path).expect("read seeded registry");
+    let mut permissions =
+        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
+    permissions.set_mode(0o444);
+    std::fs::set_permissions(&registry_path, permissions).expect("set registry readonly");
+    (tempdir, registry_path, before)
+}
+
+fn assert_project_proto_matches_entry(
+    actual: &foundryd::proto::Project,
+    expected: &foundry_sdk::registry::ProjectEntry,
+) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.path, expected.path);
+    assert_eq!(actual.stack, expected.stack.to_string());
+    assert_eq!(actual.agent, expected.agent);
+    assert_eq!(actual.repo, expected.repo);
+    assert_eq!(actual.branch, expected.branch);
+    assert_eq!(actual.skip, expected.skip.clone().unwrap_or_default());
+    assert_eq!(actual.iterate, expected.actions.iterate);
+    assert_eq!(actual.maintain, expected.actions.maintain);
+    assert_eq!(actual.push, expected.actions.push);
+    assert_eq!(actual.audit, expected.actions.audit);
+    assert_eq!(actual.release, expected.actions.release);
+    assert_eq!(actual.notes, expected.notes.clone().unwrap_or_default());
+    assert_eq!(actual.timeout_secs, expected.timeout_secs.unwrap_or(0));
+    match &expected.install {
+        Some(InstallConfig::Command(command)) => {
+            assert_eq!(actual.install_command, *command);
+            assert!(actual.install_brew.is_empty());
+        }
+        Some(InstallConfig::Brew(formula)) => {
+            assert_eq!(actual.install_brew, *formula);
+            assert!(actual.install_command.is_empty());
+        }
+        None => {
+            assert!(actual.install_command.is_empty());
+            assert!(actual.install_brew.is_empty());
+        }
     }
 }
 
@@ -457,7 +532,11 @@ async fn show_returns_full_daemon_owned_project_fields() {
 
 #[tokio::test]
 async fn generated_client_list_and_show_round_trip_exact_fields() {
-    let (service, _tmp_registry, _tmp_traces) = make_service_with(seeded_registry("alpha"));
+    let entry = fully_populated_registry_entry("alpha");
+    let (service, _tmp_registry, _tmp_traces) = make_service_with(Registry {
+        version: 2,
+        projects: vec![entry.clone()],
+    });
     let addr = start_server(service).await;
 
     let mut client = FoundryClient::connect(addr).await.expect("connect");
@@ -467,13 +546,7 @@ async fn generated_client_list_and_show_round_trip_exact_fields() {
         .expect("registry_list should succeed")
         .into_inner();
     assert_eq!(list.projects.len(), 1);
-    let listed = &list.projects[0];
-    assert_eq!(listed.name, "alpha");
-    assert_eq!(listed.path, "/tmp/alpha");
-    assert_eq!(listed.repo, "owner/alpha");
-    assert_eq!(listed.notes, "seed note");
-    assert!(listed.iterate);
-    assert!(listed.push);
+    assert_project_proto_matches_entry(&list.projects[0], &entry);
 
     let shown = client
         .registry_show(RegistryShowRequest {
@@ -484,25 +557,20 @@ async fn generated_client_list_and_show_round_trip_exact_fields() {
         .into_inner()
         .project
         .expect("project payload");
-    assert_eq!(shown.name, "alpha");
-    assert_eq!(shown.path, "/tmp/alpha");
-    assert_eq!(shown.repo, "owner/alpha");
-    assert_eq!(shown.notes, "seed note");
-    assert_eq!(shown.branch, "main");
+    assert_project_proto_matches_entry(&shown, &entry);
 }
 
 #[tokio::test]
 async fn generated_client_registry_add_persist_failure_returns_internal_without_path_and_no_mutation()
  {
-    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
-    let registry_path = unreadable_dir.path().to_path_buf();
-    let (service, _tmp_traces) = make_service_with_registry_path(
-        Registry {
-            version: 2,
-            projects: vec![],
-        },
-        registry_path.clone(),
-    );
+    let seeded_registry = Registry {
+        version: 2,
+        projects: vec![],
+    };
+    let (tempdir, registry_path, registry_before) =
+        make_persist_failure_registry_fixture(&seeded_registry);
+    let (service, _tmp_traces) =
+        make_service_with_registry_path(seeded_registry, registry_path.clone());
     let addr = start_server(service).await;
 
     let mut client = FoundryClient::connect(addr).await.expect("connect");
@@ -526,15 +594,26 @@ async fn generated_client_registry_add_persist_failure_returns_internal_without_
         list.projects.is_empty(),
         "failed add must not mutate daemon-owned in-memory registry state"
     );
+    assert_eq!(
+        std::fs::read(&registry_path).expect("read registry after failed add"),
+        registry_before,
+        "failed add must leave daemon-owned registry bytes unchanged"
+    );
+    let mut permissions =
+        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    drop(tempdir);
 }
 
 #[tokio::test]
 async fn generated_client_registry_edit_persist_failure_returns_internal_without_path_and_no_mutation()
  {
-    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
-    let registry_path = unreadable_dir.path().to_path_buf();
+    let seeded_registry = seeded_registry("alpha");
+    let (tempdir, registry_path, registry_before) =
+        make_persist_failure_registry_fixture(&seeded_registry);
     let (service, _tmp_traces) =
-        make_service_with_registry_path(seeded_registry("alpha"), registry_path.clone());
+        make_service_with_registry_path(seeded_registry, registry_path.clone());
     let addr = start_server(service).await;
 
     let mut client = FoundryClient::connect(addr).await.expect("connect");
@@ -562,15 +641,26 @@ async fn generated_client_registry_edit_persist_failure_returns_internal_without
         shown.branch, "main",
         "failed edit must leave daemon-owned in-memory registry state unchanged"
     );
+    assert_eq!(
+        std::fs::read(&registry_path).expect("read registry after failed edit"),
+        registry_before,
+        "failed edit must leave daemon-owned registry bytes unchanged"
+    );
+    let mut permissions =
+        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    drop(tempdir);
 }
 
 #[tokio::test]
 async fn generated_client_registry_remove_persist_failure_returns_internal_without_path_and_no_mutation()
  {
-    let unreadable_dir = tempfile::tempdir().expect("tempdir for unreadable registry path");
-    let registry_path = unreadable_dir.path().to_path_buf();
+    let seeded_registry = seeded_registry("alpha");
+    let (tempdir, registry_path, registry_before) =
+        make_persist_failure_registry_fixture(&seeded_registry);
     let (service, _tmp_traces) =
-        make_service_with_registry_path(seeded_registry("alpha"), registry_path.clone());
+        make_service_with_registry_path(seeded_registry, registry_path.clone());
     let addr = start_server(service).await;
 
     let mut client = FoundryClient::connect(addr).await.expect("connect");
@@ -600,6 +690,16 @@ async fn generated_client_registry_remove_persist_failure_returns_internal_witho
         shown.name, "alpha",
         "failed remove must leave daemon-owned in-memory registry state unchanged"
     );
+    assert_eq!(
+        std::fs::read(&registry_path).expect("read registry after failed remove"),
+        registry_before,
+        "failed remove must leave daemon-owned registry bytes unchanged"
+    );
+    let mut permissions =
+        std::fs::metadata(&registry_path).expect("stat registry file").permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&registry_path, permissions).expect("restore registry permissions");
+    drop(tempdir);
 }
 
 #[tokio::test]
@@ -632,4 +732,40 @@ async fn generated_client_registry_remove_missing_project_returns_exact_not_foun
 
     assert_eq!(err.code(), Code::NotFound);
     assert_eq!(err.message(), "project 'ghost' not found");
+}
+
+#[tokio::test]
+async fn generated_client_registry_show_missing_project_returns_exact_not_found_status() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_show(RegistryShowRequest {
+            name: "ghost".to_string(),
+        })
+        .await
+        .expect_err("showing a missing project must fail");
+
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(err.message(), "project 'ghost' not found");
+}
+
+#[tokio::test]
+async fn generated_client_registry_add_conflicting_install_returns_exact_invalid_argument_status() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .registry_add(RegistryAddRequest {
+            install_command: "./install.sh".to_string(),
+            install_brew: "foundry".to_string(),
+            ..add_request("alpha")
+        })
+        .await
+        .expect_err("conflicting install config must fail");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(err.message(), "provide at most one of install_command or install_brew");
 }

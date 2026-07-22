@@ -288,19 +288,19 @@ enum SentinelCommands {
 
 #[derive(Subcommand)]
 enum RegistryCommands {
-    /// Create an empty registry file
+    /// Create an empty registry file during explicit offline recovery
     Init,
 
-    /// List all projects
+    /// List all projects from the daemon-owned registry
     List,
 
-    /// Show details for a project
+    /// Show details for a project from the daemon-owned registry
     Show {
         /// Project name
         name: String,
     },
 
-    /// Add a project to the registry
+    /// Add a project to the daemon-owned registry
     Add {
         /// Project name
         #[arg(long)]
@@ -363,13 +363,13 @@ enum RegistryCommands {
         timeout_secs: Option<u64>,
     },
 
-    /// Remove a project from the registry
+    /// Remove a project from the daemon-owned registry
     Remove {
         /// Project name
         name: String,
     },
 
-    /// Edit a project's settings
+    /// Edit a project's settings in the daemon-owned registry
     Edit {
         /// Project name
         name: String,
@@ -465,7 +465,7 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let spec = registry_commands::spec_from_args(registry_commands::SpecArgs {
+            let spec = registry_commands::SpecArgs {
                 name,
                 path: project_path,
                 stack,
@@ -481,8 +481,8 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-            })?;
-            registry_commands::add(path, addr, offline, spec).await
+            };
+            registry_commands::add_from_args(path, addr, offline, spec).await
         }
         RegistryCommands::Remove { name } => {
             registry_commands::remove(path, addr, offline, &name).await
@@ -505,7 +505,7 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
         } => {
-            let edits = registry_commands::edits_from_args(registry_commands::EditArgs {
+            let edits = registry_commands::EditArgs {
                 path: project_path,
                 stack,
                 agent,
@@ -521,8 +521,8 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
-            })?;
-            registry_commands::edit(path, addr, offline, &name, edits).await
+            };
+            registry_commands::edit_from_args(path, addr, offline, &name, edits).await
         }
     }
 }

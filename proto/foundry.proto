@@ -209,7 +209,7 @@ message RegistryAddResponse {
     Project project = 1;
 }
 
-// Remove a project from the daemon-owned registry.
+// Remove a project from the daemon-owned registry by exact name.
 // Online CLI callers mutate daemon-owned state only; they do not fall back to
 // client-side registry file writes unless `--offline` is explicit. If daemon
 // persistence fails, the RPC returns INTERNAL and leaves the in-memory
@@ -220,7 +220,7 @@ message RegistryRemoveRequest {
 
 message RegistryRemoveResponse {}
 
-// Edit a project in the daemon-owned registry.
+// Edit a project in the daemon-owned registry by exact name.
 // Only non-empty / non-zero fields are applied as updates.
 // Use clear_skip = true to explicitly clear the skip field.
 // Use clear_notes = true to explicitly clear the notes field.

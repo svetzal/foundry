@@ -76,7 +76,7 @@ pub async fn list(registry_path: &Path, addr: &str, offline: bool) -> Result<()>
         return list_offline(registry_path);
     }
 
-    let mut client = connect_daemon_required(addr, "foundry registry list --offline").await?;
+    let mut client = connect_daemon_required(addr, &registry_offline_hint("list")).await?;
     let response = client
         .registry_list(RegistryListRequest {})
         .await
@@ -104,7 +104,7 @@ pub async fn show(registry_path: &Path, addr: &str, offline: bool, name: &str) -
     }
 
     let mut client =
-        connect_daemon_required(addr, &format!("foundry registry show {name} --offline")).await?;
+        connect_daemon_required(addr, &registry_offline_hint(&format!("show {name}"))).await?;
     let response = client
         .registry_show(RegistryShowRequest {
             name: name.to_string(),
@@ -132,6 +132,44 @@ fn show_offline(registry_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn add_from_args(
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    args: SpecArgs,
+) -> Result<()> {
+    if offline {
+        return add(registry_path, addr, true, spec_from_args(args)?).await;
+    }
+
+    let name = args.name.clone();
+    let mut client =
+        connect_daemon_required(addr, &registry_offline_hint(&format!("add --name {name}")))
+            .await?;
+    client
+        .registry_add(RegistryAddRequest {
+            name: args.name,
+            path: args.path,
+            stack: args.stack,
+            agent: args.agent,
+            repo: args.repo,
+            branch: args.branch,
+            iterate: args.iterate,
+            maintain: args.maintain,
+            push: args.push,
+            audit: args.audit,
+            release: args.release,
+            install_command: args.install_command.unwrap_or_default(),
+            install_brew: args.install_brew.unwrap_or_default(),
+            notes: args.notes.unwrap_or_default(),
+            timeout_secs: args.timeout_secs.unwrap_or(0),
+        })
+        .await
+        .map_err(status_to_anyhow)?;
+    println!("Added project '{name}' to registry.");
+    Ok(())
+}
+
 pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectSpec) -> Result<()> {
     let name = spec.name.clone();
     if offline {
@@ -141,7 +179,7 @@ pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectS
     }
 
     let mut client =
-        connect_daemon_required(addr, &format!("foundry registry add --name {name} --offline"))
+        connect_daemon_required(addr, &registry_offline_hint(&format!("add --name {name}")))
             .await?;
     let req = RegistryAddRequest {
         name: spec.name,
@@ -180,7 +218,7 @@ pub async fn remove(registry_path: &Path, addr: &str, offline: bool, name: &str)
     }
 
     let mut client =
-        connect_daemon_required(addr, &format!("foundry registry remove {name} --offline")).await?;
+        connect_daemon_required(addr, &registry_offline_hint(&format!("remove {name}"))).await?;
     let req = RegistryRemoveRequest {
         name: name.to_string(),
     };
@@ -200,6 +238,25 @@ fn remove_offline(registry_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn edit_from_args(
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    args: EditArgs,
+) -> Result<()> {
+    if offline {
+        return edit(registry_path, addr, true, name, edits_from_args(args)?).await;
+    }
+
+    let req = edit_request_from_args(name, &args);
+    let mut client =
+        connect_daemon_required(addr, &registry_offline_hint(&format!("edit {name}"))).await?;
+    client.registry_edit(req).await.map_err(status_to_anyhow)?;
+    println!("Updated project '{name}'.");
+    Ok(())
+}
+
 pub async fn edit(
     registry_path: &Path,
     addr: &str,
@@ -215,7 +272,7 @@ pub async fn edit(
     }
 
     let mut client =
-        connect_daemon_required(addr, &format!("foundry registry edit {name} --offline")).await?;
+        connect_daemon_required(addr, &registry_offline_hint(&format!("edit {name}"))).await?;
     client.registry_edit(req).await.map_err(status_to_anyhow)?;
     println!("Updated project '{name}'.");
     Ok(())
@@ -256,6 +313,43 @@ fn edit_request(name: &str, edits: &ProjectEdits) -> RegistryEditRequest {
         clear_notes,
         timeout_secs: edits.timeout_secs.unwrap_or(0),
         clear_timeout: edits.clear_timeout,
+    }
+}
+
+fn edit_request_from_args(name: &str, args: &EditArgs) -> RegistryEditRequest {
+    let (skip_str, clear_skip) = match &args.skip {
+        None => (String::new(), false),
+        Some(skip) if skip.is_empty() => (String::new(), true),
+        Some(skip) => (skip.clone(), false),
+    };
+    let notes_str = args.notes.as_deref().unwrap_or("").to_string();
+    let clear_notes = args.notes.as_deref().is_some_and(str::is_empty);
+    RegistryEditRequest {
+        name: name.to_string(),
+        path: args.path.clone().unwrap_or_default(),
+        stack: args.stack.clone().unwrap_or_default(),
+        agent: args.agent.clone().unwrap_or_default(),
+        repo: args.repo.clone().unwrap_or_default(),
+        branch: args.branch.clone().unwrap_or_default(),
+        skip: skip_str,
+        clear_skip,
+        iterate: args.iterate.unwrap_or(false),
+        clear_iterate: args.iterate.is_some_and(|value| !value),
+        maintain: args.maintain.unwrap_or(false),
+        clear_maintain: args.maintain.is_some_and(|value| !value),
+        push: args.push.unwrap_or(false),
+        clear_push: args.push.is_some_and(|value| !value),
+        audit: args.audit.unwrap_or(false),
+        clear_audit: args.audit.is_some_and(|value| !value),
+        release: args.release.unwrap_or(false),
+        clear_release: args.release.is_some_and(|value| !value),
+        install_command: args.install_command.clone().unwrap_or_default(),
+        install_brew: args.install_brew.clone().unwrap_or_default(),
+        clear_install: false,
+        notes: notes_str,
+        clear_notes,
+        timeout_secs: args.timeout_secs.unwrap_or(0),
+        clear_timeout: false,
     }
 }
 
@@ -327,6 +421,10 @@ fn load_or_init(path: &Path) -> Result<Registry> {
             projects: vec![],
         })
     }
+}
+
+fn registry_offline_hint(command_suffix: &str) -> String {
+    format!("foundry registry {command_suffix} --offline")
 }
 
 fn render_project_table(projects: &[Project]) -> Result<()> {

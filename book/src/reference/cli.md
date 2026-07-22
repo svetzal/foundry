@@ -361,7 +361,8 @@ requires a reachable `foundryd` daemon. Use `--offline` to read the local
 registry file directly for recovery. Without `--offline`, an unreachable daemon
 returns an error and leaves the client-side registry file untouched. The online
 path renders the daemon response directly and does not create
-`FOUNDRY_REGISTRY_PATH`.
+`FOUNDRY_REGISTRY_PATH`. Typed daemon failures render as `daemon error:
+<Code> — <message>`.
 
 ```bash
 foundry registry list
@@ -387,7 +388,8 @@ default this requires a reachable `foundryd` daemon. Use `--offline` to read
 the local registry file directly for recovery. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side registry file
 untouched. The online path renders the daemon response directly and does not
-create `FOUNDRY_REGISTRY_PATH`.
+create `FOUNDRY_REGISTRY_PATH`. Missing projects surface the daemon's typed
+`NotFound` status.
 
 ```bash
 foundry registry show my-tool
@@ -418,7 +420,9 @@ error and leaves the client-side registry file untouched. In offline mode, if
 the registry file does not exist, it is created automatically. The online path
 mutates daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`.
 If daemon persistence fails, the command surfaces the daemon's stable
-`INTERNAL` error and leaves the daemon-owned registry unchanged.
+`INTERNAL` error and leaves the daemon-owned registry unchanged. Duplicate
+names and invalid inputs surface the daemon's typed `AlreadyExists` and
+`InvalidArgument` statuses.
 
 ```bash
 foundry registry add \
@@ -461,8 +465,8 @@ directly for recovery. Without `--offline`, an unreachable daemon returns an
 error and leaves the client-side registry file untouched. The online path
 mutates daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`.
 If daemon persistence fails, the command surfaces the daemon's stable
-`INTERNAL` error and leaves the daemon-owned registry unchanged.
-Errors if the project is not found.
+`INTERNAL` error and leaves the daemon-owned registry unchanged. Missing
+projects surface the daemon's typed `NotFound` status.
 
 ```bash
 foundry registry remove my-tool
@@ -477,7 +481,8 @@ recovery. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file untouched. The online path mutates
 daemon-owned state only and does not create `FOUNDRY_REGISTRY_PATH`. If daemon
 persistence fails, the command surfaces the daemon's stable `INTERNAL` error
-and leaves the daemon-owned registry unchanged.
+and leaves the daemon-owned registry unchanged. Missing projects surface the
+daemon's typed `NotFound` status.
 
 ```bash
 foundry registry edit my-tool \

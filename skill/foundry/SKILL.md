@@ -297,7 +297,8 @@ Without `--offline`, an unreachable daemon is an error and the client-side
 registry file remains untouched byte-for-byte. If `FOUNDRY_REGISTRY_PATH` does
 not exist, the online path leaves it absent rather than creating it. If daemon
 persistence fails during an online add/edit/remove, the daemon returns a stable
-`INTERNAL` error and leaves its registry state unchanged.
+`INTERNAL` error and leaves its registry state unchanged. Missing or duplicate
+projects surface typed `NotFound` and `AlreadyExists` daemon statuses.
 
 ```bash
 # Initialize an empty registry during offline recovery

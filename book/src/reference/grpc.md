@@ -95,7 +95,9 @@ Add a project to the daemon's in-memory registry and persist the change to
 | `project` | Project | The newly created project entry |
 
 **Errors:** `ALREADY_EXISTS` if the name is already in the registry;
-`INVALID_ARGUMENT` for an unknown stack or conflicting install fields.
+`INVALID_ARGUMENT` for an unknown stack or conflicting install fields;
+`INTERNAL` with the stable message `failed to persist registry state` when
+saving fails.
 
 **CLI:** `foundry registry add ...` routes through this RPC by default and
 therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
@@ -172,7 +174,8 @@ Remove a project from the registry by name.
 |-------|------|-------------|
 | `name` | string | Project name to remove |
 
-**Errors:** `NOT_FOUND` if no project with that name exists.
+**Errors:** `NOT_FOUND` if no project with that name exists; `INTERNAL` with
+the stable message `failed to persist registry state` when saving fails.
 
 **CLI:** `foundry registry remove <name>` routes through this RPC by default
 and therefore requires a reachable daemon. Pass `--offline` to bypass the
@@ -226,7 +229,8 @@ fields (e.g. `clear_skip = true` to un-skip a project).
 | `project` | Project | The updated project entry |
 
 **Errors:** `NOT_FOUND`; `INVALID_ARGUMENT` for conflicting install fields or
-unknown stack.
+unknown stack; `INTERNAL` with the stable message `failed to persist registry
+state` when saving fails.
 
 **CLI:** `foundry registry edit <name> ...` routes through this RPC by default
 and therefore requires a reachable daemon. Pass `--offline` to bypass the
