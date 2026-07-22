@@ -357,7 +357,8 @@ foundry --offline registry init
 
 List all projects in the daemon-owned registry as a table. By default this
 requires a reachable `foundryd` daemon. Use `--offline` to read the local
-registry file directly for recovery.
+registry file directly for recovery. Without `--offline`, an unreachable daemon
+returns an error and leaves the client-side registry file untouched.
 
 ```bash
 foundry registry list
@@ -380,7 +381,9 @@ The `Skill` column shows `auto` (default derived command), `cmd` (custom command
 
 Show all details for a single project from the daemon-owned registry. By
 default this requires a reachable `foundryd` daemon. Use `--offline` to read
-the local registry file directly for recovery.
+the local registry file directly for recovery. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side registry file
+untouched.
 
 ```bash
 foundry registry show my-tool
@@ -406,8 +409,9 @@ Timeout:   3600s (default)
 
 Add a new project to the daemon-owned registry. By default this requires a
 reachable `foundryd` daemon. Use `--offline` to write the local registry file
-directly for recovery. In offline mode, if the registry file does not exist,
-it is created automatically.
+directly for recovery. Without `--offline`, an unreachable daemon returns an
+error and leaves the client-side registry file untouched. In offline mode, if
+the registry file does not exist, it is created automatically.
 
 ```bash
 foundry registry add \
@@ -440,11 +444,15 @@ foundry registry add \
 | `--install-command` | No | Shell command to run for local install |
 | `--install-brew` | No | Homebrew formula name |
 | `--notes` | No | Human-readable notes |
-| `--timeout-secs` | No | Command timeout in seconds (default: 1800) |
+| `--timeout-secs` | No | Command timeout in seconds (default: 3600) |
 
 ### `foundry registry remove <name>`
 
-Remove a project from the registry. Errors if the project is not found.
+Remove a project from the daemon-owned registry. By default this requires a
+reachable `foundryd` daemon. Use `--offline` to mutate the local registry file
+directly for recovery. Without `--offline`, an unreachable daemon returns an
+error and leaves the client-side registry file untouched. Errors if the project
+is not found.
 
 ```bash
 foundry registry remove my-tool
@@ -453,7 +461,10 @@ foundry registry remove my-tool
 ### `foundry registry edit <name>`
 
 Update settings for an existing project. Only the fields you pass are changed;
-all others are left as-is.
+all others are left as-is. By default this requires a reachable `foundryd`
+daemon. Use `--offline` to mutate the local registry file directly for
+recovery. Without `--offline`, an unreachable daemon returns an error and
+leaves the client-side registry file untouched.
 
 ```bash
 foundry registry edit my-tool \

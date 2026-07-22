@@ -261,3 +261,95 @@ async fn add_with_invalid_stack_returns_invalid_argument() {
 
     assert_eq!(err.code(), Code::InvalidArgument, "invalid stack should return InvalidArgument");
 }
+
+#[tokio::test]
+async fn list_returns_full_daemon_owned_project_fields() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+
+    service
+        .registry_add(Request::new(RegistryAddRequest {
+            name: "alpha".to_string(),
+            path: "/srv/alpha".to_string(),
+            stack: "rust".to_string(),
+            agent: "claude".to_string(),
+            repo: "daemon/alpha".to_string(),
+            branch: "main".to_string(),
+            iterate: true,
+            maintain: true,
+            push: false,
+            audit: true,
+            release: false,
+            install_command: String::new(),
+            install_brew: String::new(),
+            notes: "server note".to_string(),
+            timeout_secs: 45,
+        }))
+        .await
+        .expect("seed daemon registry");
+
+    let response = service
+        .registry_list(Request::new(foundryd::proto::RegistryListRequest {}))
+        .await
+        .expect("registry_list should succeed")
+        .into_inner();
+
+    assert_eq!(response.projects.len(), 1);
+    let project = &response.projects[0];
+    assert_eq!(project.name, "alpha");
+    assert_eq!(project.path, "/srv/alpha");
+    assert_eq!(project.repo, "daemon/alpha");
+    assert_eq!(project.notes, "server note");
+    assert_eq!(project.timeout_secs, 45);
+    assert_eq!(project.branch, "main");
+    assert!(project.iterate);
+    assert!(project.maintain);
+    assert!(project.audit);
+}
+
+#[tokio::test]
+async fn show_returns_full_daemon_owned_project_fields() {
+    let (service, _tmp_registry, _tmp_traces) = make_service();
+
+    service
+        .registry_add(Request::new(RegistryAddRequest {
+            name: "alpha".to_string(),
+            path: "/srv/alpha".to_string(),
+            stack: "rust".to_string(),
+            agent: "claude".to_string(),
+            repo: "daemon/alpha".to_string(),
+            branch: "develop".to_string(),
+            iterate: false,
+            maintain: true,
+            push: true,
+            audit: false,
+            release: true,
+            install_command: "./install.sh".to_string(),
+            install_brew: String::new(),
+            notes: "server note".to_string(),
+            timeout_secs: 90,
+        }))
+        .await
+        .expect("seed daemon registry");
+
+    let project = service
+        .registry_show(Request::new(foundryd::proto::RegistryShowRequest {
+            name: "alpha".to_string(),
+        }))
+        .await
+        .expect("registry_show should succeed")
+        .into_inner()
+        .project
+        .expect("project payload");
+
+    assert_eq!(project.name, "alpha");
+    assert_eq!(project.path, "/srv/alpha");
+    assert_eq!(project.agent, "claude");
+    assert_eq!(project.repo, "daemon/alpha");
+    assert_eq!(project.branch, "develop");
+    assert_eq!(project.notes, "server note");
+    assert_eq!(project.timeout_secs, 90);
+    assert_eq!(project.install_command, "./install.sh");
+    assert!(project.maintain);
+    assert!(project.push);
+    assert!(project.release);
+}

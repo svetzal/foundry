@@ -193,7 +193,9 @@ locations.
 `foundry registry list`, `show`, `add`, `edit`, and `remove` are
 daemon-authoritative in normal online use: they talk to `foundryd` over gRPC
 and operate on the daemon-owned in-memory registry state. Direct filesystem
-access is reserved for explicit offline recovery with `--offline`.
+access is reserved for explicit offline recovery with `--offline`. Without
+`--offline`, an unreachable daemon is an error and leaves the client-side
+registry file untouched.
 
 ```bash
 # Create an empty registry during offline recovery

@@ -97,6 +97,63 @@ Add a project to the daemon's in-memory registry and persist the change to
 **Errors:** `ALREADY_EXISTS` if the name is already in the registry;
 `INVALID_ARGUMENT` for an unknown stack or conflicting install fields.
 
+**CLI:** `foundry registry add ...` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
+and mutate the registry file directly. Without `--offline`, an unreachable
+daemon returns an error and leaves the client-side registry file unchanged.
+
+### `RegistryList(RegistryListRequest) → RegistryListResponse`
+
+List the daemon-owned registry inventory from the in-memory state held by
+`foundryd`. The online CLI path renders this response directly and does not
+read `FOUNDRY_REGISTRY_PATH`.
+
+**Request:**
+
+This message has no fields.
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `projects` | repeated Project | Every project currently loaded in the daemon-owned registry |
+
+Each `Project` carries the full registry data required by online clients:
+`name`, `path`, `stack`, `agent`, `repo`, `branch`, `skip`, action flags,
+install config, notes, timeout, installs-skill state, and audit exceptions.
+
+**Errors:** None at the RPC layer; the daemon answers from already-loaded
+registry state.
+
+**CLI:** `foundry registry list` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to read the registry
+file directly. Without `--offline`, an unreachable daemon returns an error and
+leaves the client-side registry file unchanged.
+
+### `RegistryShow(RegistryShowRequest) → RegistryShowResponse`
+
+Retrieve one exact-name project from the daemon-owned registry state. The match
+is exact and does not perform prefix or substring lookup.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact project name to retrieve |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `project` | Project | The full daemon-owned project record for that exact name |
+
+**Errors:** `NOT_FOUND` if no exact-name project exists.
+
+**CLI:** `foundry registry show <name>` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to read the registry
+file directly. Without `--offline`, an unreachable daemon returns an error and
+leaves the client-side registry file unchanged.
+
 ### `RegistryRemove(RegistryRemoveRequest) → RegistryRemoveResponse`
 
 Remove a project from the registry by name.
@@ -108,6 +165,12 @@ Remove a project from the registry by name.
 | `name` | string | Project name to remove |
 
 **Errors:** `NOT_FOUND` if no project with that name exists.
+
+**CLI:** `foundry registry remove <name>` routes through this RPC by default
+and therefore requires a reachable daemon. Pass `--offline` to bypass the
+daemon and mutate the registry file directly. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side registry file
+unchanged.
 
 ### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
 
@@ -153,6 +216,12 @@ fields (e.g. `clear_skip = true` to un-skip a project).
 
 **Errors:** `NOT_FOUND`; `INVALID_ARGUMENT` for conflicting install fields or
 unknown stack.
+
+**CLI:** `foundry registry edit <name> ...` routes through this RPC by default
+and therefore requires a reachable daemon. Pass `--offline` to bypass the
+daemon and mutate the registry file directly. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side registry file
+unchanged.
 
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 

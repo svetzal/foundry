@@ -7,7 +7,9 @@ use std::time::Duration;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_cli::registry_commands;
 use foundry_engine::engine::Engine;
-use foundry_sdk::registry::{ActionFlags, ProjectEdits, ProjectEntry, ProjectSpec, Registry, Stack};
+use foundry_sdk::registry::{
+    ActionFlags, ProjectEdits, ProjectEntry, ProjectSpec, Registry, Stack,
+};
 use foundry_sdk::sentinel::SentinelStore;
 use foundryd::{
     proto::foundry_server::FoundryServer,
@@ -153,6 +155,17 @@ fn run_foundry(
         .env("FOUNDRY_REGISTRY_PATH", registry_path)
         .output()
         .expect("run foundry binary")
+}
+
+fn seed_client_registry_trap(home: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+    let registry_path = home.join(".foundry/registry.json");
+    std::fs::create_dir_all(
+        registry_path.parent().expect("client registry path must have a parent"),
+    )
+    .expect("create client registry parent");
+    let bytes = br"not valid json and must stay untouched".to_vec();
+    std::fs::write(&registry_path, &bytes).expect("seed client registry trap bytes");
+    (registry_path, bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +332,7 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
     let addr = start_server(service).await;
 
     let client_home = tempfile::tempdir().expect("client home");
-    let client_registry = client_home.path().join(".foundry/registry.json");
+    let (client_registry, before) = seed_client_registry_trap(client_home.path());
     let output = run_foundry(client_home.path(), &client_registry, &addr, &["registry", "list"]);
 
     assert!(
@@ -331,8 +344,9 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("server-only"));
     assert!(
-        !client_registry.exists(),
-        "online registry list must not create a client-side registry file"
+        std::fs::read(&client_registry).expect("read client trap bytes after online list")
+            == before,
+        "online registry list must not read or mutate the client-side registry file"
     );
 }
 
@@ -349,7 +363,7 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     let addr = start_server(service).await;
 
     let client_home = tempfile::tempdir().expect("client home");
-    let client_registry = client_home.path().join(".foundry/registry.json");
+    let (client_registry, before) = seed_client_registry_trap(client_home.path());
     let output = run_foundry(
         client_home.path(),
         &client_registry,
@@ -369,8 +383,9 @@ async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     assert!(stdout.contains("Repo:      daemon/server-only"));
     assert!(stdout.contains("Notes:     notes from daemon for server-only"));
     assert!(
-        !client_registry.exists(),
-        "online registry show must not create a client-side registry file"
+        std::fs::read(&client_registry).expect("read client trap bytes after online show")
+            == before,
+        "online registry show must not read or mutate the client-side registry file"
     );
 }
 

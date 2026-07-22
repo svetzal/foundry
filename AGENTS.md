@@ -118,20 +118,20 @@ Rules:
 
 ### Registry commands
 
-Registry **mutations** (`add`, `edit`, `remove`) now go through `foundryd` via gRPC so the daemon's in-memory registry stays consistent with the file on disk.  Pass `--offline` to bypass the daemon and write the file directly (useful when bootstrapping before `foundryd` starts).
+Registry commands are daemon-authoritative in normal online use. `list`, `show`, `add`, `edit`, and `remove` go through `foundryd` via typed gRPC so reads and writes all observe the daemon-owned registry state. Pass `--offline` only for explicit recovery when the daemon is stopped and you intentionally need direct file access.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry registry init` | No | Creates an empty `~/.foundry/registry.json` |
-| `foundry registry list` | No | Reads the file directly |
-| `foundry registry show <name>` | No | Reads the file directly |
-| `foundry registry add …` | Yes (or `--offline`) | Adds via gRPC; falls back with a warning when daemon is unreachable |
-| `foundry registry edit <name> …` | Yes (or `--offline`) | Edits via gRPC; falls back with a warning when daemon is unreachable |
-| `foundry registry remove <name>` | Yes (or `--offline`) | Removes via gRPC; falls back with a warning when daemon is unreachable |
+| `foundry registry init` | No | Offline-only recovery command; requires `--offline` and creates an empty `~/.foundry/registry.json` |
+| `foundry registry list` | Yes (or `--offline`) | Reads daemon-owned registry state via `RegistryList`; `--offline` reads the file directly |
+| `foundry registry show <name>` | Yes (or `--offline`) | Reads daemon-owned registry state via `RegistryShow`; `--offline` reads the file directly |
+| `foundry registry add …` | Yes (or `--offline`) | Adds via `RegistryAdd`; unreachable daemon is an error unless `--offline` is set |
+| `foundry registry edit <name> …` | Yes (or `--offline`) | Edits via `RegistryEdit`; unreachable daemon is an error unless `--offline` is set |
+| `foundry registry remove <name>` | Yes (or `--offline`) | Removes via `RegistryRemove`; unreachable daemon is an error unless `--offline` is set |
 
-The gRPC RPCs added for registry mutations are `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
+The gRPC RPCs are `RegistryList`, `RegistryShow`, `RegistryAdd`, `RegistryRemove`, and `RegistryEdit` (see `proto/foundry.proto`).
 
-> **Note for scripts/automation**: If you run `foundry registry add/edit/remove` without `--offline` and `foundryd` is not listening, the command will warn and fall back to direct file editing.  A running daemon will not see that change until it is restarted.  Start `foundryd` before running mutations, or use `--offline` deliberately and restart the daemon afterward.
+> **Note for scripts/automation**: Online `foundry registry list/show/add/edit/remove` commands do not silently fall back. If `foundryd` is not listening, they fail and leave the client-side registry file untouched. Use `--offline` deliberately when you want direct file recovery semantics.
 
 ### Sentinel commands
 
@@ -360,7 +360,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 
 ## Key Directories
 
-- `~/.foundry/registry.json` — project registry; mutations go through `foundryd` gRPC so the daemon's in-memory state stays consistent (use `--offline` to write the file directly when the daemon is not running)
+- `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
 - `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; written atomically by the CLI and campaign formation
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
