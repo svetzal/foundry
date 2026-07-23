@@ -183,6 +183,10 @@ fn build_prompt(observed: &OpsObservedPayload) -> String {
     prompt.push_str("- Return only the markdown body — no preamble, no code fences.\n\n");
 
     prompt.push_str("## Source data\n\n");
+    #[allow(
+        clippy::expect_used,
+        reason = "writeln! to a String via fmt::Write never fails"
+    )]
     writeln!(
         prompt,
         "Total new events: {count}  \n\
@@ -206,6 +210,10 @@ fn push_event_line(out: &mut String, event: &OpsEventDigest) {
     };
     let urgency = event.urgency.as_deref().unwrap_or("P2");
     let summary = event.summary.as_deref().unwrap_or("(no summary)");
+    #[allow(
+        clippy::expect_used,
+        reason = "writeln! to a String via fmt::Write never fails"
+    )]
     writeln!(
         out,
         "- [{urgency}] `{etype}` | {domain} | {ts} | {summary}{client}",
@@ -223,9 +231,17 @@ fn push_event_line(out: &mut String, event: &OpsEventDigest) {
 fn fallback_digest(observed: &OpsObservedPayload, agent_error: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(err) = agent_error {
+        #[allow(
+            clippy::expect_used,
+            reason = "writeln! to a String via fmt::Write never fails"
+        )]
         writeln!(out, "> ⚠ Agent unavailable; this digest is a raw fallback. ({err})\n")
             .expect("write to String never fails");
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "writeln! to a String via fmt::Write never fails"
+    )]
     writeln!(
         out,
         "{count} operational event(s) in window. Anomaly: {anomaly}.\n",

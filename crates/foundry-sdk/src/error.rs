@@ -71,6 +71,43 @@ pub enum StoreError {
     },
 }
 
+/// Acquire a read guard on `lock`, returning a descriptive error instead of
+/// panicking when the lock is poisoned.
+///
+/// Lock poisoning occurs when a writer panicked while holding the write
+/// guard. `foundryd` is long-lived state: an unhandled panic anywhere in the
+/// process brings the whole daemon down and drops every other in-flight
+/// request. A poisoned lock on one piece of state must not be allowed to
+/// escalate into that — callers use this helper (via `?` or a `map_err` into
+/// a typed status) so the fault is propagated to the one request that hit it,
+/// and every other request keeps being served.
+///
+/// `what` names the lock in the error message (e.g. `"registry"`,
+/// `"campaign store"`) so the fault is identifiable in logs.
+pub fn read_lock<'a, T>(
+    lock: &'a std::sync::RwLock<T>,
+    what: &str,
+) -> anyhow::Result<std::sync::RwLockReadGuard<'a, T>> {
+    lock.read().map_err(|_| {
+        anyhow::anyhow!(
+            "{what} lock poisoned: a prior writer panicked while holding the write lock"
+        )
+    })
+}
+
+/// Acquire a write guard on `lock`, returning a descriptive error instead of
+/// panicking when the lock is poisoned. See [`read_lock`] for the rationale.
+pub fn write_lock<'a, T>(
+    lock: &'a std::sync::RwLock<T>,
+    what: &str,
+) -> anyhow::Result<std::sync::RwLockWriteGuard<'a, T>> {
+    lock.write().map_err(|_| {
+        anyhow::anyhow!(
+            "{what} lock poisoned: a prior writer panicked while holding the write lock"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
@@ -120,5 +157,50 @@ mod tests {
             err.source().is_some(),
             "StoreError::Parse must carry a source serde_json::Error"
         );
+    }
+
+    #[test]
+    fn read_lock_returns_guard_when_healthy() {
+        let lock = std::sync::RwLock::new(42);
+        let guard = read_lock(&lock, "test").unwrap();
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn write_lock_returns_guard_when_healthy() {
+        let lock = std::sync::RwLock::new(42);
+        {
+            let mut guard = write_lock(&lock, "test").unwrap();
+            *guard = 7;
+        }
+        assert_eq!(*lock.read().unwrap(), 7);
+    }
+
+    #[test]
+    fn read_lock_returns_err_when_poisoned() {
+        let lock = std::sync::Arc::new(std::sync::RwLock::new(0));
+        let l2 = std::sync::Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = l2.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        let err = read_lock(&lock, "widget").unwrap_err();
+        assert!(err.to_string().contains("widget lock poisoned"));
+    }
+
+    #[test]
+    fn write_lock_returns_err_when_poisoned() {
+        let lock = std::sync::Arc::new(std::sync::RwLock::new(0));
+        let l2 = std::sync::Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = l2.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        let err = write_lock(&lock, "widget").unwrap_err();
+        assert!(err.to_string().contains("widget lock poisoned"));
     }
 }

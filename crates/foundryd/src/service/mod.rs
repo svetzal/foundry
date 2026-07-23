@@ -148,7 +148,7 @@ impl Foundry for FoundryService {
         &self,
         request: Request<RegistryListRequest>,
     ) -> Result<Response<RegistryListResponse>, Status> {
-        Ok(registry_ops::list(&self.ctx.registry, request))
+        registry_ops::list(&self.ctx.registry, request)
     }
 
     async fn registry_show(

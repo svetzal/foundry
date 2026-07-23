@@ -1,5 +1,7 @@
 //! Integration tests for `foundry registry` CLI behavior.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;

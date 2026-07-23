@@ -47,7 +47,10 @@ impl EventWriter {
         let file_path = self.output_dir.join(format!("{month_key}.jsonl"));
 
         // Hold the lock only while touching the filesystem.
-        let _guard = self.write_lock.lock().expect("event writer lock poisoned");
+        // Best-effort: this guard protects only write serialization (no data
+        // lives behind it), so recovering from poison and writing anyway is
+        // safe — a stalled writer must not silently stop persisting events.
+        let _guard = self.write_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         fs::create_dir_all(&self.output_dir)?;
 

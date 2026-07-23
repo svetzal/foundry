@@ -77,7 +77,10 @@ impl TraceStore {
 
     /// Store a completed process result keyed by root `event_id`.
     pub fn insert(&self, event_id: String, result: ProcessResult) {
-        let mut state = self.state.write().expect("trace store lock poisoned");
+        // Best-effort: this guard protects a pure in-memory trace cache with no
+        // cross-process invariant to preserve; recovering from poison keeps
+        // serving traces instead of taking down the daemon.
+        let mut state = self.state.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Evict expired entries opportunistically. When an entry is dropped
         // we also have to retract its contributions to the span indexes so
@@ -120,7 +123,8 @@ impl TraceStore {
     pub fn get(&self, event_id: &str) -> Option<ProcessResult> {
         // Memory lookup
         {
-            let state = self.state.read().expect("trace store lock poisoned");
+            // Best-effort: pure in-memory trace cache; recover rather than abort.
+            let state = self.state.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = state.entries.get(event_id)
                 && Instant::now().duration_since(entry.stored_at) < self.ttl
             {
@@ -138,7 +142,8 @@ impl TraceStore {
     /// Only consults in-memory state — disk-backed traces are not searched
     /// because the on-disk format is keyed by root `event_id`, not span.
     pub fn find_span(&self, span_id: &str) -> Option<SpanResult> {
-        let state = self.state.read().expect("trace store lock poisoned");
+        // Best-effort: pure in-memory trace cache; recover rather than abort.
+        let state = self.state.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let trace_id = state.span_to_trace.get(span_id)?;
         let root_event_id = state.trace_to_root_event.get(trace_id)?;
         let entry = state.entries.get(root_event_id)?;

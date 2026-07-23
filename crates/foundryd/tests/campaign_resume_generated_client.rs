@@ -17,6 +17,8 @@
 //!   byte-identical to before (no masked mutation).
 //! - No error message contains the store filesystem path.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};

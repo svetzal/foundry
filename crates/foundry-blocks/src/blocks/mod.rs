@@ -77,11 +77,7 @@ fn require_project(
 fn read_registry(
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
 ) -> anyhow::Result<RwLockReadGuard<'_, foundry_sdk::registry::Registry>> {
-    registry.read().map_err(|_| {
-        anyhow::anyhow!(
-            "registry lock poisoned: a prior writer panicked while holding the write lock"
-        )
-    })
+    foundry_sdk::error::read_lock(registry, "registry")
 }
 
 mod advance_campaign;

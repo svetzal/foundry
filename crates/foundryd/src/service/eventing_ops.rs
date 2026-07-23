@@ -116,13 +116,20 @@ async fn finalise_system_maintenance(
     root_event_id: &str,
 ) {
     // Extract skipped projects before any .await — RwLock guards must not cross await points.
-    let skipped_projects: Vec<String> = {
-        let reg = registry.read().expect("registry lock poisoned");
-        reg.projects
+    // A poisoned registry lock must not abort the maintenance summary: log it
+    // and degrade to an empty skipped-project list rather than taking down
+    // the daemon (foundryd is long-lived state — see AGENTS.md Failure Policy).
+    let skipped_projects: Vec<String> = match foundry_sdk::error::read_lock(registry, "registry") {
+        Ok(reg) => reg
+            .projects
             .iter()
             .filter(|p| p.skip.is_some())
             .map(|p| p.name.clone())
-            .collect()
+            .collect(),
+        Err(e) => {
+            tracing::error!(error = %e, "registry lock poisoned; maintenance summary will report no skipped projects");
+            Vec::new()
+        }
     };
 
     let per_project = extract_per_project_traces(result);

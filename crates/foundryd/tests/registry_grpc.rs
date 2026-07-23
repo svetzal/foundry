@@ -6,6 +6,8 @@
 //! transport layer), and assert that both the in-memory registry state and the
 //! on-disk JSON file are updated correctly after each operation.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};

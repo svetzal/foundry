@@ -13,6 +13,7 @@
 //! of the test helpers, leaving others technically unused in any given
 //! compilation mode.
 #![allow(dead_code, unused_imports)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod service;
 pub mod trace_store;

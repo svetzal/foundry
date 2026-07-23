@@ -260,7 +260,9 @@ fn domain_of(event_type: &str, has_client: bool) -> &'static str {
 
 /// Read all MBOS JSONL files in the intake directory, parse each line into a
 /// `MbosEvent`, and return only events with `occurredAt` strictly after
-/// `cutoff`. Malformed lines are silently skipped.
+/// `cutoff`. Malformed lines and unparseable timestamps are skipped and
+/// logged at `debug!` (expected, high-cardinality on malformed upstream
+/// data) — never silently discarded.
 fn read_events_since(intake_dir: &Path, cutoff: DateTime<FixedOffset>) -> Vec<MbosEvent> {
     let mut events = Vec::new();
 
@@ -307,12 +309,21 @@ fn read_jsonl_file(path: &Path, cutoff: DateTime<FixedOffset>, out: &mut Vec<Mbo
         match serde_json::from_str::<MbosEvent>(trimmed) {
             Ok(event) => {
                 // Only include events strictly after the cutoff.
-                if let Ok(ts) = DateTime::parse_from_rfc3339(&event.occurred_at)
-                    && ts > cutoff
-                {
-                    out.push(event);
+                match DateTime::parse_from_rfc3339(&event.occurred_at) {
+                    Ok(ts) if ts > cutoff => out.push(event),
+                    Ok(_) => {}
+                    Err(err) => {
+                        // High-cardinality, expected on malformed upstream
+                        // data — logged at debug!, same level as the
+                        // malformed-JSON-line case below, not silent.
+                        tracing::debug!(
+                            path = %path.display(),
+                            line = line_no + 1,
+                            error = %err,
+                            "ops-digest: skipping event with unparseable timestamp"
+                        );
+                    }
                 }
-                // Events with unparseable timestamps are silently skipped.
             }
             Err(err) => {
                 tracing::debug!(

@@ -3,6 +3,7 @@
 //! This crate is primarily the `foundry` binary.  The library target exists
 //! solely to expose internal types for integration testing.  Application code
 //! should not depend on this crate as a library in production.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod campaign_commands;
 pub mod commands;

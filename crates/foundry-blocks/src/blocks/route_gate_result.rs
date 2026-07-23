@@ -186,6 +186,10 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
         );
 
         let loop_context = context.loop_context;
+        #[allow(
+            clippy::expect_used,
+            reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
         return super::emit_event_result(
             format!("{project}: {}", failure.stop_summary()),
             false,
@@ -213,6 +217,10 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
             "gates failed, requesting retry"
         );
 
+        #[allow(
+            clippy::expect_used,
+            reason = "RetryRequestedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
         return super::emit_event_result(
             format!("{project}: gates failed, retry {}/{max_retries} requested", retry_count + 1),
             false,
@@ -239,6 +247,10 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
     );
 
     let loop_context = context.loop_context;
+    #[allow(
+        clippy::expect_used,
+        reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     super::emit_event_result(
         format!("{project}: gates failed after {retry_count} retries"),
         false,

@@ -156,7 +156,16 @@ fn compute_next_firings(
     now: DateTime<Local>,
 ) -> Option<NextFirings> {
     let snapshot: Vec<SentinelEntry> = {
-        let guard = store.read().expect("sentinel store lock poisoned");
+        let guard = match foundry_sdk::error::read_lock(store, "sentinel store") {
+            Ok(guard) => guard,
+            Err(e) => {
+                // A poisoned sentinel store lock must not take down the
+                // daemon (foundryd is long-lived state). Skip this tick —
+                // the next scheduler wakeup will retry.
+                tracing::error!(error = %e, "sentinel store lock poisoned; skipping this scheduler tick");
+                return None;
+            }
+        };
         guard.sentinels.iter().filter(|s| s.enabled).cloned().collect()
     };
     next_firings_among(&snapshot, now)

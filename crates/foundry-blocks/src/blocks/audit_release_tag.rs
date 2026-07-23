@@ -100,33 +100,38 @@ impl AuditReleaseTag {
 
         Box::pin(async move {
             let path = std::path::Path::new(&entry.path);
-            let audit_result =
-                match crate::scanner::audit_outcome(scanner.run_audit(path, &entry.stack).await) {
-                    Err(msg) => {
-                        tracing::warn!(
-                            project = %project,
-                            error = %msg,
-                            "post-push audit scanner failed"
-                        );
-                        let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
-                            project: project.clone(),
-                            cve: "none".to_string(),
-                            tag: String::new(),
-                            vulnerable: false,
-                            dirty: Some(false),
-                            scan_error: Some(msg),
-                        })
-                        .expect("ReleaseTagAuditedPayload is infallibly serializable");
-                        return Ok(single_event_result(
-                            "Post-push audit: scanner failed".to_string(),
-                            EventType::ReleaseTagAudited,
-                            project,
-                            throttle,
-                            event_payload,
-                        ));
-                    }
-                    Ok(result) => result,
-                };
+            let audit_result = match crate::scanner::audit_outcome(
+                scanner.run_audit(path, &entry.stack).await,
+            ) {
+                Err(msg) => {
+                    tracing::warn!(
+                        project = %project,
+                        error = %msg,
+                        "post-push audit scanner failed"
+                    );
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "ReleaseTagAuditedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+                    )]
+                    let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
+                        project: project.clone(),
+                        cve: "none".to_string(),
+                        tag: String::new(),
+                        vulnerable: false,
+                        dirty: Some(false),
+                        scan_error: Some(msg),
+                    })
+                    .expect("ReleaseTagAuditedPayload is infallibly serializable");
+                    return Ok(single_event_result(
+                        "Post-push audit: scanner failed".to_string(),
+                        EventType::ReleaseTagAudited,
+                        project,
+                        throttle,
+                        event_payload,
+                    ));
+                }
+                Ok(result) => result,
+            };
             let reported =
                 crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
             let vulnerable = !reported.is_empty();
@@ -135,6 +140,10 @@ impl AuditReleaseTag {
                 .and_then(|v| v.cve.clone())
                 .unwrap_or_else(|| "none".to_string());
 
+            #[allow(
+                clippy::expect_used,
+                reason = "ReleaseTagAuditedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+            )]
             let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
                 project: project.clone(),
                 cve: cve.clone(),
@@ -282,9 +291,11 @@ struct ScanGateways<'a> {
 /// 2. On failure, fall back to `git checkout -` (previous HEAD shorthand).
 /// 3. Always run `git checkout HEAD` as a last-resort detach-guard.
 ///
-/// All operations are best-effort; errors are silently discarded because the
-/// caller has already collected its scan result and any failure here is
-/// non-fatal.
+/// All operations are best-effort: the caller has already collected its scan
+/// result and any failure here is non-fatal, but this is a rollback path, so
+/// a failure to restore the branch is exactly the thing an operator most
+/// needs to see in logs — it is recorded via `tracing::warn!`, never silently
+/// discarded.
 async fn restore_original_branch(
     shell: &dyn ShellGateway,
     path: &std::path::Path,
@@ -292,9 +303,18 @@ async fn restore_original_branch(
 ) {
     let cleanup1 = shell.run(path, "git", &["checkout", original_branch], None, None).await;
     if cleanup1.is_err() {
-        let _ = shell.run(path, "git", &["checkout", "-"], None, None).await;
+        // Best-effort: fall back to the previous-HEAD shorthand when the
+        // named-branch checkout above failed; a failure here still leaves
+        // the last-resort detach-guard below to run.
+        if let Err(e) = shell.run(path, "git", &["checkout", "-"], None, None).await {
+            tracing::warn!(error = %e, "failed to restore original branch via 'checkout -'");
+        }
     }
-    let _ = shell.run(path, "git", &["checkout", "HEAD"], None, None).await;
+    // Best-effort: last-resort detach-guard so the working tree is never left
+    // mid-checkout; a failure here means the tree may still be on the tag.
+    if let Err(e) = shell.run(path, "git", &["checkout", "HEAD"], None, None).await {
+        tracing::warn!(error = %e, "failed to restore original branch via 'checkout HEAD'");
+    }
 }
 
 /// Checks out the latest release tag, runs the scanner, restores the original
@@ -312,8 +332,11 @@ async fn perform_tag_checkout_and_scan(
     gateways: ScanGateways<'_>,
 ) -> anyhow::Result<TaskBlockResult> {
     let ScanGateways { shell, scanner } = gateways;
-    // Fetch tags from the remote (best-effort; don't abort on failure).
-    let _ = shell.run(path, "git", &["fetch", "--tags"], None, None).await;
+    // Best-effort: don't abort the audit if the remote is unreachable — fall
+    // back to whatever tags already exist locally, but record the fault.
+    if let Err(e) = shell.run(path, "git", &["fetch", "--tags"], None, None).await {
+        tracing::warn!(error = %e, "failed to fetch tags; falling back to local tags");
+    }
 
     // Find the latest release tag by version-aware sort.
     let tags_result = shell.run(path, "git", &["tag", "--sort=-v:refname"], None, None).await;
@@ -393,6 +416,10 @@ async fn perform_tag_checkout_and_scan(
 
     tracing::info!(%cve, %vulnerable, "audited release tag");
 
+    #[allow(
+        clippy::expect_used,
+        reason = "ReleaseTagAuditedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
         project: project.to_string(),
         cve: cve.clone(),
@@ -426,6 +453,10 @@ fn emit_payload_result(
     scan_error: Option<String>,
 ) -> TaskBlockResult {
     tracing::info!(%cve, %vulnerable, "audited release tag");
+    #[allow(
+        clippy::expect_used,
+        reason = "ReleaseTagAuditedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let event_payload = Event::serialize_payload(&ReleaseTagAuditedPayload {
         project: project.clone(),
         cve: cve.to_string(),
@@ -616,6 +647,74 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
         assert_eq!(result.events[0].payload["vulnerable"], true);
         assert_eq!(result.events[0].payload["cve"], "CVE-2026-9999");
+    }
+
+    /// Fails `fetch --tags` and every checkout-based rollback command with a
+    /// real `Err` (spawn failure), delegating everything else to `inner`.
+    /// Used to exercise the best-effort log paths in
+    /// `perform_tag_checkout_and_scan` / `restore_original_branch` without
+    /// changing the overall block outcome.
+    struct FailingCleanupShellGateway {
+        inner: std::sync::Arc<FakeShellGateway>,
+    }
+
+    impl ShellGateway for FailingCleanupShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a std::path::Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            let fails = (args.first() == Some(&"fetch") && args.get(1) == Some(&"--tags"))
+                || args.first() == Some(&"checkout");
+            if fails {
+                return Box::pin(async move { Err(anyhow::anyhow!("simulated spawn failure")) });
+            }
+            self.inner.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    #[tokio::test]
+    async fn tag_scan_cleanup_failures_are_logged_but_do_not_fail_the_audit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+
+        // Sequence: rev-parse (original branch). Fetch and every checkout
+        // (tag, restore, HEAD) fail via FailingCleanupShellGateway.
+        let inner = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "v1.0.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let shell = std::sync::Arc::new(FailingCleanupShellGateway { inner });
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::VulnerabilityDetected,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-9999", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "cleanup/rollback command failures must not fail the audit");
+        assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
     }
 
     // -- ProjectChangesPushed path --

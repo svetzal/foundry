@@ -38,6 +38,10 @@ fn charter_failure_result(
 ) -> TaskBlockResult {
     tracing::info!(%project, %workflow, "charter check failed, skipping gate resolution");
     if workflow == "iterate" {
+        #[allow(
+            clippy::expect_used,
+            reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
         return super::emit_event_result(
             format!("{project}: charter check failed, no gates to resolve"),
             false,

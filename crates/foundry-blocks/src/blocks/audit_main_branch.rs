@@ -62,29 +62,50 @@ impl TaskBlock for AuditMainBranch {
                 let path = std::path::Path::new(&entry.path);
 
                 // Scan the current branch — no checkout needed, we are already on main.
-                let audit_result = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
-                let reported =
-                    crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
+                let audit_outcome =
+                    crate::scanner::audit_outcome(scanner.run_audit(path, &entry.stack).await);
 
-                if audit_result.error.is_some() || reported.is_empty() {
-                    // Scanner unavailable or project has no lockfile / is genuinely clean
-                    // (or all findings suppressed by audit_exceptions).
-                    // Fall back to payload to preserve integration-test behavior.
-                    tracing::info!(
-                        project = %project,
-                        "scanner returned no results, falling back to payload dirty flag"
-                    );
-                    (cve_from_payload, dirty_from_payload)
-                } else {
-                    // Dirty when the CVE from the release-tag audit is still present on main.
-                    let dirty = reported
-                        .iter()
-                        .any(|v| v.cve.as_deref() == Some(cve_from_payload.as_str()));
-                    let cve = reported
-                        .first()
-                        .and_then(|v| v.cve.clone())
-                        .unwrap_or_else(|| cve_from_payload.clone());
-                    (cve, dirty)
+                match audit_outcome {
+                    Err(msg) => {
+                        // Record: the scan did not run at all (spawn failure, tool not
+                        // installed). This is distinct from a scan that ran and found
+                        // nothing — worth a warn, not a routine info line.
+                        tracing::warn!(
+                            project = %project,
+                            error = %msg,
+                            "supply-chain scan did not run; falling back to payload dirty flag"
+                        );
+                        (cve_from_payload, dirty_from_payload)
+                    }
+                    Ok(audit_result) => {
+                        let reported = crate::scanner::filter_audit_exceptions(
+                            &audit_result,
+                            &entry.audit_exceptions,
+                        );
+
+                        if reported.is_empty() {
+                            // Scan genuinely ran and reported nothing (no lockfile / is
+                            // genuinely clean, or all findings suppressed by
+                            // audit_exceptions). Fall back to payload to preserve
+                            // integration-test behavior.
+                            tracing::info!(
+                                project = %project,
+                                "scanner returned no results, falling back to payload dirty flag"
+                            );
+                            (cve_from_payload, dirty_from_payload)
+                        } else {
+                            // Dirty when the CVE from the release-tag audit is still
+                            // present on main.
+                            let dirty = reported
+                                .iter()
+                                .any(|v| v.cve.as_deref() == Some(cve_from_payload.as_str()));
+                            let cve = reported
+                                .first()
+                                .and_then(|v| v.cve.clone())
+                                .unwrap_or_else(|| cve_from_payload.clone());
+                            (cve, dirty)
+                        }
+                    }
                 }
             } else {
                 // Project not in registry — fall back to payload.
@@ -230,5 +251,31 @@ mod tests {
         // Scanner returned clean; falls back to payload dirty=false
         assert!(result.success);
         assert_eq!(result.events[0].payload["dirty"], false);
+    }
+
+    #[tokio::test]
+    async fn main_branch_scanner_error_falls_back_to_payload() {
+        // Exercises the `Err` branch of `audit_outcome` (scan did not run at
+        // all) rather than the "ran and found nothing" branch above. Behavior
+        // is identical from the caller's perspective — same payload fallback —
+        // but the two are logged at different levels internally.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+        let scanner = FakeScannerGateway::gateway_error("failed to spawn audit tool");
+        let block = AuditMainBranch::with_gateways(registry, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::ReleaseTagAudited,
+            "test-project",
+            serde_json::json!({"vulnerable": true, "cve": "CVE-2026-1234", "dirty": false}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["dirty"], false);
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
     }
 }

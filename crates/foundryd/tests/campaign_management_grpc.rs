@@ -8,6 +8,8 @@
 //! DONE-GATE ARTIFACT: this file is the named artifact required by the
 //! campaign plan for the gRPC lifecycle boundary objective.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};

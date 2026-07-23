@@ -5,6 +5,8 @@
 //! observed wire behavior for empty stores, filtering, ordering, malformed
 //! stores, and field-level mapping.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

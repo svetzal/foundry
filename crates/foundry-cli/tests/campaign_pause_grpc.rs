@@ -16,6 +16,8 @@
 //! Gate (4): not-found and malformed-store cases are mapped to the correct
 //!   gRPC status codes and surfaced without filesystem paths in the error text.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

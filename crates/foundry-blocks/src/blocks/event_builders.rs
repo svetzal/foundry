@@ -33,6 +33,10 @@ pub(crate) fn event_from_infallible_payload(
     throttle: Throttle,
     payload: &impl serde::Serialize,
 ) -> Event {
+    #[allow(
+        clippy::expect_used,
+        reason = "payload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let event_payload =
         Event::serialize_payload(payload).expect("payload is infallibly serializable");
     Event::new(event_type, project.to_string(), throttle, event_payload)
@@ -174,11 +178,14 @@ pub(crate) fn dry_run_single_event(
     event_type: EventType,
     payload: &impl serde::Serialize,
 ) -> Vec<Event> {
-    vec![
-        trigger
-            .with_payload(event_type, payload)
-            .expect("dry-run payload is infallibly serializable"),
-    ]
+    #[allow(
+        clippy::expect_used,
+        reason = "dry-run payload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
+    let event = trigger
+        .with_payload(event_type, payload)
+        .expect("dry-run payload is infallibly serializable");
+    vec![event]
 }
 
 /// Build a single `ExecutionCompleted` event.
@@ -288,6 +295,10 @@ pub(crate) fn build_gate_result_from_payload(
     throttle: Throttle,
     payload: &impl serde::Serialize,
 ) -> TaskBlockResult {
+    #[allow(
+        clippy::expect_used,
+        reason = "gate result payload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let event_payload =
         Event::serialize_payload(payload).expect("gate result payload is infallibly serializable");
     build_gate_block_result(project, event_type, success, label, throttle, event_payload)

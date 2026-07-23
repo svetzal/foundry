@@ -11,8 +11,7 @@
 //!
 //! [`TaskBlock`]: foundry_sdk::task_block::TaskBlock
 #![allow(dead_code)]
-#![warn(clippy::unwrap_used)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod agent_stream;
 pub mod blocks;

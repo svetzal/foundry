@@ -71,10 +71,18 @@ impl TaskBlock for StrategicLoopController {
         Box::pin(async move {
             match event_type {
                 EventType::StrategicAssessmentCompleted => {
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "assessment_payload is Some whenever event_type == StrategicAssessmentCompleted, set above"
+                    )]
                     let p = assessment_payload.expect("parsed above");
                     Ok(handle_assessment_completed(&project, throttle, &payload, &p))
                 }
                 EventType::InnerIterationCompleted => {
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "inner_payload is Some whenever event_type == InnerIterationCompleted, set above"
+                    )]
                     let p = inner_payload.expect("parsed above");
                     handle_inner_completed(&project, throttle, &payload, &p, entry, agent).await
                 }
@@ -106,12 +114,20 @@ fn handle_assessment_completed(
         "entering inner loop for first area"
     );
 
+    #[allow(
+        clippy::expect_used,
+        reason = "AreaEntry is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let area_value = serde_json::to_value(area).expect("AreaEntry is infallibly serializable");
 
     let mut updated_context = p.loop_context.clone();
     updated_context.strategic.iteration = 1;
     updated_context.strategic.current_area = Some(area_value.clone());
 
+    #[allow(
+        clippy::expect_used,
+        reason = "StrategicLoopContext is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let loop_ctx_value = serde_json::to_value(&updated_context)
         .expect("StrategicLoopContext is infallibly serializable");
 
@@ -193,6 +209,10 @@ async fn handle_inner_completed(
     let mut updated_context = loop_context;
     updated_context.strategic.iteration = next_iteration;
 
+    #[allow(
+        clippy::expect_used,
+        reason = "StrategicLoopContext is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     let loop_ctx_value = serde_json::to_value(&updated_context)
         .expect("StrategicLoopContext is infallibly serializable");
 

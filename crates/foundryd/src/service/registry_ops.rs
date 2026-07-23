@@ -74,15 +74,15 @@ pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> P
 pub(super) fn list(
     registry: &Arc<RwLock<Registry>>,
     _request: Request<RegistryListRequest>,
-) -> Response<RegistryListResponse> {
+) -> Result<Response<RegistryListResponse>, Status> {
     let projects = registry
         .read()
-        .expect("registry lock poisoned")
+        .map_err(|_| Status::internal("registry lock poisoned"))?
         .projects
         .iter()
         .map(project_to_proto)
         .collect();
-    Response::new(RegistryListResponse { projects })
+    Ok(Response::new(RegistryListResponse { projects }))
 }
 
 pub(super) fn show(
@@ -92,7 +92,7 @@ pub(super) fn show(
     let req = request.into_inner();
     let project = registry
         .read()
-        .expect("registry lock poisoned")
+        .map_err(|_| Status::internal("registry lock poisoned"))?
         .find_project(&req.name)
         .map(project_to_proto)
         .ok_or_else(|| Status::not_found(format!("project '{}' not found", req.name)))?;
@@ -161,7 +161,7 @@ pub(super) fn add(
     };
 
     let entry_proto = {
-        let mut reg = registry.write().expect("registry lock poisoned");
+        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
         let mut updated = reg.clone();
         let entry = updated.add_project(spec).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
@@ -185,7 +185,7 @@ pub(super) fn remove(
     let req = request.into_inner();
 
     {
-        let mut reg = registry.write().expect("registry lock poisoned");
+        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
         let mut updated = reg.clone();
         updated.remove_project(&req.name).map_err(mutation_error_to_status)?;
         updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
@@ -314,7 +314,7 @@ pub(super) fn edit(
     let edits = edits_from_request(&req)?;
 
     let entry_proto = {
-        let mut reg = registry.write().expect("registry lock poisoned");
+        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
         let mut updated = reg.clone();
         let entry = updated.edit_project(&req.name, edits).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
@@ -551,7 +551,7 @@ mod tests {
             ],
         }));
 
-        let response = list(&registry, Request::new(RegistryListRequest {})).into_inner();
+        let response = list(&registry, Request::new(RegistryListRequest {})).unwrap().into_inner();
 
         assert_eq!(response.projects.len(), 2);
         assert_eq!(response.projects[0].name, "alpha");

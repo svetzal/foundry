@@ -7,6 +7,8 @@
 //! It is **generic over blocks**: dispatch is `block.sinks_on().contains(&ty)`,
 //! and the engine contains no `match` on specific event types. This is what
 //! lets new blocks and workflows plug in without touching the engine.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod dispatch;
 pub mod emit;
 pub mod engine;

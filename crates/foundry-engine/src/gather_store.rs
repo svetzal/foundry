@@ -87,6 +87,10 @@ impl GatherGroup {
             context: self.context,
             children: self.arrived,
         };
+        #[allow(
+            clippy::expect_used,
+            reason = "GatherCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
         let payload = Event::serialize_payload(&payload)
             .expect("GatherCompletedPayload is infallibly serializable");
         Event::new(self.reduce_event_type, self.reduce_project, self.throttle, payload)
@@ -151,6 +155,10 @@ impl GatherStore {
         });
 
         if group.is_satisfied() {
+            #[allow(
+                clippy::expect_used,
+                reason = "`group` was just borrowed from `self.groups` via this same `gather_id` above"
+            )]
             let group = self.groups.remove(gather_id).expect("group was just present");
             return Some(group.into_reduce_event(Some(event.id.clone())));
         }

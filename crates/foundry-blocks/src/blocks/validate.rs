@@ -84,6 +84,10 @@ fn error_result(
     throttle: foundry_sdk::throttle::Throttle,
     reason: &str,
 ) -> TaskBlockResult {
+    #[allow(
+        clippy::expect_used,
+        reason = "ProjectValidationCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     super::emit_event_result(
         format!("Validation failed for {project}: {reason}"),
         false,
@@ -170,10 +174,15 @@ impl TaskBlock for ValidateProject {
                     project: project.clone(),
                     status: "ok".to_string(),
                     has_gates,
-                    actions: Some(
-                        serde_json::to_value(&entry.actions)
-                            .expect("ActionFlags is infallibly serializable"),
-                    ),
+                    actions: Some({
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "ActionFlags is infallibly serializable (Payload Conventions, AGENTS.md)"
+                        )]
+                        let value = serde_json::to_value(&entry.actions)
+                            .expect("ActionFlags is infallibly serializable");
+                        value
+                    }),
                     ..Default::default()
                 },
             )

@@ -1,3 +1,14 @@
+//! Test-support fakes, gated behind the `test-support` feature.
+//!
+//! The `Mutex::lock().unwrap()` calls throughout this module are genuinely
+//! infallible in this context: these mutexes only ever guard a plain `Vec`
+//! append/read with no user code (and therefore no panic point) running
+//! while the lock is held, so they can never be poisoned.
+#![allow(
+    clippy::unwrap_used,
+    reason = "test-support fakes: mutex holds only infallible Vec ops, never poisoned"
+)]
+
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};

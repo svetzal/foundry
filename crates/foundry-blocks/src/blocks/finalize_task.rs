@@ -117,9 +117,31 @@ async fn land_on_trunk(
     Ok(())
 }
 
+/// Run a git command whose outcome is cleanup, not correctness: log a failure
+/// (spawn error or non-zero exit) rather than discarding it.
+async fn run_best_effort(shell: &dyn ShellGateway, cwd: &Path, args: &[&str]) {
+    match run(shell, cwd, args).await {
+        Ok(result) if !result.success => {
+            tracing::warn!(
+                git_args = %args.join(" "),
+                exit_code = result.exit_code,
+                stderr = %result.stderr.trim(),
+                "best-effort cleanup command failed"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(git_args = %args.join(" "), error = %e, "best-effort cleanup command failed to run");
+        }
+        Ok(_) => {}
+    }
+}
+
 async fn remove_workspace(shell: &dyn ShellGateway, checkout: &Path, worktree: &Path) {
     let worktree_text = worktree.to_string_lossy().to_string();
-    let _ = run(shell, checkout, &["worktree", "remove", &worktree_text]).await;
+    // Best-effort: a task already landed (or was preserved) by the time we
+    // reach here; a leaked worktree is cleaned up on a later run and must
+    // not fail an already-completed task.
+    run_best_effort(shell, checkout, &["worktree", "remove", &worktree_text]).await;
 }
 
 async fn cleanup_landed_branch(
@@ -129,8 +151,11 @@ async fn cleanup_landed_branch(
     branch: &str,
 ) {
     remove_workspace(shell, checkout, worktree).await;
-    let _ = run(shell, checkout, &["branch", "-d", branch]).await;
-    let _ = run(shell, checkout, &["push", "origin", "--delete", branch]).await;
+    // Best-effort: the branch has already been fast-forward merged onto
+    // trunk; an undeleted local or remote branch is cosmetic and must not
+    // fail an already-landed task.
+    run_best_effort(shell, checkout, &["branch", "-d", branch]).await;
+    run_best_effort(shell, checkout, &["push", "origin", "--delete", branch]).await;
 }
 
 fn enforce_gate_truth(payload: &TaskReviewedPayload) -> TaskVerdict {
@@ -456,6 +481,58 @@ mod tests {
                 })
             })
         }
+    }
+
+    /// Delegates to `CleanProcessShellGateway` for every command except
+    /// worktree/branch cleanup commands, which it fails outright. Used to
+    /// prove that a failed best-effort cleanup does not fail the task.
+    struct CleanupFailsShellGateway;
+
+    impl ShellGateway for CleanupFailsShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<Duration>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+            let is_cleanup = (args.first() == Some(&"worktree") && args.get(1) == Some(&"remove"))
+                || (args.first() == Some(&"branch") && args.get(1) == Some(&"-d"))
+                || (args.first() == Some(&"push") && args.get(2) == Some(&"--delete"));
+            if is_cleanup {
+                return Box::pin(async move {
+                    Ok(CommandResult {
+                        stdout: String::new(),
+                        stderr: "simulated cleanup failure".to_string(),
+                        exit_code: 1,
+                        success: false,
+                    })
+                });
+            }
+            CleanProcessShellGateway.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_is_logged_but_does_not_fail_an_already_landed_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/cleanup-fails";
+        let (checkout, worktree, branch_head) = repo_with_task_branch(dir.path(), branch);
+
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanupFailsShellGateway));
+        let trigger = task_trigger(&worktree, branch, TaskVerdict::Complete);
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(
+            result.success,
+            "a failed best-effort cleanup must not fail an already-landed task"
+        );
+        assert_eq!(result.events[0].payload["landed"], true);
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
     }
 
     #[test]

@@ -235,12 +235,39 @@ See `book/src/architecture/tracing.md` for the full model. `EventType::is_span_o
 ## Key Conventions
 
 - Edition 2024, Rust 1.85+, `unsafe_code` is denied
-- Clippy pedantic warnings enabled with selective exceptions (see any crate's `Cargo.toml`)
+- Clippy pedantic warnings enabled with selective exceptions (see any crate's `Cargo.toml`), including `unwrap_used` and `expect_used` at `warn` in `[workspace.lints.clippy]` — see the Failure Policy section above
 - gRPC via tonic/prost, proto definition in `proto/foundry.proto`
 - Both `foundryd` and `foundry-cli` compile the proto in their `build.rs`
 - Structured logging via `tracing` with `info_span!` for request correlation
 - No external observability dependencies — tracing spans only
 - All tasks must include tests and all relevant documentation updates
+
+## Failure Policy
+
+Failures must be surfaced explicitly and handled by a single consistent policy —
+never silently discarded, defaulted into false success, or escalated to a panic
+in long-lived state. Every fault (an `Err`, a poisoned lock, a failed spawn, a
+malformed line) must be routed through exactly one of three permitted
+dispositions:
+
+- **Propagate** — return `Err`/`Result`. The default for anything a caller can
+  act on.
+- **Record** — convert the fault into a typed field in the emitted payload
+  (e.g. `scan_error`, `error`) so a downstream consumer sees it. Required when
+  an advisory formation must not fail the workflow but also must not report a
+  non-result as a clean result.
+- **Absorb** — discard the fault only with both (a) a `// Best-effort:`
+  comment naming why the failure is irrelevant to the caller, and (b) a
+  `tracing::warn!` (or `error!`/`debug!` where the policy calls for a
+  different level) carrying the error. `let _ = <fallible call>` with neither
+  marker is prohibited.
+
+Panicking (`unwrap`/`expect`) is permitted only for genuinely infallible
+operations, and must carry `#[allow(clippy::expect_used, reason = "...")]`
+naming the invariant that makes it infallible. It is never acceptable for lock
+poisoning in `foundryd`, because `foundryd` is long-lived state — a poisoned
+lock must not be allowed to take down the daemon process; it must be recovered
+or converted into a typed error/status response instead.
 
 ## Dispatch / Routing
 

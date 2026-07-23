@@ -171,6 +171,10 @@ fn build_pipeline_result(
         format!("Pipeline failing: {run_name} (#{run_id}) conclusion={conclusion}")
     };
 
+    #[allow(
+        clippy::expect_used,
+        reason = "PipelineCheckedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
     super::emit_result(
         summary,
         EventType::PipelineChecked,

@@ -19,6 +19,8 @@
 //!   byte-identical, no event dispatched.
 //! - No error message exposes the campaign store filesystem path.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

@@ -50,9 +50,17 @@ impl CommitAndPush {
     /// Returns `true` when the project is not found (unknown → optimistic default) or
     /// when `entry.actions.push` is `true`.  Returns `true` on lock-poison as well
     /// (defensive default keeps the dry-run chain intact).
+    ///
+    /// This is an **Absorb** per AGENTS.md's Failure Policy: a poisoned
+    /// registry lock is discarded in favor of an optimistic default, but only
+    /// with the `// Best-effort:` marker below and the `tracing::error!` that
+    /// carries the fault — never a bare discard.
     fn push_enabled_for(&self, project: &str) -> bool {
         match super::read_registry(&self.registry) {
             Ok(guard) => guard.find_project(project).is_none_or(|e| e.actions.push),
+            // Best-effort: a poisoned registry lock must not block a dry-run
+            // simulation from completing; default to push-enabled and log
+            // the fault so it is investigable.
             Err(e) => {
                 tracing::error!(
                     error = %e,
@@ -184,6 +192,10 @@ impl SimulatedSuccess for CommitAndPush {
             message: None,
             dry_run: Some(true),
         });
+        #[allow(
+            clippy::expect_used,
+            reason = "commit and push event payloads are infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
         build_commit_push_events(
             &trigger.project,
             trigger.throttle,

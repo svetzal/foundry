@@ -382,6 +382,10 @@ impl Registry {
             timeout_secs: spec.timeout_secs,
             audit_exceptions: Vec::new(),
         });
+        #[allow(
+            clippy::expect_used,
+            reason = "the push immediately above guarantees `projects` is non-empty"
+        )]
         Ok(self.projects.last().expect("just pushed"))
     }
 

@@ -6,7 +6,9 @@ use foundry_sdk::event::Event;
 /// Read Foundry events from JSONL files since a given timestamp.
 ///
 /// Reads files for the current and prior month from `events_dir`
-/// (files are named `YYYY-MM.jsonl`). Silently skips malformed lines.
+/// (files are named `YYYY-MM.jsonl`). Malformed lines are skipped and
+/// logged at `debug!` (expected, high-cardinality) — never silently
+/// discarded; an unreadable file is logged at `warn!`.
 pub fn read_events_jsonl(events_dir: &Path, since: DateTime<Utc>) -> Vec<Event> {
     let mut events = Vec::new();
 
@@ -39,7 +41,9 @@ fn read_jsonl_file(path: &Path, since: DateTime<Utc>, out: &mut Vec<Event>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
-            tracing::debug!(
+            // Unreadable file is operationally meaningful (permissions,
+            // missing intake directory) — warn!, not debug!.
+            tracing::warn!(
                 path = %path.display(),
                 error = %err,
                 "triage-core: cannot read JSONL file (skipping)"

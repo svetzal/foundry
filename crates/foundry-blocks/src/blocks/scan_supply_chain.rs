@@ -72,9 +72,37 @@ async fn scan_all(
     for entry in entries {
         let path = std::path::Path::new(&entry.path);
         // A missing or malformed allowlist must not abort the scan — fall back
-        // to "nothing accepted" so every advisory surfaces.
-        let allowlist = supply_chain::read_allowlist(path).unwrap_or_default();
-        let audit = scanner.run_audit(path, &entry.stack).await.unwrap_or_default();
+        // to "nothing accepted" so every advisory surfaces. The fault is still
+        // recorded via a warn! rather than silently discarded.
+        let allowlist = match supply_chain::read_allowlist(path) {
+            Ok(allowlist) => allowlist,
+            Err(e) => {
+                tracing::warn!(
+                    project = %entry.name,
+                    error = %e,
+                    "unreadable .supply-chain-allow.json; treating as empty (all advisories surface)"
+                );
+                supply_chain::SupplyChainAllowlist::default()
+            }
+        };
+
+        let audit = match crate::scanner::audit_outcome(scanner.run_audit(path, &entry.stack).await)
+        {
+            Ok(audit) => audit,
+            Err(msg) => {
+                // Record: the scan did not run, so it must not be reported as
+                // a clean result — surface the fault via `scan_error` and skip
+                // classification for this project.
+                scans.push(ProjectSupplyChainScan {
+                    project: entry.name.clone(),
+                    stack: entry.stack.to_string(),
+                    findings: Vec::new(),
+                    suppressed: Vec::new(),
+                    scan_error: Some(msg),
+                });
+                continue;
+            }
+        };
 
         let mut findings = Vec::new();
         let mut suppressed = Vec::new();
@@ -123,7 +151,7 @@ async fn scan_all(
             stack: entry.stack.to_string(),
             findings,
             suppressed,
-            scan_error: audit.error,
+            scan_error: None,
         });
     }
 
@@ -319,6 +347,29 @@ mod tests {
         let p = scanned(&result);
         assert_eq!(p.finding_count, 0);
         assert_eq!(p.projects[0].scan_error.as_deref(), Some("pip-audit not installed"));
+    }
+
+    #[tokio::test]
+    async fn gateway_error_is_recorded_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_with(vec![test_helpers::project_entry(
+            "alpha",
+            dir.path().to_str().unwrap(),
+        )]);
+        let scanner = FakeScannerGateway::gateway_error("failed to spawn audit tool");
+        let block = ScanSupplyChain::with_gateways(registry, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::SupplyChainScanStarted,
+            "system",
+            serde_json::json!({}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "a gateway spawn failure must not fail the formation");
+        let p = scanned(&result);
+        assert!(p.projects[0].scan_error.is_some());
+        assert!(p.projects[0].findings.is_empty());
     }
 
     #[tokio::test]

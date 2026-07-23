@@ -14,6 +14,8 @@
 //! - Rendered output comes from the `ResumeCampaignResponse.campaign` detail,
 //!   not from a re-read of the CLI-side store file (discriminating variant).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

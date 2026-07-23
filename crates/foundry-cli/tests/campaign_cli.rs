@@ -1,5 +1,7 @@
 //! Integration tests for the daemon-authoritative `foundry campaign` CLI boundary.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::process::Command;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;

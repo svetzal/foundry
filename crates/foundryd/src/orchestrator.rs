@@ -62,7 +62,16 @@ impl TaskBlock for FanOutMaintenance {
 
         // Extract data before the async boundary — the RwLock guard must not cross .await.
         let (project_names, active_count, skipped_count) = if project == "system" {
-            let reg = self.registry.read().expect("registry lock poisoned");
+            let reg = match foundry_sdk::error::read_lock(&self.registry, "registry") {
+                Ok(reg) => reg,
+                Err(e) => {
+                    // A poisoned registry lock must not take down the daemon
+                    // (foundryd is long-lived state). Skip this dispatch and
+                    // propagate the fault so the caller can act on it.
+                    tracing::error!(error = %e, "registry lock poisoned; skipping maintenance cycle dispatch");
+                    return Box::pin(async move { Err(e) });
+                }
+            };
             let active = reg.active_projects();
             let names: Vec<String> = active.iter().map(|p| p.name.clone()).collect();
             let active_count = names.len();

@@ -29,6 +29,8 @@
 //!    other's update, leaving one campaign still Active after both calls
 //!    return `Ok`; the reloaded-store assertion catches that defect.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};

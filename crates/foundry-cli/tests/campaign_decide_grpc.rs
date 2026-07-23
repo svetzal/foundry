@@ -1,5 +1,7 @@
 //! Integration tests for `foundry campaign decide` via the gRPC online path.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

@@ -474,6 +474,27 @@ mod tests {
         assert!(doc.contains("**gamma** (rust) — cargo audit not installed"));
     }
 
+    #[test]
+    fn render_gateway_error_project_is_not_scanned_not_clean() {
+        // A project whose gateway call returned `Err` (spawn failure, I/O
+        // error) must render under "Not scanned" alongside tool-not-installed
+        // errors, and must never be counted among clean scans.
+        let gateway_failed = ProjectSupplyChainScan {
+            project: "delta".to_string(),
+            stack: "rust".to_string(),
+            findings: vec![],
+            suppressed: vec![],
+            scan_error: Some("failed to spawn audit tool".to_string()),
+        };
+        let p = payload(vec![gateway_failed]);
+        let doc = render_document("2026-06-15", &p);
+        assert!(
+            doc.contains("## Not scanned"),
+            "a gateway failure must render under the scan-errors section, not be silently dropped"
+        );
+        assert!(doc.contains("**delta** (rust) — failed to spawn audit tool"));
+    }
+
     #[tokio::test]
     async fn dry_run_skips_file_write() {
         let dir = tempfile::tempdir().unwrap();

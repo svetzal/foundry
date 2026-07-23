@@ -47,7 +47,9 @@ pub(super) fn enable(
     let req = request.into_inner();
 
     let entry_proto = {
-        let mut store = sentinels.write().expect("sentinel store lock poisoned");
+        let mut store = sentinels
+            .write()
+            .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
         let entry = store.enable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
         store
@@ -75,7 +77,9 @@ pub(super) fn disable(
     let req = request.into_inner();
 
     let entry_proto = {
-        let mut store = sentinels.write().expect("sentinel store lock poisoned");
+        let mut store = sentinels
+            .write()
+            .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
         let entry = store.disable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
         store

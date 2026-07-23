@@ -310,17 +310,29 @@ async fn git_tree_clean(shell: &dyn ShellGateway, path: &Path) -> bool {
     }
 }
 
+/// Rolls a failed auto-fix attempt back to a clean working tree.
+///
+/// This is the rollback path for a remediation whose gate verification
+/// failed — a failed rollback is the most important thing to see in logs, so
+/// both steps are best-effort but recorded via `tracing::warn!` rather than
+/// silently discarded.
 async fn git_restore_files(shell: &dyn ShellGateway, path: &Path, files: &[String]) {
     if files.is_empty() {
         return;
     }
     let mut reset_args = vec!["reset", "HEAD", "--"];
     reset_args.extend(files.iter().map(String::as_str));
-    let _ = shell.run(path, "git", &reset_args, None, None).await;
+    // Best-effort: the fix already failed gate verification; a failed
+    // rollback step must not abort the formation, but must be visible.
+    if let Err(e) = shell.run(path, "git", &reset_args, None, None).await {
+        tracing::warn!(error = %e, files = ?files, "failed to 'git reset' files during remediation rollback");
+    }
 
     let mut checkout_args = vec!["checkout", "--"];
     checkout_args.extend(files.iter().map(String::as_str));
-    let _ = shell.run(path, "git", &checkout_args, None, None).await;
+    if let Err(e) = shell.run(path, "git", &checkout_args, None, None).await {
+        tracing::warn!(error = %e, files = ?files, "failed to 'git checkout --' files during remediation rollback");
+    }
 }
 
 async fn git_commit_files(
@@ -692,6 +704,57 @@ mod tests {
             "failed verify reverts the lockfile"
         );
         assert!(!cmds.iter().any(|c| c.contains("commit -m")), "nothing committed on failure");
+    }
+
+    /// Wraps `inner` but fails every `git reset`/`git checkout --` rollback
+    /// command with a real `Err` (spawn failure). Used to prove a failed
+    /// rollback is logged but does not abort the formation.
+    struct FailingRollbackShellGateway {
+        inner: std::sync::Arc<FakeShellGateway>,
+    }
+
+    impl ShellGateway for FailingRollbackShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            let is_rollback = args.first() == Some(&"reset")
+                || (args.first() == Some(&"checkout") && args.get(1) == Some(&"--"));
+            if is_rollback {
+                return Box::pin(async move { Err(anyhow::anyhow!("simulated spawn failure")) });
+            }
+            self.inner.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_failure_is_logged_but_does_not_fail_the_formation() {
+        let dir = project_dir_with_gate();
+        // git status (clean) → cargo update (ok) → gate (FAIL) → rollback (Err)
+        let inner = FakeShellGateway::sequence(vec![ok(), ok(), fail()]);
+        let shell = std::sync::Arc::new(FailingRollbackShellGateway { inner });
+        let block = RemediateSupplyChain::with_enabled(
+            shell,
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        assert!(result.success, "a failed rollback command must not fail the formation");
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "rolled_back");
     }
 
     #[tokio::test]

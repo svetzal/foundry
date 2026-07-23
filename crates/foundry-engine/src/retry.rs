@@ -39,5 +39,9 @@ pub(crate) async fn execute_with_retry(
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "the `0..=policy.max_retries` loop always executes at least once and sets last_result on every iteration"
+    )]
     last_result.expect("loop always sets last_result")
 }

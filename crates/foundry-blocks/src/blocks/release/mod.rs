@@ -66,6 +66,10 @@ pub(super) fn release_completed_event(
         "new_tag": new_tag,
         "success": success,
     });
+    #[allow(
+        clippy::expect_used,
+        reason = "payload was just constructed via json!({...}) above and is always an Object"
+    )]
     let obj = payload.as_object_mut().expect("release_completed payload is always an object");
     if let Some(dr) = dry_run {
         obj.insert("dry_run".to_string(), serde_json::json!(dr));

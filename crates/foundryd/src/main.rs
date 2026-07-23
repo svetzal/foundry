@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -19,6 +21,18 @@ mod workflow_tracker;
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
     tonic::include_proto!("foundry");
+}
+
+/// Resolve a startup-configured directory path to UTF-8.
+///
+/// A non-UTF-8 path here means the environment is misconfigured in a way
+/// nothing downstream can recover from; abort before the daemon serves
+/// traffic rather than fail confusingly later (Failure Policy, AGENTS.md).
+fn require_utf8_path(path: &std::path::Path, env_var: &str) -> String {
+    match path.to_str() {
+        Some(s) => s.to_string(),
+        None => panic!("{env_var} must be valid UTF-8"),
+    }
 }
 
 #[tokio::main]
@@ -59,13 +73,10 @@ async fn main() -> Result<()> {
 
     let traces_dir = foundry_sdk::paths::traces_dir();
     let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
-        traces_dir.to_str().expect("FOUNDRY_TRACES_DIR must be valid UTF-8"),
+        &require_utf8_path(&traces_dir, "FOUNDRY_TRACES_DIR"),
     ));
 
-    let audits_dir = foundry_sdk::paths::audits_dir()
-        .to_str()
-        .expect("FOUNDRY_AUDITS_DIR must be valid UTF-8")
-        .to_string();
+    let audits_dir = require_utf8_path(&foundry_sdk::paths::audits_dir(), "FOUNDRY_AUDITS_DIR");
 
     let digests_dir = foundry_sdk::paths::digests_dir();
     let ops_digests_dir = foundry_sdk::paths::ops_digests_dir();
