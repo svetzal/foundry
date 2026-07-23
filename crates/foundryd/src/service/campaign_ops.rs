@@ -495,13 +495,22 @@ pub(super) fn advance(
     })
     .map_err(|e| Status::internal(format!("failed to serialize advance payload: {e}")))?;
 
-    // Mint the trace here: this is the root of a campaign cycle, and
-    // `stamp_context` only ever inherits `trace_id` from the trigger. Without a
-    // trace at the root, every event in the cycle — formation, execution,
-    // review, finalize — carries `None`, and `foundry trace` cannot reconstruct
-    // the longest-running workflow in the system.
+    // Mint both ids here: this is the root of a campaign run, and
+    // `stamp_context` only ever *inherits* them from the trigger.
+    //
+    // The trace groups the whole campaign run — every later cycle's
+    // auto-advance inherits it through the task result that triggered it. The
+    // span groups one cycle: `CampaignAdvanceRequested` is a span opener, so
+    // each subsequent advance mints a fresh span that its formation, execution,
+    // review, and finalize events all inherit.
+    //
+    // Without them every campaign event carries `None` for both, leaving the
+    // longest-running workflow in the system the only one that cannot be
+    // reconstructed — and forcing consumers to recover cycle boundaries by
+    // sorting on time and guessing.
     let event = Event::new(EventType::CampaignAdvanceRequested, project, Throttle::Full, payload)
-        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()));
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
     let event_id = event.id.clone();
 
     super::spawn_workflow(event, ctx);

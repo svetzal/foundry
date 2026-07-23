@@ -299,6 +299,24 @@ async fn generated_client_advance_dispatches_a_traceable_root_event() {
         trace_id.chars().all(|c| c.is_ascii_hexdigit()),
         "trace id must be lowercase hex, got {trace_id:?}"
     );
+
+    // The span is what holds one cycle together. `stamp_context` hands a
+    // non-opener its trigger's span, so without a span at the root every event
+    // in the cycle inherits `None` and cycle boundaries can only be recovered by
+    // sorting on time and guessing where one advance ends and the next begins.
+    let span_id = root
+        .span_id
+        .expect("campaign root must mint a span id; it is what holds one cycle together");
+    assert_eq!(
+        span_id.len(),
+        16,
+        "span id must be the standard 16-char hex form, got {span_id:?}"
+    );
+    assert!(
+        span_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "span id must be lowercase hex, got {span_id:?}"
+    );
+    assert!(root.parent_span_id.is_none(), "a campaign root has no parent span");
 }
 
 // ── Proof 2: Paused campaign → FAILED_PRECONDITION, store unchanged, no event
