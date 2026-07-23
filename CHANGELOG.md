@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.30.3] - 2026-07-21
+### Fixed
+
+- Campaign formation now reasons about the tree the next cycle actually starts
+  from. A non-landing cycle (`remainder` or `defect`) preserves its branch and
+  chains forward as the next execution's `base_ref`, but the decision agent was
+  only ever shown the canonical checkout — so from the second such cycle onward
+  it inspected a tree that contained none of the campaign's accumulated work and
+  re-cut objectives that branch had already satisfied. The formation prompt now
+  carries a distinct `ACCUMULATED UNMERGED WORK` section listing the commits and
+  changed files reachable from the base ref but absent from the trunk, and
+  directs the agent to cut its objective from mission minus trunk-plus-accumulated
+  while still judging `done` against the delivered trunk state alone.
 
 ### Added
 

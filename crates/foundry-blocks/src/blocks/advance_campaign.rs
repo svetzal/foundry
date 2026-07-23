@@ -65,6 +65,46 @@ async fn repo_snapshot(shell: &dyn ShellGateway, repo: &Path) -> String {
     )
 }
 
+fn or_none(text: String) -> String {
+    if text.trim().is_empty() {
+        "(none)".to_string()
+    } else {
+        text
+    }
+}
+
+/// The ref the next execution will branch from, which is the previous cycle's
+/// preserved task branch whenever that cycle did not land.
+fn next_base_ref(request: &CampaignAdvanceRequestedPayload) -> Option<&str> {
+    request
+        .run_result
+        .as_ref()
+        .and_then(|result| result.preservation_ref.as_deref())
+}
+
+/// Work reachable from the next cycle's base ref but absent from the canonical
+/// checkout.
+///
+/// Non-landing cycles (`remainder`, `defect`) preserve their branch and chain
+/// forward, so from the second such cycle onward the canonical checkout no
+/// longer reflects what the executor will actually start from. Without this the
+/// decision agent re-cuts objectives the accumulated work already satisfies.
+async fn accumulated_work(shell: &dyn ShellGateway, repo: &Path, base_ref: Option<&str>) -> String {
+    let Some(reference) = base_ref else {
+        return "NEXT CYCLE BASE: the live checkout above — no preserved work carries forward."
+            .to_string();
+    };
+    let commit_range = format!("HEAD..{reference}");
+    let diff_range = format!("HEAD...{reference}");
+    let commits = shell.run(repo, "git", &["log", "--oneline", &commit_range], None, None).await;
+    let stat = shell.run(repo, "git", &["diff", "--stat", &diff_range], None, None).await;
+    format!(
+        "NEXT CYCLE BASE: {reference}\n\nCOMMITS ON THAT REF ABSENT FROM THE LIVE CHECKOUT:\n{}\n\nFILES IT CHANGES vs THE LIVE CHECKOUT:\n{}",
+        or_none(commits.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))),
+        or_none(stat.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)))
+    )
+}
+
 async fn run_done_gates(
     shell: &dyn ShellGateway,
     repo: &Path,
@@ -127,6 +167,7 @@ fn decision_prompt(
     campaign: &Campaign,
     context: &str,
     snapshot: &str,
+    accumulated: &str,
     gate_results: &[foundry_sdk::gates::GateResult],
     request: &CampaignAdvanceRequestedPayload,
 ) -> String {
@@ -162,10 +203,11 @@ fn decision_prompt(
         |result| serde_json::to_string_pretty(result).unwrap_or_default(),
     );
     format!(
-        "You are advancing a durable engineering campaign. Inspect the live repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
+        "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
-         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
-         DONE only when every required gate passes and every review statement is true against the repo itself. ADVANCE must cut exactly ONE objective from mission minus current state. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
+         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
+         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. If your reason for this cycle restates a reason from an earlier cycle, that is evidence you are reading the wrong tree: re-read the accumulated section before dispatching. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
          {{\"decision\":\"advance\",\"objective\":\"single objective plus gates/forbidden moves/evidence\",\"reason\":\"gap from mission minus state\"}}\n\
@@ -182,6 +224,7 @@ fn decision_prompt(
         gates,
         last_result,
         snapshot,
+        accumulated,
         context,
     )
 }
@@ -442,7 +485,9 @@ async fn derive_campaign_decision(
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
     let snapshot = repo_snapshot(shell, repo).await;
-    let prompt = decision_prompt(campaign, &context, &snapshot, &gate_results, request);
+    let accumulated = accumulated_work(shell, repo, next_base_ref(request)).await;
+    let prompt =
+        decision_prompt(campaign, &context, &snapshot, &accumulated, &gate_results, request);
     let outcome = invoke_agent(
         agent,
         AgentBlockSpec {
@@ -513,8 +558,7 @@ fn apply_campaign_decision(
         CampaignDecision::Advance { objective, reason } => {
             campaign.status = CampaignStatus::Active;
             campaign.cycles_completed += 1;
-            let base_ref =
-                request.run_result.as_ref().and_then(|result| result.preservation_ref.clone());
+            let base_ref = next_base_ref(request).map(ToString::to_string);
             campaign.pending_run_result = None;
             vec![
                 completed_event(
@@ -1114,6 +1158,162 @@ mod tests {
         assert_eq!(campaign.status, CampaignStatus::Paused);
         assert_eq!(campaign.cycles_landed, 0);
         assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
+    }
+
+    fn campaign_for_accumulation_test() -> Campaign {
+        Campaign {
+            name: "c".to_string(),
+            project: "p".to_string(),
+            mission: "ship".to_string(),
+            intent_refs: vec![],
+            context_paths: vec![],
+            done_evidence: vec![DoneEvidence::Review {
+                statement: "shipped".to_string(),
+            }],
+            budget: CampaignBudget { max_cycles: 6 },
+            escalation: vec![],
+            status: CampaignStatus::Active,
+            cycles_completed: 2,
+            cycles_landed: 0,
+            authorized_by: Some("owner".to_string()),
+            agent_provider: None,
+            last_run_event_id: None,
+            owner_decisions: vec![],
+            pending_run_result: None,
+        }
+    }
+
+    fn shell_result(stdout: &str) -> foundry_sdk::gateway::CommandResult {
+        foundry_sdk::gateway::CommandResult {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
+
+    /// A non-landing cycle preserves its branch and chains forward, so the
+    /// decision agent must see that branch's work or it re-cuts objectives the
+    /// accumulated commits already satisfy.
+    #[tokio::test]
+    async fn decision_prompt_carries_accumulated_work_from_the_preserved_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Land the accumulated converter work.\",\"reason\":\"unmerged chain carries the mission\"}\n```",
+        );
+        // status, log -8, then the two accumulated-work probes.
+        let shell = FakeShellGateway::sequence(vec![
+            shell_result("## main\n"),
+            shell_result("2d4a2a7 trunk commit\n"),
+            shell_result("d170a17 add parite-converterd\n1da793c add NVENC profile\n"),
+            shell_result(" 48 files changed, 5734 insertions(+), 297 deletions(-)\n"),
+        ]);
+        let block =
+            AdvanceCampaign::new(agent.clone(), shell.clone(), registry, store_path.clone());
+
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-9".to_string()),
+                run_result: Some(TaskRunCompletedPayload {
+                    project: "p".to_string(),
+                    success: false,
+                    landed: false,
+                    summary: "task stopped with a typed non-complete verdict; work preserved"
+                        .to_string(),
+                    preservation_ref: Some("foundry-task/parite-61ef680dcf08".to_string()),
+                    verdict: TaskVerdict::Remainder {
+                        gaps: vec!["deployment evidence".to_string()],
+                    },
+                    context: LoopContext {
+                        campaign: Some("c".to_string()),
+                        ..LoopContext::default()
+                    },
+                }),
+            })
+            .unwrap(),
+        );
+        block.execute(&trigger).await.unwrap();
+
+        let git_args: Vec<Vec<String>> = shell
+            .invocations()
+            .into_iter()
+            .filter(|inv| inv.command == "git")
+            .map(|inv| inv.args)
+            .collect();
+        assert!(
+            git_args.contains(&vec![
+                "log".to_string(),
+                "--oneline".to_string(),
+                "HEAD..foundry-task/parite-61ef680dcf08".to_string(),
+            ]),
+            "expected a commit-range probe against the preserved ref, got {git_args:?}"
+        );
+        assert!(
+            git_args.contains(&vec![
+                "diff".to_string(),
+                "--stat".to_string(),
+                "HEAD...foundry-task/parite-61ef680dcf08".to_string(),
+            ]),
+            "expected a diffstat probe against the preserved ref, got {git_args:?}"
+        );
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(prompt.contains("NEXT CYCLE BASE: foundry-task/parite-61ef680dcf08"));
+        assert!(prompt.contains("d170a17 add parite-converterd"));
+        assert!(prompt.contains("48 files changed, 5734 insertions(+)"));
+        // The trunk snapshot must stay distinguishable from the accumulated work.
+        assert!(prompt.contains("LIVE REPO SNAPSHOT (delivered trunk state)"));
+        assert!(prompt.contains("ACCUMULATED UNMERGED WORK"));
+    }
+
+    #[tokio::test]
+    async fn decision_prompt_states_no_carry_forward_without_a_preserved_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut the first slice.\",\"reason\":\"nothing built yet\"}\n```",
+        );
+        let shell = FakeShellGateway::success();
+        let block =
+            AdvanceCampaign::new(agent.clone(), shell.clone(), registry, store_path.clone());
+
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        );
+        block.execute(&trigger).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(prompt.contains("no preserved work carries forward"));
+        assert!(
+            !shell
+                .invocations()
+                .iter()
+                .any(|inv| inv.args.iter().any(|arg| arg.contains("HEAD.."))),
+            "must not probe a commit range when no ref carries forward"
+        );
     }
 
     #[tokio::test]
