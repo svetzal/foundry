@@ -240,6 +240,53 @@ const ORIENTING_EXTENSIONS: &[&str] = &[
 /// is impossible. Campaigns that landed well used 35–183 KB.
 pub const MAX_INLINE_CONTEXT_BYTES: u64 = 262_144;
 
+/// Reject a campaign whose *inlined* context is too large to form against.
+///
+/// Lives here rather than in either caller because both the CLI's `--offline`
+/// path and the daemon's `AddCampaign` RPC admit campaigns, and a budget
+/// enforced in only one of them is no budget at all — the daemon path is the
+/// default, so a check that lives only in the CLI never runs in practice.
+///
+/// Only binding artifacts count: source paths are listed for the agent to read
+/// on demand, so they cost nothing in the prompt. Returns the operator-facing
+/// message on rejection, for each caller to wrap in its own error type.
+///
+/// # Errors
+///
+/// Returns the rejection message when inlined context exceeds
+/// [`MAX_INLINE_CONTEXT_BYTES`].
+pub fn check_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<(), String> {
+    let mut total = 0u64;
+    let mut largest: Vec<(u64, &str)> = Vec::new();
+    for context_path in &campaign.context_paths {
+        if context_role(context_path) != ContextRole::Binding {
+            continue;
+        }
+        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).unwrap_or_default();
+        total += bytes;
+        largest.push((bytes, context_path));
+    }
+    if total <= MAX_INLINE_CONTEXT_BYTES {
+        return Ok(());
+    }
+    largest.sort_by_key(|(bytes, _)| std::cmp::Reverse(*bytes));
+    let worst = largest
+        .iter()
+        .take(3)
+        .map(|(bytes, path)| format!("{path} ({bytes} bytes)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "campaign '{}' inlines {total} bytes of context, over the {MAX_INLINE_CONTEXT_BYTES}-byte budget. \
+         Formation is passed to the agent as a command-line argument, so oversized context fails the \
+         spawn outright rather than degrading. Largest: {worst}. Context paths carry binding wording \
+         that must reach the acceptance criteria — a charter or an intent projection. Anything the \
+         agent only needs to inspect can be dropped: it has Read, Glob, and Grep over the checkout, \
+         and source paths are already listed for it rather than inlined.",
+        campaign.name
+    ))
+}
+
 /// Whether a context path is inlined verbatim or listed for on-demand reading.
 #[must_use]
 pub fn context_role(path: &str) -> ContextRole {

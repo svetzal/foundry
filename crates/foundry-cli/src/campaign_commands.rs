@@ -10,8 +10,7 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use foundry_sdk::campaign::{
-    Campaign, CampaignStatus, CampaignStore, ContextRole, MAX_INLINE_CONTEXT_BYTES, OwnerDecision,
-    context_role,
+    Campaign, CampaignStatus, CampaignStore, OwnerDecision, check_inline_context_budget,
 };
 use foundry_sdk::registry::Registry;
 
@@ -360,49 +359,7 @@ fn validate_context_paths(campaign: &Campaign, repo_path: &Path) -> Result<()> {
     for context_path in &campaign.context_paths {
         validate_context_path(campaign, &repo, context_path)?;
     }
-    validate_inline_context_budget(campaign, &repo)
-}
-
-/// Reject a campaign whose *inlined* context is too large to form against.
-///
-/// Every provider passes the formation prompt as a command-line argument, so
-/// oversized context does not degrade gracefully — it exceeds `ARG_MAX` and
-/// `execve` fails before the agent starts, surfacing only as an opaque
-/// "unavailable" that retries cannot help. Catching it here means an author
-/// learns at definition time rather than mid-campaign.
-///
-/// Only binding artifacts count: source paths are listed for the agent to read
-/// on demand, so they cost nothing in the prompt.
-fn validate_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<()> {
-    let mut total = 0u64;
-    let mut largest: Vec<(u64, &str)> = Vec::new();
-    for context_path in &campaign.context_paths {
-        if context_role(context_path) != ContextRole::Binding {
-            continue;
-        }
-        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).unwrap_or_default();
-        total += bytes;
-        largest.push((bytes, context_path));
-    }
-    if total <= MAX_INLINE_CONTEXT_BYTES {
-        return Ok(());
-    }
-    largest.sort_by_key(|(bytes, _)| std::cmp::Reverse(*bytes));
-    let worst = largest
-        .iter()
-        .take(3)
-        .map(|(bytes, path)| format!("{path} ({bytes} bytes)"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    bail!(
-        "campaign '{}' inlines {total} bytes of context, over the {MAX_INLINE_CONTEXT_BYTES}-byte budget. \
-         Formation is passed to the agent as a command-line argument, so oversized context fails the \
-         spawn outright rather than degrading. Largest: {worst}. Context paths carry binding wording \
-         that must reach the acceptance criteria — a charter or an intent projection. Anything the \
-         agent only needs to inspect can be dropped: it has Read, Glob, and Grep over the checkout, \
-         and source paths are already listed for it rather than inlined.",
-        campaign.name
-    )
+    check_inline_context_budget(campaign, &repo).map_err(|message| anyhow::anyhow!(message))
 }
 
 fn validate_context_path(campaign: &Campaign, repo: &Path, context_path: &str) -> Result<()> {
@@ -541,6 +498,8 @@ fn campaign_offline_hint(command_suffix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES;
+
     use super::*;
     use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 

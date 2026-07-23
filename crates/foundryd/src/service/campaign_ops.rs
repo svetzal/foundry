@@ -152,7 +152,10 @@ fn validate_context_paths(
     for context_path in &campaign.context_paths {
         validate_context_path(campaign, &repo, context_path)?;
     }
-    Ok(())
+    // Shared with the CLI's offline path: this is the default admission route,
+    // so a budget enforced only in the CLI would never actually run.
+    foundry_sdk::campaign::check_inline_context_budget(campaign, &repo)
+        .map_err(Status::failed_precondition)
 }
 
 fn validate_context_path(

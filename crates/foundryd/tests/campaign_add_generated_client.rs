@@ -201,6 +201,68 @@ async fn generated_client_add_unknown_project_returns_failed_precondition_and_no
     );
 }
 
+/// The daemon is the DEFAULT admission route — `foundry campaign add` goes
+/// through this RPC unless `--offline` is passed. A budget enforced only in the
+/// CLI's offline path would therefore never run in practice, which is exactly
+/// how a 347,694-byte definition was accepted after the guard was added to the
+/// CLI alone.
+#[tokio::test]
+async fn generated_client_add_rejects_context_over_the_inline_budget() {
+    let repo_root = tempfile::tempdir().expect("repo tempdir");
+    let huge = "x".repeat(
+        usize::try_from(foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES + 1).expect("fits usize"),
+    );
+    std::fs::write(repo_root.path().join("HUGE.md"), &huge).expect("write oversized context");
+    let (service, tmp_campaigns, _tmp_traces) = make_service(repo_root.path());
+    let addr = start_server(service).await;
+    let before = std::fs::read(tmp_campaigns.path()).expect("read empty campaigns");
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .add_campaign(AddCampaignRequest {
+            definition_json: "{\"name\":\"alpha\",\"project\":\"daemon-project\",\"mission\":\"Mission\",\"context_paths\":[\"HUGE.md\"],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"done\"}]}".to_string(),
+        })
+        .await
+        .expect_err("oversized inline context must fail");
+
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(err.message().contains("over the"), "must name the budget: {}", err.message());
+    assert!(err.message().contains("HUGE.md"), "must name the offender: {}", err.message());
+    assert!(
+        !err.message().contains(&tmp_campaigns.path().display().to_string()),
+        "must not leak the store path"
+    );
+    assert_eq!(
+        std::fs::read(tmp_campaigns.path()).expect("read campaigns after failure"),
+        before,
+        "a rejected definition must leave the store byte-identical"
+    );
+}
+
+/// Source context is listed for the agent to read on demand, so it costs
+/// nothing in the prompt and must not be charged against the budget.
+#[tokio::test]
+async fn generated_client_add_accepts_large_source_context() {
+    let repo_root = tempfile::tempdir().expect("repo tempdir");
+    let huge = "x".repeat(
+        usize::try_from(foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES * 2).expect("fits usize"),
+    );
+    std::fs::write(repo_root.path().join("big.rs"), &huge).expect("write oversized source");
+    let (service, tmp_campaigns, _tmp_traces) = make_service(repo_root.path());
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    client
+        .add_campaign(AddCampaignRequest {
+            definition_json: "{\"name\":\"alpha\",\"project\":\"daemon-project\",\"mission\":\"Mission\",\"context_paths\":[\"big.rs\"],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"done\"}]}".to_string(),
+        })
+        .await
+        .expect("source context must not consume the inline budget");
+
+    let store = CampaignStore::load(tmp_campaigns.path()).expect("load campaigns");
+    assert_eq!(store.find("alpha").expect("campaign persisted").context_paths.len(), 1);
+}
+
 #[tokio::test]
 async fn generated_client_add_invalid_json_returns_invalid_argument_store_unchanged() {
     let repo_root = tempfile::tempdir().expect("repo tempdir");
