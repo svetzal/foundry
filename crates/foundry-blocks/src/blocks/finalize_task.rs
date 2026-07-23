@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::gates::GateResult;
 use foundry_sdk::payload::{
     LoopContext, TaskReviewedPayload, TaskRunCompletedPayload, TaskVerdict,
 };
@@ -141,6 +142,34 @@ fn enforce_gate_truth(payload: &TaskReviewedPayload) -> TaskVerdict {
     }
 }
 
+/// Whether a reviewed task may be integrated into trunk.
+///
+/// `Complete` lands unconditionally, as it always has.
+///
+/// `Remainder` is the reviewer's term for a finite list of missing work on a
+/// *converging* implementation — sound work that simply is not finished.
+/// Withholding it accumulates a long-lived divergent branch, which is both a
+/// trunk-based-development violation and the mechanism that strands whole
+/// campaigns: nothing merges until some later cycle happens to return
+/// `Complete`. It therefore lands too, but only against positive green
+/// evidence — at least one required gate ran and every required gate passed —
+/// so trunk is never made red by unfinished work. A `Remainder` with no
+/// required gate to vouch for it stays preserved.
+///
+/// `Defect`, `BlockedOnDecision`, and `RunnerError` never land.
+fn may_land(verdict: &TaskVerdict, gate_results: &[GateResult]) -> bool {
+    match verdict {
+        TaskVerdict::Complete => true,
+        TaskVerdict::Remainder { .. } => {
+            let mut required = gate_results.iter().filter(|gate| gate.required).peekable();
+            required.peek().is_some() && required.all(|gate| gate.passed)
+        }
+        TaskVerdict::Defect { .. }
+        | TaskVerdict::BlockedOnDecision { .. }
+        | TaskVerdict::RunnerError { .. } => false,
+    }
+}
+
 fn task_location(context: &LoopContext) -> Result<(PathBuf, &str), String> {
     let worktree = context
         .task_worktree
@@ -155,12 +184,15 @@ fn task_location(context: &LoopContext) -> Result<(PathBuf, &str), String> {
 }
 
 fn task_summary(verdict: &TaskVerdict, landed: bool) -> String {
-    if landed {
-        "task completed, reviewed, and landed".to_string()
-    } else if verdict.is_complete() {
-        "task completed, reviewed, and required no landing".to_string()
-    } else {
-        "task stopped with a typed non-complete verdict; work preserved".to_string()
+    match (landed, verdict) {
+        (true, TaskVerdict::Remainder { gaps }) => {
+            format!("converging task landed on trunk with {} gap(s) carried forward", gaps.len())
+        }
+        (true, _) => "task completed, reviewed, and landed".to_string(),
+        (false, verdict) if verdict.is_complete() => {
+            "task completed, reviewed, and required no landing".to_string()
+        }
+        (false, _) => "task stopped with a typed non-complete verdict; work preserved".to_string(),
     }
 }
 
@@ -318,7 +350,7 @@ impl TaskBlock for FinalizeTask {
                 }
             };
 
-            let landed = if verdict.is_complete() && deliverable {
+            let landed = if may_land(&verdict, &payload.gate_results) && deliverable {
                 if let Err(error) =
                     land_on_trunk(&*shell, checkout, &entry.branch, branch, entry.actions.push)
                         .await
@@ -348,7 +380,7 @@ impl TaskBlock for FinalizeTask {
                 preservation_ref
             };
 
-            if success_needs_cleanup(&verdict) {
+            if success_needs_cleanup(&verdict, landed) {
                 cleanup_landed_branch(&*shell, checkout, &worktree, branch).await;
             } else {
                 remove_workspace(&*shell, checkout, &worktree).await;
@@ -359,8 +391,10 @@ impl TaskBlock for FinalizeTask {
     }
 }
 
-fn success_needs_cleanup(verdict: &TaskVerdict) -> bool {
-    verdict.is_complete()
+/// A branch is disposable once it is merged, or once a complete run proved it
+/// carried nothing to merge. Anything still holding unmerged work is preserved.
+fn success_needs_cleanup(verdict: &TaskVerdict, landed: bool) -> bool {
+    landed || verdict.is_complete()
 }
 
 #[cfg(test)]
@@ -379,7 +413,7 @@ mod tests {
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
 
-    use super::{FinalizeTask, enforce_gate_truth};
+    use super::{FinalizeTask, enforce_gate_truth, may_land};
 
     fn clean_git_env(command: &mut Command) {
         command.env("GIT_CONFIG_GLOBAL", "/dev/null");
@@ -475,6 +509,210 @@ mod tests {
             })
             .unwrap(),
         )
+    }
+
+    fn required_gate(passed: bool) -> GateResult {
+        GateResult {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            passed,
+            required: true,
+            output: String::new(),
+            exit_code: i32::from(!passed),
+            duration_ms: None,
+            fix_applied: false,
+        }
+    }
+
+    fn task_trigger_with_gates(
+        worktree: &std::path::Path,
+        branch: &str,
+        verdict: TaskVerdict,
+        gate_results: Vec<GateResult>,
+    ) -> Event {
+        Event::new(
+            EventType::TaskReviewed,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&TaskReviewedPayload {
+                project: "p".to_string(),
+                objective: "finish".to_string(),
+                review: String::new(),
+                gate_results,
+                verdict,
+                context: LoopContext {
+                    task_worktree: Some(worktree.to_string_lossy().to_string()),
+                    task_branch: Some(branch.to_string()),
+                    ..LoopContext::default()
+                },
+            })
+            .unwrap(),
+        )
+    }
+
+    /// Build a real checkout + origin + task worktree carrying one commit.
+    fn repo_with_task_branch(
+        dir: &std::path::Path,
+        branch: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let remote = dir.join("remote.git");
+        let remote_url = format!("file://{}", remote.display());
+        let checkout = dir.join("checkout");
+        let worktree = dir.join("worktree");
+        git(dir, &["init", "--bare", remote.to_str().unwrap()]);
+        git(dir, &["init", "-b", "main", checkout.to_str().unwrap()]);
+        git(&checkout, &["config", "user.email", "foundry-test@example.com"]);
+        git(&checkout, &["config", "user.name", "Foundry Test"]);
+        std::fs::write(checkout.join("README.md"), "base\n").unwrap();
+        git(&checkout, &["add", "README.md"]);
+        git(&checkout, &["commit", "-m", "initial"]);
+        git(&checkout, &["remote", "add", "origin", &remote_url]);
+        let _ = Command::new("git")
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["config", "--unset-all", "remote.origin.pushurl"])
+            .status();
+        git(&checkout, &["remote", "set-url", "--push", "origin", &remote_url]);
+        git(&checkout, &["push", "-u", "origin", "main"]);
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(worktree.join("README.md"), "base\nconverging slice\n").unwrap();
+        git(&worktree, &["add", "README.md"]);
+        git(&worktree, &["commit", "-m", "converging slice"]);
+        let head = git(&worktree, &["rev-parse", "HEAD"]);
+        (checkout, worktree, head)
+    }
+
+    /// A converging implementation with green required gates integrates rather
+    /// than accumulating a divergent branch.
+    #[tokio::test]
+    async fn converging_remainder_with_green_required_gates_lands_on_trunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/converging-test";
+        let (checkout, worktree, branch_head) = repo_with_task_branch(dir.path(), branch);
+
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
+        let trigger = task_trigger_with_gates(
+            &worktree,
+            branch,
+            TaskVerdict::Remainder {
+                gaps: vec![
+                    "queue-explain projection".to_string(),
+                    "CHANGELOG".to_string(),
+                ],
+            },
+            vec![required_gate(true)],
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events[0].payload["landed"], true);
+        assert_eq!(
+            result.events[0].payload["summary"],
+            "converging task landed on trunk with 2 gap(s) carried forward"
+        );
+        // preservation_ref becomes the trunk commit, so the next campaign cycle
+        // bases off trunk and sees no divergent accumulation.
+        assert_eq!(result.events[0].payload["preservation_ref"], branch_head);
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
+        assert!(
+            std::fs::read_to_string(checkout.join("README.md"))
+                .unwrap()
+                .contains("converging slice"),
+            "converging work did not reach trunk"
+        );
+        // The gaps must survive into the campaign's next formation prompt.
+        assert_eq!(result.events[0].payload["gaps"][0], "queue-explain projection");
+        assert!(!worktree.exists(), "merged worktree should be removed");
+        assert!(
+            git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "merged task branch should be deleted from origin"
+        );
+    }
+
+    /// Green-gate evidence is the whole safety mechanism: without it, unfinished
+    /// work must not reach trunk.
+    #[tokio::test]
+    async fn remainder_with_a_failed_required_gate_stays_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/red-gate-test";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        let trunk_before = git(&checkout, &["rev-parse", "HEAD"]);
+
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
+        let trigger = task_trigger_with_gates(
+            &worktree,
+            branch,
+            TaskVerdict::Remainder {
+                gaps: vec!["still red".to_string()],
+            },
+            vec![required_gate(false)],
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events[0].payload["landed"], false);
+        assert_eq!(result.events[0].payload["preservation_ref"], branch);
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD"]),
+            trunk_before,
+            "a red required gate must not move trunk"
+        );
+        assert!(
+            !std::fs::read_to_string(checkout.join("README.md"))
+                .unwrap()
+                .contains("converging slice"),
+            "unverified work leaked onto trunk"
+        );
+        assert!(
+            !git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "unlanded work must stay preserved on its branch"
+        );
+    }
+
+    #[test]
+    fn landing_policy_admits_only_converging_work_with_green_required_evidence() {
+        let remainder = TaskVerdict::Remainder {
+            gaps: vec!["gap".to_string()],
+        };
+        assert!(may_land(&TaskVerdict::Complete, &[]));
+        assert!(may_land(&remainder, &[required_gate(true)]));
+        // No required gate ran: nothing vouches for the unfinished work.
+        assert!(!may_land(&remainder, &[]));
+        assert!(!may_land(&remainder, &[required_gate(false)]));
+        assert!(!may_land(&remainder, &[required_gate(true), required_gate(false)]));
+        assert!(!may_land(
+            &TaskVerdict::Defect {
+                diagnosis: "bad".to_string()
+            },
+            &[required_gate(true)]
+        ));
+        assert!(!may_land(
+            &TaskVerdict::BlockedOnDecision {
+                finding: "f".to_string(),
+                options: vec![]
+            },
+            &[required_gate(true)]
+        ));
+        assert!(!may_land(
+            &TaskVerdict::RunnerError {
+                detail: "d".to_string()
+            },
+            &[required_gate(true)]
+        ));
     }
 
     fn test_entry(path: &std::path::Path) -> ProjectEntry {

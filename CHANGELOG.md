@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Converging work now integrates instead of accumulating a divergent branch. A
+  `remainder` verdict — the reviewer's term for a finite list of missing work on
+  a converging implementation — fast-forwards trunk when at least one required
+  gate ran and every required gate passed; its reviewer gaps travel forward in
+  the typed result and become the campaign's next objective. Previously only
+  `complete` could land, so sound-but-unfinished work was held back exactly like
+  a faulty approach: nothing merged until some later cycle happened to return
+  `complete`, and campaigns that never did stranded every cycle they ran. The
+  green required-gate evidence is the safety boundary — a `remainder` with a
+  failed required gate, or with no required gate to vouch for it, stays
+  preserved, and `defect`, `blocked_on_decision`, and `runner_error` never land.
+  A branch is now cleaned up whenever it lands, not only when it was `complete`.
+
 ## [0.30.4] - 2026-07-22
 
 ### Fixed

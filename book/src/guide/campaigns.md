@@ -48,11 +48,20 @@ The task formation:
    `blocked_on_decision`, or `runner_error`.
 5. Commits all task work before returning a terminal result.
 
-Only a `complete` verdict with passing required gates may fast-forward the
-registered trunk branch. Every non-complete result is pushed to a named
-preservation branch; if no remote push is possible, Foundry writes a Git bundle
-under `~/.foundry/preserved/`. Tasks do not retry. A campaign decides whether
-the preserved result should seed another objective.
+Two verdicts may fast-forward the registered trunk branch. A `complete` verdict
+with passing required gates lands, as does a `remainder` — the reviewer's term
+for a finite list of missing work on a *converging* implementation — provided at
+least one required gate ran and every required gate passed. Converging work
+integrates rather than accumulating a long-lived divergent branch, and the green
+required gates are what keep trunk from going red; a `remainder` with no
+required gate to vouch for it does not land. Its reviewer gaps travel forward in
+the typed result and become the campaign's next objective.
+
+`defect`, `blocked_on_decision`, and `runner_error` never land. Every result
+that does not land is pushed to a named preservation branch; if no remote push
+is possible, Foundry writes a Git bundle under `~/.foundry/preserved/`. Tasks do
+not retry. A campaign decides whether the preserved result should seed another
+objective.
 
 ## Campaign Definitions
 
@@ -121,11 +130,20 @@ reviews the repository and context artifacts, then makes exactly one decision:
 - `escalate` — stop because the budget, an escalation rule, runner failure, or
   owner judgment requires attention.
 
-Task results auto-request the next advance. A `remainder` or `defect` carries
+Task results auto-request the next advance. A result that did not land carries
 its preserved branch into the next task, so the campaign resumes warm. A
 `blocked_on_decision` or `runner_error` escalates immediately. `cycles_completed`
 counts dispatched tasks, while `cycles_landed` counts only task results whose
 work actually landed on trunk.
+
+Formation reasons about two trees, because they can differ. The live repository
+snapshot is the delivered trunk state and is what a `done` decision is judged
+against. Separately, when the previous cycle did not land, its preserved branch
+becomes the next execution's base ref — so formation is also shown an
+`ACCUMULATED UNMERGED WORK` section listing the commits and changed files
+reachable from that ref but absent from trunk. An `advance` objective is cut
+from mission minus trunk-plus-accumulated. Without this the agent inspects only
+trunk and re-cuts objectives the preserved branch already satisfied.
 When the final budgeted task lands, Foundry still evaluates the repository for
 completion. Only a decision to dispatch another task is converted to a budget
 escalation.
