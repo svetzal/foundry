@@ -51,6 +51,24 @@ async fn ref_exists_locally(shell: &dyn ShellGateway, cwd: &Path, reference: &st
     Ok(result.success)
 }
 
+/// The branch ref a preservation bundle carries.
+///
+/// Resume reads the ref out of the artifact rather than relying on the bundle's
+/// `HEAD`, so it does not depend on how the bundle was written. Bundles created
+/// before `preserve` recorded `HEAD` hold only `refs/heads/<task branch>`, and a
+/// bare `git fetch <bundle>` against one dies with "couldn't find remote ref
+/// HEAD" — reading the ref keeps the work already sitting in `~/.foundry/preserved`
+/// recoverable.
+async fn bundle_branch_ref(shell: &dyn ShellGateway, repo: &Path, bundle: &str) -> Result<String> {
+    let heads = checked(shell, repo, "git", &["bundle", "list-heads", bundle]).await?;
+    heads
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .find(|name| name.starts_with("refs/heads/"))
+        .map(str::to_string)
+        .with_context(|| format!("preservation bundle carries no branch ref: {bundle}"))
+}
+
 /// Create a fresh branch and worktree from the current remote base (or a
 /// preserved continuation ref) without touching the registered checkout.
 pub(crate) async fn prepare_task_workspace(
@@ -71,7 +89,8 @@ pub(crate) async fn prepare_task_workspace(
         .with_context(|| format!("create task worktree parent for {}", path.display()))?;
 
     let source = if let Some(bundle) = base_ref.and_then(|r| r.strip_prefix("bundle:")) {
-        checked(shell, repo, "git", &["fetch", bundle]).await?;
+        let reference = bundle_branch_ref(shell, repo, bundle).await?;
+        checked(shell, repo, "git", &["fetch", bundle, &reference]).await?;
         "FETCH_HEAD".to_string()
     } else if let Some(reference) = base_ref {
         if ref_exists_locally(shell, repo, reference).await? {
@@ -178,9 +197,9 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    fn test_entry(path: &Path) -> ProjectEntry {
+    fn test_entry(name: &str, path: &Path) -> ProjectEntry {
         ProjectEntry {
-            name: "foundry".to_string(),
+            name: name.to_string(),
             path: path.display().to_string(),
             stack: Stack::Rust,
             agent: "claude".to_string(),
@@ -196,13 +215,13 @@ mod tests {
         }
     }
 
-    fn task_trigger(worktree: &Path, branch: &str, verdict: TaskVerdict) -> Event {
+    fn task_trigger(project: &str, worktree: &Path, branch: &str, verdict: TaskVerdict) -> Event {
         Event::new(
             foundry_sdk::event::EventType::TaskReviewed,
-            "foundry".to_string(),
+            project.to_string(),
             Throttle::Full,
             Event::serialize_payload(&TaskReviewedPayload {
-                project: "foundry".to_string(),
+                project: project.to_string(),
                 objective: "ship change".to_string(),
                 review: "ok".to_string(),
                 gate_results: vec![],
@@ -256,11 +275,17 @@ mod tests {
         git(&worktree, &["commit", "-m", "branch commit"]);
         let expected_commit = git(&worktree, &["rev-parse", "HEAD"]);
 
-        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let registry =
+            super::super::test_helpers::registry_with_entry(test_entry("foundry", &checkout));
         let finalize =
             FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
         let finalized = finalize
-            .execute(&task_trigger(&worktree, "foundry-task/landed-cycle", TaskVerdict::Complete))
+            .execute(&task_trigger(
+                "foundry",
+                &worktree,
+                "foundry-task/landed-cycle",
+                TaskVerdict::Complete,
+            ))
             .await
             .unwrap();
         let landed_ref =
@@ -282,7 +307,7 @@ mod tests {
 
         let next = prepare_task_workspace(
             &CleanProcessShellGateway,
-            &test_entry(&checkout),
+            &test_entry("foundry", &checkout),
             "evt_123456789abc",
             Some(&landed_ref),
         )
@@ -323,7 +348,7 @@ mod tests {
             },
         ]);
         let dir = tempfile::tempdir().unwrap();
-        let entry = test_entry(dir.path());
+        let entry = test_entry("foundry", dir.path());
         let _ = prepare_task_workspace(
             &*shell,
             &entry,
@@ -337,5 +362,133 @@ mod tests {
             vec!["rev-parse", "--verify", "--quiet", "foundry-task/preserved"]
         );
         assert_eq!(invocations[1].args, vec!["fetch", "origin", "foundry-task/preserved"]);
+    }
+
+    /// Build a checkout whose `origin` does not exist on disk, so every push
+    /// fails and `preserve` is forced down the bundle fallback, plus a task
+    /// worktree carrying one commit worth preserving.
+    fn repo_with_unpushable_task_branch(
+        dir: &Path,
+        branch: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let checkout = dir.join("checkout");
+        let worktree = dir.join("worktree");
+        let absent_remote = format!("file://{}", dir.join("absent.git").display());
+        git(dir, &["init", "-b", "main", checkout.to_str().unwrap()]);
+        git(&checkout, &["config", "user.email", "foundry-test@example.com"]);
+        git(&checkout, &["config", "user.name", "Foundry Test"]);
+        std::fs::write(checkout.join("README.md"), "base\n").unwrap();
+        git(&checkout, &["add", "README.md"]);
+        git(&checkout, &["commit", "-m", "initial"]);
+        git(&checkout, &["remote", "add", "origin", &absent_remote]);
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(worktree.join("README.md"), "base\npreserved slice\n").unwrap();
+        git(&worktree, &["add", "README.md"]);
+        git(&worktree, &["commit", "-m", "preserved slice"]);
+        let head = git(&worktree, &["rev-parse", "HEAD"]);
+        (checkout, worktree, head)
+    }
+
+    /// The whole point of the bundle fallback is that the next cycle can carry
+    /// the work forward. Bundles that recorded only the task branch advertised
+    /// no HEAD, so the resume fetch died with "couldn't find remote ref HEAD"
+    /// and escalated two client campaigns as `runner_error`.
+    #[tokio::test]
+    async fn work_preserved_to_a_bundle_resumes_into_the_next_task_workspace() {
+        let project = "foundry-bundle-resume";
+        let branch = "foundry-task/bundle-resume";
+        let dir = tempfile::tempdir().unwrap();
+        let (checkout, worktree, preserved_commit) =
+            repo_with_unpushable_task_branch(dir.path(), branch);
+
+        let registry =
+            super::super::test_helpers::registry_with_entry(test_entry(project, &checkout));
+        let finalize =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
+        let finalized = finalize
+            .execute(&task_trigger(
+                project,
+                &worktree,
+                branch,
+                TaskVerdict::Remainder {
+                    gaps: vec!["unfinished".to_string()],
+                },
+            ))
+            .await
+            .unwrap();
+
+        let preservation_ref =
+            finalized.events[0].payload["preservation_ref"].as_str().unwrap().to_string();
+        let bundle =
+            preservation_ref.strip_prefix("bundle:").expect("push failed, expected bundle");
+        assert!(Path::new(bundle).exists(), "preservation bundle was not written");
+        assert!(
+            git(&checkout, &["bundle", "list-heads", bundle]).contains(" HEAD"),
+            "bundle must advertise HEAD so it can also be cloned or fetched by hand"
+        );
+
+        let next = prepare_task_workspace(
+            &CleanProcessShellGateway,
+            &test_entry(project, &checkout),
+            "evt_bundleresume",
+            Some(&preservation_ref),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(git(&next.path, &["rev-parse", "HEAD"]), preserved_commit);
+        assert!(
+            std::fs::read_to_string(next.path.join("README.md"))
+                .unwrap()
+                .contains("preserved slice"),
+            "preserved work did not reach the next cycle's worktree"
+        );
+
+        git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
+        git(&checkout, &["branch", "-D", &next.branch]);
+        let _ = std::fs::remove_dir_all(foundry_sdk::paths::preserved_dir().join(project));
+        let _ = std::fs::remove_dir(next.path.parent().unwrap());
+    }
+
+    /// Bundles already sitting in `~/.foundry/preserved` hold real client work
+    /// and predate the HEAD fix, so resume must not depend on their format.
+    #[tokio::test]
+    async fn legacy_bundle_without_head_still_resumes() {
+        let branch = "foundry-task/legacy-bundle";
+        let dir = tempfile::tempdir().unwrap();
+        let (checkout, worktree, preserved_commit) =
+            repo_with_unpushable_task_branch(dir.path(), branch);
+        let bundle = dir.path().join("legacy.bundle");
+        let bundle_text = bundle.display().to_string();
+        git(&worktree, &["bundle", "create", &bundle_text, branch]);
+        assert!(
+            !git(&checkout, &["bundle", "list-heads", &bundle_text]).contains(" HEAD"),
+            "fixture must reproduce the HEAD-less bundles already on disk"
+        );
+
+        let next = prepare_task_workspace(
+            &CleanProcessShellGateway,
+            &test_entry("foundry-legacy-bundle", &checkout),
+            "evt_legacybundle",
+            Some(&format!("bundle:{bundle_text}")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(git(&next.path, &["rev-parse", "HEAD"]), preserved_commit);
+
+        git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
+        git(&checkout, &["branch", "-D", &next.branch]);
+        let _ = std::fs::remove_dir(next.path.parent().unwrap());
     }
 }
