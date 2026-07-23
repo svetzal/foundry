@@ -33,6 +33,11 @@ pub struct ChainContext {
     /// Campaign that owns this task run, when dispatched by a campaign.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
+    /// Which cycle of that campaign this run belongs to, 1-based. Carried
+    /// alongside `campaign` so an event says not just which campaign it serves
+    /// but which attempt — see [`super::LoopContext::campaign_cycle`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_cycle: Option<u64>,
     /// Isolated task worktree prepared by the executor. Absent before execution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_worktree: Option<String>,
@@ -64,6 +69,7 @@ impl ChainContext {
                 .get("campaign")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            campaign_cycle: payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
             task_worktree: payload
                 .get("task_worktree")
                 .and_then(serde_json::Value::as_str)
@@ -104,6 +110,9 @@ impl ChainContext {
         if let Some(v) = &self.campaign {
             target["campaign"] = serde_json::json!(v);
         }
+        if let Some(v) = &self.campaign_cycle {
+            target["campaign_cycle"] = serde_json::json!(v);
+        }
         if let Some(v) = &self.task_worktree {
             target["task_worktree"] = serde_json::json!(v);
         }
@@ -132,6 +141,16 @@ pub struct LoopContext {
     pub agent_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
+    /// Which cycle of its campaign this task belongs to, 1-based.
+    ///
+    /// Every task-side event already carries `campaign`, so grouping events to
+    /// a campaign always worked; what did not was telling one cycle from the
+    /// next. Only `CampaignAdvanceCompleted` recorded `cycles_completed`, so a
+    /// consumer had to sort on time and treat each `CampaignAdvanceRequested`
+    /// as a boundary — a guess that breaks on concurrent campaigns in one
+    /// project or on out-of-order arrival. `None` for non-campaign tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_cycle: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_worktree: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,6 +174,7 @@ impl LoopContext {
                 .get("campaign")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            campaign_cycle: payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
             task_worktree: payload
                 .get("task_worktree")
                 .and_then(serde_json::Value::as_str)
@@ -252,4 +272,61 @@ pub struct GatherCompletedPayload {
     pub context: serde_json::Value,
     /// The completed children, in arrival order.
     pub children: Vec<GatheredChild>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChainContext, LoopContext};
+
+    /// `campaign_cycle` must survive every hop `campaign` survives, or an event
+    /// can name its campaign but not which attempt produced it.
+    #[test]
+    fn chain_context_carries_the_campaign_cycle_wherever_it_carries_the_campaign() {
+        let source = serde_json::json!({
+            "campaign": "c",
+            "campaign_cycle": 3,
+            "agent_provider": "codex",
+        });
+
+        let extracted = ChainContext::extract_from(&source);
+        assert_eq!(extracted.campaign.as_deref(), Some("c"));
+        assert_eq!(extracted.campaign_cycle, Some(3));
+
+        let mut target = serde_json::json!({ "project": "p" });
+        extracted.merge_into(&mut target);
+        assert_eq!(target["campaign"], "c");
+        assert_eq!(
+            target["campaign_cycle"], 3,
+            "merge_into dropped the cycle, so it would vanish at the first chain hop"
+        );
+    }
+
+    #[test]
+    fn loop_context_extracts_the_campaign_cycle() {
+        let source = serde_json::json!({ "campaign": "c", "campaign_cycle": 2 });
+        let extracted = LoopContext::extract_from(&source);
+        assert_eq!(extracted.campaign.as_deref(), Some("c"));
+        assert_eq!(extracted.campaign_cycle, Some(2));
+    }
+
+    /// A non-campaign task has no cycle, and the field must stay absent rather
+    /// than serialize as a misleading zero.
+    #[test]
+    fn absent_campaign_cycle_is_omitted_entirely() {
+        let context = LoopContext::default();
+        let json = serde_json::to_value(&context).unwrap();
+        assert!(json.get("campaign_cycle").is_none());
+
+        let extracted = LoopContext::extract_from(&serde_json::json!({ "project": "p" }));
+        assert_eq!(extracted.campaign_cycle, None);
+    }
+
+    /// Events written before this field existed must keep deserializing.
+    #[test]
+    fn context_without_a_campaign_cycle_still_deserializes() {
+        let legacy = serde_json::json!({ "campaign": "c", "task_branch": "foundry-task/x" });
+        let context: LoopContext = serde_json::from_value(legacy).unwrap();
+        assert_eq!(context.campaign.as_deref(), Some("c"));
+        assert_eq!(context.campaign_cycle, None);
+    }
 }

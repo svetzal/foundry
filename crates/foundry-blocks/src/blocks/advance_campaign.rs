@@ -534,11 +534,17 @@ fn execution_event(
     objective: &str,
     base_ref: Option<String>,
 ) -> Event {
+    // `cycles_completed` was incremented for this dispatch just above, so it is
+    // the number of the cycle this task *is* — and it matches the count the
+    // sibling `CampaignAdvanceCompleted` reports. It rides the chain and loop
+    // context from here, so every event the task emits can name its cycle
+    // instead of leaving consumers to infer boundaries from timestamps.
     let mut payload = serde_json::json!({
         "project": campaign.project,
         "workflow": "task",
         "prompt": objective,
         "campaign": campaign.name,
+        "campaign_cycle": campaign.cycles_completed,
     });
     if let Some(agent) = &campaign.agent_provider {
         payload["agent_provider"] = serde_json::json!(agent);
@@ -2022,6 +2028,55 @@ mod tests {
         );
         assert_eq!(payload.gate_results[0].command, "cargo test --workspace");
         assert!(payload.gate_results[0].required);
+    }
+
+    /// The dispatched task must name its cycle, and name the same one its
+    /// sibling `CampaignAdvanceCompleted` reports — otherwise a consumer
+    /// joining the two gets contradictory answers about which attempt it is
+    /// looking at.
+    #[tokio::test]
+    async fn a_dispatched_task_names_the_cycle_it_belongs_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        // Seeded at 2 completed, so this dispatch is cycle 3.
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block =
+            AdvanceCampaign::new(agent, FakeShellGateway::success(), registry, store_path.clone());
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let execution = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("next task dispatched");
+        assert_eq!(
+            execution.payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
+            Some(3),
+            "the dispatched task must carry its cycle number"
+        );
+        assert_eq!(
+            execution.payload.get("campaign").and_then(serde_json::Value::as_str),
+            Some("c")
+        );
+
+        let completed = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::CampaignAdvanceCompleted)
+            .expect("advance completed event");
+        let payload: CampaignAdvanceCompletedPayload = completed.parse_payload().unwrap();
+        assert_eq!(
+            payload.cycles_completed, 3,
+            "the two sides of one cycle must agree on its number"
+        );
     }
 
     /// A decision made without asking an agent has no formation to record, and
