@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-22
+
+### Fixed
+
+- Work preserved to a Git bundle is now resumable. `preserve` wrote the bundle
+  with only `refs/heads/<task branch>` and no `HEAD`, while resume used a bare
+  `git fetch <bundle>` — which resolves `HEAD`. Every bundle resume therefore
+  died with `fatal: couldn't find remote ref HEAD`, and because the bundle is
+  only written when pushing to `origin` already failed, the fallback was a dead
+  end exactly when it held the only copy of the work. It escalated two client
+  campaigns (`backend-ort-screener-resilience-2026-07`,
+  `frontend-ort-segmenting-audio-resilience-2026-07`) that were progressing
+  normally. New bundles now record `HEAD`, so a human can `git clone` or fetch
+  one by hand; independently, resume reads the branch ref out of the artifact
+  via `git bundle list-heads` rather than depending on `HEAD` at all, which is
+  what keeps bundles already on disk recoverable.
+
+- A transient provider failure no longer ends a healthy campaign. Any
+  decision-agent transport failure became a terminal escalation with no retry,
+  which twice killed `parite-phase-3-independence-aware-selection` at a 100%
+  landing rate — once with a completely empty reason. Foundry now re-asks up to
+  three times with a widening backoff and reports every attempt in the final
+  escalation, so an empty stderr can no longer produce an unexplained
+  escalation. A malformed decision is still not retried: the agent answered, and
+  re-asking would only burn three identical invocations.
+
+- A campaign whose provider is unusable — exhausted account, revoked
+  authentication, open circuit breaker — now moves to `paused` rather than
+  `escalated`, from both the formation path and the executor's `runner_error`
+  verdict. Nothing about the campaign's own work is wrong, so no cycle is
+  consumed and the pending run result is preserved for `campaign resume`. This
+  previously terminated `parite-phase-3-2-probe-observability-closure` at cycle
+  zero, twice, before it did any work.
+
+- A `done` decision rewritten because a required gate is red now carries the
+  campaign mission and each failing gate's actual output into the synthesized
+  objective, and forbids reverting landed mission work or broadening a lint
+  allowance to turn the gate green. It previously carried only the failing
+  command, discarding all mission context — which cost cycles in two campaigns
+  that had substantially landed their mission and were losing to a
+  `too_many_lines` lint on test files they had just written.
+
 ### Added
+
+- `EventType::CampaignPaused` makes an automatic pause observable. Pausing on an
+  open circuit breaker is the right behaviour, but it stops a campaign with
+  nobody watching — an operator who runs `foundry campaign pause` already knows,
+  whereas a campaign that quietly stops itself is indistinguishable from one
+  still working. The event carries the reason and is deliberately non-terminal:
+  it does not end the campaign, consume a cycle, or discard the pending result.
+
+- Campaign formation now sees the objectives it has already cut. The prompt
+  carried only the single most recent run result, so a decision agent could not
+  tell it was restating an earlier request —
+  `foundry-daemon-authoritative-state-v1` re-cut essentially one objective
+  across nine cycles, and `parite-remote-nvenc-conversion-v1` oscillated between
+  unrelated sub-gaps for twelve. Campaigns now retain their eight most recent
+  objectives with each one's typed verdict and whether it landed, rendered into
+  the prompt with an explicit no-restatement rule: a repeat means either the
+  work exists on a tree the agent is not reading, or the same request has
+  already failed once and needs reformulating or escalating. Existing campaign
+  stores load unchanged and are not rewritten with the new field.
 
 - `foundry campaign add` now rejects a **required** gate that asserts state on
   another host (`ssh`, `scp`, `sftp`, `rsync`, `systemctl`, `launchctl`,
