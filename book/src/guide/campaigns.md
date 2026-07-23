@@ -59,7 +59,9 @@ the typed result and become the campaign's next objective.
 
 `defect`, `blocked_on_decision`, and `runner_error` never land. Every result
 that does not land is pushed to a named preservation branch; if no remote push
-is possible, Foundry writes a Git bundle under `~/.foundry/preserved/`. Tasks do
+is possible, Foundry writes a Git bundle under `~/.foundry/preserved/`. Either
+way the next cycle resumes from the preserved work; a bundle also carries `HEAD`,
+so you can fetch or clone it by hand to recover the work yourself. Tasks do
 not retry. A campaign decides whether the preserved result should seed another
 objective.
 

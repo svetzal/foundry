@@ -84,7 +84,11 @@ async fn preserve(
     std::fs::create_dir_all(&dir)?;
     let bundle = dir.join(format!("{}.bundle", branch.replace('/', "-")));
     let bundle_text = bundle.to_string_lossy().to_string();
-    checked(shell, worktree, &["bundle", "create", &bundle_text, branch]).await?;
+    // Record HEAD alongside the branch. A bundle carrying only
+    // `refs/heads/<branch>` advertises no HEAD, so neither `git clone` nor a
+    // bare `git fetch` can resolve it — which is what made this fallback a
+    // dead end for anyone, human or machine, trying to recover the work.
+    checked(shell, worktree, &["bundle", "create", &bundle_text, "HEAD", branch]).await?;
     Ok(format!("bundle:{bundle_text}"))
 }
 
