@@ -251,6 +251,56 @@ async fn generated_client_advance_active_returns_pre_advance_state_and_dispatche
     );
 }
 
+// ── Proof 1c: the dispatched root carries a trace ────────────────────────────
+
+/// The root of a campaign cycle must mint a trace id.
+///
+/// `stamp_context` only ever *inherits* `trace_id` from its trigger, so a root
+/// event without one propagates `None` through formation, execution, review and
+/// finalize — leaving the longest-running workflow in the system as the only
+/// one `foundry trace` cannot reconstruct. Observed in production: every
+/// campaign event carried `trace_id: null`.
+#[tokio::test]
+async fn generated_client_advance_dispatches_a_traceable_root_event() {
+    let (service, tmp_campaigns, mut rx, _tmp_traces) = make_service();
+    seed_campaign(&tmp_campaigns, active_campaign("c"));
+    let addr = start_server(service).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    client
+        .advance_campaign(AdvanceCampaignRequest {
+            name: "c".to_string(),
+        })
+        .await
+        .expect("advance of Active campaign must succeed");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut root = None;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(event)) if event.event_type == EventType::CampaignAdvanceRequested => {
+                root = Some(event);
+                break;
+            }
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    let root = root.expect("CampaignAdvanceRequested must be broadcast");
+    let trace_id = root
+        .trace_id
+        .expect("campaign root must mint a trace id; without one the whole cycle is untraceable");
+    assert_eq!(
+        trace_id.len(),
+        32,
+        "trace id must be the standard 32-char hex form, got {trace_id:?}"
+    );
+    assert!(
+        trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "trace id must be lowercase hex, got {trace_id:?}"
+    );
+}
+
 // ── Proof 2: Paused campaign → FAILED_PRECONDITION, store unchanged, no event
 
 /// Advancing a Paused campaign must return `FAILED_PRECONDITION`.

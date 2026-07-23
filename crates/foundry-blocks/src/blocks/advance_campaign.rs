@@ -365,6 +365,19 @@ impl AdvanceOutcome {
     }
 }
 
+/// What formation was actually shown and measured, recorded onto
+/// `CampaignAdvanceCompleted` so a cycle can be reconstructed from the event
+/// stream alone rather than inferred from the decision's prose.
+///
+/// Empty for decisions forced without asking an agent (unauthorized campaign,
+/// already-terminal status, a verdict that decides on its own).
+#[derive(Default)]
+struct FormationRecord {
+    prompt: Option<String>,
+    agent_provider: Option<String>,
+    gate_results: Vec<foundry_sdk::gates::GateResult>,
+}
+
 /// The fixed part of a decision-agent invocation. Every attempt re-sends
 /// exactly this; only the attempt number differs.
 struct DecisionRequest {
@@ -476,6 +489,7 @@ fn completed_event(
     campaign: &Campaign,
     throttle: foundry_sdk::throttle::Throttle,
     outcome: CampaignDecision,
+    record: &FormationRecord,
 ) -> Event {
     super::event_from_infallible_payload(
         EventType::CampaignAdvanceCompleted,
@@ -487,6 +501,9 @@ fn completed_event(
             cycles_completed: campaign.cycles_completed,
             cycles_landed: campaign.cycles_landed,
             outcome,
+            prompt: record.prompt.clone(),
+            agent_provider: record.agent_provider.clone(),
+            gate_results: record.gate_results.clone(),
         },
     )
 }
@@ -553,6 +570,11 @@ fn terminal_error_result(
             outcome: CampaignDecision::Escalate {
                 reason: reason.clone(),
             },
+            // A store failure aborts before any agent is asked, so there is no
+            // formation to record.
+            prompt: None,
+            agent_provider: None,
+            gate_results: Vec::new(),
         },
     );
     let escalated = super::event_from_infallible_payload(
@@ -722,7 +744,7 @@ async fn derive_advance_outcome(
     entry: &foundry_sdk::registry::ProjectEntry,
     campaign: &Campaign,
     request: &CampaignAdvanceRequestedPayload,
-) -> anyhow::Result<AdvanceOutcome> {
+) -> anyhow::Result<(AdvanceOutcome, FormationRecord)> {
     let repo = Path::new(&entry.path);
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
@@ -748,7 +770,15 @@ async fn derive_advance_outcome(
         timeout: entry.timeout(),
     };
     let outcome = ask_decision_agent(agent, &decision_request, &campaign.project).await?;
-    Ok(outcome.map_decision(|decision| enforce_done_gate_truth(campaign, decision, &gate_results)))
+    let record = FormationRecord {
+        prompt: Some(decision_request.prompt),
+        agent_provider: campaign.agent_provider.clone(),
+        gate_results: gate_results.clone(),
+    };
+    Ok((
+        outcome.map_decision(|decision| enforce_done_gate_truth(campaign, decision, &gate_results)),
+        record,
+    ))
 }
 
 fn apply_advance_outcome(
@@ -756,6 +786,7 @@ fn apply_advance_outcome(
     request: &CampaignAdvanceRequestedPayload,
     throttle: foundry_sdk::throttle::Throttle,
     outcome: AdvanceOutcome,
+    record: &FormationRecord,
 ) -> Vec<Event> {
     let decision = match outcome {
         AdvanceOutcome::Decided(decision) => decision,
@@ -793,6 +824,7 @@ fn apply_advance_outcome(
                     CampaignDecision::Done {
                         reason: reason.clone(),
                     },
+                    record,
                 ),
                 terminal_event(EventType::CampaignCompleted, campaign, throttle, reason),
             ]
@@ -807,6 +839,7 @@ fn apply_advance_outcome(
                     CampaignDecision::Escalate {
                         reason: reason.clone(),
                     },
+                    record,
                 ),
                 terminal_event(EventType::CampaignEscalated, campaign, throttle, reason),
             ]
@@ -825,6 +858,7 @@ fn apply_advance_outcome(
                         objective: objective.clone(),
                         reason,
                     },
+                    record,
                 ),
                 execution_event(campaign, throttle, &objective, base_ref),
             ]
@@ -836,9 +870,9 @@ async fn choose_advance_outcome(
     execution: &AdvanceExecution,
     campaign: &Campaign,
     forced: Option<AdvanceOutcome>,
-) -> AdvanceOutcome {
+) -> (AdvanceOutcome, FormationRecord) {
     if let Some(outcome) = forced {
-        return outcome;
+        return (outcome, FormationRecord::default());
     }
     let entry = match super::read_registry(&execution.registry) {
         Ok(registry) => registry
@@ -850,9 +884,12 @@ async fn choose_advance_outcome(
     let entry = match entry {
         Ok(entry) => entry,
         Err(error) => {
-            return AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                reason: format!("campaign formation failed: {error}"),
-            });
+            return (
+                AdvanceOutcome::Decided(CampaignDecision::Escalate {
+                    reason: format!("campaign formation failed: {error}"),
+                }),
+                FormationRecord::default(),
+            );
         }
     };
     derive_advance_outcome(
@@ -864,9 +901,12 @@ async fn choose_advance_outcome(
     )
     .await
     .unwrap_or_else(|error| {
-        AdvanceOutcome::Decided(CampaignDecision::Escalate {
-            reason: format!("campaign formation failed: {error}"),
-        })
+        (
+            AdvanceOutcome::Decided(CampaignDecision::Escalate {
+                reason: format!("campaign formation failed: {error}"),
+            }),
+            FormationRecord::default(),
+        )
     })
 }
 
@@ -927,6 +967,7 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
             AdvanceOutcome::Decided(CampaignDecision::Escalate {
                 reason: error.to_string(),
             }),
+            &FormationRecord::default(),
         );
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
@@ -960,9 +1001,8 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     }
 
     let effective_execution = replay_pending_run(&execution, campaign);
-    let outcome = choose_advance_outcome(&effective_execution, campaign, forced)
-        .await
-        .map_decision(|decision| enforce_campaign_budget(campaign, decision));
+    let (outcome, record) = choose_advance_outcome(&effective_execution, campaign, forced).await;
+    let outcome = outcome.map_decision(|decision| enforce_campaign_budget(campaign, decision));
     // A pause emits no event, so its reason would otherwise be invisible; the
     // block summary is what carries it into the run trace.
     let summary = match &outcome {
@@ -971,8 +1011,13 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
             format!("campaign '{}' paused: {reason}", execution.request.campaign)
         }
     };
-    let events =
-        apply_advance_outcome(campaign, &effective_execution.request, execution.throttle, outcome);
+    let events = apply_advance_outcome(
+        campaign,
+        &effective_execution.request,
+        execution.throttle,
+        outcome,
+        &record,
+    );
     let cycles_completed = campaign.cycles_completed;
     let cycles_landed = campaign.cycles_landed;
     persist_or_terminal(
@@ -1008,7 +1053,9 @@ impl SimulatedSuccess for AdvanceCampaign {
             reason: "dry-run formation".to_string(),
         };
         vec![
-            completed_event(&campaign, trigger.throttle, outcome),
+            // A dry run asks no agent and runs no gates, so it records no
+            // formation — the absence is itself the honest signal.
+            completed_event(&campaign, trigger.throttle, outcome, &FormationRecord::default()),
             execution_event(
                 &campaign,
                 foundry_sdk::throttle::Throttle::DryRun,
@@ -1066,8 +1113,8 @@ mod tests {
     };
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::payload::{
-        CampaignAdvanceRequestedPayload, CampaignDecision, LoopContext, TaskRunCompletedPayload,
-        TaskVerdict,
+        CampaignAdvanceCompletedPayload, CampaignAdvanceRequestedPayload, CampaignDecision,
+        LoopContext, TaskRunCompletedPayload, TaskVerdict,
     };
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
@@ -1917,6 +1964,99 @@ mod tests {
         assert!(entry.contains("Make every required gate pass. detail"));
         assert!(entry.ends_with('…'), "a long objective must be truncated: {entry}");
         assert!(entry.chars().count() < 400, "history entry is not bounded: {entry}");
+    }
+
+    // --- formation audit trail ---------------------------------------------
+
+    /// A cycle must be reconstructible from the event stream alone. Formation
+    /// was the only agent-invoking block that recorded no prompt, so what the
+    /// decision agent actually saw could only be guessed at from its prose.
+    #[tokio::test]
+    async fn advance_completed_records_the_prompt_provider_and_done_gates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.agent_provider = Some("codex".to_string());
+        campaign.done_evidence.push(DoneEvidence::Gate {
+            command: "cargo test --workspace".to_string(),
+            required: true,
+            artifacts: vec![],
+        });
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let completed = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::CampaignAdvanceCompleted)
+            .expect("advance completed event");
+        let payload: CampaignAdvanceCompletedPayload = completed.parse_payload().unwrap();
+
+        let prompt = payload.prompt.expect("formation prompt must be recorded");
+        assert_eq!(
+            prompt,
+            agent.invocations()[0].prompt,
+            "the recorded prompt must be the one the agent was actually sent"
+        );
+        // The audit trail must show whether the agent saw the two-tree context.
+        assert!(prompt.contains("ACCUMULATED UNMERGED WORK"));
+        assert_eq!(payload.agent_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            payload.gate_results.len(),
+            1,
+            "the done-gate result that governs `done` must be queryable, not prose"
+        );
+        assert_eq!(payload.gate_results[0].command, "cargo test --workspace");
+        assert!(payload.gate_results[0].required);
+    }
+
+    /// A decision made without asking an agent has no formation to record, and
+    /// must not imply otherwise.
+    #[tokio::test]
+    async fn a_forced_decision_records_no_formation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.authorized_by = None;
+        let mut store = CampaignStore::default();
+        store.campaigns.push(campaign);
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success();
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "no agent should have been asked");
+        let completed = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::CampaignAdvanceCompleted)
+            .expect("advance completed event");
+        let payload: CampaignAdvanceCompletedPayload = completed.parse_payload().unwrap();
+        assert!(payload.prompt.is_none());
+        assert!(payload.agent_provider.is_none());
+        assert!(payload.gate_results.is_empty());
     }
 
     // --- transient decision-agent failures --------------------------------
