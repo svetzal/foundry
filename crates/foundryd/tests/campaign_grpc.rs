@@ -92,6 +92,7 @@ fn sample_campaign(name: &str, project: &str) -> Campaign {
         last_run_event_id: Some("run-123".to_string()),
         owner_decisions: vec![],
         pending_run_result: None,
+        objective_history: vec![],
     }
 }
 

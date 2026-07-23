@@ -194,6 +194,7 @@ mod tests {
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         }
     }
 

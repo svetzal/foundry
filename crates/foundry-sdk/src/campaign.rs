@@ -5,7 +5,17 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
-use crate::payload::TaskRunCompletedPayload;
+use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
+
+/// How many recent objectives a campaign remembers.
+///
+/// This is formation's working memory, not an archive — every objective is
+/// already durable in the `CampaignAdvanceCompleted` event stream. Eight
+/// matches the depth of the trunk snapshot's own `git log -8`, stays small
+/// against the default twenty-cycle budget, and is deep enough to expose a
+/// restatement: an agent re-cutting cycle one's objective at cycle nine has
+/// been re-cutting it at the cycles in between too.
+const OBJECTIVE_HISTORY_LIMIT: usize = 8;
 
 fn default_version() -> u32 {
     1
@@ -186,6 +196,12 @@ pub struct Campaign {
     /// continues from its preservation ref. Consumed when a decision is made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_run_result: Option<TaskRunCompletedPayload>,
+    /// Objectives this campaign has already cut, oldest first, capped at
+    /// [`OBJECTIVE_HISTORY_LIMIT`]. Fed back into formation so the decision
+    /// agent can recognise that it is restating an earlier request instead of
+    /// cutting new work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objective_history: Vec<CampaignCycle>,
 }
 
 /// Commands that assert state on a host rather than in the repository, and so
@@ -221,6 +237,39 @@ fn off_worktree_command(command: &str) -> Option<&'static str> {
 }
 
 impl Campaign {
+    /// Record an objective as dispatched for the cycle just counted.
+    ///
+    /// Older entries are dropped rather than kept, so the store a campaign
+    /// rewrites on every advance stays bounded no matter how long the mission
+    /// runs.
+    pub fn record_dispatched_objective(&mut self, objective: String) {
+        self.objective_history.push(CampaignCycle {
+            cycle: self.cycles_completed,
+            objective,
+            outcome: None,
+        });
+        let overflow = self.objective_history.len().saturating_sub(OBJECTIVE_HISTORY_LIMIT);
+        self.objective_history.drain(..overflow);
+    }
+
+    /// Stamp a typed run result onto the objective that produced it.
+    ///
+    /// A result always arrives on the advance after its dispatch, so the open
+    /// entry is the last one. A result with no open entry to close — a campaign
+    /// that predates this history, or a run replayed after its outcome was
+    /// already recorded — is dropped rather than invented as a cycle nobody
+    /// cut.
+    pub fn record_cycle_outcome(&mut self, result: &TaskRunCompletedPayload) {
+        if let Some(cycle) = self.objective_history.last_mut()
+            && cycle.outcome.is_none()
+        {
+            cycle.outcome = Some(CycleOutcome {
+                verdict: result.verdict.clone(),
+                landed: result.landed,
+            });
+        }
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.name.trim().is_empty()
             || self.project.trim().is_empty()
@@ -306,6 +355,32 @@ impl std::fmt::Display for CampaignStatus {
     }
 }
 
+/// One objective this campaign cut, and how its execution ended.
+///
+/// Appended when the objective is dispatched; the outcome is stamped on when
+/// that task's typed result arrives, which is on the following advance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampaignCycle {
+    pub cycle: u64,
+    pub objective: String,
+    /// Absent while the dispatched task is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<CycleOutcome>,
+}
+
+/// A dispatched cycle's typed verdict together with whether its work reached
+/// trunk.
+///
+/// Both halves are needed to read a repeat correctly: a `remainder` that landed
+/// is converging work with gaps left, while a `remainder` that landed nothing
+/// is a cycle that produced no integrated progress at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleOutcome {
+    #[serde(flatten)]
+    pub verdict: TaskVerdict,
+    pub landed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerDecision {
     pub decision: String,
@@ -367,6 +442,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&path).unwrap();
@@ -396,6 +472,7 @@ mod tests {
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         }
     }
 
@@ -487,10 +564,125 @@ mod tests {
 
         assert!(campaign.owner_decisions.is_empty());
         assert!(campaign.pending_run_result.is_none());
+        assert!(campaign.objective_history.is_empty());
         let DoneEvidence::Gate { artifacts, .. } = &campaign.done_evidence[0] else {
             panic!("expected gate evidence");
         };
         assert!(artifacts.is_empty());
+    }
+
+    /// The live store holds campaigns written before objective history existed;
+    /// a store that stops loading takes every one of them with it.
+    #[test]
+    fn store_written_before_objective_history_still_loads_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "campaigns": [{
+                "name": "legacy",
+                "project": "p",
+                "mission": "ship",
+                "done_evidence": [{"kind": "review", "statement": "shipped"}],
+                "status": "active",
+                "cycles_completed": 4,
+                "authorized_by": "owner"
+              }]
+            }"#,
+        )
+        .unwrap();
+
+        let store = CampaignStore::load(&path).unwrap();
+        let campaign = store.find("legacy").unwrap();
+        assert!(campaign.objective_history.is_empty());
+        assert_eq!(campaign.cycles_completed, 4);
+
+        // An untouched legacy campaign must not gain the key on rewrite either,
+        // so a rollback still reads what the current build wrote.
+        store.save(&path).unwrap();
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !rewritten.contains("objective_history"),
+            "an empty history must not be serialized: {rewritten}"
+        );
+        assert!(CampaignStore::load(&path).unwrap().find("legacy").is_some());
+    }
+
+    fn remainder_result(gap: &str, landed: bool) -> TaskRunCompletedPayload {
+        TaskRunCompletedPayload {
+            project: "p".to_string(),
+            success: false,
+            landed,
+            summary: "converging".to_string(),
+            preservation_ref: None,
+            verdict: TaskVerdict::Remainder {
+                gaps: vec![gap.to_string()],
+            },
+            context: crate::payload::LoopContext::default(),
+        }
+    }
+
+    #[test]
+    fn a_cycle_outcome_is_stamped_onto_the_objective_that_produced_it() {
+        let mut campaign = campaign_with_gate("cargo test", true);
+        campaign.cycles_completed = 1;
+        campaign
+            .record_dispatched_objective("Move registry list/show onto the daemon.".to_string());
+
+        campaign.record_cycle_outcome(&remainder_result("the CLI still reads local files", true));
+
+        let recorded = &campaign.objective_history[0];
+        assert_eq!(recorded.cycle, 1);
+        assert_eq!(
+            recorded.outcome,
+            Some(CycleOutcome {
+                verdict: TaskVerdict::Remainder {
+                    gaps: vec!["the CLI still reads local files".to_string()],
+                },
+                landed: true,
+            })
+        );
+    }
+
+    /// A replayed pending result must not overwrite an outcome already
+    /// recorded, and a result arriving with no open dispatch must not invent a
+    /// cycle nobody cut.
+    #[test]
+    fn a_second_result_does_not_rewrite_a_closed_or_absent_cycle() {
+        let mut campaign = campaign_with_gate("cargo test", true);
+        campaign.record_cycle_outcome(&remainder_result("nothing dispatched this", false));
+        assert!(campaign.objective_history.is_empty());
+
+        campaign.cycles_completed = 1;
+        campaign.record_dispatched_objective("First slice.".to_string());
+        campaign.record_cycle_outcome(&remainder_result("first gap", false));
+        campaign.record_cycle_outcome(&remainder_result("second gap", true));
+
+        let CycleOutcome {
+            verdict: TaskVerdict::Remainder { gaps },
+            landed,
+        } = campaign.objective_history[0].outcome.clone().unwrap()
+        else {
+            panic!("expected a remainder outcome");
+        };
+        assert_eq!(gaps, vec!["first gap".to_string()]);
+        assert!(!landed);
+    }
+
+    #[test]
+    fn objective_history_retains_only_the_most_recent_cycles() {
+        let mut campaign = campaign_with_gate("cargo test", true);
+        for cycle in 1..=(OBJECTIVE_HISTORY_LIMIT as u64 + 3) {
+            campaign.cycles_completed = cycle;
+            campaign.record_dispatched_objective(format!("objective {cycle}"));
+        }
+
+        assert_eq!(campaign.objective_history.len(), OBJECTIVE_HISTORY_LIMIT);
+        assert_eq!(campaign.objective_history[0].cycle, 4);
+        assert_eq!(campaign.objective_history[0].objective, "objective 4");
+        assert_eq!(campaign.objective_history.last().unwrap().cycle, 11);
     }
 
     #[test]
@@ -520,6 +712,7 @@ mod tests {
                     .with_timezone(&chrono::Utc),
             }],
             pending_run_result: None,
+            objective_history: vec![],
         };
 
         let json = serde_json::to_value(&campaign).unwrap();
