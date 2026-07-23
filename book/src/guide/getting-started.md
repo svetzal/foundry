@@ -1,102 +1,188 @@
 # Getting Started
 
-## Prerequisites
+This guide takes Foundry from installation to a registered project and a first
+evidence-reviewed task. For the underlying event model, continue to
+[Concepts](../architecture/concepts.md) afterward.
 
-- Rust 1.85+ (via `rust-toolchain.toml`)
-- `protoc` (Protocol Buffers compiler): `brew install protobuf`
+## Install
 
-## Build
+### Homebrew
 
 ```bash
-cd path/to/foundry
-cargo build --release
+brew tap svetzal/tap
+brew install foundry
 ```
 
-This produces two binaries:
+### From source
 
-- `target/release/foundryd` — the daemon
-- `target/release/foundry` — the CLI controller
-
-## Install Locally
-
-Install both binaries to `~/.cargo/bin/` using the convenience script:
+Source builds require Rust 1.85 or newer and the Protocol Buffers compiler.
 
 ```bash
+brew install protobuf
+git clone https://github.com/svetzal/foundry.git
+cd foundry
 ./install.sh
 ```
 
-Or install each crate individually:
+`install.sh` builds and installs both binaries to `~/.cargo/bin`. On macOS it
+also gives them stable ad-hoc signing identifiers. Use the script for subsequent
+source upgrades so macOS privacy grants remain attached to the binaries.
+
+The installation contains:
+
+- `foundryd` — the long-running workflow daemon;
+- `foundry` — the CLI controller.
+
+Verify the CLI:
 
 ```bash
-cargo install --path crates/foundryd
-cargo install --path crates/foundry-cli
+foundry --version
 ```
 
-Re-run after making changes to pick up the latest version.
-
 ## Start the Daemon
+
+Run the daemon in a terminal:
 
 ```bash
 foundryd
 ```
 
-You'll see the registered task blocks and the listening address:
+By default it listens on `127.0.0.1:50051`, loads project, campaign, and
+sentinel state from `~/.foundry/`, and registers the production task-block
+library.
 
-```text
-INFO foundryd::engine: registered task block block="Compose Greeting" sinks=[GreetRequested]
-INFO foundryd::engine: registered task block block="Deliver Greeting" sinks=[GreetingComposed]
-INFO foundryd::engine: registered task block block="Audit Release Tag" sinks=[VulnerabilityDetected]
-INFO foundryd::engine: registered task block block="Audit Main Branch" sinks=[ReleaseTagAudited]
-INFO foundryd::engine: registered task block block="Remediate Vulnerability" sinks=[MainBranchAudited]
-INFO foundryd::engine: registered task block block="Commit and Push" sinks=[RemediationCompleted]
-INFO foundryd::engine: registered task block block="Cut Release" sinks=[MainBranchAudited]
-INFO foundryd::engine: registered task block block="Watch Pipeline" sinks=[ReleaseCompleted]
-INFO foundryd::engine: registered task block block="Install Locally" sinks=[ProjectChangesPushed, ReleasePipelineCompleted]
-INFO foundryd: foundryd listening on 127.0.0.1:50051
-```
+The repository also includes service definitions for unattended operation:
 
-## Send Your First Event
+- macOS: [`launchd/README.md`](../../../launchd/README.md)
+- Linux: [`systemd/README.md`](../../../systemd/README.md)
 
-In another terminal:
+Do not run `foundryd` as root. It needs the same repositories, agent
+credentials, GitHub credentials, and `~/.foundry` state as the user who owns the
+workspaces.
+
+## Register a Project
+
+Open another terminal and add a Git checkout:
 
 ```bash
-foundry emit greet_requested \
-  --project hello \
-  --payload '{"name": "World"}'
+foundry registry add \
+  --name my-project \
+  --path /absolute/path/to/my-project \
+  --stack rust \
+  --agent codex \
+  --repo owner/my-project \
+  --branch main \
+  --iterate \
+  --maintain \
+  --push
 ```
 
-In the daemon logs you'll see the event chain:
-
-```text
-INFO foundryd::service: processing event event_type=greet_requested project=hello throttle=full
-INFO foundryd::engine: executing task block block="Compose Greeting" ...
-INFO foundryd::blocks::greet: composed greeting greeting=Hello, World!
-INFO foundryd::engine: executing task block block="Deliver Greeting" ...
-INFO foundryd::blocks::greet: delivering greeting greeting=Hello, World!
-INFO foundryd::service: event chain complete total_events=3
-```
-
-Three events in the chain: `greet_requested` → `greeting_composed` → `greeting_delivered`.
-
-## Try Throttle Control
+The online command updates daemon-owned state through gRPC and persists it to
+`~/.foundry/registry.json`. Confirm the result:
 
 ```bash
-# Observers run for real, mutators are simulated
-foundry emit greet_requested \
-  --project hello \
-  --throttle dry_run \
-  --payload '{"name": "World"}'
+foundry registry show my-project
 ```
 
-You'll still see all 3 events, but `greeting_delivered` carries
-`dry_run: true` — Deliver Greeting is a Mutator, so under `dry_run` it is
-simulated via `dry_run_events()` rather than executed.
+See [The Project Registry](registry.md) for every field, action flag, skip
+reason, install strategy, and explicit offline recovery.
 
-## Quality Gates
+## Establish Quality Gates
+
+Ask Foundry to inspect the repository and write `.hone-gates.json`:
 
 ```bash
-cargo test                                              # Run all tests
-cargo clippy --all-targets --all-features -- -D warnings # Lint
-cargo fmt --check                                       # Format check
-cargo deny check                                        # License + advisory audit
+foundry gates --init my-project
+```
+
+Review that file in the project, then run the gates without changing code:
+
+```bash
+foundry validate my-project
+```
+
+Required gates are the mechanical safety boundary for task landing. A project
+should have at least one meaningful required gate before it accepts autonomous
+mutations.
+
+## Run One Task
+
+Use a task for one concrete, immediately executable objective:
+
+```bash
+foundry task my-project \
+  "Add a --quiet flag and prove it suppresses progress output"
+```
+
+Foundry creates an isolated worktree, runs the coding agent, executes the
+project gates, performs a separate skeptical review, and returns one typed
+verdict. Passing complete work lands on the registered branch. Safe, converging
+remainder work can also land when required gates passed; defects and blocked
+work are preserved without reaching trunk.
+
+See [Tasks and Campaigns](campaigns.md) for verdicts, preservation, landing
+rules, and broader multi-cycle missions.
+
+## Inspect the Workflow
+
+Convenience commands stream block progress and render the completed trace. You
+can return to it later:
+
+```bash
+foundry history --project my-project
+foundry trace <event-id>
+foundry trace <event-id> --verbose
+```
+
+While work is running:
+
+```bash
+foundry status
+foundry watch --project my-project
+```
+
+Traces survive daemon restarts under `~/.foundry/traces/`.
+
+## Try a Dry Run
+
+Throttle lets a workflow retain its observation and routing behaviour while
+simulating mutators:
+
+```bash
+foundry run --project my-project --throttle dry_run
+```
+
+Observers execute normally. Mutators emit their simulated success events without
+changing repositories or external systems. See [Throttle Control](throttle.md)
+for the execution rules.
+
+## Next Steps
+
+- Use `foundry campaign` when the mission is broader than one task and the next
+  objective should be derived from current evidence.
+- Use `foundry iterate` for charter-driven quality improvement.
+- Use `foundry scout` for read-only intent-drift discovery.
+- Use `foundry run` for registered maintenance actions.
+- Inspect [Sentinels](sentinels.md) for scheduled maintenance and digest
+  workflows.
+- Read [Workflow Formations](workflow-formations.md) to understand how events
+  activate the shared task-block library.
+
+## Build Foundry Itself
+
+Contributors can build the workspace directly:
+
+```bash
+cargo build --workspace
+```
+
+The repository's required gates are:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo deny check
+mdbook build book
 ```

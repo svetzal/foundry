@@ -16,164 +16,173 @@ Every event in Foundry has this shape:
 }
 ```
 
-- **id** — Deterministic SHA256 hash of (event_type, project, occurred_at, payload), prefixed `evt_`. Same inputs always produce the same ID.
+- **id** — Deterministic SHA256 hash of (event_type, project, occurred_at,
+  payload), prefixed `evt_`. Same inputs always produce the same ID.
 - **throttle** — 0 = Full, 1 = DryRun. Propagated through the entire chain.
-- **payload** — Event-specific JSON. Completion events use `"success": true/false`.
+- **payload** — Event-specific JSON. Completion events use
+  `"success": true/false`.
 
-> **Tracing:** Every event also carries `span_id` and `parent_span_id` fields used for OTel-shaped nested tracing. These let trace renderers reconstruct the hierarchical span tree across chained events. See `book/src/architecture/tracing.md` for details.
+> **Tracing:** Every event also carries `trace_id`, `span_id`, `parent_span_id`,
+> and `causation_id` fields used for OTel-shaped nested tracing and domain
+> causality. Campaign task-side events also carry `campaign_cycle`, so cycles
+> remain distinguishable when campaigns run concurrently in the same project.
+> See `book/src/architecture/tracing.md` for details.
 
 ## Naming Conventions
 
 Events follow four suffix categories:
 
-| Category | Suffix | Meaning |
-|----------|--------|---------|
-| Command | `*Requested` | Intent — someone or something wants action taken |
-| Lifecycle start | `*Started` | A multi-step operation began |
-| Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) |
-| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity |
+| Category        | Suffix                   | Meaning                                                   |
+| --------------- | ------------------------ | --------------------------------------------------------- |
+| Command         | `*Requested`             | Intent — someone or something wants action taken          |
+| Lifecycle start | `*Started`               | A multi-step operation began                              |
+| Lifecycle end   | `*Completed`             | An operation finished (check payload for success/failure) |
+| Domain fact     | Specific past participle | A meaningful domain event where the verb adds clarity     |
 
 Rules:
 
 - Commands are always `*Requested` — never `*Triggered`.
 - `*Completed` is the default for lifecycle endpoints.
 - `*Started`/`*Completed` must pair.
-- Noun form for compound prefixes (e.g., `ProjectIterationCompleted`, not `ProjectIterateCompleted`).
+- Noun form for compound prefixes (e.g., `ProjectIterationCompleted`, not
+  `ProjectIterateCompleted`).
 - Payload boolean results use `success` (not `passed` or other variants).
 
 ## Complete Event Type List
 
-Event types use PascalCase in code and snake_case on the wire (e.g., `ReleaseRequested` → `release_requested`).
+Event types use PascalCase in code and snake_case on the wire (e.g.,
+`ReleaseRequested` → `release_requested`).
 
 ### Vulnerability Remediation Workflow
 
-| Event | Category |
-|-------|----------|
-| `ScanRequested` | Command |
-| `VulnerabilityDetected` | Domain fact |
-| `MainBranchAudited` | Domain fact |
-| `ReleaseTagAudited` | Domain fact |
-| `RemediationStarted` | Lifecycle start |
-| `RemediationCompleted` | Lifecycle end |
-| `ReleaseRequested` | Command |
-| `ReleaseCompleted` | Lifecycle end |
-| `ReleasePipelineCompleted` | Lifecycle end |
-| `LocalInstallCompleted` | Lifecycle end |
+| Event                      | Category        |
+| -------------------------- | --------------- |
+| `ScanRequested`            | Command         |
+| `VulnerabilityDetected`    | Domain fact     |
+| `MainBranchAudited`        | Domain fact     |
+| `ReleaseTagAudited`        | Domain fact     |
+| `RemediationStarted`       | Lifecycle start |
+| `RemediationCompleted`     | Lifecycle end   |
+| `ReleaseRequested`         | Command         |
+| `ReleaseCompleted`         | Lifecycle end   |
+| `ReleasePipelineCompleted` | Lifecycle end   |
+| `LocalInstallCompleted`    | Lifecycle end   |
 
 ### Project Lifecycle (Cross-workflow)
 
-| Event | Category |
-|-------|----------|
-| `ProjectValidationCompleted` | Lifecycle end |
-| `ProjectIterationCompleted` | Lifecycle end |
+| Event                         | Category      |
+| ----------------------------- | ------------- |
+| `ProjectValidationCompleted`  | Lifecycle end |
+| `ProjectIterationCompleted`   | Lifecycle end |
 | `ProjectMaintenanceCompleted` | Lifecycle end |
-| `ProjectChangesCommitted` | Domain fact |
-| `ProjectChangesPushed` | Domain fact |
+| `ProjectChangesCommitted`     | Domain fact   |
+| `ProjectChangesPushed`        | Domain fact   |
 
 ### Workflow Triggers
 
-| Event | Category |
-|-------|----------|
-| `ProjectIterationRequested` | Command |
-| `ProjectMaintenanceRequested` | Command |
-| `ExecutionRequested` | Command |
-| `ValidationRequested` | Command |
-| `DriftAssessmentRequested` | Command |
-| `PipelineCheckRequested` | Command |
+| Event                         | Category |
+| ----------------------------- | -------- |
+| `ProjectIterationRequested`   | Command  |
+| `ProjectMaintenanceRequested` | Command  |
+| `ExecutionRequested`          | Command  |
+| `ValidationRequested`         | Command  |
+| `DriftAssessmentRequested`    | Command  |
+| `PipelineCheckRequested`      | Command  |
 
 ### Task Lifecycle
 
-| Event | Category |
-|-------|----------|
-| `TaskRunStarted` | Lifecycle start |
-| `TaskReviewed` | Domain fact |
-| `TaskRunCompleted` | Lifecycle end |
+| Event              | Category        |
+| ------------------ | --------------- |
+| `TaskRunStarted`   | Lifecycle start |
+| `TaskReviewed`     | Domain fact     |
+| `TaskRunCompleted` | Lifecycle end   |
 
 ### Campaign Formation
 
-| Event | Category |
-|-------|----------|
-| `CampaignAdvanceRequested` | Command |
+| Event                      | Category      |
+| -------------------------- | ------------- |
+| `CampaignAdvanceRequested` | Command       |
 | `CampaignAdvanceCompleted` | Lifecycle end |
-| `CampaignEscalated` | Domain fact |
-| `CampaignCompleted` | Lifecycle end |
+| `CampaignPaused`           | Domain fact   |
+| `CampaignEscalated`        | Domain fact   |
+| `CampaignCompleted`        | Lifecycle end |
 
 ### Run Lifecycle
 
-| Event | Category |
-|-------|----------|
-| `MaintenanceCycleStarted` | Lifecycle start (system-level fan-out) |
-| `MaintenanceCycleCompleted` | Lifecycle end (system-level fan-out) |
-| `ProjectRunStarted` | Lifecycle start (per-project) |
-| `ProjectRunCompleted` | Lifecycle end (per-project) |
+| Event                       | Category                               |
+| --------------------------- | -------------------------------------- |
+| `MaintenanceCycleStarted`   | Lifecycle start (system-level fan-out) |
+| `MaintenanceCycleCompleted` | Lifecycle end (system-level fan-out)   |
+| `ProjectRunStarted`         | Lifecycle start (per-project)          |
+| `ProjectRunCompleted`       | Lifecycle end (per-project)            |
 
 ### Gate Orchestration
 
-| Event | Category |
-|-------|----------|
-| `GateResolutionCompleted` | Lifecycle end |
-| `PreflightCompleted` | Lifecycle end |
-| `ExecutionCompleted` | Lifecycle end |
+| Event                       | Category      |
+| --------------------------- | ------------- |
+| `GateResolutionCompleted`   | Lifecycle end |
+| `PreflightCompleted`        | Lifecycle end |
+| `ExecutionCompleted`        | Lifecycle end |
 | `GateVerificationCompleted` | Lifecycle end |
-| `RetryRequested` | Command |
-| `SummarizeCompleted` | Lifecycle end |
+| `RetryRequested`            | Command       |
+| `SummarizeCompleted`        | Lifecycle end |
 
 ### Iterate Workflow (Phase 3)
 
-| Event | Category |
-|-------|----------|
+| Event                   | Category      |
+| ----------------------- | ------------- |
 | `CharterCheckCompleted` | Lifecycle end |
-| `AssessmentCompleted` | Lifecycle end |
-| `TriageCompleted` | Lifecycle end |
-| `PlanCompleted` | Lifecycle end |
+| `AssessmentCompleted`   | Lifecycle end |
+| `TriageCompleted`       | Lifecycle end |
+| `PlanCompleted`         | Lifecycle end |
 
 ### Pipeline Health Check
 
-| Event | Category |
-|-------|----------|
+| Event             | Category    |
+| ----------------- | ----------- |
 | `PipelineChecked` | Domain fact |
 
 ### Drift Scout
 
-| Event | Category |
-|-------|----------|
+| Event                      | Category      |
+| -------------------------- | ------------- |
 | `DriftAssessmentCompleted` | Lifecycle end |
 
 ### Ops Digest Formation
 
-| Event | Category |
-|-------|----------|
-| `OpsDigestStarted` | Lifecycle start (span opener) |
-| `OpsObserved` | Domain fact |
-| `OpsSummaryCompleted` | Lifecycle end |
-| `OpsDigestCompleted` | Lifecycle end |
+| Event                 | Category                      |
+| --------------------- | ----------------------------- |
+| `OpsDigestStarted`    | Lifecycle start (span opener) |
+| `OpsObserved`         | Domain fact                   |
+| `OpsSummaryCompleted` | Lifecycle end                 |
+| `OpsDigestCompleted`  | Lifecycle end                 |
 
 ## Key Payload Fields by Event
 
-| Event | Key Payload Fields |
-|-------|-------------------|
-| `VulnerabilityDetected` | `cve`, `vulnerable`, `dirty`, `package`, `severity` |
-| `GateResolutionCompleted` | `project`, `workflow` ("iterate"/"maintain"/"validate"), `gates[]`, `actions` |
-| `PreflightCompleted` | `all_passed`, `required_passed`, `results[]`, `workflow` |
-| `ExecutionCompleted` | `success`, `workflow`, `summary` |
-| `GateVerificationCompleted` | `required_passed`, `all_passed`, `retry_count`, `results[]` |
-| `CharterCheckCompleted` | `success`, `sources[]`, `guidance` |
-| `AssessmentCompleted` | `success`, `severity`, `principle`, `category`, `assessment` |
-| `TriageCompleted` | `accepted`, `reason` |
-| `DriftAssessmentCompleted` | `candidate_count`, `high_value_count`, `candidates[]` |
-| `ProjectIterationCompleted` | `success`, `project` |
-| `ProjectMaintenanceCompleted` | `success`, `project` |
-| `MaintenanceCycleCompleted` | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level fan-out only) |
-| `PipelineChecked` | `passing`, `logs` |
-| `ReleaseCompleted` | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only) |
-| `ReleasePipelineCompleted` | `success`, `new_tag` |
-| `LocalInstallCompleted` | `success` |
-| `OpsObserved` | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
-| `OpsSummaryCompleted` | `markdown`, `event_count`, `new_watermark?` |
-| `OpsDigestCompleted` | `success`, `skipped`, `digest_path?`, `event_count` |
-| `TaskReviewed` | `objective`, `review`, `gate_results[]`, structural verdict fields, `campaign?` |
-| `TaskRunCompleted` | `success`, `landed`, `summary`, `preservation_ref?`, structural verdict fields, `campaign?` |
-| `CampaignAdvanceRequested` | `campaign`, `run_event_id?`, `run_result?` |
-| `CampaignAdvanceCompleted` | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason` |
-| `CampaignEscalated` | `campaign`, `reason`, `cycles_completed`, `cycles_landed` |
-| `CampaignCompleted` | `campaign`, `reason`, `cycles_completed`, `cycles_landed` |
+| Event                         | Key Payload Fields                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VulnerabilityDetected`       | `cve`, `vulnerable`, `dirty`, `package`, `severity`                                                                                             |
+| `GateResolutionCompleted`     | `project`, `workflow` ("iterate"/"maintain"/"validate"), `gates[]`, `actions`                                                                   |
+| `PreflightCompleted`          | `all_passed`, `required_passed`, `results[]`, `workflow`                                                                                        |
+| `ExecutionCompleted`          | `success`, `workflow`, `summary`                                                                                                                |
+| `GateVerificationCompleted`   | `required_passed`, `all_passed`, `retry_count`, `results[]`                                                                                     |
+| `CharterCheckCompleted`       | `success`, `sources[]`, `guidance`                                                                                                              |
+| `AssessmentCompleted`         | `success`, `severity`, `principle`, `category`, `assessment`                                                                                    |
+| `TriageCompleted`             | `accepted`, `reason`                                                                                                                            |
+| `DriftAssessmentCompleted`    | `candidate_count`, `high_value_count`, `candidates[]`                                                                                           |
+| `ProjectIterationCompleted`   | `success`, `project`                                                                                                                            |
+| `ProjectMaintenanceCompleted` | `success`, `project`                                                                                                                            |
+| `MaintenanceCycleCompleted`   | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level fan-out only)                                                    |
+| `PipelineChecked`             | `passing`, `logs`                                                                                                                               |
+| `ReleaseCompleted`            | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only)                                                                      |
+| `ReleasePipelineCompleted`    | `success`, `new_tag`                                                                                                                            |
+| `LocalInstallCompleted`       | `success`                                                                                                                                       |
+| `OpsObserved`                 | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
+| `OpsSummaryCompleted`         | `markdown`, `event_count`, `new_watermark?`                                                                                                     |
+| `OpsDigestCompleted`          | `success`, `skipped`, `digest_path?`, `event_count`                                                                                             |
+| `TaskReviewed`                | `objective`, `review`, `gate_results[]`, structural verdict fields, `campaign?`                                                                 |
+| `TaskRunCompleted`            | `success`, `landed`, `summary`, `preservation_ref?`, structural verdict fields, `campaign?`                                                     |
+| `CampaignAdvanceRequested`    | `campaign`, `run_event_id?`, `run_result?`                                                                                                      |
+| `CampaignAdvanceCompleted`    | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason`                                                             |
+| `CampaignEscalated`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |
+| `CampaignCompleted`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |

@@ -6,25 +6,24 @@ The Foundry service is defined in `proto/foundry.proto`.
 
 ### `Emit(EmitRequest) → EmitResponse`
 
-Fire an event into the system. The engine spawns processing as a background
-task and returns the event ID immediately. Use `Trace` to check for
-completion, `Status` to see in-flight workflows, or `Watch` for real-time
-event streaming.
+Fire an event into the system. The engine spawns processing as a background task
+and returns the event ID immediately. Use `Trace` to check for completion,
+`Status` to see in-flight workflows, or `Watch` for real-time event streaming.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event_type` | string | Event type name |
-| `project` | string | Target project |
-| `throttle` | Throttle enum | `THROTTLE_FULL`, `THROTTLE_AUDIT_ONLY`, `THROTTLE_DRY_RUN` |
-| `payload_json` | string | Optional JSON payload |
+| Field          | Type          | Description                                                |
+| -------------- | ------------- | ---------------------------------------------------------- |
+| `event_type`   | string        | Event type name                                            |
+| `project`      | string        | Target project                                             |
+| `throttle`     | Throttle enum | `THROTTLE_FULL`, `THROTTLE_AUDIT_ONLY`, `THROTTLE_DRY_RUN` |
+| `payload_json` | string        | Optional JSON payload                                      |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event_id` | string | Deterministic ID of the created event |
+| Field         | Type   | Description                           |
+| ------------- | ------ | ------------------------------------- |
+| `event_id`    | string | Deterministic ID of the created event |
 | `workflow_id` | string | ID of the triggered workflow (if any) |
 
 ### `Status(StatusRequest) → StatusResponse`
@@ -33,14 +32,14 @@ Query active workflow states.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field         | Type   | Description                              |
+| ------------- | ------ | ---------------------------------------- |
 | `workflow_id` | string | Specific workflow (empty for all active) |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field       | Type                    | Description            |
+| ----------- | ----------------------- | ---------------------- |
 | `workflows` | repeated WorkflowStatus | Active workflow states |
 
 ### `Watch(WatchRequest) → stream WatchResponse`
@@ -50,17 +49,17 @@ Optionally filtered by project name.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field     | Type   | Description                                              |
+| --------- | ------ | -------------------------------------------------------- |
 | `project` | string | Project name to filter by; empty string for all projects |
 
 **Response (stream):**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event_id` | string | Event identifier |
-| `event_type` | string | Event type name |
-| `project` | string | Target project |
+| Field          | Type   | Description           |
+| -------------- | ------ | --------------------- |
+| `event_id`     | string | Event identifier      |
+| `event_type`   | string | Event type name       |
+| `project`      | string | Target project        |
 | `payload_json` | string | Event payload as JSON |
 
 ### `RegistryAdd(RegistryAddRequest) → RegistryAddResponse`
@@ -70,28 +69,28 @@ Add a project to the daemon's in-memory registry and persist the change to
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Unique project name |
-| `path` | string | Absolute path on the local filesystem |
-| `stack` | string | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp` |
-| `agent` | string | AI agent name |
-| `repo` | string | GitHub repo slug (`owner/repo`) |
-| `branch` | string | Default branch (empty → `main`) |
-| `iterate` | bool | Enable iterate action |
-| `maintain` | bool | Enable maintain action |
-| `push` | bool | Enable push action |
-| `audit` | bool | Enable audit action |
-| `release` | bool | Enable release action |
-| `install_command` | string | Shell command for local install (mutually exclusive with `install_brew`) |
-| `install_brew` | string | Homebrew formula for local install (mutually exclusive with `install_command`) |
-| `notes` | string | Human-readable notes (empty → none) |
-| `timeout_secs` | uint64 | Per-project timeout (0 → use default 3600 s) |
+| Field             | Type   | Description                                                                    |
+| ----------------- | ------ | ------------------------------------------------------------------------------ |
+| `name`            | string | Unique project name                                                            |
+| `path`            | string | Absolute path on the local filesystem                                          |
+| `stack`           | string | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp`              |
+| `agent`           | string | AI agent name                                                                  |
+| `repo`            | string | GitHub repo slug (`owner/repo`)                                                |
+| `branch`          | string | Default branch (empty → `main`)                                                |
+| `iterate`         | bool   | Enable iterate action                                                          |
+| `maintain`        | bool   | Enable maintain action                                                         |
+| `push`            | bool   | Enable push action                                                             |
+| `audit`           | bool   | Enable audit action                                                            |
+| `release`         | bool   | Enable release action                                                          |
+| `install_command` | string | Shell command for local install (mutually exclusive with `install_brew`)       |
+| `install_brew`    | string | Homebrew formula for local install (mutually exclusive with `install_command`) |
+| `notes`           | string | Human-readable notes (empty → none)                                            |
+| `timeout_secs`    | uint64 | Per-project timeout (0 → use default 3600 s)                                   |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field     | Type    | Description                     |
+| --------- | ------- | ------------------------------- |
 | `project` | Project | The newly created project entry |
 
 **Errors:** `ALREADY_EXISTS` if the name is already in the registry;
@@ -100,19 +99,19 @@ Add a project to the daemon's in-memory registry and persist the change to
 saving fails.
 
 **CLI:** `foundry registry add ...` routes through this RPC by default and
-therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
-and mutate the registry file directly. Without `--offline`, an unreachable
-daemon returns an error and leaves the client-side registry file unchanged. The
-online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
-`INTERNAL` with a stable `failed to persist registry state` message and leaves
-both the daemon's in-memory registry and its on-disk registry bytes unchanged.
+therefore requires a reachable daemon. Pass `--offline` to bypass the daemon and
+mutate the registry file directly. Without `--offline`, an unreachable daemon
+returns an error and leaves the client-side registry file unchanged. The online
+path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns `INTERNAL`
+with a stable `failed to persist registry state` message and leaves both the
+daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `RegistryList(RegistryListRequest) → RegistryListResponse`
 
 List the daemon-owned registry inventory from the in-memory state held by
-`foundryd`. The online CLI path renders this response directly and does not
-read `FOUNDRY_REGISTRY_PATH`.
+`foundryd`. The online CLI path renders this response directly and does not read
+`FOUNDRY_REGISTRY_PATH`.
 
 **Request:**
 
@@ -120,8 +119,8 @@ This message has no fields.
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type             | Description                                                 |
+| ---------- | ---------------- | ----------------------------------------------------------- |
 | `projects` | repeated Project | Every project currently loaded in the daemon-owned registry |
 
 Each `Project` carries the full registry data required by online clients:
@@ -136,8 +135,8 @@ therefore requires a reachable daemon. Pass `--offline` to read the registry
 file directly. Without `--offline`, an unreachable daemon returns an error and
 leaves the client-side registry file unchanged. The online path renders the RPC
 response directly and does not create `FOUNDRY_REGISTRY_PATH`; if that path is
-absent, the online path leaves it absent. `foundry registry init` is not part
-of this RPC surface and remains an offline-only recovery command.
+absent, the online path leaves it absent. `foundry registry init` is not part of
+this RPC surface and remains an offline-only recovery command.
 
 ### `RegistryShow(RegistryShowRequest) → RegistryShowResponse`
 
@@ -146,14 +145,14 @@ is exact and does not perform prefix or substring lookup.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field  | Type   | Description                    |
+| ------ | ------ | ------------------------------ |
 | `name` | string | Exact project name to retrieve |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field     | Type    | Description                                              |
+| --------- | ------- | -------------------------------------------------------- |
 | `project` | Project | The full daemon-owned project record for that exact name |
 
 **Errors:** `NOT_FOUND` if no exact-name project exists.
@@ -171,94 +170,94 @@ Remove a project from the registry by name.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field  | Type   | Description            |
+| ------ | ------ | ---------------------- |
 | `name` | string | Project name to remove |
 
-**Errors:** `NOT_FOUND` if no project with that name exists; `INTERNAL` with
-the stable message `failed to persist registry state` when saving fails.
+**Errors:** `NOT_FOUND` if no project with that name exists; `INTERNAL` with the
+stable message `failed to persist registry state` when saving fails.
 
-**CLI:** `foundry registry remove <name>` routes through this RPC by default
-and therefore requires a reachable daemon. Pass `--offline` to bypass the
-daemon and mutate the registry file directly. Without `--offline`, an
-unreachable daemon returns an error and leaves the client-side registry file
-unchanged. The online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
-`INTERNAL` with a stable `failed to persist registry state` message and leaves
-both the daemon's in-memory registry and its on-disk registry bytes unchanged.
+**CLI:** `foundry registry remove <name>` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to bypass the daemon and
+mutate the registry file directly. Without `--offline`, an unreachable daemon
+returns an error and leaves the client-side registry file unchanged. The online
+path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns `INTERNAL`
+with a stable `failed to persist registry state` message and leaves both the
+daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `RegistryEdit(RegistryEditRequest) → RegistryEditResponse`
 
 Apply partial edits to an existing project. Only fields that are non-empty /
-non-zero are applied. Use `clear_*` booleans to explicitly clear optional
-fields (e.g. `clear_skip = true` to un-skip a project).
+non-zero are applied. Use `clear_*` booleans to explicitly clear optional fields
+(e.g. `clear_skip = true` to un-skip a project).
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Project to edit (required) |
-| `path` | string | New path (empty → no change) |
-| `stack` | string | New stack (empty → no change) |
-| `agent` | string | New agent (empty → no change) |
-| `repo` | string | New repo slug (empty → no change) |
-| `branch` | string | New branch (empty → no change) |
-| `skip` | string | New skip reason; non-empty sets it; empty → no change unless `clear_skip` |
-| `clear_skip` | bool | Remove the skip flag |
-| `iterate` | bool | Set iterate to true (use `clear_iterate` to set false) |
-| `clear_iterate` | bool | Set iterate to false |
-| `maintain` | bool | Set maintain to true |
-| `clear_maintain` | bool | Set maintain to false |
-| `push` | bool | Set push to true |
-| `clear_push` | bool | Set push to false |
-| `audit` | bool | Set audit to true |
-| `clear_audit` | bool | Set audit to false |
-| `release` | bool | Set release to true |
-| `clear_release` | bool | Set release to false |
-| `install_command` | string | Set a shell-command install |
-| `install_brew` | string | Set a Homebrew formula install |
-| `clear_install` | bool | Remove the install config |
-| `notes` | string | Set notes (empty string + `clear_notes = false` → no change) |
-| `clear_notes` | bool | Remove notes |
-| `timeout_secs` | uint64 | Set timeout (0 → no change unless `clear_timeout`) |
-| `clear_timeout` | bool | Revert timeout to the daemon default |
+| Field             | Type   | Description                                                               |
+| ----------------- | ------ | ------------------------------------------------------------------------- |
+| `name`            | string | Project to edit (required)                                                |
+| `path`            | string | New path (empty → no change)                                              |
+| `stack`           | string | New stack (empty → no change)                                             |
+| `agent`           | string | New agent (empty → no change)                                             |
+| `repo`            | string | New repo slug (empty → no change)                                         |
+| `branch`          | string | New branch (empty → no change)                                            |
+| `skip`            | string | New skip reason; non-empty sets it; empty → no change unless `clear_skip` |
+| `clear_skip`      | bool   | Remove the skip flag                                                      |
+| `iterate`         | bool   | Set iterate to true (use `clear_iterate` to set false)                    |
+| `clear_iterate`   | bool   | Set iterate to false                                                      |
+| `maintain`        | bool   | Set maintain to true                                                      |
+| `clear_maintain`  | bool   | Set maintain to false                                                     |
+| `push`            | bool   | Set push to true                                                          |
+| `clear_push`      | bool   | Set push to false                                                         |
+| `audit`           | bool   | Set audit to true                                                         |
+| `clear_audit`     | bool   | Set audit to false                                                        |
+| `release`         | bool   | Set release to true                                                       |
+| `clear_release`   | bool   | Set release to false                                                      |
+| `install_command` | string | Set a shell-command install                                               |
+| `install_brew`    | string | Set a Homebrew formula install                                            |
+| `clear_install`   | bool   | Remove the install config                                                 |
+| `notes`           | string | Set notes (empty string + `clear_notes = false` → no change)              |
+| `clear_notes`     | bool   | Remove notes                                                              |
+| `timeout_secs`    | uint64 | Set timeout (0 → no change unless `clear_timeout`)                        |
+| `clear_timeout`   | bool   | Revert timeout to the daemon default                                      |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field     | Type    | Description               |
+| --------- | ------- | ------------------------- |
 | `project` | Project | The updated project entry |
 
 **Errors:** `NOT_FOUND`; `INVALID_ARGUMENT` for conflicting install fields or
-unknown stack; `INTERNAL` with the stable message `failed to persist registry
-state` when saving fails.
+unknown stack; `INTERNAL` with the stable message
+`failed to persist registry state` when saving fails.
 
 **CLI:** `foundry registry edit <name> ...` routes through this RPC by default
-and therefore requires a reachable daemon. Pass `--offline` to bypass the
-daemon and mutate the registry file directly. Without `--offline`, an
-unreachable daemon returns an error and leaves the client-side registry file
-unchanged. The online path mutates daemon-owned state only and does not create
-`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns
-`INTERNAL` with a stable `failed to persist registry state` message and leaves
-both the daemon's in-memory registry and its on-disk registry bytes unchanged.
+and therefore requires a reachable daemon. Pass `--offline` to bypass the daemon
+and mutate the registry file directly. Without `--offline`, an unreachable
+daemon returns an error and leaves the client-side registry file unchanged. The
+online path mutates daemon-owned state only and does not create
+`FOUNDRY_REGISTRY_PATH`. If daemon persistence fails, the RPC returns `INTERNAL`
+with a stable `failed to persist registry state` message and leaves both the
+daemon's in-memory registry and its on-disk registry bytes unchanged.
 
 ### `AddCampaign(AddCampaignRequest) → AddCampaignResponse`
 
 Add one campaign definition to the daemon-owned campaign store. The daemon
 parses the JSON definition, validates the referenced project and context paths
-against daemon-owned registry state, acquires the exclusive campaign-store
-lock, and persists the new definition atomically.
+against daemon-owned registry state, acquires the exclusive campaign-store lock,
+and persists the new definition atomically.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field             | Type   | Description                                                                 |
+| ----------------- | ------ | --------------------------------------------------------------------------- |
 | `definition_json` | string | Full campaign definition JSON exactly as accepted by `foundry campaign add` |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                                |
+| ---------- | -------------- | ------------------------------------------ |
 | `campaign` | CampaignDetail | Full durable definition that was persisted |
 
 **Errors:** `INVALID_ARGUMENT` when the JSON is invalid or the definition is
@@ -274,32 +273,31 @@ intentionally need direct-file recovery while the daemon is stopped.
 
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 
-List the durable campaign inventory from the daemon's configured campaign
-store. This is a read-only query: it loads the store at request time, returns
-records in deterministic campaign-name order, and exposes summary/status fields
-only.
+List the durable campaign inventory from the daemon's configured campaign store.
+This is a read-only query: it loads the store at request time, returns records
+in deterministic campaign-name order, and exposes summary/status fields only.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field     | Type   | Description                                                            |
+| --------- | ------ | ---------------------------------------------------------------------- |
 | `project` | string | Optional exact project-name filter; empty string returns all campaigns |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field       | Type              | Description                                       |
+| ----------- | ----------------- | ------------------------------------------------- |
 | `campaigns` | repeated Campaign | Durable inventory records sorted by campaign name |
 
 **Errors:** `FAILED_PRECONDITION` when the campaign store is malformed;
-`INTERNAL` when the campaign store is unreadable. Missing or empty stores
-return an empty list.
+`INTERNAL` when the campaign store is unreadable. Missing or empty stores return
+an empty list.
 
 ### `PauseCampaign(PauseCampaignRequest) → PauseCampaignResponse`
 
-Pause a campaign. The operation is idempotent on the `status` field — pausing
-an already-paused campaign is not an error. The daemon holds an exclusive lock
-on the campaign store for the duration of the write, so a concurrent advance
+Pause a campaign. The operation is idempotent on the `status` field — pausing an
+already-paused campaign is not an error. The daemon holds an exclusive lock on
+the campaign store for the duration of the write, so a concurrent advance
 formation cannot interleave with a pause.
 
 Any `pending_run_result` that was recorded before the pause is explicitly
@@ -308,20 +306,20 @@ available for the next manual advance after a subsequent resume.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field  | Type   | Description                  |
+| ------ | ------ | ---------------------------- |
 | `name` | string | Exact campaign name to pause |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                                                          |
+| ---------- | -------------- | -------------------------------------------------------------------- |
 | `campaign` | CampaignDetail | Full campaign detail reflecting the state after the pause is applied |
 
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
-`FAILED_PRECONDITION` when the campaign store is malformed;
-`INTERNAL` when the campaign store is unreadable or when persistence fails.
-On save failure, the daemon leaves the persisted campaign store unchanged.
+`FAILED_PRECONDITION` when the campaign store is malformed; `INTERNAL` when the
+campaign store is unreadable or when persistence fails. On save failure, the
+daemon leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign pause <name>` routes through this RPC when the daemon
 is reachable. Pass `--offline` to bypass the daemon and mutate the store file
@@ -351,31 +349,31 @@ silently reactivates an exhausted campaign.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Exact campaign name to resume |
+| Field        | Type   | Description                                                                 |
+| ------------ | ------ | --------------------------------------------------------------------------- |
+| `name`       | string | Exact campaign name to resume                                               |
 | `add_cycles` | uint64 | Additional cycles to add to `max_cycles` before resuming (0 = no extension) |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                                                           |
+| ---------- | -------------- | --------------------------------------------------------------------- |
 | `campaign` | CampaignDetail | Full campaign detail reflecting the state after the resume is applied |
 
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
 `FAILED_PRECONDITION` when the campaign is not `paused` or `escalated`, lacks
 `authorized_by`, the budget is exhausted and `add_cycles == 0`, `add_cycles`
-would overflow `max_cycles`, or the campaign store is malformed; `INTERNAL`
-when the campaign store is unreadable or persistence fails. On save failure,
-the daemon leaves the persisted campaign store unchanged.
+would overflow `max_cycles`, or the campaign store is malformed; `INTERNAL` when
+the campaign store is unreadable or persistence fails. On save failure, the
+daemon leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign resume <name>` routes through this RPC when the
 daemon is reachable. Pass `--offline` to bypass the daemon and mutate the store
 file directly (useful when `foundryd` is not running). Without `--offline`, an
 unreachable daemon is an error and the client-side campaigns path is left
 untouched. The rendered output is built from the
-`ResumeCampaignResponse.campaign` detail — the CLI never re-reads the store
-file on the online path.
+`ResumeCampaignResponse.campaign` detail — the CLI never re-reads the store file
+on the online path.
 
 ### `DecideCampaign(DecideCampaignRequest) → DecideCampaignResponse`
 
@@ -390,15 +388,15 @@ stored `pending_run_result` are preserved.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Exact campaign name to update |
+| Field      | Type   | Description                             |
+| ---------- | ------ | --------------------------------------- |
+| `name`     | string | Exact campaign name to update           |
 | `decision` | string | Non-empty owner decision text to record |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                                                             |
+| ---------- | -------------- | ----------------------------------------------------------------------- |
 | `campaign` | CampaignDetail | Full campaign detail reflecting the state after the decision is applied |
 
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
@@ -409,10 +407,10 @@ campaign store is unreadable or persistence fails. On save failure, the daemon
 leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
-this RPC by default and therefore requires a reachable daemon. Pass
-`--offline` to bypass the daemon and mutate the store file directly. Without
-`--offline`, an unreachable daemon returns an error and leaves the client-side
-campaigns path unchanged.
+this RPC by default and therefore requires a reachable daemon. Pass `--offline`
+to bypass the daemon and mutate the store file directly. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side campaigns path
+unchanged.
 
 ### `CompleteCampaign(CompleteCampaignRequest) → CompleteCampaignResponse`
 
@@ -425,15 +423,15 @@ completed campaign is idempotent.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Exact campaign name to complete |
+| Field    | Type   | Description                                          |
+| -------- | ------ | ---------------------------------------------------- |
+| `name`   | string | Exact campaign name to complete                      |
 | `reason` | string | Evidence-backed owner reason for external completion |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                                                           |
+| ---------- | -------------- | --------------------------------------------------------------------- |
 | `campaign` | CampaignDetail | Full campaign detail reflecting the state after completion is applied |
 
 **Errors:** `INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown
@@ -456,16 +454,16 @@ releases the lock, emits `CampaignAdvanceRequested`, and returns immediately.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field  | Type   | Description                    |
+| ------ | ------ | ------------------------------ |
 | `name` | string | Exact campaign name to advance |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `campaign` | CampaignDetail | Current campaign detail at dispatch time |
-| `event_id` | string | Root event ID of the dispatched `CampaignAdvanceRequested` workflow |
+| Field      | Type           | Description                                                         |
+| ---------- | -------------- | ------------------------------------------------------------------- |
+| `campaign` | CampaignDetail | Current campaign detail at dispatch time                            |
+| `event_id` | string         | Root event ID of the dispatched `CampaignAdvanceRequested` workflow |
 
 **Errors:** `NOT_FOUND` when the name is absent; `FAILED_PRECONDITION` when the
 campaign is `paused`, `escalated`, or `completed`; `INTERNAL` when the store is
@@ -479,25 +477,25 @@ re-read `FOUNDRY_CAMPAIGNS_PATH`.
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 
 Retrieve the complete durable definition of one campaign by exact name. Unlike
-`ListCampaigns`, this RPC returns the full detail record including `intent_refs`,
-`context_paths`, `done_evidence` (with the `Gate`/`Review` type distinction
-preserved), escalation rules, and all runtime status fields.
+`ListCampaigns`, this RPC returns the full detail record including
+`intent_refs`, `context_paths`, `done_evidence` (with the `Gate`/`Review` type
+distinction preserved), escalation rules, and all runtime status fields.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field  | Type   | Description                    |
+| ------ | ------ | ------------------------------ |
 | `name` | string | Exact campaign name to look up |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type           | Description                             |
+| ---------- | -------------- | --------------------------------------- |
 | `campaign` | CampaignDetail | Full durable definition of the campaign |
 
-**Errors:** `NOT_FOUND` when no campaign with the given name exists in the
-store (even when other campaigns are present); `FAILED_PRECONDITION` when the
-campaign store is malformed; `INTERNAL` when the campaign store is unreadable.
+**Errors:** `NOT_FOUND` when no campaign with the given name exists in the store
+(even when other campaigns are present); `FAILED_PRECONDITION` when the campaign
+store is malformed; `INTERNAL` when the campaign store is unreadable.
 
 **CLI:** `foundry campaign show <name>` routes through this RPC by default and
 renders the returned `CampaignDetail` directly, without re-reading
@@ -510,55 +508,55 @@ during processing and a record of each block execution.
 
 **Request:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type   | Description              |
+| ---------- | ------ | ------------------------ |
 | `event_id` | string | Root event ID to look up |
 
 **Response:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `found` | bool | Whether a trace was found for the given event ID |
-| `events` | repeated TraceEvent | All events in the chain |
-| `block_executions` | repeated TraceBlockExecution | Record of each block execution |
+| Field              | Type                         | Description                                      |
+| ------------------ | ---------------------------- | ------------------------------------------------ |
+| `found`            | bool                         | Whether a trace was found for the given event ID |
+| `events`           | repeated TraceEvent          | All events in the chain                          |
+| `block_executions` | repeated TraceBlockExecution | Record of each block execution                   |
 
-Completed traces are persisted to disk under `~/.foundry/traces/YYYY-MM-DD/`
-and survive daemon restarts. The `Trace` RPC checks the in-memory store first
-(for recently completed chains) and falls back to disk for older traces.
+Completed traces are persisted to disk under `~/.foundry/traces/YYYY-MM-DD/` and
+survive daemon restarts. The `Trace` RPC checks the in-memory store first (for
+recently completed chains) and falls back to disk for older traces.
 
 ## Messages
 
 ### `WorkflowStatus`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `workflow_id` | string | Workflow identifier |
-| `workflow_type` | string | Workflow type name |
-| `project` | string | Target project |
-| `state` | string | pending, running, completed, failed |
-| `started_at` | string | ISO 8601 timestamp |
-| `completed_at` | string | ISO 8601 timestamp (empty if running) |
-| `task_blocks` | repeated TaskBlockStatus | Per-block status |
+| Field           | Type                     | Description                           |
+| --------------- | ------------------------ | ------------------------------------- |
+| `workflow_id`   | string                   | Workflow identifier                   |
+| `workflow_type` | string                   | Workflow type name                    |
+| `project`       | string                   | Target project                        |
+| `state`         | string                   | pending, running, completed, failed   |
+| `started_at`    | string                   | ISO 8601 timestamp                    |
+| `completed_at`  | string                   | ISO 8601 timestamp (empty if running) |
+| `task_blocks`   | repeated TaskBlockStatus | Per-block status                      |
 
 ### `TaskBlockStatus`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Block name |
-| `state` | string | pending, running, completed, skipped, failed |
-| `started_at` | string | ISO 8601 timestamp |
-| `completed_at` | string | ISO 8601 timestamp |
-| `throttled` | bool | True if emission was suppressed by throttle |
+| Field          | Type   | Description                                  |
+| -------------- | ------ | -------------------------------------------- |
+| `name`         | string | Block name                                   |
+| `state`        | string | pending, running, completed, skipped, failed |
+| `started_at`   | string | ISO 8601 timestamp                           |
+| `completed_at` | string | ISO 8601 timestamp                           |
+| `throttled`    | bool   | True if emission was suppressed by throttle  |
 
 ### `TraceEvent`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event_id` | string | Deterministic event identifier |
-| `event_type` | string | Event type name |
-| `project` | string | Target project |
-| `occurred_at` | string | ISO 8601 timestamp |
-| `throttle` | Throttle enum | Throttle level for this event |
+| Field         | Type          | Description                    |
+| ------------- | ------------- | ------------------------------ |
+| `event_id`    | string        | Deterministic event identifier |
+| `event_type`  | string        | Event type name                |
+| `project`     | string        | Target project                 |
+| `occurred_at` | string        | ISO 8601 timestamp             |
+| `throttle`    | Throttle enum | Throttle level for this event  |
 
 ### `Campaign`
 
@@ -566,42 +564,42 @@ Summary-only wire form returned by `ListCampaigns`. Intentionally omits
 `intent_refs`, `context_paths`, `done_evidence`, and `escalation` — use
 `GetCampaign` to retrieve those fields.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Campaign name |
-| `project` | string | Registered project name |
-| `mission` | string | Campaign mission statement |
-| `status` | string | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
-| `cycles_completed` | uint64 | Number of dispatched task cycles |
-| `cycles_landed` | uint64 | Number of complete task results that landed |
-| `max_cycles` | uint64 | Configured campaign cycle budget |
-| `authorized_by` | string | Owner authorization identity, or empty when absent |
-| `agent_provider` | string | Preferred agent provider, or empty when absent |
-| `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent |
+| Field               | Type   | Description                                                               |
+| ------------------- | ------ | ------------------------------------------------------------------------- |
+| `name`              | string | Campaign name                                                             |
+| `project`           | string | Registered project name                                                   |
+| `mission`           | string | Campaign mission statement                                                |
+| `status`            | string | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
+| `cycles_completed`  | uint64 | Number of dispatched task cycles                                          |
+| `cycles_landed`     | uint64 | Number of task results whose work reached trunk                           |
+| `max_cycles`        | uint64 | Configured campaign cycle budget                                          |
+| `authorized_by`     | string | Owner authorization identity, or empty when absent                        |
+| `agent_provider`    | string | Preferred agent provider, or empty when absent                            |
+| `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent                   |
 
 ### `CampaignDetail`
 
-Full durable definition of a campaign, as returned by `GetCampaign`. Carries
-all fields in `Campaign` plus the definition-time fields that the summary form
+Full durable definition of a campaign, as returned by `GetCampaign`. Carries all
+fields in `Campaign` plus the definition-time fields that the summary form
 omits.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Campaign name |
-| `project` | string | Registered project name |
-| `mission` | string | Campaign mission statement |
-| `status` | string | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
-| `cycles_completed` | uint64 | Number of dispatched task cycles |
-| `cycles_landed` | uint64 | Number of complete task results that landed |
-| `max_cycles` | uint64 | Configured campaign cycle budget |
-| `authorized_by` | string | Owner authorization identity, or empty when absent |
-| `agent_provider` | string | Preferred agent provider, or empty when absent |
-| `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent |
-| `intent_refs` | repeated string | Intent reference labels that anchor the mission |
-| `context_paths` | repeated string | Paths to context documents for the campaign |
-| `done_evidence` | repeated DoneEvidence | Completion criteria with `Gate`/`Review` type distinction |
-| `escalation` | repeated string | Human-readable escalation instructions |
-| `owner_decisions` | repeated OwnerDecision | Append-only owner policy decisions recorded after escalations |
+| Field               | Type                   | Description                                                               |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------- |
+| `name`              | string                 | Campaign name                                                             |
+| `project`           | string                 | Registered project name                                                   |
+| `mission`           | string                 | Campaign mission statement                                                |
+| `status`            | string                 | Durable status: `staged`, `active`, `paused`, `escalated`, or `completed` |
+| `cycles_completed`  | uint64                 | Number of dispatched task cycles                                          |
+| `cycles_landed`     | uint64                 | Number of task results whose work reached trunk                           |
+| `max_cycles`        | uint64                 | Configured campaign cycle budget                                          |
+| `authorized_by`     | string                 | Owner authorization identity, or empty when absent                        |
+| `agent_provider`    | string                 | Preferred agent provider, or empty when absent                            |
+| `last_run_event_id` | string                 | Most recent campaign-run event ID, or empty when absent                   |
+| `intent_refs`       | repeated string        | Intent reference labels that anchor the mission                           |
+| `context_paths`     | repeated string        | Paths to context documents for the campaign                               |
+| `done_evidence`     | repeated DoneEvidence  | Completion criteria with `Gate`/`Review` type distinction                 |
+| `escalation`        | repeated string        | Human-readable escalation instructions                                    |
+| `owner_decisions`   | repeated OwnerDecision | Append-only owner policy decisions recorded after escalations             |
 
 ### `OwnerDecision`
 
@@ -609,11 +607,11 @@ One recorded owner decision attached to a campaign after an escalation. These
 records are append-only and are threaded back into future campaign formation
 prompts as binding context.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `decision` | string | Owner-authored decision text |
+| Field           | Type   | Description                                            |
+| --------------- | ------ | ------------------------------------------------------ |
+| `decision`      | string | Owner-authored decision text                           |
 | `authorized_by` | string | Owner identity copied from the campaign at record time |
-| `decided_at` | string | RFC 3339 timestamp recorded by the daemon |
+| `decided_at`    | string | RFC 3339 timestamp recorded by the daemon              |
 
 ### `DoneEvidence`
 
@@ -621,42 +619,44 @@ One completion-evidence item. The `kind` field distinguishes the two variants.
 
 **Gate variant** (`kind = "gate"`):
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `kind` | string | `"gate"` |
-| `command` | string | Shell command to evaluate |
-| `required` | bool | Whether this gate is required for completion |
-| `statement` | string | Empty for Gate items |
+| Field       | Type            | Description                                                        |
+| ----------- | --------------- | ------------------------------------------------------------------ |
+| `kind`      | string          | `"gate"`                                                           |
+| `command`   | string          | Shell command to evaluate                                          |
+| `required`  | bool            | Whether this gate is required for completion                       |
+| `statement` | string          | Empty for Gate items                                               |
+| `artifacts` | repeated string | Repository-relative paths that must exist before the gate can pass |
 
 **Review variant** (`kind = "review"`):
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `kind` | string | `"review"` |
-| `command` | string | Empty for Review items |
-| `required` | bool | `false` for Review items |
-| `statement` | string | Human-readable completion statement |
+| Field       | Type            | Description                         |
+| ----------- | --------------- | ----------------------------------- |
+| `kind`      | string          | `"review"`                          |
+| `command`   | string          | Empty for Review items              |
+| `required`  | bool            | `false` for Review items            |
+| `statement` | string          | Human-readable completion statement |
+| `artifacts` | repeated string | Empty for Review items              |
 
 ### `TraceBlockExecution`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `block_name` | string | Name of the block that executed |
-| `trigger_event_id` | string | Event ID that triggered this block |
-| `success` | bool | Whether the block succeeded |
-| `summary` | string | Human-readable summary of the result |
-| `emitted_event_ids` | repeated string | IDs of events emitted by this block |
-| `duration_ms` | uint64 | Wall-clock milliseconds for this block execution (including retries) |
-| `raw_output` | string | Combined stdout+stderr from any shell command run by this block |
-| `exit_code` | int32 | Exit code from any shell command run by this block |
-| `trigger_payload_json` | string | JSON payload of the event that triggered this block |
-| `emitted_payload_jsons` | repeated string | JSON payloads of events emitted by this block |
-| `audit_artifacts` | repeated string | Paths to audit artefact files produced by this block |
+| Field                   | Type            | Description                                                          |
+| ----------------------- | --------------- | -------------------------------------------------------------------- |
+| `block_name`            | string          | Name of the block that executed                                      |
+| `trigger_event_id`      | string          | Event ID that triggered this block                                   |
+| `success`               | bool            | Whether the block succeeded                                          |
+| `summary`               | string          | Human-readable summary of the result                                 |
+| `emitted_event_ids`     | repeated string | IDs of events emitted by this block                                  |
+| `duration_ms`           | uint64          | Wall-clock milliseconds for this block execution (including retries) |
+| `raw_output`            | string          | Combined stdout+stderr from any shell command run by this block      |
+| `exit_code`             | int32           | Exit code from any shell command run by this block                   |
+| `trigger_payload_json`  | string          | JSON payload of the event that triggered this block                  |
+| `emitted_payload_jsons` | repeated string | JSON payloads of events emitted by this block                        |
+| `audit_artifacts`       | repeated string | Paths to audit artefact files produced by this block                 |
 
 ### `Throttle` (enum)
 
-| Value | Number | Description |
-|-------|--------|-------------|
-| `THROTTLE_FULL` | 0 | All blocks emit |
-| `THROTTLE_AUDIT_ONLY` | 1 | Observers emit, mutators suppress |
-| `THROTTLE_DRY_RUN` | 2 | Read-only, no side effects |
+| Value                 | Number | Description                       |
+| --------------------- | ------ | --------------------------------- |
+| `THROTTLE_FULL`       | 0      | All blocks emit                   |
+| `THROTTLE_AUDIT_ONLY` | 1      | Observers emit, mutators suppress |
+| `THROTTLE_DRY_RUN`    | 2      | Read-only, no side effects        |
