@@ -154,10 +154,16 @@ When the provider itself is unusable — an exhausted account, revoked
 authentication, or an open circuit breaker — the campaign moves to `paused`
 rather than `escalated`, whether that surfaces during formation or as the
 executor's `runner_error` verdict. Nothing about the campaign's own work is
-wrong, so no cycle is consumed, no terminal event is emitted, and the pending
-run result is preserved. Once the provider is usable again, `foundry campaign
-resume` continues from exactly where it stopped. The reason appears in the
-advance block's summary in the run trace.
+wrong, so no cycle is consumed and the pending run result is preserved. Once the
+provider is usable again, `foundry campaign resume` continues from exactly where
+it stopped.
+
+The stop emits a `campaign_paused` event carrying the reason. It is deliberately
+not a terminal event — it neither ends the campaign nor requires resurrection —
+but it is emitted because an automatic pause is the one kind nobody is watching:
+an operator who runs `foundry campaign pause` already knows, whereas a campaign
+that quietly stops itself is otherwise indistinguishable from one still working.
+The reason also appears in the advance block's summary in the run trace.
 
 Formation reasons about two trees, because they can differ. The live repository
 snapshot is the delivered trunk state and is what a `done` decision is judged

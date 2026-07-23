@@ -687,10 +687,13 @@ fn apply_advance_outcome(
 ) -> Vec<Event> {
     let decision = match outcome {
         AdvanceOutcome::Decided(decision) => decision,
-        // No event: pausing is not a campaign outcome, and a terminal event
-        // here is exactly what forced human resurrection before. The pending
-        // run result is left intact so the advance after `campaign resume`
-        // forms from it and the executor continues from preserved work.
+        // `CampaignPaused` is deliberately not a terminal event — it does not
+        // end the campaign, and the pending run result is left intact so the
+        // advance after `campaign resume` forms from it and the executor
+        // continues from preserved work. It is emitted purely so the stop is
+        // observable: an operator-issued pause needs no event because the
+        // operator already knows, but this one stops the campaign with nobody
+        // watching, and silence here is indistinguishable from progress.
         AdvanceOutcome::Pause { reason } => {
             campaign.status = CampaignStatus::Paused;
             tracing::warn!(
@@ -699,7 +702,12 @@ fn apply_advance_outcome(
                 %reason,
                 "campaign paused instead of escalated: provider unusable"
             );
-            return vec![];
+            return vec![terminal_event(
+                EventType::CampaignPaused,
+                campaign,
+                throttle,
+                reason,
+            )];
         }
     };
     match decision {
@@ -1840,10 +1848,21 @@ mod tests {
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
         assert_eq!(agent.invocations().len(), 1, "an open breaker returns the same refusal");
-        assert!(
-            result.events.is_empty(),
-            "a pause must leave no terminal event to resurrect from: {:?}",
+        // Observable, but not terminal: an automatic pause has no operator
+        // watching it, so it must reach the event stream — while leaving no
+        // escalation or completion to resurrect from.
+        assert_eq!(
+            result.events.iter().map(|event| &event.event_type).collect::<Vec<_>>(),
+            vec![&EventType::CampaignPaused],
+            "an automatic pause must be visible in the stream and nothing more: {:?}",
             result.events
+        );
+        assert!(
+            result.events[0].payload["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("monthly spend limit")),
+            "pause event must explain itself: {:?}",
+            result.events[0].payload
         );
         assert!(result.summary.contains("paused"), "pause reason lost: {}", result.summary);
         assert!(result.summary.contains("monthly spend limit"));
@@ -1884,7 +1903,12 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(agent.invocations().is_empty());
-        assert!(result.events.is_empty(), "expected no terminal event: {:?}", result.events);
+        assert_eq!(
+            result.events.iter().map(|event| &event.event_type).collect::<Vec<_>>(),
+            vec![&EventType::CampaignPaused],
+            "the verdict path must be as observable as the decision path: {:?}",
+            result.events
+        );
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Paused);

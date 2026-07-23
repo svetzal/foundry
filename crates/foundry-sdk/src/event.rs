@@ -348,6 +348,12 @@ pub enum EventType {
     CampaignAdvanceRequested,
     CampaignAdvanceCompleted,
     CampaignEscalated,
+    /// A campaign stopped itself without human involvement — currently only an
+    /// open provider circuit breaker. An operator-issued pause needs no event
+    /// because the operator already knows; an automatic one has no observer, so
+    /// without this the campaign would go quiet with nothing in the stream to
+    /// explain why.
+    CampaignPaused,
     CampaignCompleted,
 
     // Validation workflow
@@ -553,6 +559,7 @@ impl EventType {
             | EventType::TaskRunCompleted
             | EventType::CampaignAdvanceCompleted
             | EventType::CampaignEscalated
+            | EventType::CampaignPaused
             | EventType::CampaignCompleted
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
@@ -676,6 +683,7 @@ mod tests {
             (EventType::CampaignAdvanceRequested, "campaign_advance_requested"),
             (EventType::CampaignAdvanceCompleted, "campaign_advance_completed"),
             (EventType::CampaignEscalated, "campaign_escalated"),
+            (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
@@ -760,6 +768,7 @@ mod tests {
             (EventType::CampaignAdvanceRequested, "campaign_advance_requested"),
             (EventType::CampaignAdvanceCompleted, "campaign_advance_completed"),
             (EventType::CampaignEscalated, "campaign_escalated"),
+            (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
