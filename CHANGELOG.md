@@ -7,6 +7,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-07-23
+
+### Fixed
+
+- Campaign context no longer inlines source files, which could make a campaign
+  impossible to form at all. `read_context_files` inlined every declared path
+  whole; one campaign declared 21 paths totalling 1,039,114 bytes — 17 of them
+  source — which pushed the formation command line past `ARG_MAX` (1,048,576 on
+  macOS). Every provider passes the prompt as a command-line argument, so
+  `execve` failed before the agent started and the only symptom was an opaque
+  "unavailable" that the retry logic then burned three attempts on. Two further
+  campaigns had completed while sitting within 44 KB of the same cliff.
+
+  `context_paths` was conflating two jobs. A charter or intent projection is
+  **binding**: its wording must reach the acceptance criteria verbatim. A source
+  file is **orienting**: it says where to look, and the formation agent already
+  holds `Read`, `Glob`, and `Grep` over the same checkout, so inlining one pays
+  whole-file token cost for the few functions it needs. Formation now inlines
+  binding artifacts and lists orienting ones as a manifest it is told to open
+  itself. Measured against the live store with no definition edited, the three
+  largest campaigns drop from ~1 MB to 85,163 bytes inlined — a 92% reduction —
+  while every declared file stays reachable.
+
+### Added
+
+- `foundry campaign add` enforces a 262,144-byte budget on the *inlined* portion
+  of campaign context, naming the largest offenders and what to do instead.
+  Source paths cost nothing in the prompt and do not count against it. Oversized
+  context does not degrade gracefully — it fails the spawn outright — so this is
+  caught at definition time rather than mid-campaign.
+
 ### Documentation
 
 - Added a repository README with installation, project setup, workflow
