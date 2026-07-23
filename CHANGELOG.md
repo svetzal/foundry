@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-22
+
 ### Changed
 
 - Converging work now integrates instead of accumulating a divergent branch. A
