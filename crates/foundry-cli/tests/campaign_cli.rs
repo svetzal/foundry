@@ -41,6 +41,8 @@ const DAEMON_LIST_AGENT: &str = "daemon-list-agent";
 const CLIENT_LIST_AGENT: &str = "client-list-agent";
 const DAEMON_ADVANCE_REASON: &str = "campaign_advance_completed";
 const CLIENT_ADVANCE_MARKER: &str = "client advance stale marker";
+const OFFLINE_DECISION: &str = "Use the direct file recovery path.";
+const OFFLINE_COMPLETION_REASON: &str = "Production evidence confirms the mission shipped.";
 
 fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
     Campaign {
@@ -284,6 +286,56 @@ fn seed_stale_client_campaigns(home: &std::path::Path) -> std::path::PathBuf {
     path
 }
 
+struct OnlineHarness {
+    _repo_root: TempDir,
+    client_home: TempDir,
+    registry_path: std::path::PathBuf,
+    daemon_campaigns: NamedTempFile,
+    addr: String,
+}
+
+impl OnlineHarness {
+    async fn new() -> Self {
+        let repo_root = tempfile::tempdir().expect("repo tempdir");
+        let client_home = tempfile::tempdir().expect("client tempdir");
+        let registry_path = seed_client_registry(client_home.path(), repo_root.path());
+        let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
+        save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
+        let (service, event_tx, _tmp_traces) =
+            make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
+        spawn_advance_terminal_bridge(event_tx);
+        let addr = start_server(service).await;
+
+        Self {
+            _repo_root: repo_root,
+            client_home,
+            registry_path,
+            daemon_campaigns,
+            addr,
+        }
+    }
+
+    fn client_home(&self) -> &std::path::Path {
+        self.client_home.path()
+    }
+
+    fn daemon_campaigns_path(&self) -> &std::path::Path {
+        self.daemon_campaigns.path()
+    }
+
+    fn definition(&self) -> std::path::PathBuf {
+        write_definition(&self.client_home, "online-added", DAEMON_ADD_MISSION)
+    }
+
+    fn run(&self, campaigns_path: &std::path::Path, args: &[String]) -> std::process::Output {
+        run_foundry(self.client_home(), campaigns_path, &self.registry_path, &self.addr, args)
+    }
+
+    fn online_commands(&self) -> Vec<(String, Vec<String>)> {
+        online_command_vectors(&self.definition())
+    }
+}
+
 fn spawn_advance_terminal_bridge(event_tx: broadcast::Sender<Event>) {
     let mut rx = event_tx.subscribe();
     tokio::spawn(async move {
@@ -409,6 +461,79 @@ fn assert_daemon_mutations(campaigns_path: &std::path::Path) {
     assert_eq!(completable.status, CampaignStatus::Completed);
 }
 
+fn assert_unreachable_online_failure(output: &std::process::Output, label: &str) {
+    assert!(!output.status.success(), "unreachable online {label}: command should fail");
+    let stderr = stderr_string(output);
+    assert!(
+        stderr.contains("foundryd is not reachable at http://127.0.0.1:0"),
+        "unreachable online {label}: {stderr}"
+    );
+}
+
+fn offline_command(
+    home: &std::path::Path,
+    campaigns_path: &std::path::Path,
+    registry_path: &std::path::Path,
+    args: &[&str],
+) -> std::process::Output {
+    let owned_args = std::iter::once("--offline".to_string())
+        .chain(args.iter().map(|arg| (*arg).to_string()))
+        .collect::<Vec<_>>();
+    run_foundry(home, campaigns_path, registry_path, DUMMY_ADDR, &owned_args)
+}
+
+fn assert_offline_campaign_status(
+    campaigns_path: &std::path::Path,
+    campaign: &str,
+    status: CampaignStatus,
+) {
+    assert_eq!(
+        CampaignStore::load(campaigns_path)
+            .expect("load offline campaigns")
+            .find(campaign)
+            .expect("campaign must exist")
+            .status,
+        status
+    );
+}
+
+fn augment_offline_recovery_campaigns(campaigns_path: &std::path::Path) {
+    let mut store = CampaignStore::load(campaigns_path).expect("load campaigns");
+    store.campaigns.push(make_campaign("resume-offline", CampaignStatus::Paused));
+    let mut decide = make_campaign("decide-offline", CampaignStatus::Escalated);
+    decide.escalation.push("owner choice".to_string());
+    store.campaigns.push(decide);
+    let mut complete = make_campaign("complete-offline", CampaignStatus::Paused);
+    complete.pending_run_result = Some(foundry_sdk::payload::TaskRunCompletedPayload {
+        project: "daemon-project".to_string(),
+        success: true,
+        landed: true,
+        summary: "done".to_string(),
+        preservation_ref: None,
+        verdict: foundry_sdk::payload::TaskVerdict::Complete,
+        context: foundry_sdk::payload::LoopContext {
+            campaign: Some("complete-offline".to_string()),
+            ..foundry_sdk::payload::LoopContext::default()
+        },
+    });
+    store.campaigns.push(complete);
+    store.save(campaigns_path).expect("save augmented campaigns");
+}
+
+fn assert_offline_recovery_results(campaigns_path: &std::path::Path) {
+    let saved = CampaignStore::load(campaigns_path).expect("load final campaigns");
+    assert_eq!(
+        saved.find("resume-offline").expect("resume-offline").status,
+        CampaignStatus::Active
+    );
+    let decided = saved.find("decide-offline").expect("decide-offline");
+    assert_eq!(decided.status, CampaignStatus::Active);
+    assert_eq!(decided.owner_decisions.len(), 1);
+    let completed = saved.find("complete-offline").expect("complete-offline");
+    assert_eq!(completed.status, CampaignStatus::Completed);
+    assert!(completed.pending_run_result.is_none());
+}
+
 fn daemon_campaigns_fixture() -> Vec<Campaign> {
     vec![
         make_campaign_with_mission(
@@ -452,21 +577,11 @@ fn daemon_campaigns_fixture() -> Vec<Campaign> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn online_campaign_commands_ignore_absent_client_campaign_path() {
-    let repo_root = tempfile::tempdir().expect("repo tempdir");
-    let client_home = tempfile::tempdir().expect("client tempdir");
-    let registry_path = seed_client_registry(client_home.path(), repo_root.path());
-    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
-    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
-    let (service, event_tx, _tmp_traces) =
-        make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
-    spawn_advance_terminal_bridge(event_tx);
-    let addr = start_server(service).await;
+    let harness = OnlineHarness::new().await;
+    let client_campaigns = missing_client_campaigns_path(harness.client_home());
 
-    let client_campaigns = missing_client_campaigns_path(client_home.path());
-    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
-    for (label, args) in online_command_vectors(&definition) {
-        let output =
-            run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
+    for (label, args) in harness.online_commands() {
+        let output = harness.run(&client_campaigns, &args);
         assert_success(&output, &format!("online {label}"));
         assert!(
             !client_campaigns.exists(),
@@ -474,26 +589,16 @@ async fn online_campaign_commands_ignore_absent_client_campaign_path() {
         );
     }
 
-    assert_daemon_mutations(daemon_campaigns.path());
+    assert_daemon_mutations(harness.daemon_campaigns_path());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn online_campaign_commands_ignore_trap_client_campaign_path() {
-    let repo_root = tempfile::tempdir().expect("repo tempdir");
-    let client_home = tempfile::tempdir().expect("client tempdir");
-    let registry_path = seed_client_registry(client_home.path(), repo_root.path());
-    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
-    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
-    let (service, event_tx, _tmp_traces) =
-        make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
-    spawn_advance_terminal_bridge(event_tx);
-    let addr = start_server(service).await;
+    let harness = OnlineHarness::new().await;
+    let (client_campaigns, before) = seed_client_campaigns_trap(harness.client_home());
 
-    let (client_campaigns, before) = seed_client_campaigns_trap(client_home.path());
-    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
-    for (label, args) in online_command_vectors(&definition) {
-        let output =
-            run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
+    for (label, args) in harness.online_commands() {
+        let output = harness.run(&client_campaigns, &args);
         assert_success(&output, &format!("online {label}"));
         assert_eq!(
             std::fs::read(&client_campaigns).expect("read trap campaigns after online command"),
@@ -502,7 +607,7 @@ async fn online_campaign_commands_ignore_trap_client_campaign_path() {
         );
     }
 
-    assert_daemon_mutations(daemon_campaigns.path());
+    assert_daemon_mutations(harness.daemon_campaigns_path());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -516,12 +621,7 @@ async fn unreachable_online_campaign_commands_leave_absent_client_path_absent() 
     for (label, args) in online_command_vectors(&definition) {
         let output =
             run_foundry(client_home.path(), &client_campaigns, &registry_path, DUMMY_ADDR, &args);
-        assert!(!output.status.success(), "unreachable online {label}: command should fail");
-        let stderr = stderr_string(&output);
-        assert!(
-            stderr.contains("foundryd is not reachable at http://127.0.0.1:0"),
-            "unreachable online {label}: {stderr}"
-        );
+        assert_unreachable_online_failure(&output, &label);
         assert!(
             !client_campaigns.exists(),
             "unreachable online {label}: client campaigns path must remain absent"
@@ -540,12 +640,7 @@ async fn unreachable_online_campaign_commands_leave_trap_bytes_unchanged() {
     for (label, args) in online_command_vectors(&definition) {
         let output =
             run_foundry(client_home.path(), &client_campaigns, &registry_path, DUMMY_ADDR, &args);
-        assert!(!output.status.success(), "unreachable online {label}: command should fail");
-        let stderr = stderr_string(&output);
-        assert!(
-            stderr.contains("foundryd is not reachable at http://127.0.0.1:0"),
-            "unreachable online {label}: {stderr}"
-        );
+        assert_unreachable_online_failure(&output, &label);
         assert_eq!(
             std::fs::read(&client_campaigns).expect("read client trap after failed online command"),
             before,
@@ -562,170 +657,87 @@ async fn offline_campaign_recovery_still_works() {
     let campaigns_path = client_home.path().join(".foundry/campaigns.json");
     let definition = write_definition(&client_home, "offline-added", "Offline add mission marker");
 
-    let add_output = run_foundry(
+    let definition_arg = definition.display().to_string();
+    let add_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "add".to_string(),
-            definition.display().to_string(),
-        ],
+        &["campaign", "add", definition_arg.as_str()],
     );
     assert_success(&add_output, "offline add");
 
-    let list_output = run_foundry(
-        client_home.path(),
-        &campaigns_path,
-        &registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "list".to_string(),
-        ],
-    );
+    let list_output =
+        offline_command(client_home.path(), &campaigns_path, &registry_path, &["campaign", "list"]);
     assert_success(&list_output, "offline list");
     assert!(stdout_string(&list_output).contains("offline-added"));
 
-    let show_output = run_foundry(
+    let show_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "show".to_string(),
-            "offline-added".to_string(),
-        ],
+        &["campaign", "show", "offline-added"],
     );
     assert_success(&show_output, "offline show");
     assert!(stdout_string(&show_output).contains("offline-added"));
 
-    let pause_output = run_foundry(
+    let pause_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "pause".to_string(),
-            "offline-added".to_string(),
-        ],
+        &["campaign", "pause", "offline-added"],
     );
     assert_success(&pause_output, "offline pause");
-    assert_eq!(
-        CampaignStore::load(&campaigns_path)
-            .expect("load offline campaigns")
-            .find("offline-added")
-            .expect("offline-added")
-            .status,
-        CampaignStatus::Paused
-    );
+    assert_offline_campaign_status(&campaigns_path, "offline-added", CampaignStatus::Paused);
 
-    let mut store = CampaignStore::load(&campaigns_path).expect("load campaigns");
-    store.campaigns.push(make_campaign("resume-offline", CampaignStatus::Paused));
-    let mut decide = make_campaign("decide-offline", CampaignStatus::Escalated);
-    decide.escalation.push("owner choice".to_string());
-    store.campaigns.push(decide);
-    let mut complete = make_campaign("complete-offline", CampaignStatus::Paused);
-    complete.pending_run_result = Some(foundry_sdk::payload::TaskRunCompletedPayload {
-        project: "daemon-project".to_string(),
-        success: true,
-        landed: true,
-        summary: "done".to_string(),
-        preservation_ref: None,
-        verdict: foundry_sdk::payload::TaskVerdict::Complete,
-        context: foundry_sdk::payload::LoopContext {
-            campaign: Some("complete-offline".to_string()),
-            ..foundry_sdk::payload::LoopContext::default()
-        },
-    });
-    store.campaigns.push(complete);
-    store.save(&campaigns_path).expect("save augmented campaigns");
+    augment_offline_recovery_campaigns(&campaigns_path);
 
-    let resume_output = run_foundry(
+    let resume_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
-        &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "resume".to_string(),
-            "resume-offline".to_string(),
-        ],
+        &["campaign", "resume", "resume-offline"],
     );
     assert_success(&resume_output, "offline resume");
 
-    let decide_output = run_foundry(
+    let decide_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
         &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "decide".to_string(),
-            "decide-offline".to_string(),
-            "--decision".to_string(),
-            "Use the direct file recovery path.".to_string(),
+            "campaign",
+            "decide",
+            "decide-offline",
+            "--decision",
+            OFFLINE_DECISION,
         ],
     );
     assert_success(&decide_output, "offline decide");
 
-    let complete_output = run_foundry(
+    let complete_output = offline_command(
         client_home.path(),
         &campaigns_path,
         &registry_path,
-        DUMMY_ADDR,
         &[
-            "--offline".to_string(),
-            "campaign".to_string(),
-            "complete".to_string(),
-            "complete-offline".to_string(),
-            "--reason".to_string(),
-            "Production evidence confirms the mission shipped.".to_string(),
+            "campaign",
+            "complete",
+            "complete-offline",
+            "--reason",
+            OFFLINE_COMPLETION_REASON,
         ],
     );
     assert_success(&complete_output, "offline complete");
 
-    let saved = CampaignStore::load(&campaigns_path).expect("load final campaigns");
-    assert_eq!(
-        saved.find("resume-offline").expect("resume-offline").status,
-        CampaignStatus::Active
-    );
-    let decided = saved.find("decide-offline").expect("decide-offline");
-    assert_eq!(decided.status, CampaignStatus::Active);
-    assert_eq!(decided.owner_decisions.len(), 1);
-    let completed = saved.find("complete-offline").expect("complete-offline");
-    assert_eq!(completed.status, CampaignStatus::Completed);
-    assert!(completed.pending_run_result.is_none());
+    assert_offline_recovery_results(&campaigns_path);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn online_campaign_commands_render_daemon_owned_fields_not_client_store_fields() {
-    let repo_root = tempfile::tempdir().expect("repo tempdir");
-    let client_home = tempfile::tempdir().expect("client tempdir");
-    let registry_path = seed_client_registry(client_home.path(), repo_root.path());
-    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
-    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
-    let (service, event_tx, _tmp_traces) =
-        make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
-    spawn_advance_terminal_bridge(event_tx);
-    let addr = start_server(service).await;
-
-    let client_campaigns = seed_stale_client_campaigns(client_home.path());
+    let harness = OnlineHarness::new().await;
+    let client_campaigns = seed_stale_client_campaigns(harness.client_home());
     let before = std::fs::read(&client_campaigns).expect("read stale client campaigns before run");
-    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
 
-    for (label, args) in online_command_vectors(&definition) {
-        let output =
-            run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
+    for (label, args) in harness.online_commands() {
+        let output = harness.run(&client_campaigns, &args);
         assert_success(&output, &format!("online {label}"));
         let stdout = stdout_string(&output);
         assert_stdout_proves_daemon_boundary(&label, &stdout);
@@ -737,5 +749,5 @@ async fn online_campaign_commands_render_daemon_owned_fields_not_client_store_fi
         );
     }
 
-    assert_daemon_mutations(daemon_campaigns.path());
+    assert_daemon_mutations(harness.daemon_campaigns_path());
 }
