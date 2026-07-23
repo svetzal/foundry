@@ -126,6 +126,7 @@ fn active_campaign(name: &str) -> Campaign {
         last_run_event_id: Some("run-3".to_string()),
         owner_decisions: vec![],
         pending_run_result: None,
+        objective_history: vec![],
     }
 }
 

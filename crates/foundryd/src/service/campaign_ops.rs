@@ -549,6 +549,7 @@ mod tests {
             last_run_event_id: Some("run-42".to_string()),
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         }
     }
 
@@ -615,6 +616,7 @@ mod tests {
                     .with_timezone(&Utc),
             }],
             pending_run_result: None,
+            objective_history: vec![],
         };
         let tmp = write_store_with(vec![campaign]);
 

@@ -64,6 +64,7 @@ fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
         last_run_event_id: Some("run-2".to_string()),
         owner_decisions: vec![],
         pending_run_result: None,
+        objective_history: vec![],
     }
 }
 

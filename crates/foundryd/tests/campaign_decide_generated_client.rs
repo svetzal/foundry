@@ -151,6 +151,7 @@ fn escalated_campaign(name: &str) -> Campaign {
                 ..LoopContext::default()
             },
         }),
+        objective_history: vec![],
     }
 }
 

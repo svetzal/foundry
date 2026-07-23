@@ -678,6 +678,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -878,6 +879,7 @@ mod tests {
                 last_run_event_id: Some("run-2".to_string()),
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();

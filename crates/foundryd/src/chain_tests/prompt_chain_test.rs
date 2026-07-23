@@ -128,6 +128,7 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         })
         .unwrap();
     assert!(repo.exists());

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foundry_sdk::campaign::{
-    Campaign, CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence,
+    Campaign, CampaignStatus, CampaignStore, CampaignStoreGuard, CycleOutcome, DoneEvidence,
 };
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
@@ -109,6 +109,75 @@ async fn accumulated_work(shell: &dyn ShellGateway, repo: &Path, base_ref: Optio
     )
 }
 
+/// How much of a past objective or outcome is rendered into the history
+/// section.
+///
+/// Long enough to identify what was asked for and what came back, short enough
+/// that a full history stays a small fraction of the prompt — a synthesized
+/// gate objective alone runs to several paragraphs. The untruncated text of
+/// every objective is in the `CampaignAdvanceCompleted` event stream.
+const HISTORY_ENTRY_CHARS: usize = 280;
+
+/// Flatten a stored objective or outcome onto one bounded line.
+///
+/// Objectives are multi-line by construction, and the history is read as a list
+/// — an entry that spans lines stops looking like one item.
+fn condense(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(HISTORY_ENTRY_CHARS) {
+        Some((index, _)) => format!("{}…", &flat[..index]),
+        None => flat,
+    }
+}
+
+fn outcome_label(outcome: Option<&CycleOutcome>) -> String {
+    let Some(outcome) = outcome else {
+        return "dispatched, no result recorded".to_string();
+    };
+    let landing = if outcome.landed {
+        "landed"
+    } else {
+        "did not land"
+    };
+    let detail = match &outcome.verdict {
+        TaskVerdict::Complete => format!("complete, {landing}"),
+        TaskVerdict::Remainder { gaps } => {
+            format!("remainder, {landing}; gaps: {}", gaps.join("; "))
+        }
+        TaskVerdict::Defect { diagnosis } => format!("defect, {landing}; {diagnosis}"),
+        TaskVerdict::BlockedOnDecision { finding, .. } => format!("blocked on decision; {finding}"),
+        TaskVerdict::RunnerError { detail } => format!("runner error; {detail}"),
+    };
+    condense(&detail)
+}
+
+/// The objectives this campaign has already cut, oldest first.
+///
+/// Shown only one cycle deep, the agent cannot tell that it is asking for the
+/// same thing it asked for five cycles ago; one campaign restated the same
+/// reason across nine consecutive cycles and landed once. The typed verdict
+/// travels with each entry because it is what separates a legitimate follow-up
+/// from a repeat: a `remainder` says the last attempt at this already came back
+/// short.
+fn objective_history(campaign: &Campaign) -> String {
+    if campaign.objective_history.is_empty() {
+        return "none — this is the first objective this campaign has cut.".to_string();
+    }
+    campaign
+        .objective_history
+        .iter()
+        .map(|cycle| {
+            format!(
+                "- cycle {} [{}] {}",
+                cycle.cycle,
+                outcome_label(cycle.outcome.as_ref()),
+                condense(&cycle.objective)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn run_done_gates(
     shell: &dyn ShellGateway,
     repo: &Path,
@@ -206,12 +275,13 @@ fn decision_prompt(
         || "none (initial/manual advance)".to_string(),
         |result| serde_json::to_string_pretty(result).unwrap_or_default(),
     );
+    let history = objective_history(campaign);
     format!(
         "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
-         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
-         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. If your reason for this cycle restates a reason from an earlier cycle, that is evidence you are reading the wrong tree: re-read the accumulated section before dispatching. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
+         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
          {{\"decision\":\"advance\",\"objective\":\"single objective plus gates/forbidden moves/evidence\",\"reason\":\"gap from mission minus state\"}}\n\
@@ -226,6 +296,7 @@ fn decision_prompt(
         owner_decisions,
         review_evidence,
         gates,
+        history,
         last_result,
         snapshot,
         accumulated,
@@ -548,6 +619,7 @@ fn update_run_and_forced_outcome(
             if run_result.landed {
                 campaign.cycles_landed += 1;
             }
+            campaign.record_cycle_outcome(run_result);
             campaign.pending_run_result = Some(run_result.clone());
         }
         campaign.last_run_event_id = Some(run_event_id.clone());
@@ -742,6 +814,7 @@ fn apply_advance_outcome(
         CampaignDecision::Advance { objective, reason } => {
             campaign.status = CampaignStatus::Active;
             campaign.cycles_completed += 1;
+            campaign.record_dispatched_objective(objective.clone());
             let base_ref = next_base_ref(request).map(ToString::to_string);
             campaign.pending_run_result = None;
             vec![
@@ -988,7 +1061,8 @@ impl TaskBlock for AdvanceCampaign {
 #[cfg(test)]
 mod tests {
     use foundry_sdk::campaign::{
-        Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence, OwnerDecision,
+        Campaign, CampaignBudget, CampaignCycle, CampaignStatus, CampaignStore, CycleOutcome,
+        DoneEvidence, OwnerDecision,
     };
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::payload::{
@@ -1050,6 +1124,7 @@ mod tests {
             last_run_event_id: Some("run-2".to_string()),
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         }
     }
 
@@ -1142,6 +1217,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1217,6 +1293,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1295,6 +1372,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1361,6 +1439,7 @@ mod tests {
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         }
     }
 
@@ -1518,24 +1597,10 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
-                name: "c".to_string(),
-                project: "p".to_string(),
-                mission: "ship".to_string(),
-                intent_refs: vec![],
-                context_paths: vec![],
-                done_evidence: vec![DoneEvidence::Review {
-                    statement: "shipped".to_string(),
-                }],
                 budget: CampaignBudget { max_cycles: 3 },
-                escalation: vec![],
                 status: CampaignStatus::Paused,
                 cycles_completed: 1,
-                cycles_landed: 0,
-                authorized_by: Some("owner".to_string()),
-                agent_provider: None,
-                last_run_event_id: None,
-                owner_decisions: vec![],
-                pending_run_result: None,
+                ..campaign_for_accumulation_test()
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1638,6 +1703,7 @@ mod tests {
                         .with_timezone(&chrono::Utc),
                 }],
                 pending_run_result: None,
+                objective_history: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1671,6 +1737,186 @@ mod tests {
         );
         assert!(invocations[0].prompt.contains("OWNER DECISIONS"));
         assert!(invocations[0].prompt.contains("2026-07-18T12:00:00+00:00 [owner]"));
+    }
+
+    // --- objective history makes a repeat visible -------------------------
+
+    /// `foundry-daemon-authoritative-state-v1` ran eleven cycles and landed
+    /// once, restating the same reason from cycle 1 through cycle 9. Shown one
+    /// cycle of history, the agent had no way to see that.
+    #[tokio::test]
+    async fn decision_prompt_carries_every_objective_this_campaign_has_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.objective_history = vec![
+            CampaignCycle {
+                cycle: 1,
+                objective: "Move registry list/show onto daemon-owned gRPC.".to_string(),
+                outcome: Some(CycleOutcome {
+                    verdict: TaskVerdict::Remainder {
+                        gaps: vec!["RegistryCommands::List still reads local files".to_string()],
+                    },
+                    landed: true,
+                }),
+            },
+            CampaignCycle {
+                cycle: 2,
+                objective: "Add the RegistryList RPC to proto/foundry.proto.".to_string(),
+                outcome: None,
+            },
+        ];
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Route the CLI at the new RPC.\",\"reason\":\"the RPC exists but nothing calls it\"}\n```",
+        );
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(prompt.contains("OBJECTIVE HISTORY"));
+        assert!(
+            prompt.contains(
+                "- cycle 1 [remainder, landed; gaps: RegistryCommands::List still reads local files] Move registry list/show onto daemon-owned gRPC."
+            ),
+            "history entry lost its objective or its verdict: {prompt}"
+        );
+        assert!(
+            prompt.contains(
+                "- cycle 2 [dispatched, no result recorded] Add the RegistryList RPC to proto/foundry.proto."
+            ),
+            "an in-flight cycle must still be visible: {prompt}"
+        );
+        // The history is only useful if the agent is told what to do with it,
+        // and the wrong-tree reading stays the first branch to check.
+        assert!(prompt.contains("NO RESTATEMENT"));
+        assert!(prompt.contains("you are reading the wrong tree"));
+        assert!(prompt.contains("A third identical objective is never the answer."));
+    }
+
+    #[tokio::test]
+    async fn first_formation_states_that_nothing_has_been_cut_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut the first slice.\",\"reason\":\"nothing built yet\"}\n```",
+        );
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert!(
+            agent.invocations()[0]
+                .prompt
+                .contains("none — this is the first objective this campaign has cut.")
+        );
+    }
+
+    /// The dispatch and its result arrive on different advances, so the loop is
+    /// only closed if the objective survives from one to the other and the next
+    /// formation can see both halves.
+    #[tokio::test]
+    async fn a_dispatched_objective_and_its_verdict_reach_the_following_formation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::sequence(vec![
+            AgentResponse::success(
+                "```json\n{\"decision\":\"advance\",\"objective\":\"Move registry list/show onto daemon-owned gRPC.\",\"reason\":\"the CLI still reads local files\"}\n```",
+            ),
+            AgentResponse::success(
+                "```json\n{\"decision\":\"advance\",\"objective\":\"Route registry init at the new RPC.\",\"reason\":\"one command still bypasses the daemon\"}\n```",
+            ),
+        ]);
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+        let result_trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(TaskRunCompletedPayload {
+                    project: "p".to_string(),
+                    success: false,
+                    landed: true,
+                    summary: "the RPCs exist; the CLI still routes locally".to_string(),
+                    preservation_ref: None,
+                    verdict: TaskVerdict::Remainder {
+                        gaps: vec!["registry init still writes the local file".to_string()],
+                    },
+                    context: LoopContext {
+                        campaign: Some("c".to_string()),
+                        ..LoopContext::default()
+                    },
+                }),
+            })
+            .unwrap(),
+        );
+        block.execute(&result_trigger).await.unwrap();
+
+        let second_prompt = &agent.invocations()[1].prompt;
+        assert!(
+            second_prompt.contains(
+                "- cycle 3 [remainder, landed; gaps: registry init still writes the local file] Move registry list/show onto daemon-owned gRPC."
+            ),
+            "the previous objective and its verdict did not reach formation: {second_prompt}"
+        );
+
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let history = &stored.find("c").unwrap().objective_history;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].objective, "Route registry init at the new RPC.");
+        assert!(history[1].outcome.is_none(), "the in-flight cycle has no result yet");
+    }
+
+    /// A synthesized gate objective runs to several paragraphs; rendered whole,
+    /// eight of them would crowd out the repository state the decision needs.
+    #[tokio::test]
+    async fn a_long_objective_is_condensed_to_one_line_in_the_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.objective_history = vec![CampaignCycle {
+            cycle: 1,
+            objective: format!("Make every required gate pass.\n\n{}", "detail ".repeat(200)),
+            outcome: None,
+        }];
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Next slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let entry = agent.invocations()[0]
+            .prompt
+            .lines()
+            .find(|line| line.starts_with("- cycle 1 "))
+            .expect("history entry rendered")
+            .to_string();
+        assert!(entry.contains("Make every required gate pass. detail"));
+        assert!(entry.ends_with('…'), "a long objective must be truncated: {entry}");
+        assert!(entry.chars().count() < 400, "history entry is not bounded: {entry}");
     }
 
     // --- transient decision-agent failures --------------------------------

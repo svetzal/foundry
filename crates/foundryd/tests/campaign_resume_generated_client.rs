@@ -163,6 +163,7 @@ fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campai
         last_run_event_id: None,
         owner_decisions: vec![],
         pending_run_result: None,
+        objective_history: vec![],
     }
 }
 
@@ -200,6 +201,7 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
                 ..LoopContext::default()
             },
         }),
+        objective_history: vec![],
     }
 }
 

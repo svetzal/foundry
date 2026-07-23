@@ -177,6 +177,22 @@ When the final budgeted task lands, Foundry still evaluates the repository for
 completion. Only a decision to dispatch another task is converted to a budget
 escalation.
 
+Formation is also shown an `OBJECTIVE HISTORY` section: the objectives this
+campaign has already cut, oldest first, each with the typed verdict its
+execution returned and whether that work landed. The campaign retains the eight
+most recent — the full text of every objective is already durable in the
+`campaign_advance_completed` event stream, so the stored history is formation's
+working memory rather than an archive, and stays bounded on a long mission.
+
+The prompt forbids restating an entry from that history. When the objective
+being cut substantially repeats an earlier one, exactly two readings are
+available. Either the earlier work exists on the preserved branch and the
+inspection missed it, in which case the accumulated section applies and the
+objective becomes reconcile-and-land. Or the earlier cycle returned `remainder`
+and its gaps are genuinely open, in which case re-dispatching the same request
+has already failed once: the agent must name the blocking sub-gap, change the
+approach, or escalate for an owner decision.
+
 Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the
 paused state. The typed result and preservation ref remain pending in the

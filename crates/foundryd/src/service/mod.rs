@@ -961,6 +961,7 @@ mod tests {
             last_run_event_id: Some("evt-service-42".to_string()),
             owner_decisions: vec![],
             pending_run_result: None,
+            objective_history: vec![],
         };
         let store = CampaignStore {
             version: 1,
@@ -1033,6 +1034,7 @@ mod tests {
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
+                objective_history: vec![],
             }],
         };
         store.save(tmp.path()).expect("save");
