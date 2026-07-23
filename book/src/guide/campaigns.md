@@ -132,11 +132,32 @@ reviews the repository and context artifacts, then makes exactly one decision:
 - `escalate` — stop because the budget, an escalation rule, runner failure, or
   owner judgment requires attention.
 
+A `done` decision made while a required done-evidence gate is red is rewritten
+into an `advance`. The synthesized objective carries the campaign mission and
+each failing gate's own output, not just the command that failed, and forbids
+reverting or shrinking landed mission work — or broadening a lint allowance —
+to turn the gate green.
+
 Task results auto-request the next advance. A result that did not land carries
 its preserved branch into the next task, so the campaign resumes warm. A
-`blocked_on_decision` or `runner_error` escalates immediately. `cycles_completed`
-counts dispatched tasks, while `cycles_landed` counts only task results whose
-work actually landed on trunk.
+`blocked_on_decision` escalates immediately, and so does a `runner_error` that
+describes a fault in the run. `cycles_completed` counts dispatched tasks, while
+`cycles_landed` counts only task results whose work actually landed on trunk.
+
+A provider failure is not treated as a campaign failure. If the decision agent
+cannot be reached, Foundry re-asks it up to three times with a widening backoff
+before giving up, and the resulting escalation names every attempt — a single
+transport blip no longer ends a healthy campaign. A malformed decision is not
+retried: the agent answered, so re-asking would only repeat it.
+
+When the provider itself is unusable — an exhausted account, revoked
+authentication, or an open circuit breaker — the campaign moves to `paused`
+rather than `escalated`, whether that surfaces during formation or as the
+executor's `runner_error` verdict. Nothing about the campaign's own work is
+wrong, so no cycle is consumed, no terminal event is emitted, and the pending
+run result is preserved. Once the provider is usable again, `foundry campaign
+resume` continues from exactly where it stopped. The reason appears in the
+advance block's summary in the run trace.
 
 Formation reasons about two trees, because they can differ. The live repository
 snapshot is the delivered trunk state and is what a `done` decision is judged

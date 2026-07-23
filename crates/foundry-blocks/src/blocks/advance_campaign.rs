@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use foundry_sdk::campaign::{
     Campaign, CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence,
@@ -13,7 +14,10 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort, ShellGateway};
+use crate::gateway::{
+    AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
+    ModelTier, ReasoningEffort, ShellGateway,
+};
 
 use super::{AgentBlockSpec, SimulatedSuccess, invoke_agent};
 
@@ -249,13 +253,152 @@ fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
     }
 }
 
-fn agent_failure_decision(context: &str, detail: String) -> CampaignDecision {
-    let reason = if detail.trim().is_empty() {
-        format!("{context} without diagnostic output")
-    } else {
-        detail
-    };
-    CampaignDecision::Escalate { reason }
+/// Total attempts against the decision agent before a transient failure is
+/// treated as terminal.
+///
+/// One provider hiccup used to end a campaign outright — the campaign with the
+/// best landing rate on record was killed twice this way, both times
+/// immediately after a successful landed cycle. Three attempts make that
+/// outcome require three independent failures instead of one. A fourth would
+/// cost another Deep-tier invocation for no measurable reduction in risk.
+const DECISION_ATTEMPTS: u32 = 3;
+
+/// Delay before the first retry; doubled for each subsequent one.
+///
+/// Long enough to outlast the transport blips that caused the observed
+/// escalations, and negligible against a Deep-tier invocation already measured
+/// in minutes. No jitter: campaign advances are serialized by a process mutex
+/// and a store-wide file lock, so there is no herd to spread.
+const DECISION_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// What an advance concluded, once provider outages are separated from the
+/// decisions the campaign can act on.
+///
+/// `Pause` deliberately has no [`CampaignDecision`] counterpart: pausing is a
+/// status transition the owner clears with `campaign resume`, not an outcome
+/// the campaign dispatches or dies on.
+enum AdvanceOutcome {
+    Decided(CampaignDecision),
+    Pause { reason: String },
+}
+
+impl AdvanceOutcome {
+    /// Apply a rule that only makes sense for a real decision, leaving a pause
+    /// untouched — the campaign never chose to pause, so no decision rule
+    /// governs it.
+    fn map_decision(self, rule: impl FnOnce(CampaignDecision) -> CampaignDecision) -> Self {
+        match self {
+            Self::Decided(decision) => Self::Decided(rule(decision)),
+            Self::Pause { .. } => self,
+        }
+    }
+}
+
+/// The fixed part of a decision-agent invocation. Every attempt re-sends
+/// exactly this; only the attempt number differs.
+struct DecisionRequest {
+    prompt: String,
+    working_dir: PathBuf,
+    agent_file: Option<PathBuf>,
+    provider: Option<AgentProvider>,
+    timeout: Duration,
+}
+
+impl DecisionRequest {
+    fn spec(&self) -> AgentBlockSpec {
+        AgentBlockSpec {
+            prompt: self.prompt.clone(),
+            working_dir: self.working_dir.clone(),
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
+            agent_file: self.agent_file.clone(),
+            provider: self.provider,
+            env: Vec::new(),
+            timeout: self.timeout,
+        }
+    }
+}
+
+/// Why a provider is unusable right now, or `None` when the failure is worth
+/// another attempt.
+///
+/// An exhausted account or a tripped circuit breaker is not a hiccup: the
+/// breaker stays open for the life of the process, so every further attempt
+/// returns the same refusal. Escalating burns the campaign over something that
+/// has nothing to do with its work.
+fn provider_outage_reason(failure: Option<&AgentFailureMetadata>) -> Option<String> {
+    failure
+        .filter(|failure| failure.is_terminal_provider_failure())
+        .map(AgentFailureMetadata::execution_summary)
+}
+
+/// Whether a `RunnerError` detail describes a provider outage rather than a
+/// fault in the run.
+///
+/// The structured [`AgentFailureMetadata`] does not survive into the typed
+/// verdict, so the labels the SDK itself stamps onto the detail string are the
+/// only signal left. Sourcing them from [`AgentFailureKind`] keeps this
+/// matching the SDK's wording rather than a private copy of it.
+fn is_provider_outage_detail(detail: &str) -> bool {
+    const BREAKER_MARKER: &str = "circuit breaker open";
+    detail.contains(BREAKER_MARKER)
+        || [
+            AgentFailureKind::AccountLimit,
+            AgentFailureKind::AccountDisabled,
+            AgentFailureKind::Authentication,
+        ]
+        .iter()
+        .any(|kind| detail.contains(kind.summary_label()))
+}
+
+/// Ask the decision agent, retrying a transport failure before giving up.
+///
+/// Only failures to *get* an answer are retried. A malformed decision is the
+/// agent answering badly rather than failing to answer, so it propagates on the
+/// first attempt — re-asking would burn identical invocations. A terminal
+/// provider failure short-circuits to a pause for the same reason.
+async fn ask_decision_agent(
+    agent: &dyn AgentGateway,
+    request: &DecisionRequest,
+    project: &str,
+) -> anyhow::Result<AdvanceOutcome> {
+    let mut diagnostics = Vec::new();
+    let mut delay = DECISION_RETRY_DELAY;
+    for attempt in 1..=DECISION_ATTEMPTS {
+        let (context, detail) =
+            match invoke_agent(agent, request.spec(), "campaign advance", project).await {
+                AgentOutcome::Success { stdout } => {
+                    return Ok(AdvanceOutcome::Decided(parse_decision(&stdout)?));
+                }
+                AgentOutcome::AgentFailed { stderr, failure } => {
+                    if let Some(reason) = provider_outage_reason(failure.as_ref()) {
+                        return Ok(AdvanceOutcome::Pause { reason });
+                    }
+                    ("failed", stderr)
+                }
+                AgentOutcome::Unavailable { error } => ("unavailable", error),
+            };
+        let detail = if detail.trim().is_empty() {
+            "no diagnostic output".to_string()
+        } else {
+            detail.trim().to_string()
+        };
+        tracing::warn!(project = %project, attempt, %context, %detail, "campaign decision agent did not answer");
+        diagnostics.push(format!("attempt {attempt} {context}: {detail}"));
+        if attempt < DECISION_ATTEMPTS {
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+        }
+    }
+    // Every attempt is reported, so an escalation can never be reasoned about
+    // from a single empty stderr the way the observed ones had to be.
+    Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
+        reason: format!(
+            "campaign decision agent did not answer in {DECISION_ATTEMPTS} attempts ({})",
+            diagnostics.join("; ")
+        ),
+    }))
 }
 
 fn completed_event(
@@ -394,10 +537,10 @@ fn persist_or_terminal(
     }
 }
 
-fn update_run_and_forced_decision(
+fn update_run_and_forced_outcome(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
-) -> Option<CampaignDecision> {
+) -> Option<AdvanceOutcome> {
     if let Some(run_event_id) = &request.run_event_id
         && Some(run_event_id) != campaign.last_run_event_id.as_ref()
     {
@@ -411,31 +554,39 @@ fn update_run_and_forced_decision(
     }
 
     if campaign.authorized_by.is_none() {
-        return Some(CampaignDecision::Escalate {
+        return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
             reason: "campaign has not been authorized by its owner".to_string(),
-        });
+        }));
     }
     if campaign.status == CampaignStatus::Completed {
-        return Some(CampaignDecision::Done {
+        return Some(AdvanceOutcome::Decided(CampaignDecision::Done {
             reason: "campaign is already completed".to_string(),
-        });
+        }));
     }
     if campaign.status == CampaignStatus::Escalated {
-        return Some(CampaignDecision::Escalate {
+        return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
             reason: format!("campaign is {} and requires owner resumption", campaign.status),
-        });
+        }));
     }
     if let Some(result) = &request.run_result {
         match &result.verdict {
             TaskVerdict::BlockedOnDecision { finding, options } => {
-                return Some(CampaignDecision::Escalate {
+                return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
                     reason: format!("{finding}; options: {}", options.join(" | ")),
+                }));
+            }
+            // The same tripped breaker that stops a decision agent also arrives
+            // here, as the executor's typed verdict. Both paths must wait it out
+            // rather than spend the campaign on it.
+            TaskVerdict::RunnerError { detail } if is_provider_outage_detail(detail) => {
+                return Some(AdvanceOutcome::Pause {
+                    reason: format!("provider unusable: {detail}"),
                 });
             }
             TaskVerdict::RunnerError { detail } => {
-                return Some(CampaignDecision::Escalate {
+                return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
                     reason: format!("runner/provider unavailable: {detail}"),
-                });
+                }));
             }
             TaskVerdict::Complete | TaskVerdict::Remainder { .. } | TaskVerdict::Defect { .. } => {}
         }
@@ -454,7 +605,16 @@ fn enforce_campaign_budget(campaign: &Campaign, decision: CampaignDecision) -> C
     }
 }
 
+/// Rewrite a `done` decision into an `advance` when required mechanical
+/// evidence is still red.
+///
+/// The synthesized objective carries the mission and each gate's own output,
+/// because a bare command string is not enough to act on: dispatched with
+/// nothing but `cargo clippy …`, cycles were observed rewriting the very test
+/// file the lint was complaining about, undoing landed mission work to turn the
+/// gate green.
 fn enforce_done_gate_truth(
+    campaign: &Campaign,
     decision: CampaignDecision,
     gate_results: &[foundry_sdk::gates::GateResult],
 ) -> CampaignDecision {
@@ -462,70 +622,86 @@ fn enforce_done_gate_truth(
     if !matches!(decision, CampaignDecision::Done { .. }) || required_pass {
         return decision;
     }
-    let failed = gate_results
+    let failures = gate_results
         .iter()
         .filter(|gate| gate.required && !gate.passed)
-        .map(|gate| gate.command.clone())
+        .map(|gate| format!("$ {}\n{}", gate.command, or_none(gate.output.clone())))
         .collect::<Vec<_>>()
-        .join(", ");
+        .join("\n\n");
     CampaignDecision::Advance {
-        objective: format!("Restore the required campaign done-evidence gates: {failed}"),
+        objective: format!(
+            "Make every required campaign done-evidence gate pass without regressing the mission.\n\n\
+             MISSION THIS CAMPAIGN MUST STILL SATISFY:\n{}\n\n\
+             FAILING REQUIRED GATES, WITH THE OUTPUT THAT REJECTED THEM:\n{failures}\n\n\
+             Fix what each gate reports, at the location it names. FORBIDDEN MOVES: deleting, \
+             reverting, skipping, or shrinking landed mission work to turn a gate green; \
+             broadening a lint allowance beyond the single item the gate named; weakening the \
+             project's lint or gate configuration. EVIDENCE: every gate above passes and the \
+             mission behavior is still present in the delivered trunk state.",
+            campaign.mission
+        ),
         reason: "review proposed done while required mechanical evidence was failing".to_string(),
     }
 }
 
-async fn derive_campaign_decision(
+async fn derive_advance_outcome(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
     entry: &foundry_sdk::registry::ProjectEntry,
     campaign: &Campaign,
     request: &CampaignAdvanceRequestedPayload,
-) -> anyhow::Result<CampaignDecision> {
+) -> anyhow::Result<AdvanceOutcome> {
     let repo = Path::new(&entry.path);
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
     let snapshot = repo_snapshot(shell, repo).await;
     let accumulated = accumulated_work(shell, repo, next_base_ref(request)).await;
-    let prompt =
-        decision_prompt(campaign, &context, &snapshot, &accumulated, &gate_results, request);
-    let outcome = invoke_agent(
-        agent,
-        AgentBlockSpec {
-            prompt,
-            working_dir: repo.to_path_buf(),
-            access: AgentAccess::ReadOnly,
-            tier: ModelTier::Deep,
-            effort: ReasoningEffort::High,
-            agent_file: super::resolve_agent_file(&entry.agent),
-            provider: campaign
-                .agent_provider
-                .as_deref()
-                .and_then(|provider| super::parse_agent_provider(Some(provider))),
-            env: Vec::new(),
-            timeout: entry.timeout(),
-        },
-        "campaign advance",
-        &campaign.project,
-    )
-    .await;
-    let decision = match outcome {
-        crate::gateway::AgentOutcome::Success { stdout } => parse_decision(&stdout)?,
-        crate::gateway::AgentOutcome::AgentFailed { stderr, .. } => {
-            agent_failure_decision("campaign decision agent failed", stderr)
-        }
-        crate::gateway::AgentOutcome::Unavailable { error } => {
-            agent_failure_decision("campaign decision agent unavailable", error)
-        }
+    // The gates, the snapshot, and the prompt are all deterministic for this
+    // advance, so a retry re-asks the same question rather than re-deriving it.
+    let decision_request = DecisionRequest {
+        prompt: decision_prompt(
+            campaign,
+            &context,
+            &snapshot,
+            &accumulated,
+            &gate_results,
+            request,
+        ),
+        working_dir: repo.to_path_buf(),
+        agent_file: super::resolve_agent_file(&entry.agent),
+        provider: campaign
+            .agent_provider
+            .as_deref()
+            .and_then(|provider| super::parse_agent_provider(Some(provider))),
+        timeout: entry.timeout(),
     };
-    Ok(enforce_done_gate_truth(decision, &gate_results))
+    let outcome = ask_decision_agent(agent, &decision_request, &campaign.project).await?;
+    Ok(outcome.map_decision(|decision| enforce_done_gate_truth(campaign, decision, &gate_results)))
 }
 
-fn apply_campaign_decision(
+fn apply_advance_outcome(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
     throttle: foundry_sdk::throttle::Throttle,
-    decision: CampaignDecision,
+    outcome: AdvanceOutcome,
 ) -> Vec<Event> {
+    let decision = match outcome {
+        AdvanceOutcome::Decided(decision) => decision,
+        // No event: pausing is not a campaign outcome, and a terminal event
+        // here is exactly what forced human resurrection before. The pending
+        // run result is left intact so the advance after `campaign resume`
+        // forms from it and the executor continues from preserved work.
+        AdvanceOutcome::Pause { reason } => {
+            campaign.status = CampaignStatus::Paused;
+            tracing::warn!(
+                campaign = %campaign.name,
+                project = %campaign.project,
+                %reason,
+                "campaign paused instead of escalated: provider unusable"
+            );
+            return vec![];
+        }
+    };
     match decision {
         CampaignDecision::Done { reason } => {
             campaign.status = CampaignStatus::Completed;
@@ -575,13 +751,13 @@ fn apply_campaign_decision(
     }
 }
 
-async fn choose_campaign_decision(
+async fn choose_advance_outcome(
     execution: &AdvanceExecution,
     campaign: &Campaign,
-    forced: Option<CampaignDecision>,
-) -> CampaignDecision {
-    if let Some(decision) = forced {
-        return decision;
+    forced: Option<AdvanceOutcome>,
+) -> AdvanceOutcome {
+    if let Some(outcome) = forced {
+        return outcome;
     }
     let entry = match super::read_registry(&execution.registry) {
         Ok(registry) => registry
@@ -593,12 +769,12 @@ async fn choose_campaign_decision(
     let entry = match entry {
         Ok(entry) => entry,
         Err(error) => {
-            return CampaignDecision::Escalate {
+            return AdvanceOutcome::Decided(CampaignDecision::Escalate {
                 reason: format!("campaign formation failed: {error}"),
-            };
+            });
         }
     };
-    derive_campaign_decision(
+    derive_advance_outcome(
         &*execution.agent,
         &*execution.shell,
         &entry,
@@ -606,9 +782,34 @@ async fn choose_campaign_decision(
         &execution.request,
     )
     .await
-    .unwrap_or_else(|error| CampaignDecision::Escalate {
-        reason: format!("campaign formation failed: {error}"),
+    .unwrap_or_else(|error| {
+        AdvanceOutcome::Decided(CampaignDecision::Escalate {
+            reason: format!("campaign formation failed: {error}"),
+        })
     })
+}
+
+/// The advance to actually form from.
+///
+/// A manual advance carries no run result, so it replays whatever the campaign
+/// recorded while it was paused — formation then sees the reviewer gaps and the
+/// executor continues from the preserved ref.
+fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> AdvanceExecution {
+    let mut request = execution.request.clone();
+    if request.run_result.is_none() {
+        request.run_result.clone_from(&campaign.pending_run_result);
+        request.run_event_id.clone_from(&campaign.last_run_event_id);
+    }
+    AdvanceExecution {
+        request,
+        agent: Arc::clone(&execution.agent),
+        shell: Arc::clone(&execution.shell),
+        registry: Arc::clone(&execution.registry),
+        store_path: execution.store_path.clone(),
+        lock: Arc::clone(&execution.lock),
+        project: execution.project.clone(),
+        throttle: execution.throttle,
+    }
 }
 
 async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
@@ -638,13 +839,13 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     };
 
     if let Err(error) = campaign.validate() {
-        let events = apply_campaign_decision(
+        let events = apply_advance_outcome(
             campaign,
             &execution.request,
             execution.throttle,
-            CampaignDecision::Escalate {
+            AdvanceOutcome::Decided(CampaignDecision::Escalate {
                 reason: error.to_string(),
-            },
+            }),
         );
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
@@ -659,7 +860,7 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         );
     }
 
-    let forced = update_run_and_forced_decision(campaign, &execution.request);
+    let forced = update_run_and_forced_outcome(campaign, &execution.request);
     if campaign.status == CampaignStatus::Paused {
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
@@ -677,36 +878,27 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         );
     }
 
-    let mut effective_request = execution.request.clone();
-    if effective_request.run_result.is_none() {
-        effective_request.run_result.clone_from(&campaign.pending_run_result);
-        effective_request.run_event_id.clone_from(&campaign.last_run_event_id);
-    }
-    let effective_execution = AdvanceExecution {
-        request: effective_request,
-        agent: Arc::clone(&execution.agent),
-        shell: Arc::clone(&execution.shell),
-        registry: Arc::clone(&execution.registry),
-        store_path: execution.store_path.clone(),
-        lock: Arc::clone(&execution.lock),
-        project: execution.project.clone(),
-        throttle: execution.throttle,
+    let effective_execution = replay_pending_run(&execution, campaign);
+    let outcome = choose_advance_outcome(&effective_execution, campaign, forced)
+        .await
+        .map_decision(|decision| enforce_campaign_budget(campaign, decision));
+    // A pause emits no event, so its reason would otherwise be invisible; the
+    // block summary is what carries it into the run trace.
+    let summary = match &outcome {
+        AdvanceOutcome::Decided(_) => format!("campaign '{}' advanced", execution.request.campaign),
+        AdvanceOutcome::Pause { reason } => {
+            format!("campaign '{}' paused: {reason}", execution.request.campaign)
+        }
     };
-    let decision = choose_campaign_decision(&effective_execution, campaign, forced).await;
-    let decision = enforce_campaign_budget(campaign, decision);
-    let events = apply_campaign_decision(
-        campaign,
-        &effective_execution.request,
-        execution.throttle,
-        decision,
-    );
+    let events =
+        apply_advance_outcome(campaign, &effective_execution.request, execution.throttle, outcome);
     let cycles_completed = campaign.cycles_completed;
     let cycles_landed = campaign.cycles_landed;
     persist_or_terminal(
         &execution,
         &guard,
         events,
-        format!("campaign '{}' advanced", execution.request.campaign),
+        summary,
         "campaign decision could not be saved",
         cycles_completed,
         cycles_landed,
@@ -799,10 +991,11 @@ mod tests {
     use foundry_sdk::throttle::Throttle;
 
     use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
+    use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
 
     use super::{
-        AdvanceCampaign, agent_failure_decision, enforce_campaign_budget, parse_decision,
-        run_done_gates,
+        AdvanceCampaign, DECISION_ATTEMPTS, enforce_campaign_budget, enforce_done_gate_truth,
+        parse_decision, run_done_gates,
     };
 
     #[test]
@@ -827,26 +1020,6 @@ mod tests {
         ] {
             assert!(parse_decision(output).is_err(), "accepted invalid decision: {output}");
         }
-    }
-
-    #[test]
-    fn empty_agent_failure_carries_actionable_escalation_context() {
-        assert_eq!(
-            agent_failure_decision("campaign decision agent failed", String::new()),
-            CampaignDecision::Escalate {
-                reason: "campaign decision agent failed without diagnostic output".to_string(),
-            }
-        );
-
-        assert_eq!(
-            agent_failure_decision(
-                "campaign decision agent unavailable",
-                "rate limited".to_string()
-            ),
-            CampaignDecision::Escalate {
-                reason: "rate limited".to_string(),
-            }
-        );
     }
 
     fn campaign_at_budget() -> Campaign {
@@ -1490,5 +1663,340 @@ mod tests {
         );
         assert!(invocations[0].prompt.contains("OWNER DECISIONS"));
         assert!(invocations[0].prompt.contains("2026-07-18T12:00:00+00:00 [owner]"));
+    }
+
+    // --- transient decision-agent failures --------------------------------
+
+    /// An active campaign with a live store, ready to be advanced.
+    fn staged_active_campaign(
+        dir: &std::path::Path,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+    ) {
+        let store_path = dir.join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.to_str().unwrap());
+        (store_path, registry)
+    }
+
+    /// A manual advance request carrying no run result.
+    fn manual_advance_trigger() -> Event {
+        Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        )
+    }
+
+    fn run_result_with(verdict: TaskVerdict) -> TaskRunCompletedPayload {
+        TaskRunCompletedPayload {
+            project: "p".to_string(),
+            success: false,
+            landed: false,
+            summary: "runner stopped".to_string(),
+            preservation_ref: Some("foundry-task/preserved".to_string()),
+            verdict,
+            context: LoopContext {
+                campaign: Some("c".to_string()),
+                ..LoopContext::default()
+            },
+        }
+    }
+
+    fn terminal_reason(
+        result: &foundry_sdk::task_block::TaskBlockResult,
+        ty: &EventType,
+    ) -> String {
+        result
+            .events
+            .iter()
+            .find(|event| event.event_type == *ty)
+            .and_then(|event| event.payload.get("reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("no {ty} event in {:?}", result.events))
+            .to_string()
+    }
+
+    /// The campaign with the best landing rate on record was ended twice by a
+    /// single transport failure, both times right after a landed cycle.
+    #[tokio::test(start_paused = true)]
+    async fn transient_decision_agent_failure_is_retried_instead_of_ending_the_campaign() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::sequence(vec![
+            AgentResponse::failure(""),
+            AgentResponse::failure("connection reset by peer"),
+            AgentResponse::success(
+                "```json\n{\"decision\":\"advance\",\"objective\":\"Land the next slice.\",\"reason\":\"gap remains\"}\n```",
+            ),
+        ]);
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(
+            agent.invocations().len(),
+            3,
+            "a transient failure must be re-asked, not converted straight to escalation"
+        );
+        assert!(result.events.iter().any(|e| e.event_type == EventType::ExecutionRequested));
+        assert_eq!(
+            CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
+            CampaignStatus::Active
+        );
+    }
+
+    /// The observed escalations carried an empty reason, so nobody could tell
+    /// what had failed. Every attempt now appears in the escalation.
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_decision_agent_retries_escalate_with_every_attempt_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::failure("");
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(agent.invocations().len(), DECISION_ATTEMPTS as usize);
+        let reason = terminal_reason(&result, &EventType::CampaignEscalated);
+        assert!(reason.contains("3 attempts"), "reason omits the attempt count: {reason}");
+        for attempt in 1..=DECISION_ATTEMPTS {
+            assert!(
+                reason.contains(&format!("attempt {attempt}")),
+                "reason omits attempt {attempt}: {reason}"
+            );
+        }
+        assert!(reason.contains("no diagnostic output"), "empty stderr left no trace: {reason}");
+        assert_eq!(
+            CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
+            CampaignStatus::Escalated
+        );
+    }
+
+    /// Re-asking an agent that already answered only burns identical
+    /// invocations — the answer will be malformed again.
+    #[tokio::test(start_paused = true)]
+    async fn malformed_decision_escalates_without_burning_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::success_with("I think we should keep going.");
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(agent.invocations().len(), 1, "a permanent failure must not be retried");
+        assert!(
+            terminal_reason(&result, &EventType::CampaignEscalated)
+                .contains("campaign formation failed")
+        );
+    }
+
+    // --- provider outages pause rather than escalate ----------------------
+
+    /// A tripped breaker killed a campaign at cycle 0, twice, before it had
+    /// done any work. The breaker stays open, so retrying is pointless and
+    /// escalating spends the campaign on something outside its own work.
+    #[tokio::test(start_paused = true)]
+    async fn open_provider_circuit_breaker_pauses_the_campaign_without_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::always(AgentResponse::terminal_failure(
+            AgentProvider::Claude,
+            AgentFailureKind::AccountLimit,
+            "You've hit your monthly spend limit (circuit breaker open for provider claude)",
+        ));
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(agent.invocations().len(), 1, "an open breaker returns the same refusal");
+        assert!(
+            result.events.is_empty(),
+            "a pause must leave no terminal event to resurrect from: {:?}",
+            result.events
+        );
+        assert!(result.summary.contains("paused"), "pause reason lost: {}", result.summary);
+        assert!(result.summary.contains("monthly spend limit"));
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Paused);
+        assert_eq!(campaign.cycles_completed, 2, "a pause must not consume a cycle");
+    }
+
+    /// The same breaker text also arrives as the executor's typed verdict.
+    #[tokio::test(start_paused = true)]
+    async fn runner_error_from_an_open_breaker_pauses_and_keeps_the_run_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::success();
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(run_result_with(TaskVerdict::RunnerError {
+                    detail: "agent account limit reached: You've hit your monthly spend limit \
+                             (circuit breaker open for provider claude)"
+                        .to_string(),
+                })),
+            })
+            .unwrap(),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(agent.invocations().is_empty());
+        assert!(result.events.is_empty(), "expected no terminal event: {:?}", result.events);
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Paused);
+        assert_eq!(
+            campaign
+                .pending_run_result
+                .as_ref()
+                .and_then(|result| result.preservation_ref.as_deref()),
+            Some("foundry-task/preserved"),
+            "the resumed advance must still see the preserved work"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runner_error_unrelated_to_the_provider_still_escalates() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let block = AdvanceCampaign::new(
+            FakeAgentGateway::success(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(run_result_with(TaskVerdict::RunnerError {
+                    detail: "task review missing isolated worktree".to_string(),
+                })),
+            })
+            .unwrap(),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(
+            terminal_reason(&result, &EventType::CampaignEscalated)
+                .contains("runner/provider unavailable")
+        );
+        assert_eq!(
+            CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
+            CampaignStatus::Escalated
+        );
+    }
+
+    // --- red done-gates dispatch an actionable objective ------------------
+
+    fn failing_clippy_gate() -> foundry_sdk::gates::GateResult {
+        foundry_sdk::gates::GateResult {
+            name: "campaign_done_1".to_string(),
+            command: "cargo clippy --workspace --all-targets -- -D warnings".to_string(),
+            passed: false,
+            required: true,
+            output: "error: this function has too many lines (145/100)\n  \
+                     --> crates/foundry-cli/tests/registry_cli.rs:349:1"
+                .to_string(),
+            exit_code: 1,
+            duration_ms: Some(10),
+            fix_applied: false,
+        }
+    }
+
+    /// Dispatched with nothing but a gate command, cycles were observed
+    /// rewriting the very test file the lint named.
+    #[test]
+    fn red_done_gate_objective_carries_the_mission_and_the_failing_output() {
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.mission =
+            "Expose campaign state over gRPC with a live CLI integration test.".to_string();
+        let gate = failing_clippy_gate();
+
+        let decision = enforce_done_gate_truth(
+            &campaign,
+            CampaignDecision::Done {
+                reason: "the mission looks shipped".to_string(),
+            },
+            std::slice::from_ref(&gate),
+        );
+
+        let CampaignDecision::Advance { objective, .. } = decision else {
+            panic!("a red required gate must rewrite done into advance");
+        };
+        assert!(objective.contains(&campaign.mission), "objective lost the mission: {objective}");
+        assert!(
+            objective.contains(&gate.command),
+            "objective lost the gate command: {objective}"
+        );
+        assert!(
+            objective.contains("crates/foundry-cli/tests/registry_cli.rs:349"),
+            "objective lost the gate output: {objective}"
+        );
+        assert!(objective.contains("too many lines"));
+    }
+
+    #[test]
+    fn passing_required_gates_leave_a_done_decision_alone() {
+        let campaign = campaign_for_accumulation_test();
+        let gate = foundry_sdk::gates::GateResult {
+            passed: true,
+            ..failing_clippy_gate()
+        };
+        let decision = CampaignDecision::Done {
+            reason: "every gate is green".to_string(),
+        };
+
+        assert_eq!(
+            enforce_done_gate_truth(&campaign, decision.clone(), std::slice::from_ref(&gate)),
+            decision
+        );
     }
 }
