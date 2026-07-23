@@ -279,12 +279,12 @@ fn decision_prompt(
     format!(
         "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
-         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS:\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
-         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
+         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
-         {{\"decision\":\"advance\",\"objective\":\"single objective plus gates/forbidden moves/evidence\",\"reason\":\"gap from mission minus state\"}}\n\
+         {{\"decision\":\"advance\",\"objective\":\"single objective plus forbidden moves and task-producible evidence\",\"reason\":\"gap from mission minus state\"}}\n\
          {{\"decision\":\"escalate\",\"reason\":\"owner decision required\"}}",
         campaign.name,
         campaign.mission,
@@ -2028,6 +2028,58 @@ mod tests {
         );
         assert_eq!(payload.gate_results[0].command, "cargo test --workspace");
         assert!(payload.gate_results[0].required);
+    }
+
+    /// Formation must not ask the task to prove a gate the task never runs.
+    ///
+    /// The campaign's mechanical done-gates run at formation against the
+    /// delivered trunk; the task runs the project's own discovered gates in an
+    /// isolated worktree. Restating the former as task acceptance evidence
+    /// creates a gap the executor cannot close no matter what it does —
+    /// observed consuming a reviewer gap slot in three of one campaign's five
+    /// cycles, including as the sole remaining item on an otherwise satisfied
+    /// final cycle.
+    #[tokio::test]
+    async fn formation_is_told_not_to_restate_done_gates_as_task_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.done_evidence.push(DoneEvidence::Gate {
+            command: "mdbook build book".to_string(),
+            required: true,
+            artifacts: vec![],
+        });
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(
+            prompt.contains("the task does NOT run these"),
+            "the done-gate section must say where those gates actually run"
+        );
+        assert!(
+            prompt.contains("DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE"),
+            "formation must be told not to demand evidence the task cannot produce"
+        );
+        // The JSON shape hint used to literally ask for "gates" in the objective.
+        assert!(
+            !prompt.contains("single objective plus gates/"),
+            "the response shape must stop inviting gate commands into the objective"
+        );
     }
 
     /// The dispatched task must name its cycle, and name the same one its

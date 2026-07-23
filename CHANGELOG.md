@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-23
+
+### Added
+
+- A campaign cycle can now be reconstructed from the event stream alone.
+  Formation was the only agent-invoking block that recorded no `prompt`, so
+  what the decision agent actually saw — whether it was shown the accumulated
+  unmerged work or a stale tree — could only be inferred from its prose.
+  `CampaignAdvanceCompleted` now carries `prompt`, `agent_provider`, and the
+  `gate_results` its done-evidence gates produced. Decisions forced without
+  asking an agent record no formation, and the absence is asserted rather than
+  implied.
+
+- Campaign events now carry tracing identity. The advance RPC built its root
+  with a bare `Event::new`, and `stamp_context` only ever *inherits* — so every
+  campaign event in production carried `trace_id: null` and `span_id: null`,
+  leaving the longest-running workflow in the system the only one `foundry
+  trace` could not reconstruct. The root now mints both: the trace groups a
+  campaign run, and the span groups one cycle, since `CampaignAdvanceRequested`
+  is a span opener and each advance mints a fresh one.
+
+- `campaign_cycle` is stamped onto every task-side event. Of the twelve events a
+  cycle emits, only `CampaignAdvanceCompleted` recorded `cycles_completed`, so
+  grouping events to a *campaign* worked but grouping them to a *cycle* meant
+  sorting on time and treating each `CampaignAdvanceRequested` as a boundary —
+  a guess that breaks on concurrent campaigns in one project and on
+  out-of-order arrival. The field sits beside `campaign` in both `ChainContext`
+  and `LoopContext` so it survives exactly the hops `campaign` survives, and is
+  set from the `cycles_completed` incremented for that dispatch so both sides of
+  a cycle report the same number.
+
+### Fixed
+
+- Formation no longer restates the campaign's mechanical done-gates as task
+  acceptance evidence. Those gates run at formation against the delivered trunk;
+  a dispatched task runs the project's own discovered gates in an isolated
+  worktree and cannot produce a result for a command it is never given. The
+  response-shape hint literally asked for "gates" in the objective, so an
+  unsatisfiable item appeared in three of one campaign's five cycles — including
+  as the sole outstanding gap on an otherwise fully satisfied final cycle. It
+  cost reviewer attention rather than blocking completion, since campaign
+  done-gates are evaluated separately at formation.
+
 ## [0.32.1] - 2026-07-22
 
 ### Fixed

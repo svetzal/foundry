@@ -132,6 +132,12 @@ reviews the repository and context artifacts, then makes exactly one decision:
 - `escalate` — stop because the budget, an escalation rule, runner failure, or
   owner judgment requires attention.
 
+A campaign's mechanical done-gates run at formation, against the delivered
+trunk. They are not the task's gates: a dispatched task runs the project's own
+discovered gates inside its isolated worktree. Formation states only evidence
+the task can produce there — asking it to prove a command it is never given
+creates a gap it cannot close.
+
 A `done` decision made while a required done-evidence gate is red is rewritten
 into an `advance`. The synthesized objective carries the campaign mission and
 each failing gate's own output, not just the command that failed, and forbids
