@@ -9,7 +9,10 @@ use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
+use foundry_sdk::campaign::{
+    Campaign, CampaignStatus, CampaignStore, ContextRole, MAX_INLINE_CONTEXT_BYTES, OwnerDecision,
+    context_role,
+};
 use foundry_sdk::registry::Registry;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
@@ -357,7 +360,49 @@ fn validate_context_paths(campaign: &Campaign, repo_path: &Path) -> Result<()> {
     for context_path in &campaign.context_paths {
         validate_context_path(campaign, &repo, context_path)?;
     }
-    Ok(())
+    validate_inline_context_budget(campaign, &repo)
+}
+
+/// Reject a campaign whose *inlined* context is too large to form against.
+///
+/// Every provider passes the formation prompt as a command-line argument, so
+/// oversized context does not degrade gracefully — it exceeds `ARG_MAX` and
+/// `execve` fails before the agent starts, surfacing only as an opaque
+/// "unavailable" that retries cannot help. Catching it here means an author
+/// learns at definition time rather than mid-campaign.
+///
+/// Only binding artifacts count: source paths are listed for the agent to read
+/// on demand, so they cost nothing in the prompt.
+fn validate_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<()> {
+    let mut total = 0u64;
+    let mut largest: Vec<(u64, &str)> = Vec::new();
+    for context_path in &campaign.context_paths {
+        if context_role(context_path) != ContextRole::Binding {
+            continue;
+        }
+        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).unwrap_or_default();
+        total += bytes;
+        largest.push((bytes, context_path));
+    }
+    if total <= MAX_INLINE_CONTEXT_BYTES {
+        return Ok(());
+    }
+    largest.sort_by_key(|(bytes, _)| std::cmp::Reverse(*bytes));
+    let worst = largest
+        .iter()
+        .take(3)
+        .map(|(bytes, path)| format!("{path} ({bytes} bytes)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "campaign '{}' inlines {total} bytes of context, over the {MAX_INLINE_CONTEXT_BYTES}-byte budget. \
+         Formation is passed to the agent as a command-line argument, so oversized context fails the \
+         spawn outright rather than degrading. Largest: {worst}. Context paths carry binding wording \
+         that must reach the acceptance criteria — a charter or an intent projection. Anything the \
+         agent only needs to inspect can be dropped: it has Read, Glob, and Grep over the checkout, \
+         and source paths are already listed for it rather than inlined.",
+        campaign.name
+    )
 }
 
 fn validate_context_path(campaign: &Campaign, repo: &Path, context_path: &str) -> Result<()> {
@@ -823,6 +868,74 @@ mod tests {
             assert_eq!(err.to_string(), expected_error);
             assert_eq!(std::fs::read(&store).unwrap(), original.as_bytes());
         }
+    }
+
+    /// Oversized inlined context is not a soft cost: every provider passes the
+    /// formation prompt as a command-line argument, so exceeding `ARG_MAX` fails
+    /// the spawn outright. One real campaign reached 1,050,282 bytes and could
+    /// not be formed at all, surfacing only as an opaque "unavailable".
+    #[tokio::test]
+    async fn add_rejects_context_that_exceeds_the_inline_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let huge = "x".repeat(usize::try_from(MAX_INLINE_CONTEXT_BYTES + 1).unwrap());
+        std::fs::write(repo.join("HUGE.md"), &huge).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c",
+                "project":"p",
+                "mission":"ship",
+                "context_paths":["HUGE.md"],
+                "done_evidence":[{"kind":"review","statement":"shipped"}]
+            }"#,
+        );
+
+        let err = add(&store, &registry_path, "http://127.0.0.1:0", true, &file)
+            .await
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("over the"), "must name the budget: {message}");
+        assert!(message.contains("HUGE.md"), "must name the offending file: {message}");
+        assert!(
+            message.contains("Read, Glob, and Grep"),
+            "must tell the author what to do instead: {message}"
+        );
+        assert!(!store.exists(), "a rejected definition must not create a store");
+    }
+
+    /// Source paths are listed for the agent to read on demand, so they cost
+    /// nothing in the prompt and must not count against the inline budget.
+    #[tokio::test]
+    async fn source_context_does_not_consume_the_inline_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let huge = "x".repeat(usize::try_from(MAX_INLINE_CONTEXT_BYTES * 2).unwrap());
+        std::fs::write(repo.join("big_one.rs"), &huge).unwrap();
+        std::fs::write(repo.join("big_two.rs"), &huge).unwrap();
+        std::fs::write(repo.join("CHARTER.md"), "charter").unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c",
+                "project":"p",
+                "mission":"ship",
+                "context_paths":["CHARTER.md","big_one.rs","big_two.rs"],
+                "done_evidence":[{"kind":"review","statement":"shipped"}]
+            }"#,
+        );
+
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+
+        let saved = CampaignStore::load(&store).unwrap();
+        assert_eq!(saved.find("c").unwrap().context_paths.len(), 3);
     }
 
     #[tokio::test]

@@ -204,6 +204,57 @@ pub struct Campaign {
     pub objective_history: Vec<CampaignCycle>,
 }
 
+/// How a campaign context path reaches formation.
+///
+/// The two are not interchangeable. A *binding* artifact is normative — its
+/// exact wording must survive into the acceptance criteria — so it is inlined
+/// verbatim. An *orienting* artifact only says where to look, and the formation
+/// agent already holds `Read`, `Glob`, and `Grep` over the checkout, so
+/// inlining one pays whole-file token cost for the few functions it needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextRole {
+    /// Inlined verbatim: the wording itself is binding.
+    Binding,
+    /// Listed as a path for the agent to read on demand.
+    Orienting,
+}
+
+/// Extensions treated as orienting rather than binding.
+///
+/// Source is the clear case: it is read to understand current state, never
+/// quoted as normative wording. Prose and data formats stay binding, which is
+/// what `context_paths` was designed for — charters and intent projections.
+const ORIENTING_EXTENSIONS: &[&str] = &[
+    "rs", "ex", "exs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "swift", "c", "h",
+    "cpp", "hpp", "cs", "sh", "sql",
+];
+
+/// Total bytes of *inlined* context a campaign may carry.
+///
+/// The hard ceiling is the platform's `ARG_MAX` (1 MiB on macOS), because every
+/// provider passes the prompt as a command-line argument — exceed it and
+/// `execve` fails before the agent starts, which surfaces only as an opaque
+/// "unavailable" that retries cannot help. This budget sits far below that,
+/// both to leave room for the rest of the prompt and because a formation
+/// decision made against a megabyte of inlined source is diluted long before it
+/// is impossible. Campaigns that landed well used 35–183 KB.
+pub const MAX_INLINE_CONTEXT_BYTES: u64 = 262_144;
+
+/// Whether a context path is inlined verbatim or listed for on-demand reading.
+#[must_use]
+pub fn context_role(path: &str) -> ContextRole {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ORIENTING_EXTENSIONS.contains(&extension.as_str()) {
+        ContextRole::Orienting
+    } else {
+        ContextRole::Binding
+    }
+}
+
 /// Commands that assert state on a host rather than in the repository, and so
 /// can never be satisfied by work done inside a disposable task worktree.
 const OFF_WORKTREE_COMMANDS: &[&str] = &[
@@ -744,5 +795,57 @@ mod tests {
         drop(first);
         acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         handle.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod context_role_tests {
+    use super::{ContextRole, MAX_INLINE_CONTEXT_BYTES, context_role};
+
+    /// Source is read to understand current state; the agent has Read/Glob/Grep
+    /// and only needs the path. Prose and data are normative wording and must
+    /// reach the prompt verbatim.
+    #[test]
+    fn source_orients_while_prose_and_data_bind() {
+        for path in [
+            "parite-core/src/retrieval/coordinator.rs",
+            "lib/ops_visualizer_web/live/foundry_live.ex",
+            "src/apis/assessments.ts",
+            "scripts/deploy.sh",
+        ] {
+            assert_eq!(context_role(path), ContextRole::Orienting, "should orient: {path}");
+        }
+        for path in [
+            "CHARTER.md",
+            "AGENTS.md",
+            ".alloy/projections/AGENTS.generated.md",
+            "campaigns/thing-v1.json",
+            "docs/design.txt",
+        ] {
+            assert_eq!(context_role(path), ContextRole::Binding, "should bind: {path}");
+        }
+    }
+
+    /// An extensionless file (LICENSE, Makefile) is prose until proven
+    /// otherwise — binding is the safe default, since omitting normative
+    /// wording is worse than inlining a small file.
+    #[test]
+    fn unknown_and_extensionless_paths_bind() {
+        assert_eq!(context_role("LICENSE"), ContextRole::Binding);
+        assert_eq!(context_role("Makefile"), ContextRole::Binding);
+        assert_eq!(context_role("docs/notes.unknownext"), ContextRole::Binding);
+    }
+
+    #[test]
+    fn extension_matching_is_case_insensitive() {
+        assert_eq!(context_role("src/Main.RS"), ContextRole::Orienting);
+    }
+
+    /// The budget must stay well clear of the 1 MiB `ARG_MAX` that the whole
+    /// command line has to fit inside, since context is only one of its parts.
+    /// Checked at compile time so the constant can never drift into the cliff.
+    #[test]
+    fn inline_budget_leaves_room_for_the_rest_of_the_command_line() {
+        const { assert!(MAX_INLINE_CONTEXT_BYTES < 1_048_576 / 2) };
     }
 }

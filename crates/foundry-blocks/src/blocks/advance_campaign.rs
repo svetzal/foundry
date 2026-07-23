@@ -46,15 +46,47 @@ impl AdvanceCampaign {
     }
 }
 
+/// Build the context section: binding artifacts verbatim, orienting artifacts
+/// as a manifest the agent reads on demand.
+///
+/// Inlining every declared path put 1,032,392 bytes of mostly source into one
+/// campaign's prompt and pushed the whole command line past `ARG_MAX`, so the
+/// agent could not be spawned at all. The agent holds `Read`, `Glob`, and
+/// `Grep` over this same checkout, so a path is all it needs to reach a source
+/// file — and it then reads the part it wants rather than the whole file.
 fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
     let repo = repo.canonicalize()?;
-    let mut sections = Vec::new();
+    let mut binding = Vec::new();
+    let mut orienting = Vec::new();
     for relative in paths {
         let path = repo.join(relative).canonicalize()?;
         if !path.starts_with(&repo) {
             anyhow::bail!("campaign context path escapes project: {relative}");
         }
-        sections.push(format!("## {relative}\n{}", std::fs::read_to_string(&path)?));
+        match foundry_sdk::campaign::context_role(relative) {
+            foundry_sdk::campaign::ContextRole::Binding => {
+                binding.push(format!("## {relative}\n{}", std::fs::read_to_string(&path)?));
+            }
+            foundry_sdk::campaign::ContextRole::Orienting => {
+                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
+                orienting.push(format!("- {relative} ({bytes} bytes)"));
+            }
+        }
+    }
+
+    let mut sections = Vec::new();
+    if !binding.is_empty() {
+        sections.push(binding.join("\n\n"));
+    }
+    if !orienting.is_empty() {
+        sections.push(format!(
+            "## Declared source context — READ THESE YOURSELF\n\
+             These are listed, not inlined. You have Read, Glob, and Grep over this checkout: \
+             open the ones the decision actually turns on, and read the relevant part rather \
+             than the whole file. Their content is current state to be inspected, not binding \
+             wording to be quoted.\n{}",
+            orienting.join("\n")
+        ));
     }
     Ok(sections.join("\n\n"))
 }
@@ -2028,6 +2060,54 @@ mod tests {
         );
         assert_eq!(payload.gate_results[0].command, "cargo test --workspace");
         assert!(payload.gate_results[0].required);
+    }
+
+    /// Source context reaches formation as a path, not as its contents.
+    ///
+    /// One campaign declared 21 context paths totalling 1,039,114 bytes, 17 of
+    /// them source. Inlined, the prompt exceeded `ARG_MAX` and the agent could
+    /// not be spawned at all. The agent holds `Read`/`Glob`/`Grep` over the same
+    /// checkout, so a path is all it needs — and it reads the part it wants.
+    #[tokio::test]
+    async fn source_context_is_listed_while_binding_context_is_inlined() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(repo.join("CHARTER.md"), "BINDING-CHARTER-WORDING").unwrap();
+        std::fs::write(repo.join("big.rs"), "fn f() { /* SOURCE-BODY */ }").unwrap();
+        let store_path = repo.join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.context_paths = vec!["CHARTER.md".to_string(), "big.rs".to_string()];
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", repo.to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(
+            prompt.contains("BINDING-CHARTER-WORDING"),
+            "binding context must still be inlined"
+        );
+        assert!(
+            !prompt.contains("SOURCE-BODY"),
+            "source context must not be inlined into the prompt"
+        );
+        assert!(prompt.contains("big.rs"), "source context must still be listed by path");
+        assert!(
+            prompt.contains("READ THESE YOURSELF"),
+            "the agent must be told the listed paths are its to open"
+        );
     }
 
     /// Formation must not ask the task to prove a gate the task never runs.
