@@ -7,6 +7,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-07-23
+
+### Fixed
+
+- The campaign inline-context budget is now enforced on the daemon's
+  `AddCampaign` path, not only the CLI's `--offline` branch. `foundry campaign
+  add` goes through the daemon by default and the daemon carries its own
+  context validation, so the 0.34.0 guard never ran in practice — a live smoke
+  test admitted a definition inlining 347,694 bytes without complaint. The
+  check now lives in `foundry-sdk` and both admission paths call it, so the two
+  copies cannot drift apart again.
+
 ## [0.34.0] - 2026-07-23
 
 ### Fixed
