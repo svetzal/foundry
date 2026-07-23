@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.30.4] - 2026-07-22
+
 ### Fixed
 
 - Campaign formation now reasons about the tree the next cycle actually starts
