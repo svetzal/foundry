@@ -267,6 +267,11 @@ unknown registered project or invalid context artifact; `ALREADY_EXISTS` when a
 campaign with the same name already exists; `INTERNAL` when the store cannot be
 saved. On `INTERNAL`, the daemon leaves the on-disk campaign store unchanged.
 
+**CLI:** `foundry campaign add <definition.json>` routes through this RPC by
+default. The online CLI renders the returned `CampaignDetail` directly and does
+not re-read `FOUNDRY_CAMPAIGNS_PATH`. Pass `--offline` only when you
+intentionally need direct-file recovery while the daemon is stopped.
+
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 
 List the durable campaign inventory from the daemon's configured campaign
@@ -381,24 +386,6 @@ The persisted owner decision carries the decision text, the campaign's current
 `authorized_by` identity, and the daemon timestamp. Existing counters and any
 stored `pending_run_result` are preserved.
 
-### `CompleteCampaign(CompleteCampaignRequest) → CompleteCampaignResponse`
-
-Mark an authorized campaign complete from outside the formation loop. The
-request requires a non-empty reason and an existing `authorized_by` owner. The
-daemon stores the reason as an append-only owner record, clears any pending run
-result, changes the status to `completed`, and emits the normal
-`CampaignCompleted` event for terminal observers. Calling it on an already
-completed campaign is idempotent.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Exact campaign name to complete |
-| `reason` | string | Evidence-backed owner reason for external completion |
-
-The response contains the full updated `CampaignDetail`. Errors are
-`INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown campaign,
-and `FAILED_PRECONDITION` when the campaign has no authorizing owner.
-
 **Request:**
 
 | Field | Type | Description |
@@ -424,6 +411,39 @@ this RPC by default and therefore requires a reachable daemon. Pass
 `--offline`, an unreachable daemon returns an error and leaves the client-side
 campaigns path unchanged.
 
+### `CompleteCampaign(CompleteCampaignRequest) → CompleteCampaignResponse`
+
+Mark an authorized campaign complete from outside the formation loop. The
+request requires a non-empty reason and an existing `authorized_by` owner. The
+daemon stores the reason as an append-only owner record, clears any pending run
+result, changes the status to `completed`, and emits the normal
+`CampaignCompleted` event for terminal observers. Calling it on an already
+completed campaign is idempotent.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to complete |
+| `reason` | string | Evidence-backed owner reason for external completion |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Full campaign detail reflecting the state after completion is applied |
+
+**Errors:** `INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown
+campaign, and `FAILED_PRECONDITION` when the campaign has no authorizing owner
+or the campaign store is malformed; `INTERNAL` when the campaign store is
+unreadable.
+
+**CLI:** `foundry campaign complete <name> --reason "<text>"` routes through
+this RPC by default. The online CLI renders the returned `CampaignDetail`
+directly, never re-reads `FOUNDRY_CAMPAIGNS_PATH`, and leaves the client-side
+path untouched if the daemon is unreachable. Pass `--offline` only for
+direct-file recovery while the daemon is stopped.
+
 ### `AdvanceCampaign(AdvanceCampaignRequest) → AdvanceCampaignResponse`
 
 Dispatch one manual campaign-advance workflow for an `active` or `staged`
@@ -447,6 +467,11 @@ releases the lock, emits `CampaignAdvanceRequested`, and returns immediately.
 campaign is `paused`, `escalated`, or `completed`; `INTERNAL` when the store is
 unreadable. Rejected advances do not mutate the store.
 
+**CLI:** `foundry campaign advance <name>` routes through this RPC by default.
+The online CLI prints the returned root `event_id`, watches the daemon-owned
+workflow stream, and renders the daemon trace for that event. It does not
+re-read `FOUNDRY_CAMPAIGNS_PATH`.
+
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 
 Retrieve the complete durable definition of one campaign by exact name. Unlike
@@ -469,6 +494,10 @@ preserved), escalation rules, and all runtime status fields.
 **Errors:** `NOT_FOUND` when no campaign with the given name exists in the
 store (even when other campaigns are present); `FAILED_PRECONDITION` when the
 campaign store is malformed; `INTERNAL` when the campaign store is unreadable.
+
+**CLI:** `foundry campaign show <name>` routes through this RPC by default and
+renders the returned `CampaignDetail` directly, without re-reading
+`FOUNDRY_CAMPAIGNS_PATH`.
 
 ### `Trace(TraceRequest) → TraceResponse`
 

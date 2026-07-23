@@ -150,14 +150,17 @@ foundry campaign resume <name> [--add-cycles N]
 Campaign definitions live in the daemon-owned campaign store. By default,
 `foundry campaign add/list/show/advance/pause/resume/decide/complete` all go
 through typed gRPC and do not read or mutate the client-side
-`FOUNDRY_CAMPAIGNS_PATH`. Pass `--offline` only when the daemon is stopped and
-you intentionally need direct-file recovery. Campaigns carry a mission, neutral
-context artifact paths, required done evidence, escalation rules, an owner
-authorization, an optional agent provider, and a campaign-level cycle budget.
-The formation chooses exactly one of done, one next objective, or escalation.
-A task result automatically requests the next advance; remainders and defects
-continue from preserved work, while human decisions and runner errors
-escalate. Completion and escalation are forced into the ops digest.
+`FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
+daemon's typed response or workflow output directly, so stale client-side
+campaign files cannot mask the live daemon-owned state. Pass `--offline` only
+when the daemon is stopped and you intentionally need direct-file recovery.
+Campaigns carry a mission, neutral context artifact paths, required done
+evidence, escalation rules, an owner authorization, an optional agent
+provider, and a campaign-level cycle budget. The formation chooses exactly one
+of done, one next objective, or escalation. A task result automatically
+requests the next advance; remainders and defects continue from preserved
+work, while human decisions and runner errors escalate. Completion and
+escalation are forced into the ops digest.
 
 When owner-reviewed evidence proves a mission shipped outside the formation
 loop, use `campaign complete` with a non-empty reason. Foundry records the

@@ -112,6 +112,8 @@ the generic retry loop cannot claim them.
 Triggered manually by `foundry campaign advance <name>` or automatically by a
 campaign task result. Online campaign control flows through the daemon-owned
 campaign store; explicit `--offline` is the only direct-file recovery path.
+Online reads and mutations render daemon-owned responses directly rather than
+re-reading `FOUNDRY_CAMPAIGNS_PATH`.
 Each decision reloads the durable campaign record under a process lock before
 reasoning begins.
 

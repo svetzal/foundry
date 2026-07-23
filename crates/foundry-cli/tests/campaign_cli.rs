@@ -25,6 +25,22 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 const DUMMY_ADDR: &str = "http://127.0.0.1:0";
+const DAEMON_ADD_MISSION: &str = "Daemon add mission marker";
+const CLIENT_ADD_MISSION: &str = "Client add mission marker";
+const DAEMON_SHOW_MISSION: &str = "Daemon show mission marker";
+const CLIENT_SHOW_MISSION: &str = "Client show mission marker";
+const DAEMON_PAUSE_MISSION: &str = "Daemon pause mission marker";
+const CLIENT_PAUSE_MISSION: &str = "Client pause mission marker";
+const DAEMON_RESUME_MISSION: &str = "Daemon resume mission marker";
+const CLIENT_RESUME_MISSION: &str = "Client resume mission marker";
+const DAEMON_DECIDE_MISSION: &str = "Daemon decide mission marker";
+const CLIENT_DECIDE_MISSION: &str = "Client decide mission marker";
+const DAEMON_COMPLETE_MISSION: &str = "Daemon complete mission marker";
+const CLIENT_COMPLETE_MISSION: &str = "Client complete mission marker";
+const DAEMON_LIST_AGENT: &str = "daemon-list-agent";
+const CLIENT_LIST_AGENT: &str = "client-list-agent";
+const DAEMON_ADVANCE_REASON: &str = "campaign_advance_completed";
+const CLIENT_ADVANCE_MARKER: &str = "client advance stale marker";
 
 fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
     Campaign {
@@ -47,6 +63,18 @@ fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
     }
+}
+
+fn make_campaign_with_mission(
+    name: &str,
+    status: CampaignStatus,
+    mission: &str,
+    agent_provider: Option<&str>,
+) -> Campaign {
+    let mut campaign = make_campaign(name, status);
+    campaign.mission = mission.to_string();
+    campaign.agent_provider = agent_provider.map(ToOwned::to_owned);
+    campaign
 }
 
 fn save_campaigns(path: &std::path::Path, campaigns: Vec<Campaign>) {
@@ -172,12 +200,12 @@ fn assert_success(output: &std::process::Output, context: &str) {
     );
 }
 
-fn write_definition(dir: &TempDir, name: &str) -> std::path::PathBuf {
+fn write_definition(dir: &TempDir, name: &str, mission: &str) -> std::path::PathBuf {
     let path = dir.path().join(format!("{name}.json"));
     std::fs::write(
         &path,
         format!(
-            "{{\"name\":\"{name}\",\"project\":\"daemon-project\",\"mission\":\"Mission for {name}\",\"done_evidence\":[{{\"kind\":\"review\",\"statement\":\"done\"}}],\"authorized_by\":\"owner\"}}"
+            "{{\"name\":\"{name}\",\"project\":\"daemon-project\",\"mission\":\"{mission}\",\"done_evidence\":[{{\"kind\":\"review\",\"statement\":\"done\"}}],\"authorized_by\":\"owner\"}}"
         ),
     )
     .expect("write definition");
@@ -203,6 +231,59 @@ fn seed_client_campaigns_trap(home: &std::path::Path) -> (std::path::PathBuf, Ve
     (path, bytes)
 }
 
+fn seed_stale_client_campaigns(home: &std::path::Path) -> std::path::PathBuf {
+    let path = home.join(".foundry/campaigns.json");
+    std::fs::create_dir_all(path.parent().expect("campaigns path parent")).expect("create parent");
+    save_campaigns(
+        &path,
+        vec![
+            make_campaign_with_mission(
+                "online-added",
+                CampaignStatus::Completed,
+                CLIENT_ADD_MISSION,
+                Some("client-add-agent"),
+            ),
+            make_campaign_with_mission(
+                "showme",
+                CampaignStatus::Completed,
+                CLIENT_SHOW_MISSION,
+                Some(CLIENT_LIST_AGENT),
+            ),
+            make_campaign_with_mission(
+                "pausable",
+                CampaignStatus::Escalated,
+                CLIENT_PAUSE_MISSION,
+                Some("client-pause-agent"),
+            ),
+            make_campaign_with_mission(
+                "resumable",
+                CampaignStatus::Completed,
+                CLIENT_RESUME_MISSION,
+                Some("client-resume-agent"),
+            ),
+            make_campaign_with_mission(
+                "escalated",
+                CampaignStatus::Paused,
+                CLIENT_DECIDE_MISSION,
+                Some("client-decide-agent"),
+            ),
+            make_campaign_with_mission(
+                "completable",
+                CampaignStatus::Active,
+                CLIENT_COMPLETE_MISSION,
+                Some("client-complete-agent"),
+            ),
+            make_campaign_with_mission(
+                "advanceable",
+                CampaignStatus::Completed,
+                CLIENT_ADVANCE_MARKER,
+                Some("client-advance-agent"),
+            ),
+        ],
+    );
+    path
+}
+
 fn spawn_advance_terminal_bridge(event_tx: broadcast::Sender<Event>) {
     let mut rx = event_tx.subscribe();
     tokio::spawn(async move {
@@ -216,7 +297,7 @@ fn spawn_advance_terminal_bridge(event_tx: broadcast::Sender<Event>) {
                         "campaign": "advanceable",
                         "cycles_completed": 2,
                         "cycles_landed": 1,
-                        "reason": "bridge completion for CLI boundary test"
+                        "reason": DAEMON_ADVANCE_REASON
                     }),
                 );
                 let _ = event_tx.send(completed);
@@ -292,6 +373,29 @@ fn online_command_vectors(definition: &std::path::Path) -> Vec<(String, Vec<Stri
     ]
 }
 
+fn assert_stdout_proves_daemon_boundary(label: &str, stdout: &str) {
+    let (expected, forbidden) = match label {
+        "add" => (DAEMON_ADD_MISSION, CLIENT_ADD_MISSION),
+        "list" => (DAEMON_LIST_AGENT, CLIENT_LIST_AGENT),
+        "show" => (DAEMON_SHOW_MISSION, CLIENT_SHOW_MISSION),
+        "pause" => (DAEMON_PAUSE_MISSION, CLIENT_PAUSE_MISSION),
+        "resume" => (DAEMON_RESUME_MISSION, CLIENT_RESUME_MISSION),
+        "decide" => (DAEMON_DECIDE_MISSION, CLIENT_DECIDE_MISSION),
+        "complete" => (DAEMON_COMPLETE_MISSION, CLIENT_COMPLETE_MISSION),
+        "advance" => (DAEMON_ADVANCE_REASON, CLIENT_ADVANCE_MARKER),
+        other => panic!("unexpected label: {other}"),
+    };
+
+    assert!(
+        stdout.contains(expected),
+        "online {label}: stdout must contain daemon-owned marker {expected:?}\nstdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains(forbidden),
+        "online {label}: stdout must not contain stale client-side marker {forbidden:?}\nstdout: {stdout}"
+    );
+}
+
 fn assert_daemon_mutations(campaigns_path: &std::path::Path) {
     let store = CampaignStore::load(campaigns_path).expect("load daemon campaigns");
     assert!(store.find("online-added").is_some());
@@ -300,8 +404,50 @@ fn assert_daemon_mutations(campaigns_path: &std::path::Path) {
     let escalated = store.find("escalated").expect("escalated");
     assert_eq!(escalated.status, CampaignStatus::Active);
     assert_eq!(escalated.owner_decisions.len(), 1);
+    assert_eq!(escalated.owner_decisions[0].decision, "Use the daemon path.");
     let completable = store.find("completable").expect("completable");
     assert_eq!(completable.status, CampaignStatus::Completed);
+}
+
+fn daemon_campaigns_fixture() -> Vec<Campaign> {
+    vec![
+        make_campaign_with_mission(
+            "showme",
+            CampaignStatus::Active,
+            DAEMON_SHOW_MISSION,
+            Some(DAEMON_LIST_AGENT),
+        ),
+        make_campaign_with_mission(
+            "pausable",
+            CampaignStatus::Active,
+            DAEMON_PAUSE_MISSION,
+            Some("daemon-pause-agent"),
+        ),
+        make_campaign_with_mission(
+            "resumable",
+            CampaignStatus::Paused,
+            DAEMON_RESUME_MISSION,
+            Some("daemon-resume-agent"),
+        ),
+        make_campaign_with_mission(
+            "escalated",
+            CampaignStatus::Escalated,
+            DAEMON_DECIDE_MISSION,
+            Some("daemon-decide-agent"),
+        ),
+        make_campaign_with_mission(
+            "completable",
+            CampaignStatus::Paused,
+            DAEMON_COMPLETE_MISSION,
+            Some("daemon-complete-agent"),
+        ),
+        make_campaign_with_mission(
+            "advanceable",
+            CampaignStatus::Active,
+            "daemon advance mission marker",
+            Some("daemon-advance-agent"),
+        ),
+    ]
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -310,24 +456,14 @@ async fn online_campaign_commands_ignore_absent_client_campaign_path() {
     let client_home = tempfile::tempdir().expect("client tempdir");
     let registry_path = seed_client_registry(client_home.path(), repo_root.path());
     let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
-    save_campaigns(
-        daemon_campaigns.path(),
-        vec![
-            make_campaign("showme", CampaignStatus::Active),
-            make_campaign("pausable", CampaignStatus::Active),
-            make_campaign("resumable", CampaignStatus::Paused),
-            make_campaign("escalated", CampaignStatus::Escalated),
-            make_campaign("completable", CampaignStatus::Paused),
-            make_campaign("advanceable", CampaignStatus::Active),
-        ],
-    );
+    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
     let (service, event_tx, _tmp_traces) =
         make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
     spawn_advance_terminal_bridge(event_tx);
     let addr = start_server(service).await;
 
     let client_campaigns = missing_client_campaigns_path(client_home.path());
-    let definition = write_definition(&client_home, "online-added");
+    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
     for (label, args) in online_command_vectors(&definition) {
         let output =
             run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
@@ -347,24 +483,14 @@ async fn online_campaign_commands_ignore_trap_client_campaign_path() {
     let client_home = tempfile::tempdir().expect("client tempdir");
     let registry_path = seed_client_registry(client_home.path(), repo_root.path());
     let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
-    save_campaigns(
-        daemon_campaigns.path(),
-        vec![
-            make_campaign("showme", CampaignStatus::Active),
-            make_campaign("pausable", CampaignStatus::Active),
-            make_campaign("resumable", CampaignStatus::Paused),
-            make_campaign("escalated", CampaignStatus::Escalated),
-            make_campaign("completable", CampaignStatus::Paused),
-            make_campaign("advanceable", CampaignStatus::Active),
-        ],
-    );
+    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
     let (service, event_tx, _tmp_traces) =
         make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
     spawn_advance_terminal_bridge(event_tx);
     let addr = start_server(service).await;
 
     let (client_campaigns, before) = seed_client_campaigns_trap(client_home.path());
-    let definition = write_definition(&client_home, "online-added");
+    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
     for (label, args) in online_command_vectors(&definition) {
         let output =
             run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
@@ -385,7 +511,7 @@ async fn unreachable_online_campaign_commands_leave_absent_client_path_absent() 
     let client_home = tempfile::tempdir().expect("client tempdir");
     let registry_path = seed_client_registry(client_home.path(), repo_root.path());
     let client_campaigns = missing_client_campaigns_path(client_home.path());
-    let definition = write_definition(&client_home, "online-added");
+    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
 
     for (label, args) in online_command_vectors(&definition) {
         let output =
@@ -409,7 +535,7 @@ async fn unreachable_online_campaign_commands_leave_trap_bytes_unchanged() {
     let client_home = tempfile::tempdir().expect("client tempdir");
     let registry_path = seed_client_registry(client_home.path(), repo_root.path());
     let (client_campaigns, before) = seed_client_campaigns_trap(client_home.path());
-    let definition = write_definition(&client_home, "online-added");
+    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
 
     for (label, args) in online_command_vectors(&definition) {
         let output =
@@ -434,7 +560,7 @@ async fn offline_campaign_recovery_still_works() {
     let client_home = tempfile::tempdir().expect("client tempdir");
     let registry_path = seed_client_registry(client_home.path(), repo_root.path());
     let campaigns_path = client_home.path().join(".foundry/campaigns.json");
-    let definition = write_definition(&client_home, "offline-added");
+    let definition = write_definition(&client_home, "offline-added", "Offline add mission marker");
 
     let add_output = run_foundry(
         client_home.path(),
@@ -579,4 +705,37 @@ async fn offline_campaign_recovery_still_works() {
     let completed = saved.find("complete-offline").expect("complete-offline");
     assert_eq!(completed.status, CampaignStatus::Completed);
     assert!(completed.pending_run_result.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_campaign_commands_render_daemon_owned_fields_not_client_store_fields() {
+    let repo_root = tempfile::tempdir().expect("repo tempdir");
+    let client_home = tempfile::tempdir().expect("client tempdir");
+    let registry_path = seed_client_registry(client_home.path(), repo_root.path());
+    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns tempfile");
+    save_campaigns(daemon_campaigns.path(), daemon_campaigns_fixture());
+    let (service, event_tx, _tmp_traces) =
+        make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo_root.path()));
+    spawn_advance_terminal_bridge(event_tx);
+    let addr = start_server(service).await;
+
+    let client_campaigns = seed_stale_client_campaigns(client_home.path());
+    let before = std::fs::read(&client_campaigns).expect("read stale client campaigns before run");
+    let definition = write_definition(&client_home, "online-added", DAEMON_ADD_MISSION);
+
+    for (label, args) in online_command_vectors(&definition) {
+        let output =
+            run_foundry(client_home.path(), &client_campaigns, &registry_path, &addr, &args);
+        assert_success(&output, &format!("online {label}"));
+        let stdout = stdout_string(&output);
+        assert_stdout_proves_daemon_boundary(&label, &stdout);
+        assert_eq!(
+            std::fs::read(&client_campaigns)
+                .expect("read stale client campaigns after online command"),
+            before,
+            "online {label}: stale client campaigns file must remain byte-identical"
+        );
+    }
+
+    assert_daemon_mutations(daemon_campaigns.path());
 }

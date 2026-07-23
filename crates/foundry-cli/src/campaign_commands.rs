@@ -28,31 +28,44 @@ pub async fn add(
     offline: bool,
     file: &Path,
 ) -> Result<()> {
+    let output = add_and_render(store_path, registry_path, addr, offline, file).await?;
+    print!("{output}");
+    Ok(())
+}
+
+pub async fn add_and_render(
+    store_path: &Path,
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    file: &Path,
+) -> Result<String> {
     let content = std::fs::read_to_string(file)
         .with_context(|| format!("read campaign definition {}", file.display()))?;
     let campaign: Campaign = serde_json::from_str(&content)
         .with_context(|| format!("parse campaign definition {}", file.display()))?;
-    let name = campaign.name.clone();
 
     if offline {
         validate_campaign_definition(&campaign, registry_path)?;
         let mut guard = CampaignStore::lock_exclusive(store_path)?;
+        let name = campaign.name.clone();
         guard.store.add(campaign)?;
         guard.save()?;
-        println!("Added campaign '{name}'.");
-        return Ok(());
+        return Ok(format!("Added campaign '{name}'.\n"));
     }
 
     let mut client =
         connect_daemon_required(addr, &campaign_offline_hint("add <definition.json>")).await?;
-    client
+    let detail = client
         .add_campaign(AddCampaignRequest {
             definition_json: content,
         })
         .await
-        .map_err(status_to_anyhow)?;
-    println!("Added campaign '{name}'.");
-    Ok(())
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in AddCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
 }
 
 pub async fn list(store_path: &Path, addr: &str, offline: bool) -> Result<()> {

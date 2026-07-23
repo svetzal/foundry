@@ -197,11 +197,12 @@ The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
 required before `decide`, `complete`, or resume. `decide` is valid only when the campaign is
 currently `escalated`; it appends an owner decision record and makes that
-policy available to the next formation run. Without `--offline`, every
-campaign subcommand except `advance` requires a reachable `foundryd` daemon and
-fails without touching the client-side `FOUNDRY_CAMPAIGNS_PATH` if the daemon
-is unreachable. `advance` also requires the daemon because it dispatches and
-watches a real workflow. See
+policy available to the next formation run. Without `--offline`, all eight
+campaign subcommands are daemon-authoritative: they require a reachable
+`foundryd` daemon, fail without touching the client-side
+`FOUNDRY_CAMPAIGNS_PATH` if the daemon is unreachable, and render the daemon's
+typed response or workflow output directly rather than re-reading the client
+store. See
 [Tasks and Campaigns](../guide/campaigns.md) for the definition schema and
 lifecycle.
 

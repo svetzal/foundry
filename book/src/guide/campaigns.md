@@ -13,8 +13,10 @@ per-item retry loops are unnecessary.
 The daemon owns the durable campaign inventory. Online
 `foundry campaign add/list/show/advance/pause/resume/decide/complete` all go
 through typed gRPC and do not read, create, or mutate
-`FOUNDRY_CAMPAIGNS_PATH`. Pass `--offline` only for direct-file recovery while
-the daemon is stopped.
+`FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
+daemon's typed response directly, so stale client-side campaign files cannot
+mask the live daemon-owned state. Pass `--offline` only for direct-file
+recovery while the daemon is stopped.
 
 The read-only inventory surface starts with two gRPC queries:
 
@@ -203,8 +205,9 @@ is stopped; the direct-file path cannot emit the terminal event.
 By default, every campaign control command is daemon-authoritative:
 
 - `add` sends the JSON definition through `AddCampaign`; the daemon validates
-  the referenced project and context paths against daemon-owned registry state
-  before persisting.
+  the referenced project and context paths against daemon-owned registry state,
+  persists atomically, and returns the durable `CampaignDetail` that the CLI
+  renders directly.
 - `list` renders `ListCampaigns` directly.
 - `show` renders `GetCampaign` directly.
 - `advance` dispatches `AdvanceCampaign`, prints the returned root event ID,
