@@ -78,9 +78,21 @@ Run all of these before considering work complete:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo deny check
+mdbook build book
 ```
+
+The first four are exactly what `.github/workflows/ci.yml` runs — **keep this
+list and that workflow in sync**. The doc check is easy to forget and fails the
+build on things the other gates accept, notably a public item whose doc comment
+links to a private one (`rustdoc::private_intra_doc_links`). Passing the first
+three locally is not evidence CI will be green.
+
+`cargo deny check` and `mdbook build book` are not in CI but are required before
+a release, since the release contract covers dependencies and the book.
 
 ## Event Naming Conventions
 

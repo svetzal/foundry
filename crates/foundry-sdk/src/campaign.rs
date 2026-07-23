@@ -196,8 +196,8 @@ pub struct Campaign {
     /// continues from its preservation ref. Consumed when a decision is made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_run_result: Option<TaskRunCompletedPayload>,
-    /// Objectives this campaign has already cut, oldest first, capped at
-    /// [`OBJECTIVE_HISTORY_LIMIT`]. Fed back into formation so the decision
+    /// Objectives this campaign has already cut, oldest first, retaining only
+    /// the most recent few cycles. Fed back into formation so the decision
     /// agent can recognise that it is restating an earlier request instead of
     /// cutting new work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

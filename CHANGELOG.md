@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-07-22
+
+### Fixed
+
+- `cargo doc` no longer fails the build. The new public `objective_history`
+  field's doc comment linked to a private constant, which
+  `rustdoc::private_intra_doc_links` rejects under CI's `RUSTDOCFLAGS=-D
+  warnings`. v0.32.0 published binaries with a red CI run; this release
+  supersedes it. `AGENTS.md`'s quality-gate list omitted the doc check and has
+  been corrected to match `.github/workflows/ci.yml`, which is what allowed the
+  gap through in the first place.
+
 ## [0.32.0] - 2026-07-22
 
 ### Fixed
