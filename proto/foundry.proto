@@ -265,6 +265,19 @@ message RegistryEditResponse {
     Project project = 1;
 }
 
+// Add one campaign definition to the daemon-owned campaign store.
+// Online CLI callers send the parsed definition through this typed RPC and do
+// not read, create, or mutate a client-side campaigns file unless `--offline`
+// is explicit. The daemon validates the referenced project and context paths
+// against daemon-owned registry state before persisting.
+message AddCampaignRequest {
+    string definition_json = 1;
+}
+
+message AddCampaignResponse {
+    CampaignDetail campaign = 1;
+}
+
 // Request the durable campaign inventory. When project is non-empty, the
 // result contains only campaigns whose project exactly matches that value.
 message ListCampaignsRequest {
@@ -407,6 +420,8 @@ message AdvanceCampaignResponse {
     // The advance itself is asynchronous; poll GetCampaign to observe the
     // outcome.
     CampaignDetail campaign = 1;
+    // Root event ID of the CampaignAdvanceRequested workflow.
+    string event_id = 2;
 }
 
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.
@@ -475,6 +490,9 @@ service Foundry {
 
     // Edit a project in the daemon-owned registry.
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
+
+    // Add one durable campaign definition to the configured campaign store.
+    rpc AddCampaign(AddCampaignRequest) returns (AddCampaignResponse);
 
     // List durable campaigns from the configured campaign store.
     rpc ListCampaigns(ListCampaignsRequest) returns (ListCampaignsResponse);

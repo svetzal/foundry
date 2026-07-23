@@ -553,12 +553,21 @@ async fn handle_campaign_command(
 ) -> Result<()> {
     match command {
         CampaignCommands::Add { file } => {
-            campaign_commands::add(campaigns_path, &foundry_sdk::paths::registry_path(), &file)
+            campaign_commands::add(
+                campaigns_path,
+                &foundry_sdk::paths::registry_path(),
+                addr,
+                offline,
+                &file,
+            )
+            .await
         }
-        CampaignCommands::List => campaign_commands::list(campaigns_path),
-        CampaignCommands::Show { name } => campaign_commands::show(campaigns_path, &name),
+        CampaignCommands::List => campaign_commands::list(campaigns_path, addr, offline).await,
+        CampaignCommands::Show { name } => {
+            campaign_commands::show(campaigns_path, addr, offline, &name).await
+        }
         CampaignCommands::Advance { name } => {
-            campaign_commands::advance(addr, campaigns_path, &name).await
+            campaign_commands::advance(addr, campaigns_path, offline, &name).await
         }
         CampaignCommands::Pause { name } => {
             campaign_commands::pause(campaigns_path, addr, offline, &name).await

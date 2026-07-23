@@ -183,23 +183,25 @@ foundry campaign resume <name>
 
 | Subcommand | Daemon required? | Description |
 |------------|------------------|-------------|
-| `add` | No | Validate and atomically add one JSON definition |
-| `list` | No | Show campaign status and cycle counts |
-| `show` | No | Show the complete stored campaign record |
+| `add` | Yes unless `--offline` | Validate and atomically add one JSON definition |
+| `list` | Yes unless `--offline` | Show campaign status and cycle counts |
+| `show` | Yes unless `--offline` | Show the complete stored campaign record |
 | `advance` | Yes | Re-evaluate done evidence and dispatch one next task, complete, or escalate |
-| `pause` | No | Halt future automatic and manual advancement |
+| `pause` | Yes unless `--offline` | Halt future automatic and manual advancement |
 | `decide` | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason |
-| `resume` | No | Return an authorized paused or escalated campaign to active state |
+| `resume` | Yes unless `--offline` | Return an authorized paused or escalated campaign to active state |
 
 The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `FOUNDRY_CAMPAIGNS_PATH`. A definition requires non-empty `name`, `project`, and
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
 required before `decide`, `complete`, or resume. `decide` is valid only when the campaign is
 currently `escalated`; it appends an owner decision record and makes that
-policy available to the next formation run. Without `--offline`, `decide`
-requires a reachable `foundryd` daemon and fails without mutating the store if
-the daemon is unreachable. See
+policy available to the next formation run. Without `--offline`, every
+campaign subcommand except `advance` requires a reachable `foundryd` daemon and
+fails without touching the client-side `FOUNDRY_CAMPAIGNS_PATH` if the daemon
+is unreachable. `advance` also requires the daemon because it dispatches and
+watches a real workflow. See
 [Tasks and Campaigns](../guide/campaigns.md) for the definition schema and
 lifecycle.
 

@@ -10,7 +10,13 @@ Campaigns do not contain a pre-cut queue. The next objective is created only
 when the preceding task has a typed result, so stale downstream inventory and
 per-item retry loops are unnecessary.
 
-The daemon exposes the durable inventory through two read-only gRPC queries:
+The daemon owns the durable campaign inventory. Online
+`foundry campaign add/list/show/advance/pause/resume/decide/complete` all go
+through typed gRPC and do not read, create, or mutate
+`FOUNDRY_CAMPAIGNS_PATH`. Pass `--offline` only for direct-file recovery while
+the daemon is stopped.
+
+The read-only inventory surface starts with two gRPC queries:
 
 - **`ListCampaigns`** — returns summary/status records sorted by campaign name,
   with an optional exact `project` filter. Missing or empty stores return an
@@ -166,7 +172,7 @@ question.
 By default, `foundry campaign decide` is an online mutation: it requires a
 reachable `foundryd` daemon and sends the decision through the
 `DecideCampaign` RPC. If the daemon is unreachable, the command fails and does
-not mutate `~/.foundry/campaigns.json`.
+not touch the client-side `FOUNDRY_CAMPAIGNS_PATH`.
 
 If you need to update the file while the daemon is stopped, opt into the direct
 store path explicitly:
@@ -192,46 +198,41 @@ timestamp, clears any stale pending result, and emits the same completion event
 used by an internally completed campaign. Use `--offline` only while the daemon
 is stopped; the direct-file path cannot emit the terminal event.
 
-### Pause and the daemon boundary
+### Online and offline control
 
-`foundry campaign pause` routes the mutation through `foundryd` via the
-`PauseCampaign` gRPC RPC when the daemon is reachable. The daemon owns the
-exclusive lock on the campaign store, so a concurrent advance formation cannot
-race with a pause. On success the command renders the full campaign detail
-returned in `PauseCampaignResponse.campaign` — it does not re-read the store
-file.
+By default, every campaign control command is daemon-authoritative:
 
-If `foundryd` is not running, pass `--offline` to write the store file
-directly:
+- `add` sends the JSON definition through `AddCampaign`; the daemon validates
+  the referenced project and context paths against daemon-owned registry state
+  before persisting.
+- `list` renders `ListCampaigns` directly.
+- `show` renders `GetCampaign` directly.
+- `advance` dispatches `AdvanceCampaign`, prints the returned root event ID,
+  watches the workflow, and then renders the trace from that daemon-owned
+  event.
+- `pause`, `resume`, `decide`, and `complete` render the typed
+  `CampaignDetail` returned by their respective RPCs.
+
+Without `--offline`, an unreachable daemon is always an error. The CLI does
+not warn and fall back to direct file mutation automatically.
+
+If `foundryd` is not running, pass `--offline` to opt into direct-file
+recovery:
 
 ```bash
+foundry campaign add ./parite-phase-2d.json --offline
+foundry campaign list --offline
+foundry campaign show parite-phase-2d --offline
 foundry campaign pause parite-phase-2d --offline
-```
-
-Without `--offline`, the CLI warns and falls back to direct file mutation
-automatically when the daemon is unreachable. Restart `foundryd` afterward so
-its in-memory state stays consistent with the file on disk.
-
-### Resume and the daemon boundary
-
-`foundry campaign resume` routes the mutation through `foundryd` via the
-`ResumeCampaign` gRPC RPC when the daemon is reachable. The daemon owns the
-exclusive lock on the campaign store, so a concurrent advance formation cannot
-race with a resume. On success the command renders the full campaign detail
-returned in `ResumeCampaignResponse.campaign` — it does not re-read the store
-file.
-
-If `foundryd` is not running, pass `--offline` to write the store file
-directly:
-
-```bash
 foundry campaign resume parite-phase-2d --offline
 foundry campaign resume parite-phase-2d --add-cycles 1 --offline
+foundry campaign decide parite-phase-2d --decision "Keep the daemon boundary." --offline
+foundry campaign complete parite-phase-2d --reason "Production verification confirms every required outcome shipped." --offline
 ```
 
-Without `--offline`, the CLI warns and falls back to direct file mutation
-automatically when the daemon is unreachable. Restart `foundryd` afterward so
-its in-memory state stays consistent with the file on disk.
+The offline path reads or mutates the file directly and cannot emit workflow
+events. Restart `foundryd` afterward so its in-memory state is refreshed from
+disk before you resume normal online control.
 
 ## Dry Run
 

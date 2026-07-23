@@ -11,16 +11,16 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
-    AdvanceCampaignRequest, AdvanceCampaignResponse, CompleteCampaignRequest,
-    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
-    EmitResponse, GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest,
-    ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
-    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
-    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
-    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SpanRequest,
-    SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest,
-    WatchResponse, foundry_server::Foundry,
+    AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
+    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
+    DecideCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse,
+    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
+    RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
+    RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
+    SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse,
+    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse,
+    WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -170,6 +170,13 @@ impl Foundry for FoundryService {
         request: Request<RegistryEditRequest>,
     ) -> Result<Response<RegistryEditResponse>, Status> {
         registry_ops::edit(&self.ctx.registry, &self.registry_path, request)
+    }
+
+    async fn add_campaign(
+        &self,
+        request: Request<AddCampaignRequest>,
+    ) -> Result<Response<AddCampaignResponse>, Status> {
+        campaign_ops::add(&self.campaigns_path, &self.ctx.registry, request)
     }
 
     async fn list_campaigns(

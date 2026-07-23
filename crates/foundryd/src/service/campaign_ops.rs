@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Component, Path};
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use tonic::{Request, Response, Status};
@@ -9,13 +10,14 @@ use foundry_sdk::campaign::{
 use foundry_sdk::error::StoreError;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CampaignAdvanceRequestedPayload, CampaignTerminalPayload};
+use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
-    AdvanceCampaignRequest, AdvanceCampaignResponse, Campaign as ProtoCampaign, CampaignDetail,
-    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
-    DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence, GetCampaignRequest,
-    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
+    Campaign as ProtoCampaign, CampaignDetail, CompleteCampaignRequest, CompleteCampaignResponse,
+    DecideCampaignRequest, DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence,
+    GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
     OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
     ResumeCampaignRequest, ResumeCampaignResponse,
 };
@@ -131,6 +133,119 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
 
 fn invalid_state(name: &str, detail: &str) -> Status {
     Status::failed_precondition(format!("campaign '{name}' {detail}"))
+}
+
+fn invalid_argument(message: impl Into<String>) -> Status {
+    Status::invalid_argument(message.into())
+}
+
+fn validate_context_paths(
+    campaign: &foundry_sdk::campaign::Campaign,
+    repo_path: &Path,
+) -> Result<(), Status> {
+    let repo = repo_path.canonicalize().map_err(|_| {
+        Status::failed_precondition(format!(
+            "campaign '{}' project '{}' checkout is unreadable",
+            campaign.name, campaign.project
+        ))
+    })?;
+    for context_path in &campaign.context_paths {
+        validate_context_path(campaign, &repo, context_path)?;
+    }
+    Ok(())
+}
+
+fn validate_context_path(
+    campaign: &foundry_sdk::campaign::Campaign,
+    repo: &Path,
+    context_path: &str,
+) -> Result<(), Status> {
+    let relative = Path::new(context_path);
+    if relative.is_absolute() {
+        return Err(invalid_argument(format!(
+            "campaign '{}' context path must be repository-relative: {context_path}",
+            campaign.name
+        )));
+    }
+    if relative.components().any(|component| matches!(component, Component::ParentDir)) {
+        return Err(invalid_argument(format!(
+            "campaign '{}' context path must not traverse parent directories: {context_path}",
+            campaign.name
+        )));
+    }
+
+    let candidate = repo.join(relative);
+    if !candidate.exists() {
+        return Err(Status::failed_precondition(format!(
+            "campaign '{}' context path missing: {context_path}",
+            campaign.name
+        )));
+    }
+
+    let canonical = candidate.canonicalize().map_err(|_| {
+        Status::failed_precondition(format!(
+            "campaign '{}' context path is unreadable: {context_path}",
+            campaign.name
+        ))
+    })?;
+    if !canonical.starts_with(repo) {
+        return Err(invalid_argument(format!(
+            "campaign '{}' context path escapes project checkout: {context_path}",
+            campaign.name
+        )));
+    }
+    if !canonical.is_file() {
+        return Err(Status::failed_precondition(format!(
+            "campaign '{}' context path must be a file: {context_path}",
+            campaign.name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_campaign_definition(
+    campaign: &foundry_sdk::campaign::Campaign,
+    registry: &Arc<RwLock<Registry>>,
+) -> Result<(), Status> {
+    campaign.validate().map_err(|error| invalid_argument(error.to_string()))?;
+    let registry = registry.read().map_err(|_| Status::internal("registry lock poisoned"))?;
+    let project = registry.find_project(&campaign.project).ok_or_else(|| {
+        Status::failed_precondition(format!(
+            "campaign '{}' references unknown registered project '{}'",
+            campaign.name, campaign.project
+        ))
+    })?;
+    validate_context_paths(campaign, Path::new(&project.path))
+}
+
+pub(super) fn add(
+    campaigns_path: &Path,
+    registry: &Arc<RwLock<Registry>>,
+    request: Request<AddCampaignRequest>,
+) -> Result<Response<AddCampaignResponse>, Status> {
+    let definition_json = request.into_inner().definition_json;
+    let campaign: foundry_sdk::campaign::Campaign = serde_json::from_str(&definition_json)
+        .map_err(|source| {
+            invalid_argument(format!("campaign definition JSON is invalid: {source}"))
+        })?;
+    validate_campaign_definition(&campaign, registry)?;
+
+    let mut guard = lock_store_exclusive(campaigns_path)?;
+    let name = campaign.name.clone();
+    guard
+        .store
+        .add(campaign)
+        .map_err(|error| Status::already_exists(error.to_string()))?;
+    let detail = campaign_to_detail(
+        guard
+            .store
+            .find(&name)
+            .ok_or_else(|| Status::internal("campaign disappeared before save"))?,
+    );
+    guard.save().map_err(map_save_error)?;
+    Ok(Response::new(AddCampaignResponse {
+        campaign: Some(detail),
+    }))
 }
 
 pub(super) fn get(
@@ -381,11 +496,13 @@ pub(super) fn advance(
     .map_err(|e| Status::internal(format!("failed to serialize advance payload: {e}")))?;
 
     let event = Event::new(EventType::CampaignAdvanceRequested, project, Throttle::Full, payload);
+    let event_id = event.id.clone();
 
     super::spawn_workflow(event, ctx);
 
     Ok(Response::new(AdvanceCampaignResponse {
         campaign: Some(detail),
+        event_id,
     }))
 }
 

@@ -1,21 +1,9 @@
 //! CLI handlers for the `foundry campaign` subcommands.
 //!
-//! Inspection commands (`add`, `list`, `show`) always operate on `campaigns.json`
-//! directly — they never need the daemon.
-//!
-//! The `pause` and `resume` mutation commands mirror the sentinel
-//! daemon-or-offline protocol: the online path calls the `PauseCampaign` /
-//! `ResumeCampaign` gRPC RPC and renders the response from the typed detail
-//! field; the offline fallback (and graceful-degradation path when the daemon
-//! is unreachable) mutates the store file directly via
-//! [`CampaignStore::lock_exclusive`].
-//!
-//! The `decide` mutation command is intentionally stricter: without explicit
-//! `--offline` it requires a reachable daemon and must not mutate the store
-//! file when the daemon is unavailable.
-//!
-//! The `advance` command is out of scope for daemon fallback changes in this
-//! slice — its workflow dispatch semantics are handled separately.
+//! The default online path for every `foundry campaign` subcommand is
+//! daemon-authoritative: it goes through typed gRPC and must not read, create,
+//! or mutate `FOUNDRY_CAMPAIGNS_PATH`. Explicit `--offline` remains the only
+//! direct-file recovery path.
 
 use std::path::{Component, Path};
 
@@ -24,25 +12,310 @@ use chrono::Utc;
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore, OwnerDecision};
 use foundry_sdk::registry::Registry;
 
-use crate::daemon::{connect_daemon_required, status_to_anyhow, with_daemon_or_offline_render};
+use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
-    CompleteCampaignRequest, DecideCampaignRequest, PauseCampaignRequest, ResumeCampaignRequest,
+    AddCampaignRequest, AdvanceCampaignRequest, CompleteCampaignRequest, DecideCampaignRequest,
+    GetCampaignRequest, ListCampaignsRequest, PauseCampaignRequest, ResumeCampaignRequest,
+    WatchRequest, foundry_client::FoundryClient,
 };
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
 
-pub fn add(store_path: &Path, registry_path: &Path, file: &Path) -> Result<()> {
+pub async fn add(
+    store_path: &Path,
+    registry_path: &Path,
+    addr: &str,
+    offline: bool,
+    file: &Path,
+) -> Result<()> {
     let content = std::fs::read_to_string(file)
         .with_context(|| format!("read campaign definition {}", file.display()))?;
     let campaign: Campaign = serde_json::from_str(&content)
         .with_context(|| format!("parse campaign definition {}", file.display()))?;
-    validate_campaign_definition(&campaign, registry_path)?;
     let name = campaign.name.clone();
-    let mut guard = CampaignStore::lock_exclusive(store_path)?;
-    guard.store.add(campaign)?;
-    guard.save()?;
+
+    if offline {
+        validate_campaign_definition(&campaign, registry_path)?;
+        let mut guard = CampaignStore::lock_exclusive(store_path)?;
+        guard.store.add(campaign)?;
+        guard.save()?;
+        println!("Added campaign '{name}'.");
+        return Ok(());
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint("add <definition.json>")).await?;
+    client
+        .add_campaign(AddCampaignRequest {
+            definition_json: content,
+        })
+        .await
+        .map_err(status_to_anyhow)?;
     println!("Added campaign '{name}'.");
     Ok(())
+}
+
+pub async fn list(store_path: &Path, addr: &str, offline: bool) -> Result<()> {
+    if offline {
+        let store = CampaignStore::load(store_path)?;
+        if store.campaigns.is_empty() {
+            println!("No campaigns configured.");
+        } else {
+            print!("{}", render::campaign::campaign_table(&store.campaigns));
+        }
+        return Ok(());
+    }
+
+    let mut client = connect_daemon_required(addr, &campaign_offline_hint("list")).await?;
+    let response = client
+        .list_campaigns(ListCampaignsRequest {
+            project: String::new(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    if response.campaigns.is_empty() {
+        println!("No campaigns configured.");
+    } else {
+        print!("{}", render::campaign::campaign_table_proto(&response.campaigns));
+    }
+    Ok(())
+}
+
+pub async fn show(store_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+    if offline {
+        let store = CampaignStore::load(store_path)?;
+        let campaign =
+            store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+        print!("{}", render::campaign::campaign_detail(campaign));
+        return Ok(());
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("show {name}"))).await?;
+    let detail = client
+        .get_campaign(GetCampaignRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?;
+    print!("{}", render::campaign::campaign_detail_proto(&detail));
+    Ok(())
+}
+
+/// Pause a campaign via the daemon (online path) or the campaign store
+/// (offline path).
+pub async fn pause_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+) -> Result<String> {
+    if offline {
+        pause_offline(store_path, name)?;
+        return Ok(format!("Campaign '{name}' is now paused.\n"));
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("pause {name}"))).await?;
+    let detail = client
+        .pause_campaign(PauseCampaignRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in PauseCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+pub async fn pause(store_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+    let output = pause_and_render(store_path, addr, offline, name).await?;
+    print!("{output}");
+    Ok(())
+}
+
+pub async fn decide_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    decision: &str,
+) -> Result<String> {
+    if offline {
+        return decide_offline_and_render(store_path, name, decision);
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("decide {name}"))).await?;
+    let detail = client
+        .decide_campaign(DecideCampaignRequest {
+            name: name.to_string(),
+            decision: decision.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in DecideCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+pub async fn decide(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    decision: &str,
+) -> Result<()> {
+    let output = decide_and_render(store_path, addr, offline, name, decision).await?;
+    print!("{output}");
+    Ok(())
+}
+
+pub async fn complete_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+) -> Result<String> {
+    if offline {
+        return complete_offline_and_render(store_path, name, reason);
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("complete {name}"))).await?;
+    let detail = client
+        .complete_campaign(CompleteCampaignRequest {
+            name: name.to_string(),
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| {
+            anyhow::anyhow!("daemon returned no campaign in CompleteCampaignResponse")
+        })?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+pub async fn complete(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+) -> Result<()> {
+    let output = complete_and_render(store_path, addr, offline, name, reason).await?;
+    print!("{output}");
+    Ok(())
+}
+
+pub async fn resume_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    add_cycles: u64,
+) -> Result<String> {
+    if offline {
+        resume_offline(store_path, name, add_cycles)?;
+        return Ok(format!("Campaign '{name}' is now active.\n"));
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("resume {name}"))).await?;
+    let detail = client
+        .resume_campaign(ResumeCampaignRequest {
+            name: name.to_string(),
+            add_cycles,
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in ResumeCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+pub async fn resume(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    add_cycles: u64,
+) -> Result<()> {
+    let output = resume_and_render(store_path, addr, offline, name, add_cycles).await?;
+    print!("{output}");
+    Ok(())
+}
+
+pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -> Result<()> {
+    if offline {
+        let store = CampaignStore::load(store_path)?;
+        let campaign =
+            store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+        match campaign.status {
+            CampaignStatus::Active | CampaignStatus::Staged => bail!(
+                "`foundry campaign advance` requires a running daemon; rerun without `--offline` once foundryd is available"
+            ),
+            CampaignStatus::Paused => bail!(
+                "campaign '{name}' is {}; run `foundry campaign resume {name}` before advancing",
+                campaign.status
+            ),
+            CampaignStatus::Escalated => bail!(
+                "campaign '{name}' is escalated; record owner policy with `foundry campaign decide {name} --decision \"...\"` or use `foundry campaign resume {name}` when the escalation was budget-only"
+            ),
+            CampaignStatus::Completed => bail!("campaign '{name}' is already completed"),
+        }
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("advance {name}"))).await?;
+    let project = client
+        .get_campaign(GetCampaignRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?
+        .project;
+
+    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let mut stream = watch_client
+        .watch(WatchRequest {
+            project: project.clone(),
+        })
+        .await?
+        .into_inner();
+
+    let response = client
+        .advance_campaign(AdvanceCampaignRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    println!("Event: {}", response.event_id);
+    println!();
+
+    while let Some(event) = stream.message().await? {
+        let done = event.event_type == "campaign_advance_completed";
+        print!("{}", render::workflow::watch_event_line(&event));
+        if done {
+            break;
+        }
+    }
+
+    WorkflowRunner::new(addr, &project).show_trace(&response.event_id).await
 }
 
 fn validate_campaign_definition(campaign: &Campaign, registry_path: &Path) -> Result<()> {
@@ -112,164 +385,6 @@ fn validate_context_path(campaign: &Campaign, repo: &Path, context_path: &str) -
     Ok(())
 }
 
-pub fn list(store_path: &Path) -> Result<()> {
-    let store = CampaignStore::load(store_path)?;
-    if store.campaigns.is_empty() {
-        println!("No campaigns configured.");
-    } else {
-        print!("{}", render::campaign::campaign_table(&store.campaigns));
-    }
-    Ok(())
-}
-
-pub fn show(store_path: &Path, name: &str) -> Result<()> {
-    let store = CampaignStore::load(store_path)?;
-    let campaign =
-        store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    print!("{}", render::campaign::campaign_detail(campaign));
-    Ok(())
-}
-
-/// Pause a campaign via the daemon (online path) or the campaign store
-/// (offline/fallback path).
-///
-/// Returns the rendered output string. Callers print it so that tests can
-/// inspect the value without capturing stdout.
-///
-/// **Online path**: calls `PauseCampaign` gRPC, renders from
-/// `PauseCampaignResponse.campaign` — no store reads on this path.
-///
-/// **Offline / fallback path**: acquires an exclusive lock on the store file
-/// and mutates `status` directly, mirroring the behaviour of
-/// `CampaignStore::lock_exclusive` used by the daemon itself.
-pub async fn pause_and_render(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-) -> Result<String> {
-    // Clone owned values so each closure can capture independently.
-    let name_for_daemon = name.to_string();
-    let name_for_file = name.to_string();
-    let store_path_for_file = store_path.to_path_buf();
-    with_daemon_or_offline_render(
-        addr,
-        offline,
-        move |mut client| async move {
-            let req = PauseCampaignRequest {
-                name: name_for_daemon,
-            };
-            let resp = client.pause_campaign(req).await.map_err(status_to_anyhow)?;
-            let detail = resp.into_inner().campaign.ok_or_else(|| {
-                anyhow::anyhow!("daemon returned no campaign in PauseCampaignResponse")
-            })?;
-            // Render from the typed proto response — never re-read from disk.
-            Ok(render::campaign::campaign_detail_proto(&detail))
-        },
-        move || {
-            // Offline / graceful-degradation fallback: mutate the store directly.
-            pause_offline(&store_path_for_file, &name_for_file)?;
-            Ok(format!("Campaign '{name_for_file}' is now paused.\n"))
-        },
-    )
-    .await
-}
-
-/// Pause a campaign, printing the result to stdout.
-///
-/// See [`pause_and_render`] for the full description of the online/offline
-/// dispatch logic.
-pub async fn pause(store_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
-    let output = pause_and_render(store_path, addr, offline, name).await?;
-    print!("{output}");
-    Ok(())
-}
-
-/// Record an owner decision via the daemon (online path) or the campaign
-/// store (explicit offline path).
-pub async fn decide_and_render(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    decision: &str,
-) -> Result<String> {
-    if offline {
-        return decide_offline_and_render(store_path, name, decision);
-    }
-
-    let mut client =
-        connect_daemon_required(addr, &format!("foundry campaign decide {name} --offline")).await?;
-    let req = DecideCampaignRequest {
-        name: name.to_string(),
-        decision: decision.to_string(),
-    };
-    let resp = client.decide_campaign(req).await.map_err(status_to_anyhow)?;
-    let detail = resp
-        .into_inner()
-        .campaign
-        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in DecideCampaignResponse"))?;
-    Ok(render::campaign::campaign_detail_proto(&detail))
-}
-
-pub async fn decide(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    decision: &str,
-) -> Result<()> {
-    let output = decide_and_render(store_path, addr, offline, name, decision).await?;
-    print!("{output}");
-    Ok(())
-}
-
-/// Mark an authorized campaign complete and retain the owner's reason.
-pub async fn complete_and_render(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    reason: &str,
-) -> Result<String> {
-    if offline {
-        return complete_offline_and_render(store_path, name, reason);
-    }
-
-    let mut client = connect_daemon_required(
-        addr,
-        &format!("foundry campaign complete {name} --reason <reason> --offline"),
-    )
-    .await?;
-    let resp = client
-        .complete_campaign(CompleteCampaignRequest {
-            name: name.to_string(),
-            reason: reason.to_string(),
-        })
-        .await
-        .map_err(status_to_anyhow)?;
-    let detail = resp.into_inner().campaign.ok_or_else(|| {
-        anyhow::anyhow!("daemon returned no campaign in CompleteCampaignResponse")
-    })?;
-    Ok(render::campaign::campaign_detail_proto(&detail))
-}
-
-pub async fn complete(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    reason: &str,
-) -> Result<()> {
-    let output = complete_and_render(store_path, addr, offline, name, reason).await?;
-    print!("{output}");
-    Ok(())
-}
-
-/// Direct-store pause used by the offline / fallback path.
-///
-/// Acquires an exclusive lock, sets `status = Paused`, and saves.
-/// Does NOT emit any events; that is the daemon's responsibility.
 fn pause_offline(store_path: &Path, name: &str) -> Result<()> {
     let mut guard = CampaignStore::lock_exclusive(store_path)?;
     let campaign = guard
@@ -338,76 +453,6 @@ fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> R
     Ok(rendered)
 }
 
-/// Resume a campaign via the daemon (online path) or the campaign store
-/// (offline/fallback path).
-///
-/// Returns the rendered output string. Callers print it so that tests can
-/// inspect the value without capturing stdout.
-///
-/// **Online path**: calls `ResumeCampaign` gRPC, renders from
-/// `ResumeCampaignResponse.campaign` — no store reads on this path.
-///
-/// **Offline / fallback path**: acquires an exclusive lock on the store file
-/// and mutates `status`, `budget.max_cycles` directly, mirroring the behaviour
-/// of `CampaignStore::lock_exclusive` used by the daemon itself.
-/// `pending_run_result` is never cleared or overwritten on this path.
-pub async fn resume_and_render(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    add_cycles: u64,
-) -> Result<String> {
-    // Clone owned values so each closure can capture independently.
-    let name_for_daemon = name.to_string();
-    let name_for_file = name.to_string();
-    let store_path_for_file = store_path.to_path_buf();
-    with_daemon_or_offline_render(
-        addr,
-        offline,
-        move |mut client| async move {
-            let req = ResumeCampaignRequest {
-                name: name_for_daemon,
-                add_cycles,
-            };
-            let resp = client.resume_campaign(req).await.map_err(status_to_anyhow)?;
-            let detail = resp.into_inner().campaign.ok_or_else(|| {
-                anyhow::anyhow!("daemon returned no campaign in ResumeCampaignResponse")
-            })?;
-            // Render from the typed proto response — never re-read from disk.
-            Ok(render::campaign::campaign_detail_proto(&detail))
-        },
-        move || {
-            // Offline / graceful-degradation fallback: mutate the store directly.
-            resume_offline(&store_path_for_file, &name_for_file, add_cycles)?;
-            Ok(format!("Campaign '{name_for_file}' is now active.\n"))
-        },
-    )
-    .await
-}
-
-/// Resume a campaign, printing the result to stdout.
-///
-/// See [`resume_and_render`] for the full description of the online/offline
-/// dispatch logic.
-pub async fn resume(
-    store_path: &Path,
-    addr: &str,
-    offline: bool,
-    name: &str,
-    add_cycles: u64,
-) -> Result<()> {
-    let output = resume_and_render(store_path, addr, offline, name, add_cycles).await?;
-    print!("{output}");
-    Ok(())
-}
-
-/// Direct-store resume used by the offline / fallback path.
-///
-/// Acquires an exclusive lock, validates `authorized_by` and the exhausted-budget
-/// guard, applies `add_cycles` to `budget.max_cycles`, sets `status = Active`,
-/// and saves.  `pending_run_result` is left untouched.
-/// Does NOT emit any events; that is the daemon's responsibility.
 fn resume_offline(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> {
     let mut guard = CampaignStore::lock_exclusive(store_path)?;
     let campaign = guard
@@ -428,39 +473,12 @@ fn resume_offline(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> 
         .checked_add(add_cycles)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' cycle budget overflow"))?;
     campaign.status = CampaignStatus::Active;
-    // pending_run_result is intentionally left untouched.
     guard.save()?;
     Ok(())
 }
 
-pub async fn advance(addr: &str, store_path: &Path, name: &str) -> Result<()> {
-    let store = CampaignStore::load(store_path)?;
-    let campaign =
-        store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    if campaign.status == CampaignStatus::Paused {
-        bail!(
-            "campaign '{name}' is {}; run `foundry campaign resume {name}` before advancing",
-            campaign.status
-        );
-    }
-    if campaign.status == CampaignStatus::Escalated {
-        bail!(
-            "campaign '{name}' is escalated; record owner policy with `foundry campaign decide {name} --decision \"...\"` or use `foundry campaign resume {name}` when the escalation was budget-only"
-        );
-    }
-    if campaign.status == CampaignStatus::Completed {
-        bail!("campaign '{name}' is already completed");
-    }
-    let project = campaign.project.clone();
-    let runner = WorkflowRunner::new(addr, &project);
-    let (event_id, _) = runner
-        .run_workflow(
-            "campaign_advance_requested",
-            serde_json::json!({"campaign": name}),
-            |event_type, _| event_type == "campaign_advance_completed",
-        )
-        .await?;
-    runner.show_trace(&event_id).await
+fn campaign_offline_hint(command_suffix: &str) -> String {
+    format!("foundry campaign {command_suffix} --offline")
 }
 
 #[cfg(test)]
@@ -499,8 +517,6 @@ mod tests {
         path
     }
 
-    // Offline path: pause_and_render with offline=true must not touch gRPC
-    // and must flip the status to Paused in the store file.
     #[tokio::test]
     async fn offline_pause_sets_status_paused_in_store() {
         let dir = tempfile::tempdir().unwrap();
@@ -516,23 +532,17 @@ mod tests {
                 "authorized_by":"tester"
             }"#,
         );
-        add(&store, &registry_path, &file).unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
         let output = pause_and_render(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
 
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused,
-            "store must reflect Paused after offline pause"
         );
-        assert!(
-            output.contains("paused"),
-            "offline output must mention 'paused'; got: {output:?}"
-        );
+        assert!(output.contains("paused"));
     }
 
-    // Offline round-trip: add → list → show → pause all succeed against the
-    // same store file.
     #[tokio::test]
     async fn add_list_show_pause_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -548,9 +558,9 @@ mod tests {
                 "authorized_by":"tester"
             }"#,
         );
-        add(&store, &registry_path, &file).unwrap();
-        list(&store).unwrap();
-        show(&store, "c").unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+        list(&store, "http://127.0.0.1:0", true).await.unwrap();
+        show(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
         pause(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
@@ -578,7 +588,7 @@ mod tests {
                 }
             }"#,
         );
-        add(&store, &registry_path, &file).unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
         let output = complete_and_render(
             &store,
@@ -617,7 +627,7 @@ mod tests {
                 "status":"paused"
             }"#,
         );
-        add(&store, &registry_path, &file).unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
         let unauthorized = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "shipped")
             .await
@@ -659,13 +669,11 @@ mod tests {
             .unwrap();
         store.save(&store_path).unwrap();
 
-        // Offline path rejects add_cycles=0 when budget is exhausted.
         let error = resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 0)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("--add-cycles"));
 
-        // Offline path applies add_cycles=1 and sets status to Active.
         resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 1)
             .await
             .unwrap();
@@ -675,9 +683,6 @@ mod tests {
         assert_eq!(campaign.budget.max_cycles, 3);
     }
 
-    // Offline path: resume_and_render with offline=true must not touch gRPC,
-    // must flip the status to Active in the store file, and must reject
-    // add_cycles=0 when the campaign budget is exhausted.
     #[tokio::test]
     async fn offline_resume_mutates_store_and_rejects_exhausted_with_zero_add_cycles() {
         let dir = tempfile::tempdir().unwrap();
@@ -685,7 +690,6 @@ mod tests {
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         let registry_path = write_registry(&dir, "p", &repo);
-        // Seed a paused campaign with an exhausted budget.
         let file = write_campaign_file(
             &dir,
             r#"{
@@ -697,34 +701,25 @@ mod tests {
                 "status":"paused"
             }"#,
         );
-        add(&store, &registry_path, &file).unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
-        // Exhausted + add_cycles=0 must be rejected — store must be unchanged.
         let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
-        assert!(
-            err.to_string().contains("--add-cycles"),
-            "error must mention --add-cycles; got: {err}"
-        );
+        assert!(err.to_string().contains("--add-cycles"));
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused,
-            "store must remain Paused after rejected resume"
         );
 
-        // add_cycles=1 must succeed and set status to Active.
         let output = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 1).await.unwrap();
-        assert!(
-            output.contains("active"),
-            "offline output must mention 'active'; got: {output:?}"
-        );
+        assert!(output.contains("active"));
         let after = CampaignStore::load(&store).unwrap();
         let campaign = after.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Active);
-        assert_eq!(campaign.budget.max_cycles, 3, "budget must be extended by add_cycles");
+        assert_eq!(campaign.budget.max_cycles, 3);
     }
 
-    #[test]
-    fn add_rejects_unknown_registered_project_distinctly() {
+    #[tokio::test]
+    async fn add_rejects_unknown_registered_project_distinctly() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
         let repo = dir.path().join("repo");
@@ -738,17 +733,19 @@ mod tests {
             }"#,
         );
 
-        let err = add(&store, &registry_path, &file).unwrap_err();
+        let err = add(&store, &registry_path, "http://127.0.0.1:0", true, &file)
+            .await
+            .unwrap_err();
 
         assert_eq!(
             err.to_string(),
             "campaign 'c' references unknown registered project 'missing-project'"
         );
-        assert!(!store.exists(), "rejected add must not create the store");
+        assert!(!store.exists());
     }
 
-    #[test]
-    fn add_rejects_invalid_context_paths_without_mutating_existing_store() {
+    #[tokio::test]
+    async fn add_rejects_invalid_context_paths_without_mutating_existing_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
         let repo = dir.path().join("repo");
@@ -805,19 +802,17 @@ mod tests {
                 ),
             );
 
-            let err = add(&store, &registry_path, &file).unwrap_err();
+            let err = add(&store, &registry_path, "http://127.0.0.1:0", true, &file)
+                .await
+                .unwrap_err();
 
             assert_eq!(err.to_string(), expected_error);
-            assert_eq!(
-                std::fs::read(&store).unwrap(),
-                original.as_bytes(),
-                "rejected add must leave campaigns.json byte-identical for {context_path}"
-            );
+            assert_eq!(std::fs::read(&store).unwrap(), original.as_bytes());
         }
     }
 
-    #[test]
-    fn add_persists_when_all_context_paths_are_existing_repository_relative_files() {
+    #[tokio::test]
+    async fn add_persists_when_all_context_paths_are_existing_repository_relative_files() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
         let repo = dir.path().join("repo");
@@ -838,7 +833,7 @@ mod tests {
             }"#,
         );
 
-        add(&store, &registry_path, &file).unwrap();
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
         let stored = CampaignStore::load(&store).unwrap();
         let campaign = stored.find("c").unwrap();

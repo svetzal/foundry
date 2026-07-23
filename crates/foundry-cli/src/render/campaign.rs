@@ -91,6 +91,30 @@ pub fn campaign_table(campaigns: &[Campaign]) -> String {
     out
 }
 
+pub fn campaign_table_proto(campaigns: &[crate::proto::Campaign]) -> String {
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["Name", "Project", "Status", "Cycles", "Landed", "Agent"]);
+    for campaign in campaigns {
+        let agent = if campaign.agent_provider.is_empty() {
+            "default"
+        } else {
+            campaign.agent_provider.as_str()
+        };
+        table.add_row(vec![
+            campaign.name.as_str(),
+            campaign.project.as_str(),
+            campaign.status.as_str(),
+            &format!("{}/{}", campaign.cycles_completed, campaign.max_cycles),
+            &campaign.cycles_landed.to_string(),
+            agent,
+        ]);
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "{table}");
+    out
+}
+
 pub fn campaign_detail(campaign: &Campaign) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Name:       {}", campaign.name);

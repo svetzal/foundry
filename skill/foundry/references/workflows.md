@@ -110,8 +110,10 @@ the generic retry loop cannot claim them.
 ## Campaign Formation
 
 Triggered manually by `foundry campaign advance <name>` or automatically by a
-campaign task result. The campaign record is reloaded from
-`~/.foundry/campaigns.json` under a process lock before every decision.
+campaign task result. Online campaign control flows through the daemon-owned
+campaign store; explicit `--offline` is the only direct-file recovery path.
+Each decision reloads the durable campaign record under a process lock before
+reasoning begins.
 
 ```text
 CampaignAdvanceRequested {campaign, run_event_id?, run_result?}

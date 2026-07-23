@@ -212,6 +212,10 @@ async fn generated_client_advance_active_returns_pre_advance_state_and_dispatche
 
     // ── Proof 1a: response carries the pre-advance campaign state ────────────
     let detail = response.campaign.expect("AdvanceCampaignResponse must contain campaign detail");
+    assert!(
+        !response.event_id.is_empty(),
+        "AdvanceCampaignResponse must include the root event_id for CLI trace lookup"
+    );
     assert_eq!(detail.name, "c", "response name must match the seeded campaign name");
     assert_eq!(
         detail.status, "active",

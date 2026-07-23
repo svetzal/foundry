@@ -242,6 +242,31 @@ unchanged. The online path mutates daemon-owned state only and does not create
 `INTERNAL` with a stable `failed to persist registry state` message and leaves
 both the daemon's in-memory registry and its on-disk registry bytes unchanged.
 
+### `AddCampaign(AddCampaignRequest) → AddCampaignResponse`
+
+Add one campaign definition to the daemon-owned campaign store. The daemon
+parses the JSON definition, validates the referenced project and context paths
+against daemon-owned registry state, acquires the exclusive campaign-store
+lock, and persists the new definition atomically.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `definition_json` | string | Full campaign definition JSON exactly as accepted by `foundry campaign add` |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Full durable definition that was persisted |
+
+**Errors:** `INVALID_ARGUMENT` when the JSON is invalid or the definition is
+structurally invalid; `FAILED_PRECONDITION` when the definition references an
+unknown registered project or invalid context artifact; `ALREADY_EXISTS` when a
+campaign with the same name already exists; `INTERNAL` when the store cannot be
+saved. On `INTERNAL`, the daemon leaves the on-disk campaign store unchanged.
+
 ### `ListCampaigns(ListCampaignsRequest) → ListCampaignsResponse`
 
 List the durable campaign inventory from the daemon's configured campaign
@@ -294,9 +319,9 @@ available for the next manual advance after a subsequent resume.
 
 **CLI:** `foundry campaign pause <name>` routes through this RPC when the daemon
 is reachable. Pass `--offline` to bypass the daemon and mutate the store file
-directly (useful when `foundryd` is not running). When the daemon is
-unreachable and `--offline` is not set, the CLI warns and falls back to the
-direct-store path automatically.
+directly (useful when `foundryd` is not running). Without `--offline`, an
+unreachable daemon is an error and the client-side campaigns path is left
+untouched.
 
 ### `ResumeCampaign(ResumeCampaignRequest) → ResumeCampaignResponse`
 
@@ -339,9 +364,9 @@ when the campaign store is unreadable.
 
 **CLI:** `foundry campaign resume <name>` routes through this RPC when the
 daemon is reachable. Pass `--offline` to bypass the daemon and mutate the store
-file directly (useful when `foundryd` is not running). When the daemon is
-unreachable and `--offline` is not set, the CLI warns and falls back to the
-direct-store path automatically. The rendered output is built from the
+file directly (useful when `foundryd` is not running). Without `--offline`, an
+unreachable daemon is an error and the client-side campaigns path is left
+untouched. The rendered output is built from the
 `ResumeCampaignResponse.campaign` detail — the CLI never re-reads the store
 file on the online path.
 
@@ -396,8 +421,31 @@ campaign store is unreadable.
 **CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
 this RPC by default and therefore requires a reachable daemon. Pass
 `--offline` to bypass the daemon and mutate the store file directly. Without
-`--offline`, an unreachable daemon returns an error and leaves the store file
-unchanged.
+`--offline`, an unreachable daemon returns an error and leaves the client-side
+campaigns path unchanged.
+
+### `AdvanceCampaign(AdvanceCampaignRequest) → AdvanceCampaignResponse`
+
+Dispatch one manual campaign-advance workflow for an `active` or `staged`
+campaign. The daemon validates the current status under the exclusive lock,
+releases the lock, emits `CampaignAdvanceRequested`, and returns immediately.
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Exact campaign name to advance |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | CampaignDetail | Current campaign detail at dispatch time |
+| `event_id` | string | Root event ID of the dispatched `CampaignAdvanceRequested` workflow |
+
+**Errors:** `NOT_FOUND` when the name is absent; `FAILED_PRECONDITION` when the
+campaign is `paused`, `escalated`, or `completed`; `INTERNAL` when the store is
+unreadable. Rejected advances do not mutate the store.
 
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 
