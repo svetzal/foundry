@@ -188,6 +188,38 @@ pub struct Campaign {
     pub pending_run_result: Option<TaskRunCompletedPayload>,
 }
 
+/// Commands that assert state on a host rather than in the repository, and so
+/// can never be satisfied by work done inside a disposable task worktree.
+const OFF_WORKTREE_COMMANDS: &[&str] = &[
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "systemctl",
+    "launchctl",
+    "journalctl",
+    "service",
+];
+
+/// Find an off-worktree command used in command position anywhere in a gate.
+///
+/// Segments the string on shell operators and inspects the leading word of each
+/// segment, skipping `VAR=value` prefixes and `sudo`. This is deliberately not a
+/// shell parser: over-segmentation only widens the search, which is the safe
+/// direction for a check whose purpose is to catch host assertions.
+fn off_worktree_command(command: &str) -> Option<&'static str> {
+    command.split(['|', '&', ';', '\n']).find_map(|segment| {
+        segment
+            .split_whitespace()
+            .find(|word| !word.contains('=') && *word != "sudo")
+            .and_then(|word| {
+                let leaf = word.trim_start_matches(['(', '"', '\'']);
+                let leaf = leaf.rsplit('/').next().unwrap_or(leaf);
+                OFF_WORKTREE_COMMANDS.iter().copied().find(|name| *name == leaf)
+            })
+    })
+}
+
 impl Campaign {
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.name.trim().is_empty()
@@ -201,6 +233,36 @@ impl Campaign {
         }
         if self.budget.max_cycles == 0 {
             anyhow::bail!("campaign '{}' max_cycles must be greater than zero", self.name);
+        }
+        self.validate_required_gates_are_runnable()
+    }
+
+    /// A required gate is re-run every formation against the project checkout
+    /// and gates the `done` decision outright, so one that asserts state on
+    /// another host can never pass until the whole mission is already deployed —
+    /// making the campaign structurally incapable of completing and burning its
+    /// entire budget. Such evidence is real, but it is owner-verified
+    /// deployment evidence, which is what a `review` statement is for.
+    fn validate_required_gates_are_runnable(&self) -> anyhow::Result<()> {
+        for item in &self.done_evidence {
+            let DoneEvidence::Gate {
+                command, required, ..
+            } = item
+            else {
+                continue;
+            };
+            if !*required {
+                continue;
+            }
+            if let Some(offender) = off_worktree_command(command) {
+                anyhow::bail!(
+                    "campaign '{}' has a required gate that cannot run in a task worktree: `{}` asserts state on another host via `{offender}`. \
+                     A required gate is re-run every formation and blocks `done`, so this one can never pass and will exhaust the cycle budget. \
+                     Express it as a `review` statement the owner verifies, or mark the gate `\"required\": false`.",
+                    self.name,
+                    command.trim()
+                );
+            }
         }
         Ok(())
     }
@@ -310,6 +372,93 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().campaigns.len(), 1);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    fn campaign_with_gate(command: &str, required: bool) -> Campaign {
+        Campaign {
+            name: "c".to_string(),
+            project: "p".to_string(),
+            mission: "ship".to_string(),
+            intent_refs: vec![],
+            context_paths: vec![],
+            done_evidence: vec![DoneEvidence::Gate {
+                command: command.to_string(),
+                required,
+                artifacts: vec![],
+            }],
+            budget: CampaignBudget::default(),
+            escalation: vec![],
+            status: CampaignStatus::Staged,
+            cycles_completed: 0,
+            cycles_landed: 0,
+            authorized_by: Some("tester".to_string()),
+            agent_provider: None,
+            last_run_event_id: None,
+            owner_decisions: vec![],
+            pending_run_result: None,
+        }
+    }
+
+    /// The exact gate that made parite-remote-nvenc-conversion-v1 structurally
+    /// incapable of completing: it can never pass until the whole mission is
+    /// already deployed, so it consumed all 12 cycles.
+    #[test]
+    fn required_gate_asserting_remote_host_state_is_rejected() {
+        let campaign = campaign_with_gate(
+            "ssh -o BatchMode=yes odin.local 'systemctl is-active --quiet parite-converterd' && ssh -o BatchMode=yes parite.local 'systemctl is-active --quiet parited'",
+            true,
+        );
+        let error = campaign.validate().unwrap_err().to_string();
+        assert!(error.contains("cannot run in a task worktree"), "unexpected error: {error}");
+        assert!(error.contains("ssh"), "error should name the offending command: {error}");
+        assert!(
+            error.contains("review"),
+            "error should point at the correct home for deployment evidence: {error}"
+        );
+    }
+
+    #[test]
+    fn off_worktree_command_is_found_in_any_command_position() {
+        for command in [
+            "ssh host 'true'",
+            "cargo test && ssh host 'systemctl is-active x'",
+            "sudo systemctl is-active parited",
+            "/usr/bin/ssh host true",
+            "DEPLOY=1 rsync -a ./ host:/srv",
+            "cargo build; launchctl list",
+        ] {
+            assert!(
+                off_worktree_command(command).is_some(),
+                "should have flagged an off-worktree command: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_repository_gates_remain_acceptable() {
+        for command in [
+            "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+            "cargo test -- --skip ssh_transport_tests",
+            "npm run typecheck && npm test -- --runInBand",
+            "mix test && mix credo --strict",
+            "cargo deny check && mdbook build book && git diff --check",
+        ] {
+            assert!(
+                off_worktree_command(command).is_none(),
+                "false positive on a legitimate repository gate: {command}"
+            );
+            assert!(campaign_with_gate(command, true).validate().is_ok());
+        }
+    }
+
+    /// Only required gates block `done`; an advisory host probe is allowed.
+    #[test]
+    fn optional_gate_may_assert_host_state() {
+        assert!(
+            campaign_with_gate("ssh host 'systemctl is-active parited'", false)
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]

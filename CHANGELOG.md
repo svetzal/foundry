@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry campaign add` now rejects a **required** gate that asserts state on
+  another host (`ssh`, `scp`, `sftp`, `rsync`, `systemctl`, `launchctl`,
+  `journalctl`, `service` in command position). A required gate is re-run every
+  formation and blocks `done` outright, so one that cannot be satisfied from a
+  disposable task worktree makes the campaign structurally incapable of
+  completing and guarantees it burns its whole cycle budget — which is exactly
+  how `parite-remote-nvenc-conversion-v1` spent 12 cycles and landed nothing.
+  The error names the offending command and points at the two correct homes for
+  deployment evidence: a `review` statement the owner verifies, or an explicitly
+  optional gate. Optional gates may still probe host state advisorily.
+
 ## [0.31.0] - 2026-07-22
 
 ### Changed
