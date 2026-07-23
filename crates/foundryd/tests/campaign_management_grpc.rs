@@ -8,6 +8,8 @@
 //! DONE-GATE ARTIFACT: this file is the named artifact required by the
 //! campaign plan for the gRPC lifecycle boundary objective.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -81,6 +83,52 @@ fn make_service() -> (FoundryService, NamedTempFile, broadcast::Receiver<Event>,
     let service = FoundryService::new(ctx, stores);
 
     (service, tmp_campaigns, rx, tmp_traces)
+}
+
+fn make_service_with_campaigns_path(
+    campaigns_path: std::path::PathBuf,
+) -> (FoundryService, broadcast::Receiver<Event>, TempDir) {
+    let (event_tx, rx) = broadcast::channel(64);
+    let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+
+    let tmp_traces = tempfile::tempdir().expect("tempdir for traces");
+    let trace_writer =
+        Arc::new(TraceWriter::new(tmp_traces.path().to_str().expect("trace dir must be UTF-8")));
+    let trace_store = Arc::new(TraceStore::with_trace_writer(
+        Duration::from_secs(60),
+        Arc::clone(&trace_writer),
+    ));
+    let workflow_tracker = Arc::new(WorkflowTracker::new());
+    let registry = Arc::new(RwLock::new(Registry {
+        version: 2,
+        projects: vec![],
+    }));
+
+    let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
+    let registry_path = tmp_registry.path().to_path_buf();
+    let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+    let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
+    let sentinels_path = tmp_sentinels.path().to_path_buf();
+    let scheduler_reload = Arc::new(Notify::new());
+
+    let ctx = RuntimeContext {
+        engine,
+        trace_store,
+        workflow_tracker,
+        trace_writer,
+        event_tx,
+        registry,
+    };
+    let stores = StoreConfig {
+        campaigns_path,
+        registry_path,
+        sentinels,
+        sentinels_path,
+        scheduler_reload,
+    };
+    let service = FoundryService::new(ctx, stores);
+
+    (service, rx, tmp_traces)
 }
 
 fn active_campaign(name: &str) -> Campaign {
@@ -220,6 +268,63 @@ async fn complete_requires_non_empty_reason_and_authorized_owner() {
         .await
         .expect_err("unauthorized completion must fail");
     assert_eq!(error.code(), Code::FailedPrecondition);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn complete_persist_failure_returns_internal_keeps_store_bytes_and_emits_no_event() {
+    let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
+    let campaigns_path = campaigns_dir.path().join("campaigns.json");
+    CampaignStore {
+        version: 1,
+        campaigns: vec![paused_campaign("c", 10)],
+    }
+    .save(&campaigns_path)
+    .expect("save initial campaigns");
+    drop(
+        CampaignStore::lock_exclusive(&campaigns_path)
+            .expect("create lock file before making directory readonly"),
+    );
+    let before = std::fs::read(&campaigns_path).expect("read campaigns before failure");
+
+    let mut permissions = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir")
+        .permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(campaigns_dir.path(), permissions).expect("set readonly dir");
+
+    let (service, mut rx, _tmp_traces) = make_service_with_campaigns_path(campaigns_path.clone());
+    let err = service
+        .complete_campaign(Request::new(CompleteCampaignRequest {
+            name: "c".to_string(),
+            reason: "Production evidence confirms the mission shipped.".to_string(),
+        }))
+        .await
+        .expect_err("persist failure must fail");
+
+    let mut restore = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir for restore")
+        .permissions();
+    restore.set_mode(0o755);
+    std::fs::set_permissions(campaigns_dir.path(), restore).expect("restore dir perms");
+
+    assert_eq!(err.code(), Code::Internal);
+    assert!(err.message().contains("campaign store save failed"));
+    assert!(!err.message().contains(&campaigns_path.display().to_string()));
+    assert_eq!(std::fs::read(&campaigns_path).expect("read campaigns after failure"), before);
+
+    let stored = CampaignStore::load(&campaigns_path).expect("load store after failure");
+    let campaign = stored.find("c").expect("campaign remains present");
+    assert_eq!(campaign.status, CampaignStatus::Paused);
+    assert!(campaign.owner_decisions.is_empty());
+
+    while let Ok(event) = rx.try_recv() {
+        assert_ne!(
+            event.event_type,
+            EventType::CampaignCompleted,
+            "CampaignCompleted must not be broadcast when save fails"
+        );
+    }
 }
 
 // ── PauseCampaign ─────────────────────────────────────────────────────────────
@@ -728,4 +833,51 @@ async fn concurrent_lifecycle_ops_on_different_campaigns_no_lost_update() {
         CampaignStatus::Paused,
         "campaign-b must be Paused — both writes must have persisted"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_mixed_lifecycle_ops_on_distinct_campaigns_no_lost_update() {
+    let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
+    let mut escalated = active_campaign("campaign-c");
+    escalated.status = CampaignStatus::Escalated;
+    escalated.escalation = vec!["owner decision required".to_string()];
+    write_campaigns(
+        &tmp_campaigns,
+        vec![
+            active_campaign("campaign-a"),
+            paused_campaign("campaign-b", 8),
+            escalated,
+        ],
+    );
+
+    let pause = service.pause_campaign(Request::new(PauseCampaignRequest {
+        name: "campaign-a".to_string(),
+    }));
+    let resume = service.resume_campaign(Request::new(ResumeCampaignRequest {
+        name: "campaign-b".to_string(),
+        add_cycles: 2,
+    }));
+    let decide = service.decide_campaign(Request::new(foundryd::proto::DecideCampaignRequest {
+        name: "campaign-c".to_string(),
+        decision: "Use the daemon boundary.".to_string(),
+    }));
+
+    let (pause_result, resume_result, decide_result) = tokio::join!(pause, resume, decide);
+    pause_result.expect("pause must succeed");
+    resume_result.expect("resume must succeed");
+    decide_result.expect("decide must succeed");
+
+    let store = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+
+    let campaign_a = store.find("campaign-a").expect("campaign-a exists");
+    assert_eq!(campaign_a.status, CampaignStatus::Paused);
+
+    let campaign_b = store.find("campaign-b").expect("campaign-b exists");
+    assert_eq!(campaign_b.status, CampaignStatus::Active);
+    assert_eq!(campaign_b.budget.max_cycles, 10);
+
+    let campaign_c = store.find("campaign-c").expect("campaign-c exists");
+    assert_eq!(campaign_c.status, CampaignStatus::Active);
+    assert_eq!(campaign_c.owner_decisions.len(), 1);
+    assert_eq!(campaign_c.owner_decisions[0].decision, "Use the daemon boundary.");
 }

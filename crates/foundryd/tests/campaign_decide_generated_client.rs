@@ -1,5 +1,7 @@
 //! Integration tests for `DecideCampaign` through the generated tonic client.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -67,6 +69,52 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
     let service = FoundryService::new(ctx, stores);
 
     (service, tmp_campaigns, tmp_traces)
+}
+
+fn make_service_with_campaigns_path(
+    campaigns_path: std::path::PathBuf,
+) -> (FoundryService, TempDir) {
+    let (event_tx, _rx) = broadcast::channel(64);
+    let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+
+    let tmp_traces = tempfile::tempdir().expect("tempdir for traces");
+    let trace_writer =
+        Arc::new(TraceWriter::new(tmp_traces.path().to_str().expect("trace dir must be UTF-8")));
+    let trace_store = Arc::new(TraceStore::with_trace_writer(
+        Duration::from_secs(60),
+        Arc::clone(&trace_writer),
+    ));
+    let workflow_tracker = Arc::new(WorkflowTracker::new());
+    let registry = Arc::new(RwLock::new(Registry {
+        version: 2,
+        projects: vec![],
+    }));
+
+    let tmp_registry = NamedTempFile::new().expect("tempfile for registry");
+    let registry_path = tmp_registry.path().to_path_buf();
+    let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+    let tmp_sentinels = NamedTempFile::new().expect("tempfile for sentinels");
+    let sentinels_path = tmp_sentinels.path().to_path_buf();
+    let scheduler_reload = Arc::new(Notify::new());
+
+    let ctx = RuntimeContext {
+        engine,
+        trace_store,
+        workflow_tracker,
+        trace_writer,
+        event_tx,
+        registry,
+    };
+    let stores = StoreConfig {
+        campaigns_path,
+        registry_path,
+        sentinels,
+        sentinels_path,
+        scheduler_reload,
+    };
+    let service = FoundryService::new(ctx, stores);
+
+    (service, tmp_traces)
 }
 
 fn escalated_campaign(name: &str) -> Campaign {
@@ -238,4 +286,55 @@ async fn generated_client_decide_campaign_malformed_store_returns_failed_precond
         !err.message().contains(&tmp_campaigns.path().display().to_string()),
         "error message must not expose the campaign store path"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generated_client_decide_campaign_persist_failure_returns_internal_and_store_unchanged() {
+    let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
+    let campaigns_path = campaigns_dir.path().join("campaigns.json");
+    CampaignStore {
+        version: 1,
+        campaigns: vec![escalated_campaign("c")],
+    }
+    .save(&campaigns_path)
+    .expect("save initial campaigns");
+    drop(
+        CampaignStore::lock_exclusive(&campaigns_path)
+            .expect("create lock file before making directory readonly"),
+    );
+    let before = std::fs::read(&campaigns_path).expect("read campaigns before failure");
+
+    let mut permissions = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir")
+        .permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(campaigns_dir.path(), permissions).expect("set readonly dir");
+
+    let (service, _tmp_traces) = make_service_with_campaigns_path(campaigns_path.clone());
+    let addr = start_server(service).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .decide_campaign(DecideCampaignRequest {
+            name: "c".to_string(),
+            decision: "Use the daemon boundary.".to_string(),
+        })
+        .await
+        .expect_err("persist failure must fail");
+
+    let mut restore = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir for restore")
+        .permissions();
+    restore.set_mode(0o755);
+    std::fs::set_permissions(campaigns_dir.path(), restore).expect("restore dir perms");
+
+    assert_eq!(err.code(), Code::Internal);
+    assert!(err.message().contains("campaign store save failed"));
+    assert!(!err.message().contains(&campaigns_path.display().to_string()));
+    assert_eq!(std::fs::read(&campaigns_path).expect("read campaigns after failure"), before);
+
+    let stored = CampaignStore::load(&campaigns_path).expect("load store after failure");
+    let campaign = stored.find("c").expect("campaign remains present");
+    assert_eq!(campaign.status, CampaignStatus::Escalated);
+    assert!(campaign.owner_decisions.is_empty());
 }

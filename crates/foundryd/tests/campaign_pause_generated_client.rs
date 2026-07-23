@@ -29,6 +29,8 @@
 //!    other's update, leaving one campaign still Active after both calls
 //!    return `Ok`; the reloaded-store assertion catches that defect.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -633,4 +635,55 @@ async fn generated_client_pause_error_messages_do_not_contain_store_path() {
             err.message()
         );
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generated_client_pause_persist_failure_returns_internal_and_store_unchanged() {
+    let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
+    let campaigns_path = campaigns_dir.path().join("campaigns.json");
+    CampaignStore {
+        version: 1,
+        campaigns: vec![active_campaign("c")],
+    }
+    .save(&campaigns_path)
+    .expect("save initial campaigns");
+    drop(
+        CampaignStore::lock_exclusive(&campaigns_path)
+            .expect("create lock file before making directory readonly"),
+    );
+    let before = std::fs::read(&campaigns_path).expect("read campaigns before failure");
+
+    let mut permissions = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir")
+        .permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(campaigns_dir.path(), permissions).expect("set readonly dir");
+
+    let (service, _tmp_traces) = make_service_with_campaigns_path(campaigns_path.clone());
+    let addr = start_server(service).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let err = client
+        .pause_campaign(PauseCampaignRequest {
+            name: "c".to_string(),
+        })
+        .await
+        .expect_err("persist failure must fail");
+
+    let mut restore = std::fs::metadata(campaigns_dir.path())
+        .expect("stat campaigns dir for restore")
+        .permissions();
+    restore.set_mode(0o755);
+    std::fs::set_permissions(campaigns_dir.path(), restore).expect("restore dir perms");
+
+    assert_eq!(err.code(), Code::Internal);
+    assert!(err.message().contains("campaign store save failed"));
+    assert!(!err.message().contains(&campaigns_path.display().to_string()));
+    assert_eq!(std::fs::read(&campaigns_path).expect("read campaigns after failure"), before);
+
+    let stored = CampaignStore::load(&campaigns_path).expect("load store after failure");
+    assert_eq!(
+        stored.find("c").expect("campaign remains present").status,
+        CampaignStatus::Active
+    );
 }

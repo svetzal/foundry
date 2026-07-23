@@ -153,7 +153,9 @@ through typed gRPC and do not read or mutate the client-side
 `FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
 daemon's typed response or workflow output directly, so stale client-side
 campaign files cannot mask the live daemon-owned state. Pass `--offline` only
-when the daemon is stopped and you intentionally need direct-file recovery.
+when the daemon is stopped and you intentionally need direct-file recovery. If
+`foundryd` is unreachable, the online command fails and leaves any absent or
+pre-existing client-side `FOUNDRY_CAMPAIGNS_PATH` untouched.
 Campaigns carry a mission, neutral context artifact paths, required done
 evidence, escalation rules, an owner authorization, an optional agent
 provider, and a campaign-level cycle budget. The formation chooses exactly one
@@ -190,6 +192,11 @@ binding context instead of re-escalating on the same question. By default,
 campaign control commands require a reachable `foundryd` daemon; pass
 `--offline` only when you intentionally want direct-file recovery while the
 daemon is stopped.
+
+Online control-plane mutations are persistence-atomic at the daemon boundary:
+if a save fails during `pause`, `resume`, `decide`, or `complete`, the RPC
+returns `INTERNAL`, the persisted campaign store stays byte-identical, and
+`complete` does not emit `CampaignCompleted`.
 
 Read `references/workflows.md` for the event chain and the campaign definition
 example in `book/src/guide/campaigns.md` when preparing a new campaign.

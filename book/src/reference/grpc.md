@@ -320,7 +320,8 @@ available for the next manual advance after a subsequent resume.
 
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
 `FAILED_PRECONDITION` when the campaign store is malformed;
-`INTERNAL` when the campaign store is unreadable.
+`INTERNAL` when the campaign store is unreadable or when persistence fails.
+On save failure, the daemon leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign pause <name>` routes through this RPC when the daemon
 is reachable. Pass `--offline` to bypass the daemon and mutate the store file
@@ -365,7 +366,8 @@ silently reactivates an exhausted campaign.
 `FAILED_PRECONDITION` when the campaign is not `paused` or `escalated`, lacks
 `authorized_by`, the budget is exhausted and `add_cycles == 0`, `add_cycles`
 would overflow `max_cycles`, or the campaign store is malformed; `INTERNAL`
-when the campaign store is unreadable.
+when the campaign store is unreadable or persistence fails. On save failure,
+the daemon leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign resume <name>` routes through this RPC when the
 daemon is reachable. Pass `--offline` to bypass the daemon and mutate the store
@@ -403,7 +405,8 @@ stored `pending_run_result` are preserved.
 `INVALID_ARGUMENT` when `decision` is empty after trimming;
 `FAILED_PRECONDITION` when the campaign is not `escalated`, lacks
 `authorized_by`, or the campaign store is malformed; `INTERNAL` when the
-campaign store is unreadable.
+campaign store is unreadable or persistence fails. On save failure, the daemon
+leaves the persisted campaign store unchanged.
 
 **CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
 this RPC by default and therefore requires a reachable daemon. Pass
@@ -436,7 +439,8 @@ completed campaign is idempotent.
 **Errors:** `INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown
 campaign, and `FAILED_PRECONDITION` when the campaign has no authorizing owner
 or the campaign store is malformed; `INTERNAL` when the campaign store is
-unreadable.
+unreadable or persistence fails. On save failure, the daemon leaves the
+persisted campaign store unchanged and does not emit `CampaignCompleted`.
 
 **CLI:** `foundry campaign complete <name> --reason "<text>"` routes through
 this RPC by default. The online CLI renders the returned `CampaignDetail`

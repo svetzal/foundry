@@ -206,6 +206,11 @@ store. See
 [Tasks and Campaigns](../guide/campaigns.md) for the definition schema and
 lifecycle.
 
+For online mutations, daemon-side persistence is atomic at the control-plane
+boundary: if a save fails, the command surfaces the typed gRPC `INTERNAL`
+error, the daemon-owned campaign store stays byte-identical on disk, and
+`campaign complete` does not emit a terminal completion event.
+
 `complete` is the owner-authorized external terminal path. It accepts any
 non-completed campaign state, requires a non-empty `--reason`, clears any stale
 pending run result, records the reason with the authorizing owner and timestamp,

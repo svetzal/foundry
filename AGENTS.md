@@ -116,6 +116,27 @@ Rules:
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
+### Campaign commands
+
+Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
+`show`, `advance`, `pause`, `resume`, `decide`, and `complete` go through
+`foundryd` via typed gRPC so reads and writes all observe the daemon-owned
+campaign state. Pass `--offline` only for explicit recovery when the daemon is
+stopped and you intentionally need direct file access.
+
+| Command | Daemon required? | Notes |
+|---------|-----------------|-------|
+| `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign list` | Yes (or `--offline`) | Reads daemon-owned campaign state via `ListCampaigns`; `--offline` reads the file directly |
+| `foundry campaign show <name>` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`; `--offline` reads the file directly |
+| `foundry campaign advance <name>` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback |
+| `foundry campaign pause <name>` | Yes (or `--offline`) | Mutates via `PauseCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign decide <name> …` | Yes (or `--offline`) | Mutates via `DecideCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign complete <name> …` | Yes (or `--offline`) | Mutates via `CompleteCampaign`; unreachable daemon is an error unless `--offline` is set |
+
+> **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/complete` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`complete` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign` does not emit a terminal completion event.
+
 ### Registry commands
 
 Registry commands are daemon-authoritative in normal online use. `list`, `show`, `add`, `edit`, and `remove` go through `foundryd` via typed gRPC so reads and writes all observe the daemon-owned registry state. Pass `--offline` only for explicit recovery when the daemon is stopped and you intentionally need direct file access.
@@ -362,7 +383,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
-- `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; written atomically by the CLI and campaign formation
+- `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; owned by `foundryd` for normal online reads and mutations, with direct file access reserved for explicit `--offline` recovery
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)

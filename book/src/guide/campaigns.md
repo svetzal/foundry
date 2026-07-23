@@ -16,7 +16,9 @@ through typed gRPC and do not read, create, or mutate
 `FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
 daemon's typed response directly, so stale client-side campaign files cannot
 mask the live daemon-owned state. Pass `--offline` only for direct-file
-recovery while the daemon is stopped.
+recovery while the daemon is stopped. If the daemon is unreachable, the online
+command fails and leaves any absent or pre-existing client-side
+`FOUNDRY_CAMPAIGNS_PATH` byte-identical.
 
 The read-only inventory surface starts with two gRPC queries:
 
@@ -155,6 +157,9 @@ foundry campaign resume parite-phase-2d --add-cycles 1
 Completion and escalation are terminal events and are forced into the next ops
 digest as an anomaly. Campaign-store mutations are serialized across the CLI and
 daemon, so a control command cannot overwrite an in-flight formation decision.
+If a daemon-side save fails during `pause`, `resume`, `decide`, or `complete`,
+the RPC returns `INTERNAL`, leaves the persisted daemon-owned store
+byte-identical, and `complete` does not emit `CampaignCompleted`.
 
 When a task escalates with a human judgment question, record the owner's policy
 before the next advance:
