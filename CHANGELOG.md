@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.34.2] - 2026-07-24
+
 ### Changed
 
 - `block_started` and `block_completed` observations are now persisted in the
