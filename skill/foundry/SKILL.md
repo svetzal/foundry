@@ -251,7 +251,9 @@ when the daemon is not running. If `foundryd` is unreachable, the online
 command fails and leaves any client-side `FOUNDRY_SENTINELS_PATH` absent or
 untouched. Successful online `enable`/`disable` wake the scheduler
 immediately; failed saves leave the daemon-owned sentinel store unchanged in
-memory and on disk. The file is auto-seeded with the canonical entries on
+memory, on disk, and in subsequent `list`/`show` reads, and do not wake the
+scheduler. The daemon persists via same-directory temp-file rename, so a failed
+save does not fall back to direct destination writes or truncation. The file is auto-seeded with the canonical entries on
 first daemon start, and the daemon additively merges any missing canonical
 entries on every restart (so new Foundry releases that ship more sentinels
 reach existing installs automatically).

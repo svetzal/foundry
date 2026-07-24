@@ -241,6 +241,120 @@ online path mutates daemon-owned state only and does not create
 with a stable `failed to persist registry state` message and leaves both the
 daemon's in-memory registry and its on-disk registry bytes unchanged.
 
+### `SentinelList(SentinelListRequest) → SentinelListResponse`
+
+List every daemon-owned sentinel from the in-memory scheduler control-plane
+state held by `foundryd`.
+
+**Request:**
+
+This message has no fields.
+
+**Response:**
+
+| Field       | Type              | Description                                                    |
+| ----------- | ----------------- | -------------------------------------------------------------- |
+| `sentinels` | repeated Sentinel | Every daemon-owned sentinel entry in scheduler evaluation order |
+
+Each `Sentinel` carries the exact scheduler contract the CLI needs to render:
+`name`, `cron`, `emit_event_type`, `emit_project`, `emit_throttle`,
+`emit_payload_json`, and `enabled`.
+
+**Errors:** None at the RPC layer; the daemon answers from already-loaded
+sentinel state.
+
+**CLI:** `foundry sentinel list` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to read the sentinel
+file directly. Without `--offline`, an unreachable daemon returns an error and
+leaves the client-side sentinel file unchanged. The online path renders the RPC
+response directly and does not create `FOUNDRY_SENTINELS_PATH`; if that path is
+absent, the online path leaves it absent.
+
+### `SentinelShow(SentinelShowRequest) → SentinelShowResponse`
+
+Retrieve one exact-name sentinel from the daemon-owned scheduler control-plane
+state. The name match is exact and does not perform prefix or substring lookup.
+
+**Request:**
+
+| Field  | Type   | Description                     |
+| ------ | ------ | ------------------------------- |
+| `name` | string | Exact sentinel name to retrieve |
+
+**Response:**
+
+| Field      | Type     | Description                                         |
+| ---------- | -------- | --------------------------------------------------- |
+| `sentinel` | Sentinel | The full daemon-owned sentinel record for that name |
+
+**Errors:** `NOT_FOUND` if no exact-name sentinel exists.
+
+**CLI:** `foundry sentinel show <name>` routes through this RPC by default and
+therefore requires a reachable daemon. Pass `--offline` to read the sentinel
+file directly. Without `--offline`, an unreachable daemon returns an error and
+leaves the client-side sentinel file unchanged. The online path renders the RPC
+response directly and does not create `FOUNDRY_SENTINELS_PATH`; if that path is
+absent, the online path leaves it absent.
+
+### `SentinelEnable(SentinelEnableRequest) → SentinelEnableResponse`
+
+Mark one daemon-owned sentinel as enabled, persist the updated sentinel store,
+and wake the in-process scheduler so the next firing is recomputed immediately.
+
+**Request:**
+
+| Field  | Type   | Description                   |
+| ------ | ------ | ----------------------------- |
+| `name` | string | Exact sentinel name to enable |
+
+**Response:**
+
+| Field      | Type     | Description                                             |
+| ---------- | -------- | ------------------------------------------------------- |
+| `sentinel` | Sentinel | The committed daemon-owned sentinel record after enable |
+
+**Errors:** `NOT_FOUND` if no exact-name sentinel exists; `INTERNAL` if the
+daemon cannot persist the sentinel store.
+
+**CLI:** `foundry sentinel enable <name>` routes through this RPC by default
+and therefore requires a reachable daemon. Pass `--offline` to bypass the
+daemon and mutate the sentinel file directly. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side sentinel file
+unchanged. The online path mutates daemon-owned state only and does not create
+`FOUNDRY_SENTINELS_PATH`. If daemon persistence fails, the RPC returns
+`INTERNAL`, leaves the daemon-owned in-memory sentinel store unchanged, does
+not wake the scheduler, and leaves the on-disk sentinel bytes unchanged.
+
+### `SentinelDisable(SentinelDisableRequest) → SentinelDisableResponse`
+
+Mark one daemon-owned sentinel as disabled, persist the updated sentinel store,
+and wake the in-process scheduler so any pending firing is cancelled
+immediately.
+
+**Request:**
+
+| Field  | Type   | Description                    |
+| ------ | ------ | ------------------------------ |
+| `name` | string | Exact sentinel name to disable |
+
+**Response:**
+
+| Field      | Type     | Description                                              |
+| ---------- | -------- | -------------------------------------------------------- |
+| `sentinel` | Sentinel | The committed daemon-owned sentinel record after disable |
+
+**Errors:** `NOT_FOUND` if no exact-name sentinel exists; `INTERNAL` if the
+daemon cannot persist the sentinel store.
+
+**CLI:** `foundry sentinel disable <name>` routes through this RPC by default
+and therefore requires a reachable daemon. Pass `--offline` to bypass the
+daemon and mutate the sentinel file directly. Without `--offline`, an
+unreachable daemon returns an error and leaves the client-side sentinel file
+unchanged. The online path mutates daemon-owned state only and does not create
+`FOUNDRY_SENTINELS_PATH`. If daemon persistence fails, the RPC returns
+`INTERNAL`, leaves the daemon-owned in-memory sentinel store unchanged, does
+not wake the scheduler, and leaves the on-disk sentinel bytes unchanged.
+
 ### `AddCampaign(AddCampaignRequest) → AddCampaignResponse`
 
 Add one campaign definition to the daemon-owned campaign store. The daemon

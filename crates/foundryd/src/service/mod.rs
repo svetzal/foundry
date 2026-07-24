@@ -955,22 +955,26 @@ mod tests {
         let sentinels_path = tempdir.path().join("sentinels.json");
         store.save(&sentinels_path).expect("save seeded sentinels");
         let before = std::fs::read(&sentinels_path).expect("read seeded sentinels");
-        let mut permissions = std::fs::metadata(&sentinels_path)
-            .expect("stat sentinel file")
+        let mut file_permissions =
+            std::fs::metadata(&sentinels_path).expect("stat sentinel file").permissions();
+        file_permissions.set_mode(0o644);
+        std::fs::set_permissions(&sentinels_path, file_permissions)
+            .expect("set sentinel file writable for direct-write trap");
+        let mut dir_permissions = std::fs::metadata(tempdir.path())
+            .expect("stat sentinel directory")
             .permissions();
-        permissions.set_mode(0o444);
-        std::fs::set_permissions(&sentinels_path, permissions)
-            .expect("set sentinel file readonly");
+        dir_permissions.set_mode(0o555);
+        std::fs::set_permissions(tempdir.path(), dir_permissions)
+            .expect("set sentinel directory readonly");
         (tempdir, sentinels_path, before)
     }
 
     #[cfg(unix)]
-    fn restore_sentinel_fixture_permissions(path: &std::path::Path) {
-        let mut permissions = std::fs::metadata(path)
-            .expect("stat sentinel file")
-            .permissions();
-        permissions.set_mode(0o644);
-        std::fs::set_permissions(path, permissions).expect("restore sentinel file permissions");
+    fn restore_sentinel_fixture_permissions(dir: &std::path::Path) {
+        let mut permissions =
+            std::fs::metadata(dir).expect("stat sentinel directory").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(dir, permissions).expect("restore sentinel directory permissions");
     }
 
     #[cfg(unix)]
@@ -1049,7 +1053,7 @@ mod tests {
             "disk bytes must remain byte-identical after failed enable"
         );
 
-        restore_sentinel_fixture_permissions(&sentinels_path);
+        restore_sentinel_fixture_permissions(tempdir.path());
         drop(tempdir);
     }
 
@@ -1094,8 +1098,76 @@ mod tests {
             "disk bytes must remain byte-identical after failed disable"
         );
 
-        restore_sentinel_fixture_permissions(&sentinels_path);
+        restore_sentinel_fixture_permissions(tempdir.path());
         drop(tempdir);
+    }
+
+    #[tokio::test]
+    async fn sentinel_enable_success_notifies_scheduler_and_updates_list_state() {
+        let (service, _rx) = test_service();
+        {
+            let mut store = service.sentinels.write().unwrap();
+            store.sentinels[0].enabled = false;
+            store.save(&service.sentinels_path).expect("persist disabled baseline");
+        }
+
+        let scheduler_reload = Arc::clone(&service.scheduler_reload);
+        let notified = scheduler_reload.notified();
+        let response = service
+            .sentinel_enable(Request::new(SentinelEnableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("enable should succeed")
+            .into_inner();
+
+        let sentinel = response.sentinel.expect("sentinel echoed");
+        assert!(sentinel.enabled, "response must report enabled state");
+        tokio::time::timeout(Duration::from_millis(50), notified)
+            .await
+            .expect("successful enable must notify scheduler");
+
+        let listed = service
+            .sentinel_list(Request::new(SentinelListRequest {}))
+            .await
+            .expect("list should succeed after enable")
+            .into_inner();
+        assert!(
+            listed.sentinels[0].enabled,
+            "list view must observe the committed enabled state"
+        );
+    }
+
+    #[tokio::test]
+    async fn sentinel_disable_success_notifies_scheduler_and_updates_show_state() {
+        let (service, _rx) = test_service();
+
+        let scheduler_reload = Arc::clone(&service.scheduler_reload);
+        let notified = scheduler_reload.notified();
+        let response = service
+            .sentinel_disable(Request::new(SentinelDisableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("disable should succeed")
+            .into_inner();
+
+        let sentinel = response.sentinel.expect("sentinel echoed");
+        assert!(!sentinel.enabled, "response must report disabled state");
+        tokio::time::timeout(Duration::from_millis(50), notified)
+            .await
+            .expect("successful disable must notify scheduler");
+
+        let shown = service
+            .sentinel_show(Request::new(SentinelShowRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("show should succeed after disable")
+            .into_inner()
+            .sentinel
+            .expect("sentinel echoed");
+        assert!(!shown.enabled, "show view must observe the committed disabled state");
     }
 
     #[tokio::test]

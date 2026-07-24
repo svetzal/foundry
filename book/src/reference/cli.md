@@ -230,6 +230,44 @@ pending run result, records the reason with the authorizing owner and timestamp,
 and emits the normal `campaign_completed` terminal event. Repeating it for an
 already-completed campaign is idempotent.
 
+## `foundry sentinel`
+
+Inspect or toggle the daemon-owned scheduled sentinels.
+
+```bash
+foundry sentinel list [--offline]
+foundry sentinel show <name> [--offline]
+foundry sentinel enable <name> [--offline]
+foundry sentinel disable <name> [--offline]
+```
+
+| Subcommand | Daemon required?       | Description                                                              |
+| ---------- | ---------------------- | ------------------------------------------------------------------------ |
+| `list`     | Yes unless `--offline` | Render every daemon-owned sentinel entry                                 |
+| `show`     | Yes unless `--offline` | Render one exact-name daemon-owned sentinel                              |
+| `enable`   | Yes unless `--offline` | Mark one sentinel enabled and wake the in-process scheduler immediately  |
+| `disable`  | Yes unless `--offline` | Mark one sentinel disabled and wake the in-process scheduler immediately |
+
+The store defaults to `~/.foundry/sentinels.json` and can be overridden with
+`FOUNDRY_SENTINELS_PATH`. Without `--offline`, all four commands are
+daemon-authoritative: `list` renders `SentinelList`, `show` renders
+`SentinelShow`, `enable` calls `SentinelEnable`, and `disable` calls
+`SentinelDisable`. The online path never reads the client-side sentinel file,
+so an absent `FOUNDRY_SENTINELS_PATH` stays absent and a malformed trap file is
+left byte-identical.
+
+If `foundryd` is unreachable, the command fails with a stable actionable error
+that names the matching offline recovery command. There is no silent fallback.
+Pass `--offline` only when the daemon is stopped and you intentionally want to
+read or mutate the sentinel JSON file directly.
+
+Online `enable` and `disable` are persistence-atomic at the daemon boundary:
+the daemon writes a same-directory temporary file and renames it into place only
+after the full JSON payload is ready. If that save fails, the RPC returns
+`INTERNAL`, the daemon-owned in-memory sentinel store remains unchanged, `list`
+and `show` continue to reflect the pre-mutation state, the scheduler is not
+notified, and the on-disk `sentinels.json` bytes remain unchanged.
+
 ## `foundry validate`
 
 Validate quality gates for one or more projects without running iterate or

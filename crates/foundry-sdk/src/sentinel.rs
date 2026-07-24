@@ -77,11 +77,15 @@ impl SentinelStore {
             path: path.to_owned(),
             source,
         })?;
-        std::fs::write(path, content).map_err(|source| StoreError::Io {
-            path: path.to_owned(),
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, content).map_err(|source| StoreError::Io {
+            path: tmp.clone(),
             source,
         })?;
-        Ok(())
+        std::fs::rename(&tmp, path).map_err(|source| StoreError::Io {
+            path: path.to_owned(),
+            source,
+        })
     }
 
     /// Look up a sentinel by name.
@@ -483,6 +487,64 @@ mod tests {
         let path = dir.path().join("nested").join("dir").join("sentinels.json");
         SentinelStore::default_seed().save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn save_replaces_file_atomically_without_leaving_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentinels.json");
+        let original = SentinelStore::default_seed();
+        original.save(&path).unwrap();
+
+        let updated = SentinelStore {
+            version: SENTINEL_STORE_VERSION,
+            sentinels: vec![],
+        };
+        updated.save(&path).unwrap();
+
+        let loaded = SentinelStore::load(&path).unwrap();
+        assert!(loaded.sentinels.is_empty());
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "atomic save should not leave a temporary sentinel file behind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_failure_with_readonly_directory_leaves_existing_bytes_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentinels.json");
+        let original = SentinelStore::default_seed();
+        original.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let mut file_permissions = std::fs::metadata(&path).unwrap().permissions();
+        file_permissions.set_mode(0o644);
+        std::fs::set_permissions(&path, file_permissions).unwrap();
+
+        let mut dir_permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+        dir_permissions.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), dir_permissions).unwrap();
+
+        let err = SentinelStore {
+            version: SENTINEL_STORE_VERSION,
+            sentinels: vec![],
+        }
+        .save(&path)
+        .unwrap_err();
+
+        let mut restore = std::fs::metadata(dir.path()).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), restore).unwrap();
+
+        assert!(
+            matches!(err, StoreError::Io { .. }),
+            "expected StoreError::Io when temp-file create/rename cannot proceed, got {err:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

@@ -192,6 +192,26 @@ fn assert_daemon_sentinel_matches(path: &std::path::Path, expected: &SentinelEnt
     assert_eq!(actual.enabled, expected.enabled);
 }
 
+fn assert_offline_sentinel_file_matches(path: &std::path::Path, expected: &SentinelEntry) {
+    let store = SentinelStore::load(path).expect("load offline sentinel store");
+    let actual = store
+        .find_sentinel(&expected.name)
+        .expect("offline sentinel store should contain expected entry");
+    let actual_cron = match &actual.schedule {
+        Schedule::Cron(cron) => cron,
+    };
+    let expected_cron = match &expected.schedule {
+        Schedule::Cron(cron) => cron,
+    };
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual_cron, expected_cron);
+    assert_eq!(actual.emit.event_type, expected.emit.event_type);
+    assert_eq!(actual.emit.project, expected.emit.project);
+    assert_eq!(actual.emit.throttle, expected.emit.throttle);
+    assert_eq!(actual.emit.payload, expected.emit.payload);
+    assert_eq!(actual.enabled, expected.enabled);
+}
+
 fn assert_online_unreachable_keeps_client_sentinels_absent(
     client_home: &std::path::Path,
     args: &[&str],
@@ -398,4 +418,101 @@ fn online_disable_unreachable_keeps_client_trap_byte_identical() {
         "Error: foundryd is not reachable at http://127.0.0.1:9; start the daemon or rerun with `foundry sentinel disable nightly-maintenance --offline`",
         "sentinel disable unreachable",
     );
+}
+
+#[test]
+fn offline_list_reads_direct_file_state() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let sentinels_path = client_home.path().join(".foundry/offline-sentinels.json");
+    daemon_sentinels().save(&sentinels_path).expect("seed offline sentinel store");
+
+    let output = run_foundry(
+        client_home.path(),
+        &sentinels_path,
+        DUMMY_ADDR,
+        &["sentinel", "list", "--offline"],
+    );
+
+    assert_command_succeeded(&output);
+    let stdout = stdout_string(&output);
+    assert!(stdout.contains("nightly-maintenance"));
+    assert!(stdout.contains("cron: 7 4 * * 1"));
+    assert!(stdout.contains("maintenance_cycle_started"));
+    assert!(stdout.contains("daemon-system"));
+    assert!(stdout.contains("ops-digest"));
+    assert!(stdout.contains("cron: 11 */6 * * *"));
+    assert!(stdout.contains("ops_digest_started"));
+    assert!(stdout.contains("daemon-ops"));
+}
+
+#[test]
+fn offline_show_reads_direct_file_state() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let sentinels_path = client_home.path().join(".foundry/offline-sentinels.json");
+    daemon_sentinels().save(&sentinels_path).expect("seed offline sentinel store");
+
+    let output = run_foundry(
+        client_home.path(),
+        &sentinels_path,
+        DUMMY_ADDR,
+        &["sentinel", "show", "--offline", "nightly-maintenance"],
+    );
+
+    assert_command_succeeded(&output);
+    let stdout = stdout_string(&output);
+    assert!(stdout.contains("Name:      nightly-maintenance"));
+    assert!(stdout.contains("Schedule:  cron: 7 4 * * 1"));
+    assert!(stdout.contains("Enabled:   no"));
+    assert!(stdout.contains("Emits:     maintenance_cycle_started"));
+    assert!(stdout.contains("Project:   daemon-system"));
+    assert!(stdout.contains("Throttle:  dry_run"));
+    assert!(stdout.contains(r#"Payload:   {"scope":"daemon-owned","window":"night"}"#));
+}
+
+#[test]
+fn offline_enable_mutates_direct_file_state() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let sentinels_path = client_home.path().join(".foundry/offline-sentinels.json");
+    daemon_sentinels().save(&sentinels_path).expect("seed offline sentinel store");
+
+    let output = run_foundry(
+        client_home.path(),
+        &sentinels_path,
+        DUMMY_ADDR,
+        &["sentinel", "enable", "--offline", "nightly-maintenance"],
+    );
+
+    assert_command_succeeded(&output);
+    assert_eq!(stdout_string(&output).trim(), "Enabled sentinel 'nightly-maintenance'.");
+
+    let mut expected = daemon_sentinels()
+        .find_sentinel("nightly-maintenance")
+        .expect("seed sentinel exists")
+        .clone();
+    expected.enabled = true;
+    assert_offline_sentinel_file_matches(&sentinels_path, &expected);
+}
+
+#[test]
+fn offline_disable_mutates_direct_file_state() {
+    let client_home = tempfile::tempdir().expect("client home");
+    let sentinels_path = client_home.path().join(".foundry/offline-sentinels.json");
+    daemon_sentinels().save(&sentinels_path).expect("seed offline sentinel store");
+
+    let output = run_foundry(
+        client_home.path(),
+        &sentinels_path,
+        DUMMY_ADDR,
+        &["sentinel", "disable", "--offline", "ops-digest"],
+    );
+
+    assert_command_succeeded(&output);
+    assert_eq!(stdout_string(&output).trim(), "Disabled sentinel 'ops-digest'.");
+
+    let mut expected = daemon_sentinels()
+        .find_sentinel("ops-digest")
+        .expect("seed sentinel exists")
+        .clone();
+    expected.enabled = false;
+    assert_offline_sentinel_file_matches(&sentinels_path, &expected);
 }

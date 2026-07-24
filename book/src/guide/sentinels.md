@@ -178,8 +178,11 @@ explicit direct-file recovery while the daemon is stopped.
 
 Online `enable` and `disable` are persistence-atomic at the daemon boundary:
 if the daemon cannot save the sentinel store, the RPC returns `INTERNAL`, the
-daemon-owned in-memory store stays unchanged, the scheduler does not reload,
-and the on-disk `sentinels.json` stays byte-identical.
+daemon-owned in-memory store stays unchanged, `list` and `show` continue to
+render the pre-mutation state, the scheduler does not reload, and the on-disk
+`sentinels.json` stays byte-identical. The save path writes a temporary file in
+the same directory and renames it into place only after the full JSON payload is
+ready, so a failed save does not expose destination truncation or partial bytes.
 
 ## Adding a new sentinel
 

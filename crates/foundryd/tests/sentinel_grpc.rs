@@ -179,7 +179,12 @@ async fn enable_and_disable_round_trip_via_generated_client() {
         .sentinel
         .expect("sentinel echoed");
     assert!(enabled.enabled);
+    assert_eq!(enabled.name, "nightly-maintenance");
+    assert_eq!(enabled.cron, "7 4 * * 1");
+    assert_eq!(enabled.emit_event_type, "maintenance_cycle_started");
+    assert_eq!(enabled.emit_project, "daemon-system");
     assert_eq!(enabled.emit_throttle, 1);
+    assert_eq!(enabled.emit_payload_json, r#"{"scope":"daemon-owned","window":"night"}"#);
 
     let disabled = client
         .sentinel_disable(SentinelDisableRequest {
@@ -191,6 +196,11 @@ async fn enable_and_disable_round_trip_via_generated_client() {
         .sentinel
         .expect("sentinel echoed");
     assert!(!disabled.enabled);
+    assert_eq!(disabled.name, "ops-digest");
+    assert_eq!(disabled.cron, "11 */6 * * *");
+    assert_eq!(disabled.emit_event_type, "ops_digest_started");
+    assert_eq!(disabled.emit_project, "daemon-ops");
+    assert_eq!(disabled.emit_throttle, 0);
     assert_eq!(disabled.emit_payload_json, r#"{"kind":"ops","priority":"normal"}"#);
 
     let on_disk = SentinelStore::load(tmp_sentinels.path()).expect("load daemon sentinel store");
