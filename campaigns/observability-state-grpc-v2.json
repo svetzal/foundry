@@ -1,0 +1,61 @@
+{
+  "name": "foundry-observability-state-grpc-v2",
+  "project": "foundry",
+  "mission": "Finish remote observability from the current Foundry baseline. Status, trace, and span already query foundryd through typed gRPC, but history still reads the CLI host's trace files directly and the existing remote boundary needs coherent end-to-end proof. Make online history daemon-authoritative through typed gRPC, retain and harden status/trace/span behavior, and reserve direct trace-file diagnostics for explicit offline recovery. Preserve current rendering, filtering, trace retention, and not-found semantics unless an incompatibility is surfaced for owner decision.",
+  "intent_refs": [
+    "foundry.control-plane.observability-state",
+    "foundry.control-plane.remote-operator",
+    "foundry.control-plane.stateless-client",
+    "foundry.control-plane.explicit-offline-recovery"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "proto/foundry.proto",
+    "crates/foundry-cli/src/main.rs",
+    "crates/foundry-cli/src/event_commands.rs",
+    "crates/foundry-cli/src/render/event.rs",
+    "crates/foundry-cli/src/workflow_commands.rs",
+    "crates/foundryd/src/service/eventing_ops.rs",
+    "crates/foundryd/src/service/tracing_ops.rs",
+    "crates/foundryd/src/trace_store.rs",
+    "crates/foundryd/src/workflow_tracker.rs",
+    "book/src/guide/emitting-events.md",
+    "book/src/reference/cli.md",
+    "book/src/reference/grpc.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+      "required": true
+    },
+    {
+      "kind": "review",
+      "statement": "Real CLI or generated-client boundary tests prove online status, filtered history, trace, and span queries return exact daemon-owned records while the client has no matching event, trace, or workflow files."
+    },
+    {
+      "kind": "review",
+      "statement": "History is served by a typed gRPC contract and preserves date/project filtering, deterministic ordering, event ID, event type, project, success, duration, and trace ID fields without reading the client trace directory."
+    },
+    {
+      "kind": "review",
+      "statement": "Online observability failures return stable typed errors and never substitute client-local history or trace data. Explicit offline diagnostics are separately selected, documented, and tested."
+    },
+    {
+      "kind": "review",
+      "statement": "CLI and gRPC documentation clearly distinguish live workflow status, durable daemon history, trace/span lookup and retention, not-found behavior, and explicit offline diagnostics."
+    }
+  ],
+  "budget": {
+    "max_cycles": 4
+  },
+  "escalation": [
+    "A required history contract cannot preserve current filtering or rendering semantics without an owner-visible compatibility decision.",
+    "The implementation requires a new retention policy rather than exposing the daemon's existing durable records.",
+    "The same objective fails required validation twice.",
+    "The agent provider is unavailable because of authentication, rate, or spend capacity."
+  ],
+  "authorized_by": "Stacey",
+  "agent_provider": "codex"
+}

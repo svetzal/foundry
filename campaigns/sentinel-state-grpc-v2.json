@@ -1,0 +1,61 @@
+{
+  "name": "foundry-sentinel-state-grpc-v2",
+  "project": "foundry",
+  "mission": "Close the remaining sentinel control-plane gap from the current Foundry baseline. Registry and campaign state are already daemon-authoritative, while sentinel list/show still read client-side sentinels.json and enable/disable still permit implicit daemon-unreachable fallback. Make foundryd the sole online owner of sentinel definitions and scheduler-visible state: list, show, enable, and disable use typed gRPC; daemon-unreachable online commands never read or mutate client files; explicit --offline remains the only direct-file recovery path. Preserve canonical seeding, additive default merging, scheduler wake-up semantics, and loopback compatibility.",
+  "intent_refs": [
+    "foundry.control-plane.sentinel-state",
+    "foundry.control-plane.stateless-client",
+    "foundry.control-plane.scheduler-consistency",
+    "foundry.control-plane.explicit-offline-recovery"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "proto/foundry.proto",
+    "crates/foundry-sdk/src/sentinel.rs",
+    "crates/foundry-cli/src/main.rs",
+    "crates/foundry-cli/src/daemon.rs",
+    "crates/foundry-cli/src/sentinel_commands.rs",
+    "crates/foundryd/src/main.rs",
+    "crates/foundryd/src/service/mod.rs",
+    "crates/foundryd/src/service/sentinel_ops.rs",
+    "crates/foundryd/src/scheduler.rs",
+    "book/src/guide/sentinels.md",
+    "book/src/reference/cli.md",
+    "book/src/reference/grpc.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+      "required": true
+    },
+    {
+      "kind": "review",
+      "statement": "Real CLI or generated-client boundary tests run sentinel list, show, enable, and disable against populated daemon-owned state with an isolated absent or trap client FOUNDRY_SENTINELS_PATH. They assert exact sentinel name, cron, event type, project, throttle, payload, and enabled state, and prove online commands neither read nor mutate the client file."
+    },
+    {
+      "kind": "review",
+      "statement": "Daemon-unreachable online list, show, enable, and disable fail with stable actionable errors and no local fallback. Explicit --offline recovery for all supported sentinel operations remains documented and tested."
+    },
+    {
+      "kind": "review",
+      "statement": "Concurrent sentinel mutations are serialized and persistence-atomic, successful enable/disable changes wake the scheduler consistently, and failed persistence leaves daemon memory, scheduler-visible state, and disk byte-identical."
+    },
+    {
+      "kind": "review",
+      "statement": "Documentation accurately describes daemon-authoritative sentinel reads and mutations, explicit offline recovery, canonical additive seeding, scheduler reload behavior, and the boundary between this campaign and future sentinel add/edit/remove work."
+    }
+  ],
+  "budget": {
+    "max_cycles": 4
+  },
+  "escalation": [
+    "Moving sentinel reads behind gRPC requires intentionally changing canonical seed or scheduler semantics.",
+    "A behavior choice would expand scope into sentinel add, edit, or remove.",
+    "The same objective fails required validation twice.",
+    "The agent provider is unavailable because of authentication, rate, or spend capacity."
+  ],
+  "authorized_by": "Stacey",
+  "agent_provider": "codex"
+}

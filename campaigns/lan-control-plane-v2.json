@@ -1,0 +1,58 @@
+{
+  "name": "foundry-lan-control-plane-v2",
+  "project": "foundry",
+  "mission": "Make the current single-daemon architecture practical as a trusted-LAN control plane. Registry and campaign state are already daemon-authoritative; the CLI currently has an explicit --addr flag with a fixed loopback default, and foundryd still binds unconditionally to 127.0.0.1:50051. Add a configurable daemon listen address, a persistent client daemon-address default with explicit --addr precedence, plaintext remote operation, and an exact no-split-brain migration runbook for moving authority from the Mac to mojility-ops-01 after all remaining state-domain campaigns close. Preserve loopback defaults. Authentication, TLS, clustering, and the live migration itself remain out of scope.",
+  "intent_refs": [
+    "foundry.control-plane.trusted-lan",
+    "foundry.control-plane.configurable-endpoint",
+    "foundry.control-plane.ops-server-migration",
+    "foundry.control-plane.single-authority"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "crates/foundry-cli/src/main.rs",
+    "crates/foundryd/src/main.rs",
+    "launchd/README.md",
+    "systemd/README.md",
+    "systemd/foundryd.service",
+    "book/src/guide/getting-started.md",
+    "book/src/reference/cli.md",
+    "book/src/architecture/crates.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+      "required": true
+    },
+    {
+      "kind": "review",
+      "statement": "foundryd supports a startup-configured listen address while preserving the 127.0.0.1:50051 default, and integration tests prove binding a non-default address and serving a remote-style plaintext gRPC client."
+    },
+    {
+      "kind": "review",
+      "statement": "The CLI supports a persistent environment or configuration daemon-address default, an explicit --addr override takes precedence, and the loopback default remains unchanged when neither is set. Tests pin the full precedence order."
+    },
+    {
+      "kind": "review",
+      "statement": "Documentation identifies plaintext trusted-LAN operation as an explicit deployment choice and does not imply authentication, TLS, clustering, or multiple writable authorities."
+    },
+    {
+      "kind": "review",
+      "statement": "A migration runbook inventories every authoritative Foundry state path, requires registry, campaign, sentinel, and observability authority campaigns to be complete before cutover, performs a one-time copy to mojility-ops-01, validates remote command parity, prevents both daemons from being writable simultaneously, and defines rollback before retiring the Mac daemon."
+    }
+  ],
+  "budget": {
+    "max_cycles": 3
+  },
+  "escalation": [
+    "The endpoint design requires choosing authentication, TLS, or clustering policy.",
+    "The Mac and mojility-ops-01 contain divergent authoritative state requiring a merge decision.",
+    "A migration step would make both daemons writable at the same time.",
+    "The same objective fails required validation twice.",
+    "The agent provider is unavailable because of authentication, rate, or spend capacity."
+  ],
+  "authorized_by": "Stacey",
+  "agent_provider": "codex"
+}
