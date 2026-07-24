@@ -124,7 +124,7 @@ foundry watch --project my-project
 Key events to look for:
 
 | Event | Meaning |
-|-------|---------|
+| ------- | ------- |
 | `strategic_assessment_completed` | AI identified areas; check `areas` in payload |
 | `iteration_requested` (with `loop_context`) | Inner loop entered for an area |
 | `inner_iteration_completed` | One cycle done; check `success` |
@@ -149,7 +149,7 @@ it took — across all iterations of the loop.
 ### Entry payload
 
 | Field | Type | Default | Purpose |
-|-------|------|---------|---------|
+| ------- | ------ | ------- | ------- |
 | `strategic` | bool | `false` | Must be `true` to activate strategic mode |
 | `max_iterations` | integer | 5 | Maximum number of inner loop cycles |
 | `strategic_prompt` | string | (built-in) | Custom directive for the assessment and continue checks (see below) |
@@ -218,7 +218,7 @@ survives the full inner chain and is available on every re-entry.
 Some examples:
 
 | Goal | Prompt |
-|------|--------|
+| ------ | ------ |
 | Product work from a backlog | `"Pick the highest priority interaction from et and implement it."` |
 | Focused refactoring | `"Find the module with the worst test coverage and add tests."` |
 | Dependency modernisation | `"Identify deprecated dependencies and upgrade them one at a time."` |
@@ -245,7 +245,7 @@ a broken codebase.
 ### Throttle interaction
 
 | Throttle | Strategic Assessor | Inner Iterate | Commits |
-|----------|-------------------|---------------|---------|
+| -------- | ----------------- | ------------- | ------- |
 | `full` | Runs | Runs (modifies files) | Real commits |
 | `dry_run` | Runs | Simulated success | No commits |
 
@@ -312,8 +312,8 @@ Strategic iteration adds two blocks with their own agent invocations on top
 of the standard iterate chain:
 
 | Phase | Capability | Model | Access | Purpose |
-|-------|-----------|-------|--------|---------|
-| Strategic Assessor | Reasoning | `claude-opus-4-6` | Read-only | Holistic codebase analysis producing ranked improvement areas |
+| ------- | --------- | ----- | ------ | ------- |
+| Strategic Assessor | Reasoning | `claude-opus-5` | Read-only | Holistic codebase analysis producing ranked improvement areas |
 | Continue check | Quick | `claude-haiku-4-5-20251001` | Read-only | Decide whether the loop should continue after each cycle |
 
 The inner iterate formation uses the same model assignments described in
@@ -326,7 +326,7 @@ and termination decisions.
 ## Comparison with Standard Iterate
 
 | Aspect | Standard Iterate | Strategic Iterate |
-|--------|-----------------|-------------------|
+| ------ | --------------- | ----------------- |
 | Entry payload | `{}` or `{actions: ...}` | `{strategic: true, max_iterations: N}` |
 | Scope | One issue per run | Multiple issues per run |
 | Commits | One at the end | One per inner cycle + one final |

@@ -649,7 +649,7 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "stream-json"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--verbose"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--model"), "args: {captured:?}");
-        assert!(captured.iter().any(|a| a == "claude-opus-4-8"), "args: {captured:?}");
+        assert!(captured.iter().any(|a| a == "claude-opus-5"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--effort"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "high"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");

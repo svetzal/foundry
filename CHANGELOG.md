@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Claude's deep model tier now uses `claude-opus-5`, replacing the retired
+  Opus 4.6/4.8 canonical aliases. Existing generated `agents.json` stores
+  migrate those known defaults on daemon startup while preserving custom model
+  overrides. The balanced tier remains `claude-sonnet-5`; runtime defaults,
+  gate derivation, tests, and workflow documentation now consistently use the
+  Claude 5 model family.
+
 ## [0.34.3] - 2026-07-24
 
 ### Changed
@@ -96,7 +105,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   implied.
 
 - Campaign events now carry tracing identity. The advance RPC built its root
-  with a bare `Event::new`, and `stamp_context` only ever _inherits_ — so every
+  with a bare `Event::new`, and `stamp_context` only ever *inherits* — so every
   campaign event in production carried `trace_id: null` and `span_id: null`,
   leaving the longest-running workflow in the system the only one
   `foundry trace` could not reconstruct. The root now mints both: the trace
@@ -106,7 +115,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - `campaign_cycle` is stamped onto every task-side event. Of the twelve events a
   cycle emits, only `CampaignAdvanceCompleted` recorded `cycles_completed`, so
-  grouping events to a _campaign_ worked but grouping them to a _cycle_ meant
+  grouping events to a *campaign* worked but grouping them to a *cycle* meant
   sorting on time and treating each `CampaignAdvanceRequested` as a boundary — a
   guess that breaks on concurrent campaigns in one project and on out-of-order
   arrival. The field sits beside `campaign` in both `ChainContext` and
@@ -542,9 +551,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Supply-chain auto-fix engine (EXP-003 Phase 2, Slice 2b — first increment,
-  shipped dark).** `RemediateSupplyChain` can now _apply_ a fixable advisory's
+  shipped dark).** `RemediateSupplyChain` can now *apply* a fixable advisory's
   fix, not just classify it. It is **off by default** and acts only when
-  `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` is truthy _and_ the throttle is `Full` (never
+  `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` is truthy *and* the throttle is `Full` (never
   `dry_run`); otherwise it is byte-for-byte the classifier. Every fix runs a
   mandatory verify-and-rollback rail and is reversible — **committed locally,
   never pushed**: (1) skip any project whose working tree is dirty; (2) apply
@@ -558,7 +567,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   fix is never applied).
 - `SupplyChainRemediatedPayload` carries per-finding `outcomes`
   (`RemediationOutcome`); the digest gains a **Remediation** section
-  (_Auto-fixed_ / _Reverted_ / _Not auto-fixed_) shown only when the engine ran.
+  (*Auto-fixed* / *Reverted* / *Not auto-fixed*) shown only when the engine ran.
 - New env var `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` (default off).
 
 ## [0.25.2] - 2026-06-16
@@ -568,7 +577,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **pip-audit exit code 1 (vulnerabilities found) misread as a tool failure.**
   Like `npm audit`, `pip-audit` exits non-zero when it finds advisories — the
   JSON report still goes to stdout. The scanner treated that as "audit tool
-  failed" and discarded the findings, so a Python project _with_ a real advisory
+  failed" and discarded the findings, so a Python project *with* a real advisory
   landed under "Not scanned". `is_audit_vuln_exit_code` now recognises Python
   exit 1 as "vulnerabilities found" (stderr warnings are ignored; the stdout
   JSON is parsed). Completes the Python supply-chain scanning fix begun in
@@ -581,7 +590,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Python supply-chain scanning now works (venv-local tool + correct parser).**
   Two bugs kept every Python project reading as "not scanned". (1) `pip-audit`
-  was invoked as a bare command expecting a global PATH; it is a _project_
+  was invoked as a bare command expecting a global PATH; it is a *project*
   dependency that lives in the project's virtualenv, so it is now resolved from
   `{project}/.venv/bin/pip-audit`. A project without it reports a clean,
   informative "pip-audit not found in .venv" rather than a spawn error. Global
@@ -629,7 +638,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Triage formation self-emit loop (event-log runaway).** `WriteTriageDigest`
-  sank on `MaintenanceTriageCompleted` _and_ re-emitted that same event type,
+  sank on `MaintenanceTriageCompleted` *and* re-emitted that same event type,
   re-triggering itself in an unbounded loop. Each iteration appended a large
   verdicts-bearing event, ballooning `~/.foundry/events/2026-06.jsonl` to ~56 GB
   (≈1000× a normal month) and eventually filling the disk. The block now emits a
@@ -655,12 +664,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `nightly-supply-chain` canonical sentinel (06:00 local, enabled by default)
   emits `SupplyChainScanStarted`, driving a two-block formation that scans every
   active project's working-tree lockfile for dependency advisories. This is the
-  _detection_ lane the release-tag `ReleaseTagAudited` audit does not cover — it
+  *detection* lane the release-tag `ReleaseTagAudited` audit does not cover — it
   scans what is checked out now, on a schedule, independent of whether code
   changed. `ScanSupplyChain` runs each stack's audit tool (`cargo audit`,
   `npm audit`, `pip-audit`, `mix deps.audit`), classifies each advisory against
   that repo's committed `.supply-chain-allow.json`, and emits
-  `SupplyChainScanned`. `WriteSupplyChainDigest` renders a _deterministic_
+  `SupplyChainScanned`. `WriteSupplyChainDigest` renders a *deterministic*
   (no-agent) markdown digest to `{FOUNDRY_SUPPLY_CHAIN_DIR}/{YYYY-MM-DD}.md` and
   emits `SupplyChainScanCompleted`. The formation is advisory and read-only: it
   never mutates a working tree and never fails a project run — a supply-chain
@@ -733,7 +742,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (`codex exec --json -o …`) as a third provider alongside `claude` and
   `opencode`, all behind the same `AgentGateway` trait. Capability maps to
   `OpenAI` models with `model_reasoning_effort`; `ReadOnly` access maps to
-  codex's _enforced_ `-s read-only` sandbox (a real guarantee opencode's
+  codex's *enforced* `-s read-only` sandbox (a real guarantee opencode's
   advisory mode lacks), `Full` to `--dangerously-bypass-approvals-and-sandbox`.
   Validated against `codex-cli` 0.134.0.
 - **Per-request agent provider override.** A run may select its backend via an
@@ -749,7 +758,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `FOUNDRY_AGENT_PROVIDER` is now the _default_ provider rather than the sole
+- `FOUNDRY_AGENT_PROVIDER` is now the *default* provider rather than the sole
   selector. The daemon constructs all three backends up front and routes per
   request; absent an override, requests use this default (still defaulting to
   `claude`, with a warning on an unknown value).
@@ -1008,7 +1017,7 @@ prints the remediation command.
 - **OpenTelemetry-shaped nested tracing**: every `Event` now carries `span_id`
   (16-char hex) and `parent_span_id` (16-char hex) alongside `trace_id` (32-char
   hex). The engine stamps these per two rules: emitted events default to the
-  trigger's span; events registered as _span openers_ (`*Requested` workflow
+  trigger's span; events registered as *span openers* (`*Requested` workflow
   events, `*Started` lifecycle events, `RemediationStarted`) get a fresh
   `span_id` parented to the emitting block's span. Block-level spans are
   recorded on `BlockExecution` (not on emitted events), so the call tree can be

@@ -240,7 +240,7 @@ hint to a concrete model:
 
 | Capability | Model | Use Case |
 | --- | --- | --- |
-| Reasoning | `claude-opus-4-6` | Deep analysis and planning |
+| Reasoning | `claude-opus-5` | Deep analysis and planning |
 | Coding | `claude-sonnet-5` | Code generation and modification |
 | Quick | `claude-haiku-4-5-20251001` | Fast, lightweight decisions |
 

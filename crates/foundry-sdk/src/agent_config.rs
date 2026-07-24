@@ -10,9 +10,9 @@
 //!
 //! The store follows the same seed-merge discipline as sentinels: on first
 //! start the full default seed is written; on later starts
-//! [`merge_default_seed_into`] additively fills any provider or individual
-//! tier/effort key missing from the user's file, leaving overridden entries
-//! untouched. New providers, tiers, or effort levels shipped in a release
+//! [`merge_default_seed_into`] fills missing provider/tier/effort keys and
+//! migrates retired canonical model aliases. Custom model overrides remain
+//! untouched. New providers, tiers, effort levels, and replacement defaults
 //! therefore reach existing installs automatically.
 
 use std::collections::BTreeMap;
@@ -62,7 +62,7 @@ impl ProviderModels {
             // claude --effort accepts low|medium|high; clamp the extremes.
             AgentProvider::Claude => build(
                 &[
-                    (ModelTier::Deep, "claude-opus-4-8"),
+                    (ModelTier::Deep, "claude-opus-5"),
                     (ModelTier::Balanced, "claude-sonnet-5"),
                     (ModelTier::Fast, "claude-haiku-4-5-20251001"),
                 ],
@@ -218,10 +218,12 @@ impl AgentConfigStore {
     }
 }
 
-/// Additive seed-merge: fill any provider, tier, or effort key missing from
-/// `store` with the canonical default. Returns `true` when anything was added
-/// (the caller should persist). Never overwrites a key the user already set, so
-/// hand-edited model ids and effort tokens survive.
+/// Seed merge: fill any provider, tier, or effort key missing from `store` and
+/// migrate retired canonical Claude model aliases to their replacements.
+///
+/// Returns `true` when anything changed (the caller should persist). Only
+/// previously shipped canonical aliases are replaced; all other hand-edited
+/// model ids and effort tokens survive.
 pub fn merge_default_seed_into(store: &mut AgentConfigStore) -> bool {
     let mut changed = false;
     for provider in [
@@ -247,7 +249,38 @@ pub fn merge_default_seed_into(store: &mut AgentConfigStore) -> bool {
             }
         }
     }
+    if let Some(claude) = store.providers.get_mut(&AgentProvider::Claude) {
+        changed |= migrate_canonical_model(
+            &mut claude.models,
+            ModelTier::Deep,
+            &["claude-opus-4-6", "claude-opus-4-8"],
+            "claude-opus-5",
+        );
+        changed |= migrate_canonical_model(
+            &mut claude.models,
+            ModelTier::Balanced,
+            &["claude-sonnet-4-6"],
+            "claude-sonnet-5",
+        );
+    }
     changed
+}
+
+fn migrate_canonical_model(
+    models: &mut BTreeMap<ModelTier, String>,
+    tier: ModelTier,
+    retired: &[&str],
+    replacement: &str,
+) -> bool {
+    let Some(current) = models.get_mut(&tier) else {
+        return false;
+    };
+    if retired.contains(&current.as_str()) {
+        *current = replacement.to_string();
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -272,9 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn default_tier_models_match_prior_hardcoded_mappings() {
+    fn default_tier_models_match_current_provider_mappings() {
         let claude = ProviderModels::default_for(AgentProvider::Claude);
-        assert_eq!(claude.model(ModelTier::Deep, AgentProvider::Claude), "claude-opus-4-8");
+        assert_eq!(claude.model(ModelTier::Deep, AgentProvider::Claude), "claude-opus-5");
         assert_eq!(claude.model(ModelTier::Balanced, AgentProvider::Claude), "claude-sonnet-5");
         assert_eq!(
             claude.model(ModelTier::Fast, AgentProvider::Claude),
@@ -325,7 +358,7 @@ mod tests {
             providers: BTreeMap::new(),
         };
         let resolved = store.resolved(AgentProvider::Claude);
-        assert_eq!(resolved.model(ModelTier::Deep, AgentProvider::Claude), "claude-opus-4-8");
+        assert_eq!(resolved.model(ModelTier::Deep, AgentProvider::Claude), "claude-opus-5");
     }
 
     #[test]
@@ -352,6 +385,33 @@ mod tests {
 
         // Idempotent: a second merge changes nothing.
         assert!(!merge_default_seed_into(&mut store));
+    }
+
+    #[test]
+    fn merge_migrates_retired_canonical_claude_models() {
+        let mut store = AgentConfigStore::default_seed();
+        let claude = store.providers.get_mut(&AgentProvider::Claude).unwrap();
+        claude.models.insert(ModelTier::Deep, "claude-opus-4-8".to_string());
+        claude.models.insert(ModelTier::Balanced, "claude-sonnet-4-6".to_string());
+
+        assert!(merge_default_seed_into(&mut store));
+        let claude = &store.providers[&AgentProvider::Claude];
+        assert_eq!(claude.models[&ModelTier::Deep], "claude-opus-5");
+        assert_eq!(claude.models[&ModelTier::Balanced], "claude-sonnet-5");
+        assert!(!merge_default_seed_into(&mut store));
+    }
+
+    #[test]
+    fn merge_preserves_custom_claude_model_overrides() {
+        let mut store = AgentConfigStore::default_seed();
+        let claude = store.providers.get_mut(&AgentProvider::Claude).unwrap();
+        claude.models.insert(ModelTier::Deep, "custom-opus".to_string());
+        claude.models.insert(ModelTier::Balanced, "custom-sonnet".to_string());
+
+        assert!(!merge_default_seed_into(&mut store));
+        let claude = &store.providers[&AgentProvider::Claude];
+        assert_eq!(claude.models[&ModelTier::Deep], "custom-opus");
+        assert_eq!(claude.models[&ModelTier::Balanced], "custom-sonnet");
     }
 
     #[test]
