@@ -439,12 +439,21 @@ pub(super) fn complete(
             cycles_landed: campaign.cycles_landed,
         })
         .map_err(|e| Status::internal(format!("failed to serialize completion payload: {e}")))?;
+        // Mint both ids here: this manual completion is a workflow root
+        // dispatched through `spawn_workflow`, with no trigger event to inherit
+        // from. `stamp_context` only ever *inherits* the ids, so a bare
+        // `Event::new` propagates `None` to `CampaignCompleted` and to every
+        // event the terminal-surfacing block emits from it — the same gap the
+        // `advance` path above already closes. No parent span: a manual
+        // completion opens its own root chain.
         let event = Event::new(
             EventType::CampaignCompleted,
             campaign.project.clone(),
             Throttle::Full,
             payload,
-        );
+        )
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
         guard.save().map_err(map_save_error)?;
         (detail, event)
     };
