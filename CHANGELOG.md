@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.34.3] - 2026-07-24
+
+### Changed
+
+- Every event published to Watch is now persisted idempotently in the monthly
+  event log. This includes non-routable `block_started` and `block_completed`
+  observations plus agent-session and service-completion signals that were
+  previously Watch-only. The live stream can no longer be richer than the
+  authoritative event history, and repeated delivery of one event ID cannot
+  append duplicate audit facts.
+
 ## [0.34.2] - 2026-07-24
 
 ### Changed

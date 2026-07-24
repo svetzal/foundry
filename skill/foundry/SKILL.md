@@ -18,7 +18,7 @@ compatibility:
   Requires foundryd daemon running locally (Rust binary, gRPC on
   127.0.0.1:50051)
 metadata:
-  version: "0.34.2"
+  version: "0.34.3"
   author: Stacey Vetzal
 ---
 
@@ -145,7 +145,7 @@ While the command is waiting, it streams both workflow events and non-routable
 block progress messages such as `running block Run Verify Gates` and
 `finished block Run Verify Gates (ok, 143.0s)`. Progress observations are
 persisted to the event log for auditability, but never delivered to downstream
-task blocks.
+task blocks. Every event published on Foundry's Watch stream is durable.
 
 Use this for small, concrete, immediately executable coding work.
 

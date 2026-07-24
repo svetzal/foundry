@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
     let supply_chain_dir = foundry_sdk::paths::supply_chain_dir();
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    spawn_event_audit_writer(&event_tx, Arc::clone(&event_writer));
 
     let engine = register_blocks(
         &registry,
@@ -149,6 +150,36 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+fn spawn_event_audit_writer(
+    event_tx: &tokio::sync::broadcast::Sender<foundry_sdk::event::Event>,
+    event_writer: Arc<foundry_engine::event_writer::EventWriter>,
+) {
+    let mut rx = event_tx.subscribe();
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Err(error) = event_writer.write(&event) {
+                        tracing::warn!(
+                            error = %error,
+                            event_id = %event.id,
+                            "failed to persist broadcast audit event"
+                        );
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::error!(
+                        missed,
+                        "event audit writer lagged; broadcast events may be absent from JSONL"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Load the sentinel store from disk, auto-seeding the default canonical set
@@ -574,4 +605,43 @@ fn register_digest_blocks(
     engine.register(Box::new(foundry_blocks::blocks::WriteSupplyChainDigest::new(
         paths.supply_chain_dir,
     )));
+}
+
+#[cfg(test)]
+mod audit_writer_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn watch_only_event_is_persisted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let writer = Arc::new(foundry_engine::event_writer::EventWriter::new(tmp.path()));
+        let (event_tx, _) = tokio::sync::broadcast::channel(8);
+        spawn_event_audit_writer(&event_tx, writer);
+
+        let event = foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::Custom("watch_only".to_string()),
+            "test-project".to_string(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"status": "observed"}),
+        );
+        let event_id = event.id.clone();
+        event_tx.send(event).unwrap();
+
+        let mut persisted = false;
+        for _attempt in 0..100 {
+            tokio::task::yield_now().await;
+
+            persisted = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|content| content.contains(&event_id));
+
+            if persisted {
+                break;
+            }
+        }
+
+        assert!(persisted, "Watch-only event should be written to JSONL");
+    }
 }

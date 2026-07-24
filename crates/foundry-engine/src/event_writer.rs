@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,8 +18,8 @@ use foundry_sdk::event::Event;
 /// closed immediately afterwards, giving crash-safe, unbuffered persistence.
 pub struct EventWriter {
     output_dir: PathBuf,
-    /// Serializes writes so concurrent callers never interleave partial lines.
-    write_lock: Mutex<()>,
+    /// Serializes writes and makes repeated delivery of one event idempotent.
+    written_ids: Mutex<HashSet<String>>,
 }
 
 impl EventWriter {
@@ -29,7 +30,7 @@ impl EventWriter {
     pub fn new(output_dir: impl Into<PathBuf>) -> Self {
         Self {
             output_dir: output_dir.into(),
-            write_lock: Mutex::new(()),
+            written_ids: Mutex::new(HashSet::new()),
         }
     }
 
@@ -46,11 +47,14 @@ impl EventWriter {
         let month_key = event.occurred_at.format("%Y-%m").to_string();
         let file_path = self.output_dir.join(format!("{month_key}.jsonl"));
 
-        // Hold the lock only while touching the filesystem.
-        // Best-effort: this guard protects only write serialization (no data
-        // lives behind it), so recovering from poison and writing anyway is
-        // safe — a stalled writer must not silently stop persisting events.
-        let _guard = self.write_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Hold the lock while checking and writing so concurrent delivery of
+        // one event id cannot append duplicate audit facts.
+        let mut written_ids =
+            self.written_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if written_ids.contains(&event.id) {
+            return Ok(());
+        }
 
         fs::create_dir_all(&self.output_dir)?;
 
@@ -58,6 +62,7 @@ impl EventWriter {
 
         file.write_all(line.as_bytes())?;
         file.flush()?;
+        written_ids.insert(event.id.clone());
 
         Ok(())
     }
@@ -155,6 +160,19 @@ mod tests {
     }
 
     #[test]
+    fn repeated_event_id_is_written_once() {
+        let tmp = TempDir::new().unwrap();
+        let writer = EventWriter::new(tmp.path());
+        let event = make_event_at(2026, 3, 1);
+
+        writer.write(&event).unwrap();
+        writer.write(&event).unwrap();
+
+        let contents = fs::read_to_string(tmp.path().join("2026-03.jsonl")).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+    }
+
+    #[test]
     fn each_line_is_valid_json() {
         let tmp = TempDir::new().unwrap();
         let writer = EventWriter::new(tmp.path());
@@ -249,10 +267,11 @@ mod tests {
         let writer = Arc::new(EventWriter::new(tmp.path()));
 
         let handles: Vec<_> = (0..20)
-            .map(|_| {
+            .map(|index| {
                 let w = Arc::clone(&writer);
                 thread::spawn(move || {
-                    let event = make_event_at(2026, 3, 15);
+                    let mut event = make_event_at(2026, 3, 15);
+                    event.id = format!("evt_concurrent_{index}");
                     w.write(&event).expect("concurrent write failed");
                 })
             })

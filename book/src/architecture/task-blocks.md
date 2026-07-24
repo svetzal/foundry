@@ -34,7 +34,8 @@ step-by-step instructions and a full example including `RetryPolicy`.
 Foundry records `block_started` and `block_completed` observations around every
 block execution. These observations are persisted and streamed for operational
 auditability, but are not routed through `sinks_on()` and can never trigger
-another task block.
+another task block. The daemon applies the same durability rule to every event
+published on Watch, including observations emitted outside the engine.
 
 ## Current Blocks
 
