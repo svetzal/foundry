@@ -151,6 +151,15 @@ async fn finalise_system_maintenance(
         }
     }
 
+    // Mint both ids here: this is a fresh workflow root. `finalise` opens a new
+    // `engine.process` chain for the summary phase, and `stamp_context` only
+    // ever *inherits* the ids from the trigger — a bare `Event::new` carries
+    // `None`, so the whole triage + summary fan-out (`MaintenanceTriageCompleted`,
+    // `MaintenanceTriageDigestWritten`, the generated summary) inherits `None`
+    // and lands in the event log untraceable. The trace groups this summary
+    // phase; the span groups it as a root (`MaintenanceSummaryRequested` is a
+    // span opener, so each sink inherits this root span). No parent span — the
+    // maintenance cycle that produced `result` was a separate root chain.
     let summary_event = Event::new(
         EventType::MaintenanceSummaryRequested,
         "system".to_string(),
@@ -161,7 +170,9 @@ async fn finalise_system_maintenance(
             "total_duration_ms": result.total_duration_ms,
             "root_event_id": root_event_id,
         }),
-    );
+    )
+    .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+    .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
 
     let summary_result = engine.process(summary_event.clone()).await;
 
