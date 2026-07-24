@@ -177,12 +177,8 @@ fn assert_daemon_sentinel_matches(path: &std::path::Path, expected: &SentinelEnt
     let actual = daemon_store
         .find_sentinel(&expected.name)
         .expect("daemon sentinel store should contain expected entry");
-    let actual_cron = match &actual.schedule {
-        Schedule::Cron(cron) => cron,
-    };
-    let expected_cron = match &expected.schedule {
-        Schedule::Cron(cron) => cron,
-    };
+    let Schedule::Cron(actual_cron) = &actual.schedule;
+    let Schedule::Cron(expected_cron) = &expected.schedule;
     assert_eq!(actual.name, expected.name);
     assert_eq!(actual_cron, expected_cron);
     assert_eq!(actual.emit.event_type, expected.emit.event_type);
@@ -197,12 +193,8 @@ fn assert_offline_sentinel_file_matches(path: &std::path::Path, expected: &Senti
     let actual = store
         .find_sentinel(&expected.name)
         .expect("offline sentinel store should contain expected entry");
-    let actual_cron = match &actual.schedule {
-        Schedule::Cron(cron) => cron,
-    };
-    let expected_cron = match &expected.schedule {
-        Schedule::Cron(cron) => cron,
-    };
+    let Schedule::Cron(actual_cron) = &actual.schedule;
+    let Schedule::Cron(expected_cron) = &expected.schedule;
     assert_eq!(actual.name, expected.name);
     assert_eq!(actual_cron, expected_cron);
     assert_eq!(actual.emit.event_type, expected.emit.event_type);
