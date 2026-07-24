@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `block_started` and `block_completed` observations are now persisted in the
+  monthly event log as durable audit evidence while remaining non-routable.
+  They were previously Watch-only progress messages, which made the live stream
+  richer than the authoritative event history and allowed a dashboard restart
+  to erase evidence of block execution.
+
 ## [0.34.1] - 2026-07-23
 
 ### Fixed
@@ -580,7 +588,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   first increment).** A new `RemediateSupplyChain` block is inserted into the
   supply-chain formation between the scan and the digest, with a new mid-chain
   event `SupplyChainRemediated`. It triages every live finding by _fix
-  availability_: a populated fix version → mechanically **auto-fixable**; an
+  availability*: a populated fix version → mechanically **auto-fixable**; an
   empty one → a **policy call** (an exploitability judgement about our usage
   that stays human). The chain is now
   `SupplyChainScanStarted → ScanSupplyChain → SupplyChainScanned → RemediateSupplyChain → SupplyChainRemediated → WriteSupplyChainDigest → SupplyChainScanCompleted`.

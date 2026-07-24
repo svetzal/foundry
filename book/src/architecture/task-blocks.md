@@ -31,6 +31,11 @@ The trait provides default implementations for `should_emit()` and
 See the [Writing Task Blocks](../guide/writing-task-blocks.md) guide for
 step-by-step instructions and a full example including `RetryPolicy`.
 
+Foundry records `block_started` and `block_completed` observations around every
+block execution. These observations are persisted and streamed for operational
+auditability, but are not routed through `sinks_on()` and can never trigger
+another task block.
+
 ## Current Blocks
 
 ### Hello-World (validates engine mechanics)

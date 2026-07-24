@@ -65,21 +65,16 @@ impl EventEmitter {
         }
     }
 
-    /// Broadcast a transient progress message to Watch subscribers.
+    /// Persist and broadcast an audit observation without routing it.
     ///
-    /// Progress messages are intentionally not persisted to the event log and
-    /// are never delivered to downstream blocks. They exist only so interactive
-    /// clients can show that a long-running block is active.
-    pub(crate) fn broadcast_progress(
+    /// Block progress is durable operational evidence, but it is not a domain
+    /// input and must never be delivered to downstream task blocks.
+    pub(crate) fn record_progress(
         &self,
         current: &Event,
         event_type: &str,
         payload: serde_json::Value,
     ) {
-        let Some(tx) = &self.tx else {
-            return;
-        };
-
         let progress = Event::new(
             EventType::Custom(event_type.to_string()),
             current.project.clone(),
@@ -87,18 +82,14 @@ impl EventEmitter {
             payload,
         )
         .with_trace_id(current.trace_id.clone())
-        .with_span_ids(current.span_id.clone(), current.parent_span_id.clone());
+        .with_span_ids(current.span_id.clone(), current.parent_span_id.clone())
+        .with_causation_id(Some(current.id.clone()));
 
-        // Best-effort: a send error means no Watch subscribers are attached,
-        // which is the normal steady state; progress broadcasting must not
-        // depend on a listener.
-        if let Err(e) = tx.send(progress) {
-            tracing::debug!(error = %e, event_type, "no Watch subscribers for progress event");
-        }
+        self.persist_one(&progress);
     }
 
-    pub(crate) fn broadcast_block_started(&self, block: &dyn TaskBlock, current: &Event) {
-        self.broadcast_progress(
+    pub(crate) fn record_block_started(&self, block: &dyn TaskBlock, current: &Event) {
+        self.record_progress(
             current,
             "block_started",
             serde_json::json!({
@@ -110,8 +101,8 @@ impl EventEmitter {
         );
     }
 
-    pub(crate) fn broadcast_block_completed(&self, execution: &BlockExecution, current: &Event) {
-        self.broadcast_progress(
+    pub(crate) fn record_block_completed(&self, execution: &BlockExecution, current: &Event) {
+        self.record_progress(
             current,
             "block_completed",
             serde_json::json!({

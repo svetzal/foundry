@@ -141,10 +141,11 @@ gate passed; its reviewer gaps become the campaign's next objective. Every other
 non-complete result is committed and preserved on a named remote branch, with a
 Git bundle fallback when push is unavailable. The task formation never retries.
 
-While the command is waiting, it streams both workflow events and transient
+While the command is waiting, it streams both workflow events and non-routable
 block progress messages such as `running block Run Verify Gates` and
-`finished block Run Verify Gates (ok, 143.0s)`. Progress messages are not
-persisted to the event log.
+`finished block Run Verify Gates (ok, 143.0s)`. Progress observations are
+persisted to the event log for auditability, but never delivered to downstream
+task blocks.
 
 Use this for small, concrete, immediately executable coding work.
 

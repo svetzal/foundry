@@ -172,7 +172,7 @@ impl Engine {
         let workflow_span_id = current.span_id.clone();
         let block_start = Instant::now();
 
-        self.emitter.broadcast_block_started(block, current);
+        self.emitter.record_block_started(block, current);
 
         let propagator = Propagator::new(&self.emitter, &self.stamper);
         let execution = match classify_dispatch(
@@ -229,7 +229,7 @@ impl Engine {
             }
         };
 
-        self.emitter.broadcast_block_completed(&execution, current);
+        self.emitter.record_block_completed(&execution, current);
         execution
     }
 
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcasts_transient_block_progress_without_persisting_it() {
+    async fn streams_block_progress_without_routing_it() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         let mut engine = Engine::new().with_event_broadcaster(tx);
         engine.register(Box::new(TestObserver));
@@ -736,14 +736,15 @@ mod tests {
             ]
         );
 
-        // Verify JSONL file was created and contains one line per event.
+        // Verify domain events and non-routable block audit observations were
+        // all persisted.
         let entries: Vec<_> =
             std::fs::read_dir(tmp.path()).unwrap().filter_map(Result::ok).collect();
         assert_eq!(entries.len(), 1, "exactly one JSONL file should exist");
 
         let contents = std::fs::read_to_string(entries[0].path()).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 3, "JSONL file should contain 3 events");
+        assert_eq!(lines.len(), 7, "JSONL file should contain 7 events");
 
         // Each line should deserialize to a valid Event with the expected type.
         let written_types: Vec<String> = lines
@@ -757,8 +758,12 @@ mod tests {
             written_types,
             [
                 "greeting_requested",
+                "block_started",
                 "greeting_composed",
-                "greeting_delivered"
+                "block_completed",
+                "block_started",
+                "greeting_delivered",
+                "block_completed"
             ]
         );
     }
