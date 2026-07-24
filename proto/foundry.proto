@@ -462,6 +462,22 @@ message SentinelDisableResponse {
     Sentinel sentinel = 1;
 }
 
+// List every daemon-owned sentinel.
+message SentinelListRequest {}
+
+message SentinelListResponse {
+    repeated Sentinel sentinels = 1;
+}
+
+// Retrieve one daemon-owned sentinel by exact name.
+message SentinelShowRequest {
+    string name = 1;
+}
+
+message SentinelShowResponse {
+    Sentinel sentinel = 1;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -520,6 +536,12 @@ service Foundry {
 
     // Mark a sentinel as disabled. Persists to disk and wakes the scheduler.
     rpc SentinelDisable(SentinelDisableRequest) returns (SentinelDisableResponse);
+
+    // List every daemon-owned sentinel.
+    rpc SentinelList(SentinelListRequest) returns (SentinelListResponse);
+
+    // Retrieve one daemon-owned sentinel by exact name.
+    rpc SentinelShow(SentinelShowRequest) returns (SentinelShowResponse);
 
     // Retrieve every event and block execution within a single span.
     rpc Span(SpanRequest) returns (SpanResponse);

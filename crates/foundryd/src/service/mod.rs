@@ -19,6 +19,7 @@ use crate::proto::{
     RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
     RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
     SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse,
+    SentinelListRequest, SentinelListResponse, SentinelShowRequest, SentinelShowResponse,
     SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse,
     WatchRequest, WatchResponse, foundry_server::Foundry,
 };
@@ -247,6 +248,20 @@ impl Foundry for FoundryService {
         )
     }
 
+    async fn sentinel_list(
+        &self,
+        request: Request<SentinelListRequest>,
+    ) -> Result<Response<SentinelListResponse>, Status> {
+        sentinel_ops::list(&self.sentinels, request)
+    }
+
+    async fn sentinel_show(
+        &self,
+        request: Request<SentinelShowRequest>,
+    ) -> Result<Response<SentinelShowResponse>, Status> {
+        sentinel_ops::show(&self.sentinels, request)
+    }
+
     async fn trace(
         &self,
         request: Request<TraceRequest>,
@@ -262,6 +277,8 @@ impl Foundry for FoundryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use std::time::Duration;
 
     /// Build a minimal `FoundryService` for testing, returning the service and
@@ -886,6 +903,241 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn sentinel_list_returns_all_seed_entries() {
+        let (service, _rx) = test_service();
+
+        let response = service
+            .sentinel_list(Request::new(SentinelListRequest {}))
+            .await
+            .expect("list should succeed")
+            .into_inner();
+
+        assert_eq!(response.sentinels.len(), 4);
+        assert_eq!(response.sentinels[0].name, "nightly-maintenance");
+        assert_eq!(response.sentinels[0].cron, "0 2 * * *");
+        assert_eq!(response.sentinels[0].emit_event_type, "maintenance_cycle_started");
+        assert_eq!(response.sentinels[0].emit_project, "system");
+        assert_eq!(response.sentinels[0].emit_throttle, 0);
+        assert_eq!(response.sentinels[0].emit_payload_json, "{}");
+        assert!(response.sentinels[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn sentinel_show_returns_full_seed_entry() {
+        let (service, _rx) = test_service();
+
+        let response = service
+            .sentinel_show(Request::new(SentinelShowRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("show should succeed")
+            .into_inner();
+
+        let sentinel = response.sentinel.expect("sentinel echoed");
+        assert_eq!(sentinel.name, "nightly-maintenance");
+        assert_eq!(sentinel.cron, "0 2 * * *");
+        assert_eq!(sentinel.emit_event_type, "maintenance_cycle_started");
+        assert_eq!(sentinel.emit_project, "system");
+        assert_eq!(sentinel.emit_throttle, 0);
+        assert_eq!(sentinel.emit_payload_json, "{}");
+        assert!(sentinel.enabled);
+    }
+
+    #[cfg(unix)]
+    fn make_sentinel_persist_failure_fixture(
+        store: &SentinelStore,
+    ) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let sentinels_path = tempdir.path().join("sentinels.json");
+        store.save(&sentinels_path).expect("save seeded sentinels");
+        let before = std::fs::read(&sentinels_path).expect("read seeded sentinels");
+        let mut permissions = std::fs::metadata(&sentinels_path)
+            .expect("stat sentinel file")
+            .permissions();
+        permissions.set_mode(0o444);
+        std::fs::set_permissions(&sentinels_path, permissions)
+            .expect("set sentinel file readonly");
+        (tempdir, sentinels_path, before)
+    }
+
+    #[cfg(unix)]
+    fn restore_sentinel_fixture_permissions(path: &std::path::Path) {
+        let mut permissions = std::fs::metadata(path)
+            .expect("stat sentinel file")
+            .permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(path, permissions).expect("restore sentinel file permissions");
+    }
+
+    #[cfg(unix)]
+    fn test_service_with_sentinels_path(
+        sentinels: SentinelStore,
+        sentinels_path: std::path::PathBuf,
+    ) -> FoundryService {
+        let (event_tx, _rx) = broadcast::channel(64);
+        let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+        let trace_store = Arc::new(TraceStore::new(Duration::from_secs(60)));
+        let workflow_tracker = Arc::new(WorkflowTracker::new());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trace_writer = Arc::new(TraceWriter::new(tmp.path().to_str().unwrap()));
+        let registry = Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let tmp_registry = tempfile::NamedTempFile::new().expect("tempfile");
+        let registry_path = tmp_registry.path().to_path_buf();
+        let tmp_campaigns = tempfile::NamedTempFile::new().expect("tempfile");
+        let campaigns_path = tmp_campaigns.path().to_path_buf();
+        let scheduler_reload = Arc::new(Notify::new());
+        let ctx = RuntimeContext {
+            engine,
+            trace_store,
+            workflow_tracker,
+            trace_writer,
+            event_tx,
+            registry,
+        };
+        let stores = StoreConfig {
+            campaigns_path,
+            registry_path,
+            sentinels: Arc::new(RwLock::new(sentinels)),
+            sentinels_path,
+            scheduler_reload,
+        };
+        FoundryService::new(ctx, stores)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sentinel_enable_failed_persistence_leaves_memory_scheduler_and_disk_unchanged() {
+        let mut initial = SentinelStore::default_seed();
+        initial.sentinels[0].enabled = false;
+        let (tempdir, sentinels_path, before) = make_sentinel_persist_failure_fixture(&initial);
+        let service = test_service_with_sentinels_path(initial.clone(), sentinels_path.clone());
+        let reload = Arc::clone(&service.scheduler_reload);
+
+        let err = service
+            .sentinel_enable(Request::new(SentinelEnableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect_err("enable should fail when persistence fails");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("failed to save sentinels"));
+
+        let notify_result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), reload.notified()).await;
+        assert!(notify_result.is_err(), "failed persistence must not notify scheduler");
+
+        let listed = service
+            .sentinel_list(Request::new(SentinelListRequest {}))
+            .await
+            .expect("list should succeed after failed enable")
+            .into_inner();
+        assert!(!listed.sentinels[0].enabled, "list view must remain on the pre-mutation state");
+        {
+            let store = service.sentinels.read().unwrap();
+            assert!(!store.sentinels[0].enabled, "in-memory state must remain unchanged");
+        }
+        assert_eq!(
+            std::fs::read(&sentinels_path).expect("read sentinel file after failed enable"),
+            before,
+            "disk bytes must remain byte-identical after failed enable"
+        );
+
+        restore_sentinel_fixture_permissions(&sentinels_path);
+        drop(tempdir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sentinel_disable_failed_persistence_leaves_memory_scheduler_and_disk_unchanged() {
+        let initial = SentinelStore::default_seed();
+        let (tempdir, sentinels_path, before) = make_sentinel_persist_failure_fixture(&initial);
+        let service = test_service_with_sentinels_path(initial, sentinels_path.clone());
+        let reload = Arc::clone(&service.scheduler_reload);
+
+        let err = service
+            .sentinel_disable(Request::new(SentinelDisableRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect_err("disable should fail when persistence fails");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("failed to save sentinels"));
+
+        let notify_result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), reload.notified()).await;
+        assert!(notify_result.is_err(), "failed persistence must not notify scheduler");
+
+        let shown = service
+            .sentinel_show(Request::new(SentinelShowRequest {
+                name: "nightly-maintenance".to_string(),
+            }))
+            .await
+            .expect("show should succeed after failed disable")
+            .into_inner()
+            .sentinel
+            .expect("sentinel echoed");
+        assert!(shown.enabled, "show view must remain on the pre-mutation state");
+        {
+            let store = service.sentinels.read().unwrap();
+            assert!(store.sentinels[0].enabled, "in-memory state must remain unchanged");
+        }
+        assert_eq!(
+            std::fs::read(&sentinels_path).expect("read sentinel file after failed disable"),
+            before,
+            "disk bytes must remain byte-identical after failed disable"
+        );
+
+        restore_sentinel_fixture_permissions(&sentinels_path);
+        drop(tempdir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_sentinel_toggles_leave_store_and_disk_consistent() {
+        let (service, _rx) = test_service();
+        let path = service.sentinels_path.clone();
+
+        let disable = service.sentinel_disable(Request::new(SentinelDisableRequest {
+            name: "nightly-maintenance".to_string(),
+        }));
+        let enable = service.sentinel_enable(Request::new(SentinelEnableRequest {
+            name: "nightly-maintenance".to_string(),
+        }));
+        let (disable_result, enable_result) = tokio::join!(disable, enable);
+
+        let disable_response = disable_result.expect("disable should succeed").into_inner();
+        let enable_response = enable_result.expect("enable should succeed").into_inner();
+        assert!(
+            !disable_response.sentinel.expect("disable sentinel echoed").enabled,
+            "disable response should reflect a disabled sentinel"
+        );
+        assert!(
+            enable_response.sentinel.expect("enable sentinel echoed").enabled,
+            "enable response should reflect an enabled sentinel"
+        );
+
+        let in_memory_enabled = {
+            let store = service.sentinels.read().unwrap();
+            store
+                .find_sentinel("nightly-maintenance")
+                .expect("seed sentinel exists")
+                .enabled
+        };
+        let on_disk_enabled = SentinelStore::load(&path)
+            .expect("load persisted sentinels")
+            .find_sentinel("nightly-maintenance")
+            .expect("seed sentinel exists")
+            .enabled;
+        assert_eq!(
+            in_memory_enabled, on_disk_enabled,
+            "serialized concurrent toggles must leave disk and memory in the same final state"
+        );
     }
 
     // ── get_campaign service-level tests ─────────────────────────────────────

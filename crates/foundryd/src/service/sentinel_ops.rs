@@ -11,7 +11,8 @@ use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     Sentinel as ProtoSentinel, SentinelDisableRequest, SentinelDisableResponse,
-    SentinelEnableRequest, SentinelEnableResponse,
+    SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest, SentinelListResponse,
+    SentinelShowRequest, SentinelShowResponse,
 };
 
 fn sentinel_error_to_status(err: SentinelMutationError) -> Status {
@@ -50,11 +51,13 @@ pub(super) fn enable(
         let mut store = sentinels
             .write()
             .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
-        let entry = store.enable(&req.name).map_err(sentinel_error_to_status)?;
+        let mut updated = store.clone();
+        let entry = updated.enable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
-        store
+        updated
             .save(sentinels_path)
             .map_err(|e| Status::internal(format!("failed to save sentinels: {e}")))?;
+        *store = updated;
         proto
     };
 
@@ -80,11 +83,13 @@ pub(super) fn disable(
         let mut store = sentinels
             .write()
             .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
-        let entry = store.disable(&req.name).map_err(sentinel_error_to_status)?;
+        let mut updated = store.clone();
+        let entry = updated.disable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
-        store
+        updated
             .save(sentinels_path)
             .map_err(|e| Status::internal(format!("failed to save sentinels: {e}")))?;
+        *store = updated;
         proto
     };
 
@@ -98,6 +103,32 @@ pub(super) fn disable(
     }))
 }
 
+pub(super) fn list(
+    sentinels: &Arc<RwLock<SentinelStore>>,
+    _request: Request<SentinelListRequest>,
+) -> Result<Response<SentinelListResponse>, Status> {
+    let store = sentinels.read().map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+
+    Ok(Response::new(SentinelListResponse {
+        sentinels: store.sentinels.iter().map(sentinel_to_proto).collect(),
+    }))
+}
+
+pub(super) fn show(
+    sentinels: &Arc<RwLock<SentinelStore>>,
+    request: Request<SentinelShowRequest>,
+) -> Result<Response<SentinelShowResponse>, Status> {
+    let req = request.into_inner();
+    let store = sentinels.read().map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+    let entry = store
+        .find_sentinel(&req.name)
+        .ok_or_else(|| Status::not_found(format!("sentinel '{}' not found", req.name)))?;
+
+    Ok(Response::new(SentinelShowResponse {
+        sentinel: Some(sentinel_to_proto(entry)),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, RwLock};
@@ -108,9 +139,11 @@ mod tests {
 
     use foundry_sdk::sentinel::{SentinelMutationError, SentinelStore};
 
-    use crate::proto::{SentinelDisableRequest, SentinelEnableRequest};
+    use crate::proto::{
+        SentinelDisableRequest, SentinelEnableRequest, SentinelListRequest, SentinelShowRequest,
+    };
 
-    use super::{disable, enable, sentinel_error_to_status, sentinel_to_proto};
+    use super::{disable, enable, list, sentinel_error_to_status, sentinel_to_proto, show};
 
     #[test]
     fn sentinel_error_to_status_not_found_maps_correctly() {
@@ -215,6 +248,59 @@ mod tests {
             tmp.path(),
             &reload,
             Request::new(SentinelDisableRequest {
+                name: "ghost".to_string(),
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn list_returns_every_seed_sentinel() {
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+
+        let response = list(&sentinels, Request::new(SentinelListRequest {}))
+            .expect("list should succeed")
+            .into_inner();
+
+        assert_eq!(response.sentinels.len(), 4);
+        assert_eq!(response.sentinels[0].name, "nightly-maintenance");
+        assert_eq!(response.sentinels[1].name, "daily-commit-digest");
+        assert_eq!(response.sentinels[2].name, "ops-digest");
+        assert_eq!(response.sentinels[3].name, "nightly-supply-chain");
+    }
+
+    #[test]
+    fn show_returns_full_seed_sentinel_fields() {
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+
+        let response = show(
+            &sentinels,
+            Request::new(SentinelShowRequest {
+                name: "nightly-maintenance".to_string(),
+            }),
+        )
+        .expect("show should succeed")
+        .into_inner();
+
+        let sentinel = response.sentinel.expect("sentinel echoed");
+        assert_eq!(sentinel.name, "nightly-maintenance");
+        assert_eq!(sentinel.cron, "0 2 * * *");
+        assert_eq!(sentinel.emit_event_type, "maintenance_cycle_started");
+        assert_eq!(sentinel.emit_project, "system");
+        assert_eq!(sentinel.emit_throttle, 0);
+        assert_eq!(sentinel.emit_payload_json, "{}");
+        assert!(sentinel.enabled);
+    }
+
+    #[test]
+    fn show_unknown_sentinel_returns_not_found() {
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+
+        let err = show(
+            &sentinels,
+            Request::new(SentinelShowRequest {
                 name: "ghost".to_string(),
             }),
         )

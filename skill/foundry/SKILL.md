@@ -243,12 +243,18 @@ foundry sentinel disable nightly-maintenance
 foundry sentinel enable nightly-maintenance
 ```
 
-`enable` and `disable` go through gRPC by default so the daemon's scheduler
-wakes immediately; pass `--offline` to mutate `~/.foundry/sentinels.json`
-directly when the daemon is not running. The file is auto-seeded with the
-canonical entries on first daemon start, and the daemon additively merges any
-missing canonical entries on every restart (so new Foundry releases that ship
-more sentinels reach existing installs automatically).
+Without `--offline`, all four commands go through typed gRPC so reads and
+writes observe daemon-owned state directly: `list` → `SentinelList`, `show` →
+`SentinelShow`, `enable` → `SentinelEnable`, `disable` → `SentinelDisable`.
+Pass `--offline` only to read or mutate `~/.foundry/sentinels.json` directly
+when the daemon is not running. If `foundryd` is unreachable, the online
+command fails and leaves any client-side `FOUNDRY_SENTINELS_PATH` absent or
+untouched. Successful online `enable`/`disable` wake the scheduler
+immediately; failed saves leave the daemon-owned sentinel store unchanged in
+memory and on disk. The file is auto-seeded with the canonical entries on
+first daemon start, and the daemon additively merges any missing canonical
+entries on every restart (so new Foundry releases that ship more sentinels
+reach existing installs automatically).
 
 **Canonical sentinels that ship today:**
 

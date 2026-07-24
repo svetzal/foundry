@@ -44,7 +44,7 @@ sentinel. It blocks on `tokio::select!` between that deadline and a reload
 ## The default seed
 
 On first start the daemon writes `~/.foundry/sentinels.json` with the
-canonical seed set — currently two entries:
+canonical seed set — currently four entries:
 
 ```json
 {
@@ -71,13 +71,36 @@ canonical seed set — currently two entries:
         "payload": {}
       },
       "enabled": true
+    },
+    {
+      "name": "ops-digest",
+      "schedule": { "cron": "0 */3 * * *" },
+      "emit": {
+        "event_type": "ops_digest_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
+    },
+    {
+      "name": "nightly-supply-chain",
+      "schedule": { "cron": "0 6 * * *" },
+      "emit": {
+        "event_type": "supply_chain_scan_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
     }
   ]
 }
 ```
 
 The `daily-commit-digest` sentinel drives the [Commit Digest](commit-digest.md)
-formation.
+formation. The `ops-digest` and `nightly-supply-chain` sentinels drive the
+[Ops Digest](ops-digest.md) and [Supply Chain](supply-chain.md) workflows.
 
 Subsequent starts read the existing file and **additively merge** any seed
 entries whose names are not yet present — so new Foundry releases that
@@ -140,10 +163,23 @@ foundry sentinel enable nightly-maintenance
 foundry sentinel disable --offline nightly-maintenance
 ```
 
-`list` and `show` always read the file directly. `enable` and `disable` try
-the gRPC `SentinelEnable` / `SentinelDisable` RPCs first; if the daemon is
-unreachable they fall back to direct file mutation (and print a warning so
-you know to restart the daemon to pick up the change).
+Without `--offline`, all four commands are daemon-authoritative:
+
+- `list` calls `SentinelList`
+- `show` calls `SentinelShow`
+- `enable` calls `SentinelEnable`
+- `disable` calls `SentinelDisable`
+
+Online reads render the daemon response directly and never read the
+client-side `FOUNDRY_SENTINELS_PATH`. If `foundryd` is unreachable, the command
+fails with a stable actionable error and leaves any absent or pre-existing
+client-side sentinel file untouched byte-for-byte. Pass `--offline` only for
+explicit direct-file recovery while the daemon is stopped.
+
+Online `enable` and `disable` are persistence-atomic at the daemon boundary:
+if the daemon cannot save the sentinel store, the RPC returns `INTERNAL`, the
+daemon-owned in-memory store stays unchanged, the scheduler does not reload,
+and the on-disk `sentinels.json` stays byte-identical.
 
 ## Adding a new sentinel
 

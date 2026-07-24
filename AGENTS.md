@@ -182,12 +182,14 @@ Three canonical sentinels ship in the default seed:
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry sentinel list` | No | Reads the file directly |
-| `foundry sentinel show <name>` | No | Reads the file directly |
-| `foundry sentinel enable <name>` | Yes (or `--offline`) | Enables via gRPC; falls back with a warning when daemon is unreachable |
-| `foundry sentinel disable <name>` | Yes (or `--offline`) | Disables via gRPC; falls back with a warning when daemon is unreachable |
+| `foundry sentinel list` | Yes (or `--offline`) | Reads daemon-owned sentinel state via `SentinelList`; `--offline` reads the file directly |
+| `foundry sentinel show <name>` | Yes (or `--offline`) | Reads daemon-owned sentinel state via `SentinelShow`; `--offline` reads the file directly |
+| `foundry sentinel enable <name>` | Yes (or `--offline`) | Enables via `SentinelEnable`; unreachable daemon is an error unless `--offline` is set |
+| `foundry sentinel disable <name>` | Yes (or `--offline`) | Disables via `SentinelDisable`; unreachable daemon is an error unless `--offline` is set |
 
-The gRPC RPCs are `SentinelEnable` and `SentinelDisable`. Both wake the daemon's in-process scheduler via a `Notify` so the next firing is recomputed immediately. Adding non-canonical (machine-local) sentinels still means hand-editing `~/.foundry/sentinels.json` and restarting `foundryd` — `foundry sentinel add | remove | edit` is deferred to a later slice.
+The gRPC RPCs are `SentinelList`, `SentinelShow`, `SentinelEnable`, and `SentinelDisable`. Successful `enable`/`disable` calls wake the daemon's in-process scheduler via a `Notify` so the next firing is recomputed immediately. Adding non-canonical (machine-local) sentinels still means hand-editing `~/.foundry/sentinels.json` and restarting `foundryd` — `foundry sentinel add | remove | edit` is deferred to a later slice.
+
+> **Note for scripts/automation**: without `--offline`, online `foundry sentinel list/show/enable/disable` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side sentinel file, and if `FOUNDRY_SENTINELS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, all four commands fail and leave any existing client-side sentinel file untouched byte-for-byte. Online `enable`/`disable` are also persistence-atomic: if the daemon cannot save the sentinel store, the RPC returns `INTERNAL` and leaves the daemon-owned sentinel state unchanged in memory and on disk.
 
 ## Payload Conventions
 

@@ -536,8 +536,10 @@ async fn handle_sentinel_command(
     offline: bool,
 ) -> Result<()> {
     match sub {
-        SentinelCommands::List => sentinel_commands::list(path),
-        SentinelCommands::Show { name } => sentinel_commands::show(path, &name),
+        SentinelCommands::List => sentinel_commands::list(path, addr, offline).await,
+        SentinelCommands::Show { name } => {
+            sentinel_commands::show(path, addr, offline, &name).await
+        }
         SentinelCommands::Enable { name } => {
             sentinel_commands::enable(path, addr, offline, &name).await
         }
