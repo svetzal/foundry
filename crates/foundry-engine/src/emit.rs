@@ -56,7 +56,12 @@ impl EventEmitter {
             tracing::warn!(error = %e, event_id = %event.id, "failed to write event to JSONL");
         }
         if let Some(tx) = &self.tx {
-            let _ = tx.send(event.clone());
+            // Best-effort: a send error means no Watch subscribers are
+            // attached, which is the normal steady state; event processing
+            // must not depend on a listener.
+            if let Err(e) = tx.send(event.clone()) {
+                tracing::debug!(error = %e, event_id = %event.id, "no Watch subscribers for event");
+            }
         }
     }
 
@@ -84,7 +89,12 @@ impl EventEmitter {
         .with_trace_id(current.trace_id.clone())
         .with_span_ids(current.span_id.clone(), current.parent_span_id.clone());
 
-        let _ = tx.send(progress);
+        // Best-effort: a send error means no Watch subscribers are attached,
+        // which is the normal steady state; progress broadcasting must not
+        // depend on a listener.
+        if let Err(e) = tx.send(progress) {
+            tracing::debug!(error = %e, event_type, "no Watch subscribers for progress event");
+        }
     }
 
     pub(crate) fn broadcast_block_started(&self, block: &dyn TaskBlock, current: &Event) {

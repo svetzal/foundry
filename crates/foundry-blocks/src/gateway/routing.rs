@@ -52,16 +52,29 @@ impl RoutingAgentGateway {
     }
 
     fn breaker_for(&self, provider: AgentProvider) -> Option<AgentFailureMetadata> {
-        self.breakers.read().ok()?.get(&provider).cloned()
+        // Recover rather than discard: a poisoned breaker map must never read
+        // as "no breaker open", which would re-enable a circuit-broken
+        // provider.
+        let breakers = self.breakers.read().unwrap_or_else(|e| {
+            tracing::warn!(
+                "agent breaker lock poisoned; recovering guard to preserve open breakers"
+            );
+            e.into_inner()
+        });
+        breakers.get(&provider).cloned()
     }
 
     fn open_breaker(&self, provider: AgentProvider, failure: &AgentFailureMetadata) {
         if !failure.is_terminal_provider_failure() {
             return;
         }
-        if let Ok(mut breakers) = self.breakers.write() {
-            breakers.insert(provider, failure.clone());
-        }
+        // Recover rather than discard: a poisoned breaker map must still
+        // record the breaker being opened, not silently drop the write.
+        let mut breakers = self.breakers.write().unwrap_or_else(|e| {
+            tracing::warn!("agent breaker lock poisoned; recovering guard to record breaker open");
+            e.into_inner()
+        });
+        breakers.insert(provider, failure.clone());
     }
 }
 
@@ -249,6 +262,51 @@ mod tests {
                 .and_then(|failure| failure.message.as_deref())
                 .is_some_and(|message| message.contains("circuit breaker open")),
             "breaker-open message should be explicit"
+        );
+    }
+
+    #[test]
+    fn breaker_survives_poisoned_read_lock() {
+        let (router, ..) = router_with_all();
+        let failure = AgentFailureMetadata::new(AgentProvider::Claude)
+            .terminal(AgentFailureKind::AccountLimit);
+        router.open_breaker(AgentProvider::Claude, &failure);
+
+        let breakers = Arc::clone(&router.breakers);
+        let _ = std::thread::spawn(move || {
+            let _guard = breakers.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        let recovered = router.breaker_for(AgentProvider::Claude);
+        assert_eq!(
+            recovered.and_then(|f| f.failure_kind),
+            Some(AgentFailureKind::AccountLimit),
+            "breaker state must survive a poisoned lock, not read as unset"
+        );
+    }
+
+    #[test]
+    fn open_breaker_records_through_poisoned_lock() {
+        let (router, ..) = router_with_all();
+
+        let breakers = Arc::clone(&router.breakers);
+        let _ = std::thread::spawn(move || {
+            let _guard = breakers.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        let failure = AgentFailureMetadata::new(AgentProvider::Claude)
+            .terminal(AgentFailureKind::AccountLimit);
+        router.open_breaker(AgentProvider::Claude, &failure);
+
+        let recovered = router.breaker_for(AgentProvider::Claude);
+        assert_eq!(
+            recovered.and_then(|f| f.failure_kind),
+            Some(AgentFailureKind::AccountLimit),
+            "open_breaker must record through a poisoned lock, not silently no-op"
         );
     }
 }

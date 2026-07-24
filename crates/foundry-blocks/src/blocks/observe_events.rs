@@ -152,7 +152,17 @@ fn observe(
 
 /// Read the watermark from disk. Returns `None` on missing/unreadable file.
 fn read_watermark(path: &Path) -> Option<DateTime<FixedOffset>> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            // Best-effort: a missing watermark is normal (first run), but an
+            // *unreadable* one silently widens the digest lookback window, so
+            // it is worth surfacing even though the disposition is the same.
+            tracing::debug!(path = %path.display(), error = %e, "failed to read ops-digest watermark file");
+            return None;
+        }
+    };
     let ts = content.trim();
     DateTime::parse_from_rfc3339(ts).ok()
 }

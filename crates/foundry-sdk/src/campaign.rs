@@ -156,7 +156,16 @@ impl CampaignStoreGuard {
 
 impl Drop for CampaignStoreGuard {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.lock_file);
+        // Best-effort: Drop cannot return a Result, so a failed unlock can
+        // only be absorbed here. It is still worth a warn (not debug): a
+        // stuck advisory lock blocks the next campaign mutation.
+        if let Err(e) = FileExt::unlock(&self.lock_file) {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %e,
+                "failed to release campaign store advisory lock"
+            );
+        }
     }
 }
 
@@ -262,7 +271,14 @@ pub fn check_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<(
         if context_role(context_path) != ContextRole::Binding {
             continue;
         }
-        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).unwrap_or_default();
+        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).map_err(|e| {
+            format!(
+                "campaign '{}' lists binding context path '{context_path}' that cannot be read: {e}. \
+                 Binding context is inlined verbatim at formation time, so an unreadable path fails \
+                 the run rather than shrinking the budget.",
+                campaign.name
+            )
+        })?;
         total += bytes;
         largest.push((bytes, context_path));
     }
@@ -572,6 +588,23 @@ mod tests {
             pending_run_result: None,
             objective_history: vec![],
         }
+    }
+
+    /// An unreadable binding context path must fail admission outright rather
+    /// than being silently counted as zero bytes, which would let an
+    /// over-budget campaign through. `advance_campaign.rs` reads binding
+    /// context files with `?` at formation time, so "unreadable" is always a
+    /// hard failure regardless of size.
+    #[test]
+    fn rejects_campaign_with_unreadable_binding_context() {
+        let mut campaign = campaign_with_gate("true", true);
+        campaign.context_paths = vec!["does-not-exist.md".to_string()];
+        let repo = tempfile::tempdir().unwrap();
+
+        let err = check_inline_context_budget(&campaign, repo.path()).unwrap_err();
+
+        assert!(err.contains("does-not-exist.md"), "error must name the unreadable path: {err}");
+        assert!(err.contains("cannot be read"), "error must explain the failure mode: {err}");
     }
 
     /// The exact gate that made parite-remote-nvenc-conversion-v1 structurally

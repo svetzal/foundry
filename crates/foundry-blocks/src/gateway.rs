@@ -284,7 +284,12 @@ pub(crate) fn emit_session_started(
         Throttle::Full,
         serde_json::to_value(&started_payload)?,
     );
-    let _ = event_tx.send(started_event);
+    // Best-effort: a send error means no Watch subscribers are attached,
+    // which is the normal steady state; session emission must not depend on
+    // a listener.
+    if let Err(e) = event_tx.send(started_event) {
+        tracing::debug!(error = %e, session_id, "no Watch subscribers for AgentSessionStarted");
+    }
     Ok(())
 }
 
@@ -300,7 +305,12 @@ pub(crate) fn emit_session_ended(
         Throttle::Full,
         serde_json::to_value(payload)?,
     );
-    let _ = event_tx.send(ended_event);
+    // Best-effort: a send error means no Watch subscribers are attached,
+    // which is the normal steady state; session emission must not depend on
+    // a listener.
+    if let Err(e) = event_tx.send(ended_event) {
+        tracing::debug!(error = %e, project, "no Watch subscribers for AgentSessionEnded");
+    }
     Ok(())
 }
 

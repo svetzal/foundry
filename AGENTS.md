@@ -260,7 +260,9 @@ dispositions:
   comment naming why the failure is irrelevant to the caller, and (b) a
   `tracing::warn!` (or `error!`/`debug!` where the policy calls for a
   different level) carrying the error. `let _ = <fallible call>` with neither
-  marker is prohibited.
+  marker is prohibited. Exempt: `let _ = writeln!(out, ...)` / `write!` calls
+  into an owned `String` in `crates/foundry-cli/src/render/*`, since
+  `fmt::Write` into a `String` is infallible and carries no fault to surface.
 
 Panicking (`unwrap`/`expect`) is permitted only for genuinely infallible
 operations, and must carry `#[allow(clippy::expect_used, reason = "...")]`

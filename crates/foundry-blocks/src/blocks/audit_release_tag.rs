@@ -317,6 +317,44 @@ async fn restore_original_branch(
     }
 }
 
+/// Fetch remote tags (best-effort) and resolve the latest local release tag
+/// by version-aware sort.
+///
+/// A failed `git tag` listing must not silently read as "no release tag
+/// exists" — that would flip the audit verdict — so it is recorded via the
+/// same `scan_error` Record channel the checkout-failure branch uses, and
+/// returned as `Err` carrying the already-built early-return result.
+async fn find_latest_release_tag(
+    path: &std::path::Path,
+    shell: &dyn ShellGateway,
+    original_branch: &str,
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    fallback: &PayloadFallback,
+) -> Result<Option<String>, TaskBlockResult> {
+    // Best-effort: don't abort the audit if the remote is unreachable — fall
+    // back to whatever tags already exist locally, but record the fault.
+    if let Err(e) = shell.run(path, "git", &["fetch", "--tags"], None, None).await {
+        tracing::warn!(error = %e, "failed to fetch tags; falling back to local tags");
+    }
+
+    match shell.run(path, "git", &["tag", "--sort=-v:refname"], None, None).await {
+        Ok(r) => Ok(r.stdout.lines().next().map(ToString::to_string)),
+        Err(e) => {
+            tracing::warn!(project = %project, error = %e, "git tag listing failed");
+            restore_original_branch(shell, path, original_branch).await;
+            Err(emit_payload_result(
+                project.to_string(),
+                throttle,
+                &fallback.cve,
+                fallback.vulnerable,
+                fallback.dirty,
+                Some(format!("git tag listing failed: {e}")),
+            ))
+        }
+    }
+}
+
 /// Checks out the latest release tag, runs the scanner, restores the original
 /// branch, and returns a `TaskBlockResult` with a `ReleaseTagAudited` event.
 ///
@@ -332,17 +370,14 @@ async fn perform_tag_checkout_and_scan(
     gateways: ScanGateways<'_>,
 ) -> anyhow::Result<TaskBlockResult> {
     let ScanGateways { shell, scanner } = gateways;
-    // Best-effort: don't abort the audit if the remote is unreachable — fall
-    // back to whatever tags already exist locally, but record the fault.
-    if let Err(e) = shell.run(path, "git", &["fetch", "--tags"], None, None).await {
-        tracing::warn!(error = %e, "failed to fetch tags; falling back to local tags");
-    }
-
-    // Find the latest release tag by version-aware sort.
-    let tags_result = shell.run(path, "git", &["tag", "--sort=-v:refname"], None, None).await;
 
     let latest_tag =
-        tags_result.ok().and_then(|r| r.stdout.lines().next().map(ToString::to_string));
+        match find_latest_release_tag(path, shell, original_branch, project, throttle, &fallback)
+            .await
+        {
+            Ok(tag) => tag,
+            Err(result) => return Ok(result),
+        };
 
     let vulnerabilities = if let Some(ref tag) = latest_tag {
         // Check out the release tag.
@@ -715,6 +750,90 @@ mod tests {
 
         assert!(result.success, "cleanup/rollback command failures must not fail the audit");
         assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
+    }
+
+    /// Fails only `git tag --sort=-v:refname` with a real `Err` (spawn
+    /// failure), delegating everything else to `inner`. Used to exercise the
+    /// Record-disposition path when tag listing itself fails, distinct from
+    /// `FailingCleanupShellGateway` which fails fetch/checkout instead.
+    struct FailingTagListShellGateway {
+        inner: std::sync::Arc<FakeShellGateway>,
+    }
+
+    impl ShellGateway for FailingTagListShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a std::path::Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            let fails = args.first() == Some(&"tag") && args.get(1) == Some(&"--sort=-v:refname");
+            if fails {
+                return Box::pin(async move { Err(anyhow::anyhow!("simulated tag list failure")) });
+            }
+            self.inner.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    #[tokio::test]
+    async fn records_scan_error_when_tag_listing_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "test-project",
+            dir.path().to_str().unwrap(),
+        ));
+
+        // Sequence: rev-parse (original branch), fetch --tags succeeds. The
+        // tag-list call itself is intercepted and fails before reaching this
+        // sequence.
+        let inner = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: "main\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let shell = std::sync::Arc::new(FailingTagListShellGateway { inner });
+        let scanner = FakeScannerGateway::clean();
+        let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::VulnerabilityDetected,
+            "test-project",
+            serde_json::json!({"cve": "CVE-2026-1234", "vulnerable": true, "dirty": true}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "tag listing failure must not fail the audit block itself");
+        assert_eq!(result.events.len(), 1);
+        let emitted = &result.events[0];
+        assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
+        assert!(
+            emitted.payload["scan_error"].as_str().is_some(),
+            "scan_error must be set when tag listing fails"
+        );
+        assert!(
+            emitted.payload["scan_error"]
+                .as_str()
+                .unwrap()
+                .contains("git tag listing failed"),
+            "scan_error should name the tag-listing failure"
+        );
+        // Must not be misreported as a clean "no release tag exists" result:
+        // the payload-fallback CVE/vulnerable values must still be forwarded.
+        assert_eq!(emitted.payload["cve"], "CVE-2026-1234");
+        assert_eq!(emitted.payload["vulnerable"], true);
     }
 
     // -- ProjectChangesPushed path --

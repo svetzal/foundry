@@ -68,7 +68,19 @@ fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
                 binding.push(format!("## {relative}\n{}", std::fs::read_to_string(&path)?));
             }
             foundry_sdk::campaign::ContextRole::Orienting => {
-                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
+                // Best-effort: unlike the binding-context path (admission-
+                // gated in `check_inline_context_budget`, which propagates on
+                // an unreadable file), this byte count is purely cosmetic —
+                // it only decorates the "read this yourself" manifest line,
+                // never affects the budget or the agent's ability to read
+                // the file itself.
+                let bytes = std::fs::metadata(&path).map_or_else(
+                    |e| {
+                        tracing::warn!(path = %path.display(), error = %e, "failed to stat orienting context file for manifest display");
+                        0
+                    },
+                    |m| m.len(),
+                );
                 orienting.push(format!("- {relative} ({bytes} bytes)"));
             }
         }

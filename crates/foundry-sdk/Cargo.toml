@@ -19,6 +19,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 fs2 = { workspace = true }
 strum = { workspace = true }
+tracing = { workspace = true }
 # Task blocks are async tokio futures and the engine propagates span context
 # through tokio task-locals; `rt` provides task_local!, `process` the Command
 # used to inject TRACEPARENT into child processes.

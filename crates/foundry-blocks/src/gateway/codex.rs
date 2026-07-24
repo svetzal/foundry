@@ -121,8 +121,10 @@ impl CliAgentAdapter for CodexAdapter {
             };
 
             // Best-effort cleanup of the transient last-message file.
-            if let Some(ref p) = inv.last_message_path {
-                let _ = tokio::fs::remove_file(p).await;
+            if let Some(ref p) = inv.last_message_path
+                && let Err(e) = tokio::fs::remove_file(p).await
+            {
+                tracing::debug!(error = %e, path = %p.display(), "failed to remove transient last-message file");
             }
 
             Interpreted {

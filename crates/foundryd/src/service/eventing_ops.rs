@@ -169,7 +169,12 @@ async fn finalise_system_maintenance(
         tracing::warn!(error = %e, "failed to write summary trace");
     }
 
-    let _ = event_tx.send(summary_event);
+    // Best-effort: a send error means no Watch subscribers are attached,
+    // which is the normal steady state; summary emission must not depend on
+    // a listener.
+    if let Err(e) = event_tx.send(summary_event) {
+        tracing::debug!(error = %e, "no Watch subscribers for MaintenanceSummaryRequested");
+    }
 }
 
 pub(super) async fn run_workflow(
@@ -222,7 +227,12 @@ pub(super) async fn run_workflow(
                 "root_event_id": event_id,
             }),
         );
-        let _ = event_tx.send(completed);
+        // Best-effort: a send error means no Watch subscribers are attached,
+        // which is the normal steady state; completion emission must not
+        // depend on a listener.
+        if let Err(e) = event_tx.send(completed) {
+            tracing::debug!(error = %e, event_id = %event_id, "no Watch subscribers for ProjectRunCompleted");
+        }
     }
 
     trace_store.insert(event_id, result);
