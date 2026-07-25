@@ -22,6 +22,8 @@ use foundryd::{
     trace_store::TraceStore,
     workflow_tracker::{ActiveWorkflow, WorkflowTracker},
 };
+use prost::Message;
+use prost_types::{DescriptorProto, FileDescriptorSet};
 use tempfile::{NamedTempFile, TempDir};
 use tokio::sync::{Notify, broadcast};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -252,6 +254,50 @@ async fn make_service() -> (String, TempDir) {
     let addr = format!("http://127.0.0.1:{port}");
 
     (addr, tmp_traces)
+}
+
+fn span_response_descriptor() -> DescriptorProto {
+    let descriptor_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/foundry_descriptor.bin"));
+    let descriptor_set =
+        FileDescriptorSet::decode(&descriptor_bytes[..]).expect("decode generated descriptor set");
+
+    descriptor_set
+        .file
+        .into_iter()
+        .find(|file| file.package.as_deref() == Some("foundry"))
+        .and_then(|file| {
+            file.message_type
+                .into_iter()
+                .find(|message| message.name.as_deref() == Some("SpanResponse"))
+        })
+        .expect("generated descriptor must contain foundry.SpanResponse")
+}
+
+#[test]
+fn generated_proto_keeps_span_response_wire_numbers_compatible() {
+    let descriptor = span_response_descriptor();
+
+    let total_duration = descriptor
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("total_duration_ms"))
+        .expect("SpanResponse.total_duration_ms field must exist");
+    assert_eq!(
+        total_duration.number,
+        Some(4),
+        "SpanResponse.total_duration_ms must stay on wire field 4"
+    );
+
+    let trace_id = descriptor
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("trace_id"))
+        .expect("SpanResponse.trace_id field must exist");
+    assert_eq!(
+        trace_id.number,
+        Some(5),
+        "SpanResponse.trace_id must use a newly appended wire field number"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
