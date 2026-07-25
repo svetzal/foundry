@@ -190,6 +190,8 @@ foundry campaign decide retrieval-identity-v1 \
 foundry campaign resume retrieval-identity-v1 --add-cycles 2
 foundry campaign complete retrieval-identity-v1 \
   --reason "Owner-reviewed production evidence confirms the mission shipped."
+foundry campaign cancel retrieval-identity-v1 \
+  --reason "Superseded by the streaming rewrite." --now
 ```
 
 Campaign done-evidence gates run during formation against delivered trunk. They

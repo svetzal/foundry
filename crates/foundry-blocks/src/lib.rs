@@ -23,3 +23,4 @@ pub mod scanner;
 pub mod shell;
 pub mod summary;
 pub mod trace_writer;
+pub(crate) mod workspace;

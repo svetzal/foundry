@@ -454,6 +454,14 @@ pub enum CampaignStatus {
     Paused,
     Escalated,
     Completed,
+    /// Stopped by an operator before its done-evidence was met. Terminal and
+    /// not resumable — `resume` accepts only `Paused` and `Escalated`, so a
+    /// campaign that should come back later must be paused, not cancelled.
+    ///
+    /// Distinct from `Completed` because in this codebase completion is an
+    /// evidence claim; recording an abandoned campaign as completed would put
+    /// a false assertion into the ops digest and the audit trail.
+    Cancelled,
 }
 
 impl std::fmt::Display for CampaignStatus {
@@ -464,6 +472,7 @@ impl std::fmt::Display for CampaignStatus {
             Self::Paused => "paused",
             Self::Escalated => "escalated",
             Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
         };
         f.write_str(value)
     }
@@ -562,6 +571,34 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().campaigns.len(), 1);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn cancelled_status_displays_and_round_trips_as_snake_case() {
+        assert_eq!(CampaignStatus::Cancelled.to_string(), "cancelled");
+        let json = serde_json::to_string(&CampaignStatus::Cancelled).unwrap();
+        assert_eq!(json, "\"cancelled\"");
+        assert_eq!(
+            serde_json::from_str::<CampaignStatus>(&json).unwrap(),
+            CampaignStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn store_written_before_the_cancelled_variant_existed_still_loads() {
+        // A campaigns.json from a prior release names only the five original
+        // statuses. Adding a variant must not make old stores unreadable.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"campaigns":[{"name":"legacy","project":"p","mission":"m",
+               "done_evidence":[{"kind":"review","statement":"done"}],"status":"active"}]}"#,
+        )
+        .unwrap();
+        let store = CampaignStore::load(&path).unwrap();
+        assert_eq!(store.campaigns.len(), 1);
+        assert_eq!(store.campaigns[0].status, CampaignStatus::Active);
     }
 
     fn campaign_with_gate(command: &str, required: bool) -> Campaign {

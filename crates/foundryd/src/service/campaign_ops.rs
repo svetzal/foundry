@@ -9,15 +9,18 @@ use foundry_sdk::campaign::{
 };
 use foundry_sdk::error::StoreError;
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{CampaignAdvanceRequestedPayload, CampaignTerminalPayload};
+use foundry_sdk::payload::{
+    CampaignAdvanceRequestedPayload, CampaignCancelledPayload, CampaignTerminalPayload,
+};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    Campaign as ProtoCampaign, CampaignDetail, CompleteCampaignRequest, CompleteCampaignResponse,
-    DecideCampaignRequest, DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence,
-    GetCampaignRequest, GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    Campaign as ProtoCampaign, CampaignDetail, CancelCampaignRequest, CancelCampaignResponse,
+    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
+    DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence, GetCampaignRequest,
+    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
     OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
     ResumeCampaignRequest, ResumeCampaignResponse,
 };
@@ -76,6 +79,7 @@ fn status_str(status: CampaignStatus) -> String {
         CampaignStatus::Paused => "paused",
         CampaignStatus::Escalated => "escalated",
         CampaignStatus::Completed => "completed",
+        CampaignStatus::Cancelled => "cancelled",
     }
     .to_string()
 }
@@ -437,6 +441,12 @@ pub(super) fn complete(
                 campaign: Some(campaign_to_detail(campaign)),
             }));
         }
+        if campaign.status == CampaignStatus::Cancelled {
+            return Err(invalid_state(
+                &name,
+                "was cancelled; a cancelled campaign cannot be recorded as complete",
+            ));
+        }
 
         campaign.owner_decisions.push(OwnerDecision {
             decision: format!("Completed externally: {reason}"),
@@ -476,6 +486,130 @@ pub(super) fn complete(
     super::spawn_workflow(event, ctx);
     Ok(Response::new(CompleteCampaignResponse {
         campaign: Some(detail),
+    }))
+}
+
+/// Stop a campaign permanently, optionally killing its in-flight cycle first.
+///
+/// Ordering matters and is deliberate: the abort happens **before** the store
+/// lock is taken. `execute_campaign_advance` holds that lock across the whole
+/// formation agent call, and `fs2::lock_exclusive` is a blocking syscall — so
+/// locking first would park a tokio worker thread for minutes, making `--now`
+/// the slowest command in the tool. Aborting first releases the lock (see
+/// `WorkflowTracker::abort_campaign`, which awaits the unwind for exactly this
+/// reason), leaving the subsequent acquisition uncontended.
+///
+/// The window between the abort and the lock is safe because the only thing
+/// that could have advanced this campaign is the task just aborted, and the
+/// state is re-read under the lock regardless.
+pub(super) async fn cancel(
+    campaigns_path: &Path,
+    ctx: &super::RuntimeContext,
+    request: Request<CancelCampaignRequest>,
+) -> Result<Response<CancelCampaignResponse>, Status> {
+    let req = request.into_inner();
+    let name = req.name;
+    let reason = req.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(Status::invalid_argument("reason must be non-empty"));
+    }
+
+    // Resolve what we can without contending for the lock, so an obviously
+    // doomed call fails fast and never aborts a workflow needlessly.
+    {
+        let store = load_store(campaigns_path)?;
+        let campaign = store
+            .find(&name)
+            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+        if campaign.status == CampaignStatus::Completed {
+            return Err(invalid_state(
+                &name,
+                "is already completed; there is nothing in flight to cancel",
+            ));
+        }
+    }
+
+    let aborted_event_id = if req.terminate_now {
+        ctx.workflow_tracker
+            .abort_campaign(&name)
+            .await
+            .into_iter()
+            .next()
+            .map(|workflow| workflow.event_id)
+    } else {
+        None
+    };
+
+    let (detail, event) = {
+        let mut guard = lock_store_exclusive(campaigns_path)?;
+        let campaign = guard
+            .store
+            .find_mut(&name)
+            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+
+        if campaign.status == CampaignStatus::Cancelled {
+            return Ok(Response::new(CancelCampaignResponse {
+                campaign: Some(campaign_to_detail(campaign)),
+                event_id: String::new(),
+            }));
+        }
+        if campaign.status == CampaignStatus::Completed {
+            return Err(invalid_state(
+                &name,
+                "is already completed; there is nothing in flight to cancel",
+            ));
+        }
+
+        // Unlike `complete`, cancellation does not require an owner. Refusing
+        // to stop an unauthorized campaign would strand it: it can never be
+        // advanced to completion either, so there would be no way out of the
+        // state at all. The reason still reaches the event and the audit trail
+        // regardless; only the owner-decision record needs an owner to attach
+        // itself to.
+        if let Some(authorized_by) = campaign.authorized_by.clone() {
+            campaign.owner_decisions.push(OwnerDecision {
+                decision: format!("Cancelled externally: {reason}"),
+                authorized_by,
+                decided_at: Utc::now(),
+            });
+        }
+        campaign.status = CampaignStatus::Cancelled;
+        campaign.pending_run_result = None;
+        let detail = campaign_to_detail(campaign);
+
+        let payload = Event::serialize_payload(&CampaignCancelledPayload {
+            terminal: CampaignTerminalPayload {
+                campaign: campaign.name.clone(),
+                project: campaign.project.clone(),
+                reason,
+                cycles_completed: campaign.cycles_completed,
+                cycles_landed: campaign.cycles_landed,
+            },
+            terminated_now: req.terminate_now,
+            discard_work: req.discard_work,
+            aborted_event_id,
+        })
+        .map_err(|e| Status::internal(format!("failed to serialize cancellation payload: {e}")))?;
+        // Mint both ids: like a manual completion, this is a workflow root
+        // dispatched through `spawn_workflow` with no trigger to inherit from.
+        // No parent span — it opens its own root chain.
+        let event = Event::new(
+            EventType::CampaignCancelled,
+            campaign.project.clone(),
+            Throttle::Full,
+            payload,
+        )
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
+        guard.save().map_err(map_save_error)?;
+        (detail, event)
+    };
+
+    let event_id = event.id.clone();
+    super::spawn_workflow(event, ctx);
+    Ok(Response::new(CancelCampaignResponse {
+        campaign: Some(detail),
+        event_id,
     }))
 }
 

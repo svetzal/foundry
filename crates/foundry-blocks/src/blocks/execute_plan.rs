@@ -117,8 +117,26 @@ impl TaskBlock for ExecutePlan {
             let project_path = if workflow == WorkflowType::Task {
                 let base_ref =
                     execution_payload.get("base_ref").and_then(serde_json::Value::as_str);
+                // A campaign cycle's workspace is named from the campaign and
+                // cycle it serves, not from this run's event id. Cancellation
+                // knows the campaign but cannot know the run — nothing in the
+                // event stream names the worktree until the agent has already
+                // finished — so this is what lets a killed cycle's orphaned
+                // worktree be found and disposed of afterwards.
+                let workspace_id = match (
+                    execution_payload.get("campaign").and_then(serde_json::Value::as_str),
+                    execution_payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
+                ) {
+                    (Some(campaign), Some(cycle)) => {
+                        crate::workspace::campaign_workspace_id(campaign, cycle, &run_id)
+                    }
+                    _ => crate::workspace::run_workspace_id(&run_id),
+                };
                 match super::task_workspace::prepare_task_workspace(
-                    &*shell, &entry, &run_id, base_ref,
+                    &*shell,
+                    &entry,
+                    &workspace_id,
+                    base_ref,
                 )
                 .await
                 {

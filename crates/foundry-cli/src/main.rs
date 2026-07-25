@@ -255,6 +255,19 @@ enum CampaignCommands {
         #[arg(long)]
         reason: String,
     },
+    /// Stop a campaign permanently with an auditable reason
+    Cancel {
+        name: String,
+        #[arg(long)]
+        reason: String,
+        /// Terminate the in-flight cycle immediately, killing the running agent
+        #[arg(long)]
+        now: bool,
+        /// Throw away the terminated cycle's uncommitted work instead of preserving it
+        /// (requires --now)
+        #[arg(long)]
+        discard_work: bool,
+    },
     /// Resume an authorized paused or escalated campaign
     Resume {
         name: String,
@@ -581,6 +594,23 @@ async fn handle_campaign_command(
         }
         CampaignCommands::Complete { name, reason } => {
             campaign_commands::complete(campaigns_path, addr, offline, &name, &reason).await
+        }
+        CampaignCommands::Cancel {
+            name,
+            reason,
+            now,
+            discard_work,
+        } => {
+            campaign_commands::cancel(
+                campaigns_path,
+                addr,
+                offline,
+                &name,
+                &reason,
+                now,
+                discard_work,
+            )
+            .await
         }
         CampaignCommands::Resume { name, add_cycles } => {
             campaign_commands::resume(campaigns_path, addr, offline, &name, add_cycles).await

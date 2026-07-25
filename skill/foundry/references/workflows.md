@@ -143,8 +143,13 @@ The decision block checks live repository state, neutral context files, typed
 task results, and required done evidence. It cuts exactly one next objective.
 Campaign budget is spent only on dispatched tasks. A final budgeted task still
 receives completion evaluation; only an attempted additional dispatch escalates
-for budget exhaustion. Paused campaigns record an in-flight result without
-advancing. Provider-unavailable failures pause without consuming a cycle;
+for budget exhaustion. Paused **and cancelled** campaigns record an in-flight
+result without advancing — that is the whole graceful-stop mechanism for
+`campaign cancel`: the running cycle finishes, its work is preserved as usual,
+and no successor is dispatched. `campaign cancel --now` instead aborts the
+campaign's daemon task outright, which kills the running agent and leaves an
+orphaned worktree for `DisposeCampaignWork` to preserve or discard.
+Provider-unavailable failures pause without consuming a cycle;
 `blocked_on_decision`, genuine runner faults, and owner-judgment findings
 escalate. Every advance mints trace and cycle-span identity,
 `CampaignAdvanceCompleted` retains the formation prompt, provider, and

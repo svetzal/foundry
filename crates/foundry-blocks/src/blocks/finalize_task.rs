@@ -11,6 +11,7 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::{ProcessShellGateway, ShellGateway};
+use crate::workspace::{checked, commit_worktree, preserve, remove_workspace, run_best_effort};
 
 use super::SimulatedSuccess;
 
@@ -21,33 +22,6 @@ task_block_new! {
     pub struct FinalizeTask {
         shell: ShellGateway = ProcessShellGateway
     }
-}
-
-async fn run(
-    shell: &dyn ShellGateway,
-    cwd: &Path,
-    args: &[&str],
-) -> Result<crate::shell::CommandResult> {
-    shell.run(cwd, "git", args, None, None).await
-}
-
-async fn checked(shell: &dyn ShellGateway, cwd: &Path, args: &[&str]) -> Result<String> {
-    let result = run(shell, cwd, args).await?;
-    if !result.success {
-        bail!("git {} failed ({}): {}", args.join(" "), result.exit_code, result.stderr.trim());
-    }
-    Ok(result.stdout.trim().to_string())
-}
-
-async fn commit_worktree(shell: &dyn ShellGateway, worktree: &Path, project: &str) -> Result<bool> {
-    let status = checked(shell, worktree, &["status", "--porcelain"]).await?;
-    if status.is_empty() {
-        return Ok(false);
-    }
-    checked(shell, worktree, &["add", "-A"]).await?;
-    checked(shell, worktree, &["commit", "-m", &format!("feat({project}): automated task")])
-        .await?;
-    Ok(true)
 }
 
 async fn branch_has_deliverable(
@@ -67,29 +41,6 @@ async fn branch_has_deliverable(
     )
     .await?;
     Ok(count != "0")
-}
-
-async fn preserve(
-    shell: &dyn ShellGateway,
-    worktree: &Path,
-    project: &str,
-    branch: &str,
-) -> Result<String> {
-    let push = run(shell, worktree, &["push", "-u", "origin", branch]).await?;
-    if push.success {
-        return Ok(branch.to_string());
-    }
-
-    let dir = foundry_sdk::paths::preserved_dir().join(project);
-    std::fs::create_dir_all(&dir)?;
-    let bundle = dir.join(format!("{}.bundle", branch.replace('/', "-")));
-    let bundle_text = bundle.to_string_lossy().to_string();
-    // Record HEAD alongside the branch. A bundle carrying only
-    // `refs/heads/<branch>` advertises no HEAD, so neither `git clone` nor a
-    // bare `git fetch` can resolve it — which is what made this fallback a
-    // dead end for anyone, human or machine, trying to recover the work.
-    checked(shell, worktree, &["bundle", "create", &bundle_text, "HEAD", branch]).await?;
-    Ok(format!("bundle:{bundle_text}"))
 }
 
 async fn land_on_trunk(
@@ -115,33 +66,6 @@ async fn land_on_trunk(
         checked(shell, checkout, &["push", "origin", base_branch]).await?;
     }
     Ok(())
-}
-
-/// Run a git command whose outcome is cleanup, not correctness: log a failure
-/// (spawn error or non-zero exit) rather than discarding it.
-async fn run_best_effort(shell: &dyn ShellGateway, cwd: &Path, args: &[&str]) {
-    match run(shell, cwd, args).await {
-        Ok(result) if !result.success => {
-            tracing::warn!(
-                git_args = %args.join(" "),
-                exit_code = result.exit_code,
-                stderr = %result.stderr.trim(),
-                "best-effort cleanup command failed"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(git_args = %args.join(" "), error = %e, "best-effort cleanup command failed to run");
-        }
-        Ok(_) => {}
-    }
-}
-
-async fn remove_workspace(shell: &dyn ShellGateway, checkout: &Path, worktree: &Path) {
-    let worktree_text = worktree.to_string_lossy().to_string();
-    // Best-effort: a task already landed (or was preserved) by the time we
-    // reach here; a leaked worktree is cleaned up on a later run and must
-    // not fail an already-completed task.
-    run_best_effort(shell, checkout, &["worktree", "remove", &worktree_text]).await;
 }
 
 async fn cleanup_landed_branch(

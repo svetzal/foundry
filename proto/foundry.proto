@@ -438,6 +438,39 @@ message CompleteCampaignResponse {
     CampaignDetail campaign = 1;
 }
 
+// Stop a campaign permanently before its done-evidence is met.
+//
+// Distinct from CompleteCampaign because `completed` is an evidence claim;
+// cancellation records the opposite. The non-empty reason is retained as an
+// append-only owner record when the campaign has an owner, and the daemon
+// emits CampaignCancelled so terminal observers see the transition.
+//
+// Unlike CompleteCampaign this does NOT require authorized_by — an
+// unauthorized campaign must still be stoppable.
+//
+// Idempotent on an already-cancelled campaign; FAILED_PRECONDITION on a
+// completed one; INVALID_ARGUMENT when the reason is empty.
+message CancelCampaignRequest {
+    string name = 1;
+    string reason = 2;
+    // Abort the in-flight workflow immediately, killing the running agent
+    // process, instead of letting the current cycle finish. Note this kills
+    // only the agent itself; tool subprocesses it spawned are reparented and
+    // survive.
+    bool terminate_now = 3;
+    // Throw away the terminated cycle's uncommitted work instead of committing
+    // and preserving it. Only meaningful with terminate_now — a cycle allowed
+    // to finish has already had its work committed and preserved.
+    bool discard_work = 4;
+}
+
+message CancelCampaignResponse {
+    CampaignDetail campaign = 1;
+    // The emitted CampaignCancelled event. Empty when the call was a no-op
+    // because the campaign was already cancelled.
+    string event_id = 2;
+}
+
 // Manually dispatch one advance iteration for an active campaign.
 // Valid only when the campaign is `active` or `staged`; returns
 // FAILED_PRECONDITION for `paused`, `escalated`, or `completed` campaigns.
@@ -560,6 +593,9 @@ service Foundry {
 
     // Mark an authorized campaign complete with an auditable owner reason.
     rpc CompleteCampaign(CompleteCampaignRequest) returns (CompleteCampaignResponse);
+
+    // Stop a campaign permanently, optionally killing the in-flight cycle.
+    rpc CancelCampaign(CancelCampaignRequest) returns (CancelCampaignResponse);
 
     // Manually dispatch one advance iteration for an active campaign.
     rpc AdvanceCampaign(AdvanceCampaignRequest) returns (AdvanceCampaignResponse);

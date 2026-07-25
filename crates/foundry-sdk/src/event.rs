@@ -355,6 +355,12 @@ pub enum EventType {
     /// explain why.
     CampaignPaused,
     CampaignCompleted,
+    /// An operator stopped a campaign before its done-evidence was met. Unlike
+    /// a pause — which the operator can see the effect of on the next advance —
+    /// this is terminal, and it may have killed a running agent and disposed of
+    /// that cycle's work. The event is what carries the reason and the
+    /// disposition into the stream and the ops digest.
+    CampaignCancelled,
 
     // Validation workflow
     ValidationRequested,
@@ -561,6 +567,7 @@ impl EventType {
             | EventType::CampaignEscalated
             | EventType::CampaignPaused
             | EventType::CampaignCompleted
+            | EventType::CampaignCancelled
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
             | EventType::ProjectRunCompleted
@@ -685,6 +692,7 @@ mod tests {
             (EventType::CampaignEscalated, "campaign_escalated"),
             (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
+            (EventType::CampaignCancelled, "campaign_cancelled"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -770,6 +778,7 @@ mod tests {
             (EventType::CampaignEscalated, "campaign_escalated"),
             (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
+            (EventType::CampaignCancelled, "campaign_cancelled"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -1198,6 +1207,12 @@ mod tests {
         assert!(!EventType::OpsObserved.is_span_opener());
         assert!(!EventType::OpsSummaryCompleted.is_span_opener());
         assert!(!EventType::OpsDigestCompleted.is_span_opener());
+
+        // Campaign terminals are lifecycle ends, not openers — including a
+        // manual cancellation, which is minted as its own workflow root but
+        // still opens no span of its own.
+        assert!(!EventType::CampaignCompleted.is_span_opener());
+        assert!(!EventType::CampaignCancelled.is_span_opener());
 
         // Supply-chain workflow openers and non-openers
         assert!(EventType::SupplyChainScanStarted.is_span_opener());

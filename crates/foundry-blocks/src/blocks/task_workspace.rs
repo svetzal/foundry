@@ -4,25 +4,11 @@ use anyhow::{Context, Result, bail};
 use foundry_sdk::registry::ProjectEntry;
 
 use crate::gateway::ShellGateway;
+use crate::workspace::task_workspace_paths;
 
 pub(crate) struct TaskWorkspace {
     pub path: PathBuf,
     pub branch: String,
-}
-
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
 }
 
 async fn checked(
@@ -71,16 +57,19 @@ async fn bundle_branch_ref(shell: &dyn ShellGateway, repo: &Path, bundle: &str) 
 
 /// Create a fresh branch and worktree from the current remote base (or a
 /// preserved continuation ref) without touching the registered checkout.
+///
+/// `workspace_id` names the workspace. Callers derive it from
+/// [`crate::workspace`] — campaign cycles use an id that encodes the campaign
+/// and cycle, so a cancellation can find an orphaned worktree without having
+/// observed the run that created it; everything else uses the run id.
 pub(crate) async fn prepare_task_workspace(
     shell: &dyn ShellGateway,
     entry: &ProjectEntry,
-    run_id: &str,
+    workspace_id: &str,
     base_ref: Option<&str>,
 ) -> Result<TaskWorkspace> {
     let repo = Path::new(&entry.path);
-    let short_id = run_id.trim_start_matches("evt_").chars().take(12).collect::<String>();
-    let branch = format!("foundry-task/{}-{short_id}", slug(&entry.name));
-    let path = foundry_sdk::paths::worktrees_dir().join(slug(&entry.name)).join(&short_id);
+    let (path, branch) = task_workspace_paths(&entry.name, workspace_id);
 
     if path.exists() {
         bail!("task worktree already exists: {}", path.display());

@@ -49,7 +49,14 @@ flowchart TD
     G -->|"provider unavailable"| H["paused"]
     H -->|"resume"| B
     F -->|"decide or extend budget"| B
+    A -->|"cancel"| I["cancelled"]
+    B -->|"cancel"| I
+    F -->|"cancel"| I
+    H -->|"cancel"| I
 ```
+
+`cancelled` is terminal and has no edge back: it records that the mission was
+abandoned, not achieved. Use `paused` for a campaign meant to resume.
 
 Each dispatched task consumes one cycle. Formation, retries caused by a
 transient decision-provider transport failure, and an automatic provider pause
@@ -59,8 +66,8 @@ evaluation; only an attempted dispatch beyond the authorized budget escalates.
 ## Durable Ownership
 
 The daemon owns the durable campaign inventory. Online
-`foundry campaign add/list/show/advance/pause/resume/decide/complete` all go
-through typed gRPC and do not read, create, or mutate `FOUNDRY_CAMPAIGNS_PATH`.
+`foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all
+go through typed gRPC and do not read, create, or mutate `FOUNDRY_CAMPAIGNS_PATH`.
 Successful online reads and mutations render the daemon's typed response
 directly, so stale client-side campaign files cannot mask the live daemon-owned
 state. Pass `--offline` only for direct-file recovery while the daemon is
@@ -227,11 +234,12 @@ reviews the repository and context artifacts, then makes exactly one decision:
 
 | Status      | Meaning                                                | Valid next control             |
 | ----------- | ------------------------------------------------------ | ------------------------------ |
-| `staged`    | Definition exists; no cycle has started                | `advance`, `pause`             |
-| `active`    | Formation or a task may advance the mission            | `advance`, `pause`             |
-| `paused`    | Advancement is intentionally stopped                   | `resume`, `complete`           |
-| `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `complete` |
-| `completed` | Evidence or owner authorization closed the mission     | None                           |
+| `staged`    | Definition exists; no cycle has started                | `advance`, `pause`, `cancel`           |
+| `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `cancel`           |
+| `paused`    | Advancement is intentionally stopped                   | `resume`, `complete`, `cancel`         |
+| `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `complete`, `cancel` |
+| `completed` | Evidence or owner authorization closed the mission     | None                                   |
+| `cancelled` | An owner abandoned the mission before its evidence     | None                                   |
 
 A `done` decision made while a required done-evidence gate is red is rewritten
 into an `advance`. The synthesized objective carries the campaign mission and
@@ -402,6 +410,63 @@ This is an owner-authorized terminal transition. Foundry retains the reason and
 timestamp, clears any stale pending result, and emits the same completion event
 used by an internally completed campaign. Use `--offline` only while the daemon
 is stopped; the direct-file path cannot emit the terminal event.
+
+## Cancelling a Campaign
+
+When a mission is abandoned rather than achieved — superseded by a different
+approach, overtaken by events, or simply wrong — cancel it:
+
+```bash
+foundry campaign cancel parite-phase-2d \
+  --reason "Superseded by the streaming rewrite."
+```
+
+Cancellation is a distinct `cancelled` status, not a flavour of `completed`.
+Completion in Foundry is an evidence claim, so recording an abandoned campaign
+as complete would put a false assertion into the audit trail and the ops digest.
+It is terminal and not resumable; if the campaign should come back later, use
+`pause` instead.
+
+Unlike `complete`, cancellation does not require `authorized_by` — an
+unauthorized campaign cannot be advanced to completion either, so requiring an
+owner would leave it stranded with no reachable terminal state. The `--reason`
+is always mandatory and always reaches the `campaign_cancelled` event; it is
+additionally recorded as an owner decision when the campaign has an owner.
+
+By default the cancellation is **graceful**: the in-flight cycle runs to
+completion, its work is committed and preserved exactly as usual, and no
+successor cycle is dispatched. To stop immediately instead:
+
+```bash
+# Kill the running agent, keep its work (committed and pushed or bundled)
+foundry campaign cancel parite-phase-2d --reason "Wrong approach." --now
+
+# Kill the running agent and throw its uncommitted work away
+foundry campaign cancel parite-phase-2d --reason "Wrong approach." --now --discard-work
+```
+
+A whole campaign runs inside a single daemon task, so `--now` aborts that task:
+the running agent process is killed, and the cycle's worktree is left orphaned
+because normal finalization never ran. Foundry then disposes of that worktree
+according to `--discard-work` — preserving the work to a branch or bundle by
+default, or deleting the worktree and its local branch when asked. A remote
+branch pushed by an earlier cycle is never deleted; it is the audit trail for
+work that did reach a durable ref.
+
+`--discard-work` requires `--now`, because a graceful cancellation has already
+committed and preserved the cycle's work by the time it stops — there would be
+nothing uncommitted left to discard.
+
+Two limits worth knowing. `--now` kills the agent process itself, but not the
+tool subprocesses that agent spawned; those are reparented and run to their own
+completion. And the aborted run produces no trace file, so reconstruct it from
+the `aborted_event_id` recorded on the `campaign_cancelled` event rather than
+from `foundry trace`.
+
+`--offline` cancellation is graceful-only and emits no terminal event, matching
+offline `complete`. `--offline --now` is refused rather than quietly downgraded:
+with no daemon there is no workflow to abort, and reporting a kill that never
+happened would be worse than failing.
 
 ## Online and Offline Control
 

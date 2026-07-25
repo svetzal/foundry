@@ -1046,7 +1046,19 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     }
 
     let forced = update_run_and_forced_outcome(campaign, &execution.request);
-    if campaign.status == CampaignStatus::Paused {
+    // Both a pause and a cancellation stop the loop here, by recording the
+    // arriving run result and forming nothing further. For a cancellation this
+    // is the whole graceful-stop mechanism: the in-flight cycle runs to
+    // completion, `FinalizeTask` commits and preserves its work as usual, and
+    // the result lands in the store with no successor dispatched.
+    //
+    // Emitting nothing is deliberate. `CampaignCancelled` was already emitted
+    // by the operator's `cancel`, and forming any decision here would move the
+    // status off `Cancelled` — `Done` in particular would record the abandoned
+    // campaign as completed, which is the false evidence claim the separate
+    // status exists to prevent.
+    if matches!(campaign.status, CampaignStatus::Paused | CampaignStatus::Cancelled) {
+        let status = campaign.status;
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
         return persist_or_terminal(
@@ -1054,10 +1066,10 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
             &guard,
             vec![],
             format!(
-                "campaign '{}' is paused; run recorded without advancing",
+                "campaign '{}' is {status}; run recorded without advancing",
                 execution.request.campaign
             ),
-            "paused campaign result could not be saved",
+            "stopped campaign result could not be saved",
             cycles_completed,
             cycles_landed,
         );
@@ -1462,6 +1474,85 @@ mod tests {
                 .and_then(|result| result.preservation_ref.as_deref()),
             None
         );
+    }
+
+    /// The graceful half of `foundry campaign cancel`: the in-flight cycle
+    /// runs to completion and its result arrives here, but nothing further is
+    /// formed. Critically the status must stay `Cancelled` — forming a `Done`
+    /// decision would rewrite it to `Completed` and put a false evidence claim
+    /// into the store and the ops digest.
+    #[tokio::test]
+    async fn cancelled_campaign_records_run_without_advancing_or_completing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                name: "c".to_string(),
+                project: "p".to_string(),
+                mission: "ship".to_string(),
+                intent_refs: vec![],
+                context_paths: vec![],
+                done_evidence: vec![DoneEvidence::Review {
+                    statement: "shipped".to_string(),
+                }],
+                budget: CampaignBudget::default(),
+                escalation: vec![],
+                status: CampaignStatus::Cancelled,
+                cycles_completed: 1,
+                cycles_landed: 0,
+                authorized_by: Some("owner".to_string()),
+                agent_provider: None,
+                last_run_event_id: None,
+                owner_decisions: vec![],
+                pending_run_result: None,
+                objective_history: vec![],
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success();
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(TaskRunCompletedPayload {
+                    project: "p".to_string(),
+                    success: true,
+                    landed: true,
+                    summary: "landed".to_string(),
+                    preservation_ref: None,
+                    verdict: TaskVerdict::Complete,
+                    context: LoopContext {
+                        campaign: Some("c".to_string()),
+                        ..LoopContext::default()
+                    },
+                }),
+            })
+            .unwrap(),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        // No successor dispatched, no formation agent consulted, and above all
+        // no terminal event — `cancel` already emitted `CampaignCancelled`.
+        assert!(result.events.is_empty());
+        assert!(agent.invocations().is_empty());
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Cancelled);
+        assert_eq!(campaign.cycles_landed, 1);
+        assert_eq!(campaign.last_run_event_id.as_deref(), Some("run-1"));
     }
 
     #[tokio::test]

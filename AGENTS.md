@@ -119,7 +119,7 @@ Rules:
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
 | `foundry task <project> "<description>" [--agent <provider>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict |
-| `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete` | Manage durable objectives that derive one task at a time from live state or close on owner-verified evidence |
+| `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
 | `foundry run` | Full maintenance across registered projects (the nightly schedule is now driven by the `nightly-maintenance` sentinel inside `foundryd`) |
@@ -131,7 +131,7 @@ Rules:
 ### Campaign commands
 
 Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
-`show`, `advance`, `pause`, `resume`, `decide`, and `complete` go through
+`show`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel` go through
 `foundryd` via typed gRPC so reads and writes all observe the daemon-owned
 campaign state. Pass `--offline` only for explicit recovery when the daemon is
 stopped and you intentionally need direct file access.
@@ -146,8 +146,9 @@ stopped and you intentionally need direct file access.
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign decide <name> …` | Yes (or `--offline`) | Mutates via `DecideCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign complete <name> …` | Yes (or `--offline`) | Mutates via `CompleteCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign cancel <name> --reason … [--now] [--discard-work]` | Yes (or `--offline`) | Mutates via `CancelCampaign`. Terminal and non-resumable, and unlike `complete` it does **not** require `authorized_by`. `--now` aborts the in-flight workflow and kills the running agent; `--discard-work` requires `--now`. `--offline` is graceful-only — `--offline --now` is refused, not downgraded |
 
-> **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/complete` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`complete` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign` does not emit a terminal completion event.
+> **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`complete`/`cancel` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign`/`CancelCampaign` do not emit a terminal event.
 
 ### Registry commands
 

@@ -16,9 +16,9 @@ use foundry_sdk::registry::Registry;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
-    AddCampaignRequest, AdvanceCampaignRequest, CompleteCampaignRequest, DecideCampaignRequest,
-    GetCampaignRequest, ListCampaignsRequest, PauseCampaignRequest, ResumeCampaignRequest,
-    WatchRequest, foundry_client::FoundryClient,
+    AddCampaignRequest, AdvanceCampaignRequest, CancelCampaignRequest, CompleteCampaignRequest,
+    DecideCampaignRequest, GetCampaignRequest, ListCampaignsRequest, PauseCampaignRequest,
+    ResumeCampaignRequest, WatchRequest, foundry_client::FoundryClient,
 };
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
@@ -232,6 +232,118 @@ pub async fn complete(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one parameter per CLI flag; a struct would add indirection without removing a decision"
+)]
+pub async fn cancel(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+    terminate_now: bool,
+    discard_work: bool,
+) -> Result<()> {
+    let output =
+        cancel_and_render(store_path, addr, offline, name, reason, terminate_now, discard_work)
+            .await?;
+    print!("{output}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, reason = "see `cancel`")]
+pub async fn cancel_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    reason: &str,
+    terminate_now: bool,
+    discard_work: bool,
+) -> Result<String> {
+    // Checked here rather than with clap's `requires` so the operator gets the
+    // reason, not just a usage line: this coupling is a fact about the domain,
+    // and someone reaching for `--discard-work` has a mental model worth
+    // correcting.
+    if discard_work && !terminate_now {
+        bail!(
+            "--discard-work applies to the in-flight cycle's uncommitted work, which only \
+             exists when that cycle is terminated with --now. A graceful cancel lets the cycle \
+             finish, and Foundry commits and preserves its work before stopping.\n\n  \
+             stop now, throw the in-flight work away:  foundry campaign cancel {name} --reason \"...\" --now --discard-work\n  \
+             stop gracefully, keep preserved work:     foundry campaign cancel {name} --reason \"...\""
+        );
+    }
+
+    if offline {
+        // `--now` aborts a workflow running inside foundryd. Offline there is
+        // no daemon and therefore nothing to abort — silently downgrading to a
+        // graceful cancel would tell the operator their agent was killed when
+        // it is still running.
+        if terminate_now {
+            bail!(
+                "--now terminates a workflow running inside foundryd; there is no daemon to \
+                 terminate in --offline mode. Start the daemon and retry, or drop --now to \
+                 record the cancellation directly in the store:\n  \
+                 foundry campaign cancel {name} --reason \"...\" --offline"
+            );
+        }
+        return cancel_offline_and_render(store_path, name, reason);
+    }
+
+    let mut client =
+        connect_daemon_required(addr, &campaign_offline_hint(&format!("cancel {name}"))).await?;
+    let detail = client
+        .cancel_campaign(CancelCampaignRequest {
+            name: name.to_string(),
+            reason: reason.to_string(),
+            terminate_now,
+            discard_work,
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in CancelCampaignResponse"))?;
+    Ok(render::campaign::campaign_detail_proto(&detail))
+}
+
+/// Direct-store cancellation for when the daemon is unreachable.
+///
+/// Graceful only, and emits no event — the same shape as offline `complete`.
+fn cancel_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Result<String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        bail!("reason must be non-empty");
+    }
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    if campaign.status == CampaignStatus::Cancelled {
+        return Ok(render::campaign::campaign_detail(campaign));
+    }
+    if campaign.status == CampaignStatus::Completed {
+        bail!("campaign '{name}' is already completed; there is nothing in flight to cancel");
+    }
+    // No `authorized_by` requirement — see the daemon-side `cancel`: an
+    // unauthorized campaign must still be stoppable, or it is stranded.
+    if let Some(authorized_by) = campaign.authorized_by.clone() {
+        campaign.owner_decisions.push(OwnerDecision {
+            decision: format!("Cancelled externally: {reason}"),
+            authorized_by,
+            decided_at: Utc::now(),
+        });
+    }
+    campaign.status = CampaignStatus::Cancelled;
+    campaign.pending_run_result = None;
+    let rendered = render::campaign::campaign_detail(campaign);
+    guard.save()?;
+    Ok(rendered)
+}
+
 pub async fn resume_and_render(
     store_path: &Path,
     addr: &str,
@@ -288,6 +400,9 @@ pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -
                 "campaign '{name}' is escalated; record owner policy with `foundry campaign decide {name} --decision \"...\"` or use `foundry campaign resume {name}` when the escalation was budget-only"
             ),
             CampaignStatus::Completed => bail!("campaign '{name}' is already completed"),
+            CampaignStatus::Cancelled => bail!(
+                "campaign '{name}' was cancelled; cancellation is terminal, so there is nothing to advance"
+            ),
         }
     }
 
@@ -476,6 +591,15 @@ fn resume_offline(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> 
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
     if campaign.authorized_by.is_none() {
         bail!("campaign '{name}' cannot resume until authorized_by is set");
+    }
+    // The daemon-side `resume` has always required this; the offline path did
+    // not, so `--offline` could resume a campaign from any state — including,
+    // once cancellation existed, silently reviving a cancelled one.
+    if !matches!(campaign.status, CampaignStatus::Paused | CampaignStatus::Escalated) {
+        bail!(
+            "campaign '{name}' is {}; resume applies only to paused or escalated campaigns",
+            campaign.status
+        );
     }
     if add_cycles == 0 && campaign.cycles_completed >= campaign.budget.max_cycles {
         bail!(
@@ -734,6 +858,73 @@ mod tests {
         let campaign = after.find("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Active);
         assert_eq!(campaign.budget.max_cycles, 3);
+    }
+
+    /// `resume_offline` historically checked `authorized_by` and the cycle
+    /// budget but never the status, so `--offline` could resume a campaign from
+    /// any state — including reviving a cancelled one, which is terminal. The
+    /// daemon-side `resume` has always required `paused` or `escalated`.
+    #[tokio::test]
+    async fn offline_resume_refuses_a_cancelled_campaign() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "budget":{"max_cycles":9},
+                "cycles_completed":1,
+                "status":"active"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+
+        cancel_and_render(&store, "http://127.0.0.1:0", true, "c", "abandoned", false, false)
+            .await
+            .unwrap();
+
+        let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
+        assert!(
+            err.to_string().contains("paused or escalated"),
+            "the refusal must say which states resume applies to, got: {err}"
+        );
+        assert_eq!(
+            CampaignStore::load(&store).unwrap().find("c").unwrap().status,
+            CampaignStatus::Cancelled,
+            "a refused resume must not change the status"
+        );
+    }
+
+    /// Cancellation is terminal, so the offline advance path must refuse it
+    /// rather than fall through to the daemon-required message.
+    #[tokio::test]
+    async fn offline_advance_refuses_a_cancelled_campaign() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "status":"active"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+        cancel_and_render(&store, "http://127.0.0.1:0", true, "c", "abandoned", false, false)
+            .await
+            .unwrap();
+
+        let err = advance("http://127.0.0.1:0", &store, true, "c").await.unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "got: {err}");
     }
 
     #[tokio::test]

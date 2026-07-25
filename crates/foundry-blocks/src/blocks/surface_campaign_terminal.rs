@@ -8,7 +8,9 @@ impl TaskBlock for SurfaceCampaignTerminal {
     task_block_meta! {
         name: "Surface Campaign Terminal",
         kind: Observer,
-        sinks_on: [CampaignEscalated, CampaignCompleted],
+        // `CampaignCancelledPayload` flattens `CampaignTerminalPayload`, so it
+        // parses here unchanged and needs no special handling.
+        sinks_on: [CampaignEscalated, CampaignCompleted, CampaignCancelled],
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {

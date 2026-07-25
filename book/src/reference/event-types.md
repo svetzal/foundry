@@ -202,6 +202,23 @@ or `detail`.
 | `campaign_paused`            | Provider unavailability paused a non-terminal campaign       |
 | `campaign_escalated`         | Campaign halted for budget, failure, rule, or owner judgment |
 | `campaign_completed`         | Required done evidence proved the mission complete           |
+| `campaign_cancelled`         | An owner abandoned the mission before its evidence was met   |
+
+**`campaign_cancelled` payload**
+
+Flattens the shared terminal payload (`campaign`, `project`, `reason`,
+`cycles_completed`, `cycles_landed`) so generic terminal observers parse it
+unchanged, and adds the operator's disposition choices.
+
+| Field               | Type    | Description                                                     |
+| ------------------- | ------- | --------------------------------------------------------------- |
+| `terminated_now`    | bool    | The in-flight workflow was aborted rather than left to finish   |
+| `discard_work`      | bool    | The terminated cycle's uncommitted work was thrown away         |
+| `aborted_event_id`  | string? | Root event of the aborted workflow; absent for a graceful stop  |
+
+An aborted run never reaches trace persistence, so `aborted_event_id` is the
+only handle onto its partial events in the JSONL log — `foundry trace` has
+nothing to show for it.
 
 **`campaign_advance_requested` payload**
 

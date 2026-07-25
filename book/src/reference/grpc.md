@@ -560,6 +560,51 @@ directly, never re-reads `FOUNDRY_CAMPAIGNS_PATH`, and leaves the client-side
 path untouched if the daemon is unreachable. Pass `--offline` only for
 direct-file recovery while the daemon is stopped.
 
+### `CancelCampaign(CancelCampaignRequest) → CancelCampaignResponse`
+
+Stop a campaign permanently before its done evidence was met. Distinct from
+`CompleteCampaign` because `completed` is an evidence claim and cancellation
+records the opposite. The daemon changes the status to `cancelled`, clears any
+pending run result, stores the reason as an append-only owner record when the
+campaign has an owner, and emits `CampaignCancelled` for terminal observers.
+
+Unlike `CompleteCampaign`, this does **not** require `authorized_by` — an
+unauthorized campaign has no other reachable terminal state.
+
+With `terminate_now`, the daemon aborts the in-flight workflow before touching
+the store. Because a whole campaign runs inside one task, aborting it kills the
+running agent process and releases the campaign store lock that task was
+holding. The abort is awaited, so the subsequent store acquisition is
+uncontended. `discard_work` then selects how the orphaned worktree is disposed
+of by the `DisposeCampaignWork` block.
+
+**Request:**
+
+| Field           | Type   | Description                                                        |
+| --------------- | ------ | ------------------------------------------------------------------ |
+| `name`          | string | Exact campaign name to cancel                                      |
+| `reason`        | string | Owner reason for abandoning the mission                            |
+| `terminate_now` | bool   | Abort the in-flight workflow, killing the running agent process    |
+| `discard_work`  | bool   | Throw the terminated cycle's uncommitted work away                 |
+
+**Response:**
+
+| Field      | Type           | Description                                                          |
+| ---------- | -------------- | -------------------------------------------------------------------- |
+| `campaign` | CampaignDetail | Full campaign detail reflecting the state after cancellation         |
+| `event_id` | string         | The emitted `CampaignCancelled` event; empty when the call was a no-op |
+
+**Errors:** `INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown
+campaign, `FAILED_PRECONDITION` when the campaign is already completed or the
+store is malformed, and `INTERNAL` when the store is unreadable or persistence
+fails. Cancelling an already-cancelled campaign is idempotent: it returns the
+current detail with an empty `event_id` and emits no second event.
+
+**CLI:** `foundry campaign cancel <name> --reason "<text>" [--now]
+[--discard-work]` routes through this RPC by default. `--discard-work` requires
+`--now`. `--offline` uses a graceful-only direct-file path that emits no event;
+`--offline --now` is refused rather than downgraded.
+
 ### `AdvanceCampaign(AdvanceCampaignRequest) → AdvanceCampaignResponse`
 
 Dispatch one manual campaign-advance workflow for an `active` or `staged`

@@ -7,6 +7,41 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry campaign cancel <name> --reason "<text>"` stops a campaign
+  permanently. Cancellation is a distinct terminal `cancelled` status rather
+  than a flavour of `completed`, because completion in Foundry is an evidence
+  claim and recording an abandoned campaign as complete puts a false assertion
+  into the audit trail and the ops digest. It is not resumable — use `pause` for
+  a campaign meant to come back — and, unlike `complete`, does not require
+  `authorized_by`, since an unauthorized campaign has no other reachable
+  terminal state.
+- `--now` on `campaign cancel` terminates the in-flight cycle immediately
+  instead of letting it finish, killing the running agent process. A whole
+  campaign runs inside one daemon task, so the daemon now retains that task's
+  join handle and aborts it; dropping the task drops the agent's child process,
+  which `kill_on_drop` then kills. The abort is awaited so the campaign store
+  lock the aborted task held is provably released before cancellation takes it.
+  Kills the agent process only — tool subprocesses it spawned are reparented and
+  survive.
+- `--discard-work` on `campaign cancel --now` throws the terminated cycle's
+  uncommitted work away instead of committing and preserving it to a branch or
+  bundle. Remote branches pushed by earlier cycles are never deleted. The flag
+  requires `--now`: a graceful cancellation has already preserved its work, so
+  there would be nothing uncommitted left to discard.
+- `campaign_cancelled` event, flattening the shared campaign terminal payload so
+  existing terminal observers parse it unchanged, plus `terminated_now`,
+  `discard_work`, and `aborted_event_id`. An aborted run persists no trace, so
+  `aborted_event_id` is the only handle onto its partial events.
+
+### Fixed
+
+- `foundry campaign resume --offline` never checked campaign status, so it could
+  resume a campaign from any state — including, once cancellation existed,
+  silently reviving a terminal one. It now requires `paused` or `escalated`,
+  matching the daemon-side `ResumeCampaign` behaviour.
+
 ### Changed
 
 - Claude's deep model tier now uses `claude-opus-5`, replacing the retired

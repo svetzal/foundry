@@ -188,6 +188,8 @@ foundry campaign advance <name>
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
+foundry campaign cancel <name> --reason "Superseded by the new architecture."
+foundry campaign cancel <name> --reason "Wrong approach." --now --discard-work
 foundry campaign resume <name>
 foundry campaign resume <name> --add-cycles 2
 ```
@@ -201,6 +203,7 @@ foundry campaign resume <name> --add-cycles 2
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
 | `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active   |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason         |
+| `cancel`   | Yes unless `--offline` | Stop a campaign permanently, optionally killing the in-flight cycle         |
 | `resume`   | Yes unless `--offline` | Return an authorized paused or escalated campaign to active state           |
 
 The store defaults to `~/.foundry/campaigns.json` and can be overridden with
@@ -210,7 +213,7 @@ required before `decide`, `complete`, or `resume`. `decide` is valid only when
 the campaign is currently `escalated`; it appends an owner decision record and
 makes that policy available to the next formation run. `resume --add-cycles N`
 is required when an exhausted budget needs an explicit positive extension.
-Without `--offline`, all eight campaign subcommands are daemon-authoritative:
+Without `--offline`, all nine campaign subcommands are daemon-authoritative:
 they require a reachable `foundryd` daemon, fail without touching the
 client-side `FOUNDRY_CAMPAIGNS_PATH` if the daemon is unreachable, and render
 the daemon's typed response or workflow output directly rather than re-reading
@@ -239,6 +242,50 @@ non-completed campaign state, requires a non-empty `--reason`, clears any stale
 pending run result, records the reason with the authorizing owner and timestamp,
 and emits the normal `campaign_completed` terminal event. Repeating it for an
 already-completed campaign is idempotent.
+
+`cancel` is the other external terminal path, and it means the opposite of
+`complete`: the campaign is being abandoned before its done evidence was met.
+It is a distinct `cancelled` status rather than a flavour of `completed`,
+because in Foundry completion is an evidence claim — recording an abandoned
+campaign as complete would put a false assertion into the audit trail and the
+ops digest. Cancellation is terminal and not resumable; use `pause` for a
+campaign you intend to come back to.
+
+Unlike `complete`, `cancel` does **not** require `authorized_by`. An
+unauthorized campaign can never be advanced to completion either, so requiring
+an owner would strand it with no reachable terminal state. The `--reason` is
+still mandatory and always reaches the `campaign_cancelled` event; it is
+additionally recorded as an owner decision when the campaign has an owner.
+Repeating a cancellation is idempotent and emits no second event, and cancelling
+an already-completed campaign is refused.
+
+By default the cancellation is graceful: the in-flight cycle runs to completion,
+Foundry commits and preserves its work exactly as it would normally, and no
+successor cycle is dispatched. Two flags change that:
+
+| Flag             | Effect                                                                        |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `--now`          | Abort the in-flight workflow immediately, killing the running agent process    |
+| `--discard-work` | Throw the terminated cycle's uncommitted work away instead of preserving it    |
+
+With `--now` and no `--discard-work`, the orphaned worktree is committed and
+pushed to its task branch (falling back to a bundle under `~/.foundry/preserved`),
+then removed. With `--discard-work` the worktree and its local branch are deleted
+outright; any remote branch an earlier cycle already pushed is deliberately left
+alone, since that is the audit trail for work which did reach a durable ref.
+
+`--discard-work` requires `--now`. A graceful cancellation lets the cycle finish,
+and `FinalizeTask` has already committed and preserved its work by then, so there
+is nothing uncommitted left to discard — the flag would silently do nothing.
+
+`--now` terminates the **agent process**, not every process descended from it.
+`kill_on_drop` reaches only the direct child, so tool subprocesses spawned by
+`claude` or `codex` are reparented and keep running until they exit on their own.
+
+`--offline` cancellation is graceful-only and emits no event, matching offline
+`complete`. `--offline --now` is refused rather than silently downgraded: there
+is no daemon holding a workflow to abort, and reporting a kill that never
+happened would be worse than failing.
 
 ## `foundry sentinel`
 

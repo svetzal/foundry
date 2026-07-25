@@ -162,11 +162,12 @@ foundry campaign advance <name>
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
+foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
 ```
 
 Campaign definitions live in the daemon-owned campaign store. By default,
-`foundry campaign add/list/show/advance/pause/resume/decide/complete` all go
+`foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all go
 through typed gRPC and do not read or mutate the client-side
 `FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
 daemon's typed response or workflow output directly, so stale client-side

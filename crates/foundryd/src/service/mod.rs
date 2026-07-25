@@ -12,17 +12,17 @@ use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
-    DecideCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse,
-    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
-    PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse,
-    RegistryEditRequest, RegistryEditResponse, RegistryListRequest, RegistryListResponse,
-    RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest, RegistryShowResponse,
-    ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse,
-    SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest, SentinelListResponse,
-    SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse, StatusRequest,
-    StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
-    foundry_server::Foundry,
+    CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
+    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
+    EmitResponse, GetCampaignRequest, GetCampaignResponse, HistoryRequest, HistoryResponse,
+    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
+    RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
+    RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
+    SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse,
+    SentinelListRequest, SentinelListResponse, SentinelShowRequest, SentinelShowResponse,
+    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse,
+    WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -86,13 +86,25 @@ impl FoundryService {
 pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
     let event_id = event.id.clone();
     let trace_id = event.trace_id.clone().unwrap_or_default();
+    // Read the campaign generically off the root payload rather than matching
+    // on event type: every campaign root event names it under the same key, so
+    // this stays correct as new campaign roots are added.
+    let campaign = event
+        .payload
+        .get("campaign")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string);
 
+    // Insert before spawning: the spawned task's `WorkflowGuard` removes this
+    // entry on drop, and a fast workflow could otherwise finish and remove it
+    // before it was ever recorded.
     ctx.workflow_tracker.insert(ActiveWorkflow {
         event_id: event_id.clone(),
         event_type: event.event_type.to_string(),
         project: event.project.clone(),
         trace_id,
         started_at: chrono::Utc::now(),
+        campaign,
     });
 
     let span = tracing::info_span!(
@@ -102,7 +114,7 @@ pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
         project = %event.project,
     );
 
-    tokio::spawn(
+    let handle = tokio::spawn(
         eventing_ops::run_workflow(
             event,
             Arc::clone(&ctx.engine),
@@ -114,6 +126,10 @@ pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
         )
         .instrument(span),
     );
+    // Retaining the handle is what makes `foundry campaign cancel --now`
+    // possible: a whole campaign runs inside this one task, so aborting it
+    // stops the loop and drops the running agent's `Child`.
+    ctx.workflow_tracker.attach_handle(&event_id, handle);
 }
 
 #[tonic::async_trait]
@@ -228,6 +244,13 @@ impl Foundry for FoundryService {
         request: Request<CompleteCampaignRequest>,
     ) -> Result<Response<CompleteCampaignResponse>, Status> {
         campaign_ops::complete(&self.campaigns_path, &self.ctx, request)
+    }
+
+    async fn cancel_campaign(
+        &self,
+        request: Request<CancelCampaignRequest>,
+    ) -> Result<Response<CancelCampaignResponse>, Status> {
+        campaign_ops::cancel(&self.campaigns_path, &self.ctx, request).await
     }
 
     async fn advance_campaign(
