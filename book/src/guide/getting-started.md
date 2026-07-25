@@ -51,6 +51,17 @@ By default it listens on `127.0.0.1:50051`, loads project, campaign, and
 sentinel state from `~/.foundry/`, and registers the production task-block
 library.
 
+To expose the daemon on a trusted LAN, set `FOUNDRYD_LISTEN_ADDR` at startup:
+
+```bash
+FOUNDRYD_LISTEN_ADDR=0.0.0.0:50051 foundryd
+```
+
+The CLI resolves its daemon URL by precedence: explicit `--addr`, then
+`FOUNDRY_DAEMON_ADDR`, then `http://127.0.0.1:50051`. See
+[Trusted-LAN Control Plane](trusted-lan-control-plane.md) for the plaintext
+networking model and the Mac-to-`mojility-ops-01` migration runbook.
+
 The repository also includes service definitions for unattended operation:
 
 - macOS: [`launchd/README.md`](../../../launchd/README.md)

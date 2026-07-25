@@ -14,7 +14,7 @@ foundry emit <event_type> --project <project> [--throttle <level>] [--payload <j
 | `--project` | Yes | Target project name |
 | `--throttle` | No | `full` (default) or `dry_run` |
 | `--payload` | No | JSON string with event-specific data |
-| `--addr` | No | Daemon address (default: `http://127.0.0.1:50051`) |
+| `--addr` | No | Daemon address (overrides `FOUNDRY_DAEMON_ADDR`, else defaults to `http://127.0.0.1:50051`) |
 
 ### Examples
 

@@ -72,12 +72,16 @@ $EDITOR ~/.config/foundry/foundryd.env
 Example:
 
 ```text
+FOUNDRYD_LISTEN_ADDR=0.0.0.0:50051
 FOUNDRY_DIGESTS_DIR=/home/svetzal/Work/Operations/Automation/commit-digests
 FOUNDRY_OPS_DIGESTS_DIR=/home/svetzal/Work/Operations/Automation/ops-digests
 FOUNDRY_OPS_EVENTS_DIR=/home/svetzal/Work/Operations/Events/intake
 ```
 
 Leave the file absent if the default `~/.foundry/*` paths are acceptable.
+
+Only use a non-loopback `FOUNDRYD_LISTEN_ADDR` on a trusted LAN or VPN. The
+daemon's gRPC control plane is plaintext in this slice.
 
 ## Install and start the user service
 

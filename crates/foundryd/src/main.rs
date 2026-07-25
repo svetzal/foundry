@@ -35,6 +35,13 @@ fn require_utf8_path(path: &std::path::Path, env_var: &str) -> String {
     }
 }
 
+fn resolve_listen_addr(configured: Option<&str>) -> Result<std::net::SocketAddr> {
+    configured
+        .unwrap_or(foundry_sdk::paths::DEFAULT_DAEMON_LISTEN_ADDR)
+        .parse()
+        .map_err(Into::into)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -141,7 +148,7 @@ async fn main() -> Result<()> {
         },
     );
 
-    let addr = "127.0.0.1:50051".parse()?;
+    let addr = resolve_listen_addr(foundry_sdk::paths::daemon_listen_addr().as_deref())?;
     tracing::info!("foundryd listening on {addr}");
 
     Server::builder()
@@ -150,6 +157,24 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_listen_addr;
+
+    #[test]
+    fn resolve_listen_addr_uses_historical_loopback_default() {
+        let addr = resolve_listen_addr(None).expect("default listen addr must parse");
+        assert_eq!(addr.to_string(), "127.0.0.1:50051");
+    }
+
+    #[test]
+    fn resolve_listen_addr_uses_configured_override() {
+        let addr = resolve_listen_addr(Some("127.0.0.1:55123"))
+            .expect("configured listen addr must parse");
+        assert_eq!(addr.to_string(), "127.0.0.1:55123");
+    }
 }
 
 fn spawn_event_audit_writer(

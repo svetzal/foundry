@@ -6,10 +6,32 @@
 use std::env;
 use std::path::PathBuf;
 
+/// Default foundryd listen address used when no startup override is configured.
+pub const DEFAULT_DAEMON_LISTEN_ADDR: &str = "127.0.0.1:50051";
+
+/// Default foundry CLI daemon URL used when no client override is configured.
+pub const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:50051";
+
 /// Returns the Foundry home directory (`~/.foundry` by default).
 fn foundry_home() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(format!("{home}/.foundry"))
+}
+
+/// Returns the configured foundryd listen address, if any.
+///
+/// Override with `FOUNDRYD_LISTEN_ADDR`. The value must be a socket address
+/// such as `127.0.0.1:50051` or `0.0.0.0:50051`.
+pub fn daemon_listen_addr() -> Option<String> {
+    env::var("FOUNDRYD_LISTEN_ADDR").ok()
+}
+
+/// Returns the configured foundry CLI daemon URL, if any.
+///
+/// Override with `FOUNDRY_DAEMON_ADDR`. The value must be a tonic-compatible
+/// URL such as `http://127.0.0.1:50051`.
+pub fn daemon_url() -> Option<String> {
+    env::var("FOUNDRY_DAEMON_ADDR").ok()
 }
 
 /// Returns the project registry file path.
@@ -266,5 +288,11 @@ mod tests {
         let dir = digests_dir();
         let s = dir.to_string_lossy();
         assert!(s.ends_with(".foundry/digests"), "got: {s}");
+    }
+
+    #[test]
+    fn daemon_defaults_match_historical_loopback_control_plane() {
+        assert_eq!(DEFAULT_DAEMON_LISTEN_ADDR, "127.0.0.1:50051");
+        assert_eq!(DEFAULT_DAEMON_URL, "http://127.0.0.1:50051");
     }
 }

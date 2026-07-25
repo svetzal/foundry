@@ -24,8 +24,8 @@ pub mod proto {
 #[command(version)]
 struct Cli {
     /// Daemon address to connect to
-    #[arg(long, default_value = "http://127.0.0.1:50051", global = true)]
-    addr: String,
+    #[arg(long, global = true)]
+    addr: Option<String>,
 
     /// Skip daemon RPCs and use explicit offline file access where supported
     #[arg(long, global = true)]
@@ -591,6 +591,10 @@ async fn handle_campaign_command(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let addr = daemon::resolve_daemon_addr(
+        cli.addr.as_deref(),
+        foundry_sdk::paths::daemon_url().as_deref(),
+    );
 
     match cli.command {
         Commands::Emit {
@@ -599,48 +603,42 @@ async fn main() -> Result<()> {
             throttle,
             payload,
             wait,
-        } => event_commands::emit(&cli.addr, &event_type, &project, &throttle, payload, wait).await,
+        } => event_commands::emit(&addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id, span } => {
-            event_commands::status(&cli.addr, workflow_id, span).await
+            event_commands::status(&addr, workflow_id, span).await
         }
-        Commands::Watch { project } => event_commands::watch(&cli.addr, project).await,
+        Commands::Watch { project } => event_commands::watch(&addr, project).await,
         Commands::Trace {
             event_id,
             verbose,
             flat,
-        } => event_commands::trace(&cli.addr, &event_id, verbose, flat).await,
+        } => event_commands::trace(&addr, &event_id, verbose, flat).await,
         Commands::Run { project, throttle } => {
-            workflow_commands::run(&cli.addr, project, &throttle).await
+            workflow_commands::run(&addr, project, &throttle).await
         }
         Commands::Validate { projects, all } => {
-            workflow_commands::validate(
-                &cli.addr,
-                projects,
-                all,
-                &foundry_sdk::paths::registry_path(),
-            )
-            .await
+            workflow_commands::validate(&addr, projects, all, &foundry_sdk::paths::registry_path())
+                .await
         }
         Commands::Iterate { project, agent } => {
-            workflow_commands::iterate(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::iterate(&addr, &project, agent.as_deref()).await
         }
         Commands::Task {
             project,
             description,
             agent,
-        } => workflow_commands::task(&cli.addr, &project, &description, agent.as_deref()).await,
+        } => workflow_commands::task(&addr, &project, &description, agent.as_deref()).await,
         Commands::Scout { project, agent } => {
-            workflow_commands::scout(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::scout(&addr, &project, agent.as_deref()).await
         }
         Commands::Pipeline { project, agent } => {
-            workflow_commands::pipeline(&cli.addr, &project, agent.as_deref()).await
+            workflow_commands::pipeline(&addr, &project, agent.as_deref()).await
         }
         Commands::Release { project, bump } => {
-            workflow_commands::release(&cli.addr, &project, bump).await
+            workflow_commands::release(&addr, &project, bump).await
         }
         Commands::History { date, project } => {
-            event_commands::history(&cli.addr, cli.offline, date.as_deref(), project.as_deref())
-                .await
+            event_commands::history(&addr, cli.offline, date.as_deref(), project.as_deref()).await
         }
         Commands::Init {
             local,
@@ -668,26 +666,16 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Registry(sub) => {
-            handle_registry_command(
-                sub,
-                &foundry_sdk::paths::registry_path(),
-                &cli.addr,
-                cli.offline,
-            )
-            .await
+            handle_registry_command(sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)
+                .await
         }
         Commands::Campaign(sub) => {
             let campaigns = foundry_sdk::paths::campaigns_path();
-            handle_campaign_command(sub, &campaigns, &cli.addr, cli.offline).await
+            handle_campaign_command(sub, &campaigns, &addr, cli.offline).await
         }
         Commands::Sentinel(sub) => {
-            handle_sentinel_command(
-                sub,
-                &foundry_sdk::paths::sentinels_path(),
-                &cli.addr,
-                cli.offline,
-            )
-            .await
+            handle_sentinel_command(sub, &foundry_sdk::paths::sentinels_path(), &addr, cli.offline)
+                .await
         }
     }
 }

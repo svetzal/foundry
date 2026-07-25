@@ -23,6 +23,7 @@
 - [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Tasks and Campaigns](guide/campaigns.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
+- [Trusted-LAN Control Plane](guide/trusted-lan-control-plane.md)
 - [Commit Digest](guide/commit-digest.md)
 - [Ops Digest](guide/ops-digest.md)
 - [Maintenance Triage](guide/maintenance-triage.md)

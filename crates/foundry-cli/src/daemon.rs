@@ -16,6 +16,20 @@ use anyhow::Result;
 
 use crate::proto::foundry_client::FoundryClient;
 
+/// Resolve the daemon URL for a CLI invocation.
+///
+/// Precedence is:
+/// 1. Explicit `--addr`
+/// 2. Persistent environment/config default (`FOUNDRY_DAEMON_ADDR`)
+/// 3. Historical loopback fallback
+#[must_use]
+pub fn resolve_daemon_addr(explicit: Option<&str>, configured_default: Option<&str>) -> String {
+    explicit
+        .or(configured_default)
+        .unwrap_or(foundry_sdk::paths::DEFAULT_DAEMON_URL)
+        .to_string()
+}
+
 /// Connect to the daemon or return a stable actionable error.
 ///
 /// Use this for commands whose default online path must not fall back to a
@@ -82,6 +96,25 @@ mod tests {
             err.to_string(),
             "foundryd is not reachable at http://127.0.0.1:0; start the daemon"
         );
+    }
+
+    #[test]
+    fn resolve_daemon_addr_prefers_explicit_flag() {
+        let addr =
+            resolve_daemon_addr(Some("http://10.0.0.5:50051"), Some("http://10.0.0.6:50051"));
+        assert_eq!(addr, "http://10.0.0.5:50051");
+    }
+
+    #[test]
+    fn resolve_daemon_addr_uses_configured_default_when_flag_absent() {
+        let addr = resolve_daemon_addr(None, Some("http://10.0.0.6:50051"));
+        assert_eq!(addr, "http://10.0.0.6:50051");
+    }
+
+    #[test]
+    fn resolve_daemon_addr_falls_back_to_historical_loopback_url() {
+        let addr = resolve_daemon_addr(None, None);
+        assert_eq!(addr, "http://127.0.0.1:50051");
     }
 
     // ── Structural gate ───────────────────────────────────────────────────────

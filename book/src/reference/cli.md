@@ -6,7 +6,13 @@ The `foundry` CLI communicates with a running `foundryd` daemon over gRPC.
 
 | Option         | Default                  | Description    |
 | -------------- | ------------------------ | -------------- |
-| `--addr <url>` | `http://127.0.0.1:50051` | Daemon address |
+| `--addr <url>` | `FOUNDRY_DAEMON_ADDR` or `http://127.0.0.1:50051` | Daemon address |
+
+`foundry` resolves the daemon URL in this order:
+
+1. Explicit `--addr`
+2. `FOUNDRY_DAEMON_ADDR`
+3. `http://127.0.0.1:50051`
 
 ## `foundry emit`
 
