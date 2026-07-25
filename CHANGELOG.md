@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-25
+
 ### Added
 
 - `foundry campaign cancel <name> --reason "<text>"` stops a campaign
