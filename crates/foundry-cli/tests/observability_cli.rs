@@ -52,30 +52,34 @@ fn make_event(
     event
 }
 
-fn make_block(
-    block_name: &str,
-    trigger_event_id: &str,
-    emitted_event_ids: &[&str],
+struct BlockFixture<'a> {
+    name: &'a str,
+    trigger_event_id: &'a str,
+    emitted_event_ids: &'a [&'a str],
     success: bool,
     duration_ms: u64,
-    summary: &str,
-    span_id: &str,
-    parent_span_id: &str,
-) -> BlockExecution {
-    BlockExecution {
-        block_name: block_name.to_string(),
-        trigger_event_id: trigger_event_id.to_string(),
-        success,
-        summary: summary.to_string(),
-        emitted_event_ids: emitted_event_ids.iter().map(|id| (*id).to_string()).collect(),
-        duration_ms,
-        raw_output: Some("daemon block output".to_string()),
-        exit_code: Some(0),
-        trigger_payload: serde_json::json!({"from":"test"}),
-        emitted_payloads: vec![serde_json::json!({"ok": success})],
-        audit_artifacts: vec![],
-        span_id: Some(span_id.to_string()),
-        parent_span_id: Some(parent_span_id.to_string()),
+    summary: &'a str,
+    span_id: &'a str,
+    parent_span_id: &'a str,
+}
+
+impl BlockFixture<'_> {
+    fn build(self) -> BlockExecution {
+        BlockExecution {
+            block_name: self.name.to_string(),
+            trigger_event_id: self.trigger_event_id.to_string(),
+            success: self.success,
+            summary: self.summary.to_string(),
+            emitted_event_ids: self.emitted_event_ids.iter().map(|id| (*id).to_string()).collect(),
+            duration_ms: self.duration_ms,
+            raw_output: Some("daemon block output".to_string()),
+            exit_code: Some(0),
+            trigger_payload: serde_json::json!({"from":"test"}),
+            emitted_payloads: vec![serde_json::json!({"ok": self.success})],
+            audit_artifacts: vec![],
+            span_id: Some(self.span_id.to_string()),
+            parent_span_id: Some(self.parent_span_id.to_string()),
+        }
     }
 }
 
@@ -98,16 +102,19 @@ fn alpha_trace() -> ProcessResult {
     );
     ProcessResult {
         events: vec![root, completed],
-        block_executions: vec![make_block(
-            "RunAlpha",
-            "evt_alpha_root",
-            &["evt_alpha_completed"],
-            true,
-            53,
-            "completed alpha",
-            "2222222222222222",
-            "1111111111111111",
-        )],
+        block_executions: vec![
+            BlockFixture {
+                name: "RunAlpha",
+                trigger_event_id: "evt_alpha_root",
+                emitted_event_ids: &["evt_alpha_completed"],
+                success: true,
+                duration_ms: 53,
+                summary: "completed alpha",
+                span_id: "2222222222222222",
+                parent_span_id: "1111111111111111",
+            }
+            .build(),
+        ],
         total_duration_ms: 53,
     }
 }
@@ -123,16 +130,19 @@ fn alpha_failed_trace() -> ProcessResult {
     );
     ProcessResult {
         events: vec![root],
-        block_executions: vec![make_block(
-            "RunAlphaFailed",
-            "evt_alpha_failed",
-            &[],
-            false,
-            19,
-            "failed alpha",
-            "4444444444444444",
-            "3333333333333333",
-        )],
+        block_executions: vec![
+            BlockFixture {
+                name: "RunAlphaFailed",
+                trigger_event_id: "evt_alpha_failed",
+                emitted_event_ids: &[],
+                success: false,
+                duration_ms: 19,
+                summary: "failed alpha",
+                span_id: "4444444444444444",
+                parent_span_id: "3333333333333333",
+            }
+            .build(),
+        ],
         total_duration_ms: 19,
     }
 }
@@ -148,16 +158,19 @@ fn beta_trace() -> ProcessResult {
     );
     ProcessResult {
         events: vec![root],
-        block_executions: vec![make_block(
-            "RunBeta",
-            "evt_beta_root",
-            &[],
-            true,
-            31,
-            "completed beta",
-            "6666666666666666",
-            "5555555555555555",
-        )],
+        block_executions: vec![
+            BlockFixture {
+                name: "RunBeta",
+                trigger_event_id: "evt_beta_root",
+                emitted_event_ids: &[],
+                success: true,
+                duration_ms: 31,
+                summary: "completed beta",
+                span_id: "6666666666666666",
+                parent_span_id: "5555555555555555",
+            }
+            .build(),
+        ],
         total_duration_ms: 31,
     }
 }
