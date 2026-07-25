@@ -148,7 +148,8 @@ message SpanResponse {
     bool found = 1;
     repeated TraceEvent events = 2;
     repeated TraceBlockExecution block_executions = 3;
-    uint64 total_duration_ms = 4;
+    string trace_id = 4;
+    uint64 total_duration_ms = 5;
 }
 
 // Request to subscribe to the live event stream.

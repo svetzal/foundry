@@ -384,6 +384,55 @@ async fn online_status_span_filter_uses_daemon_span_lookup_and_leaves_client_tra
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn online_status_block_only_span_filters_to_owning_trace_only() {
+    let (service, _daemon_traces) = make_service();
+    let addr = start_server(service).await;
+    let client_home = tempfile::tempdir().expect("client home");
+    let (client_traces, trap_file, before) = seed_client_traces_trap(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &client_traces,
+        &addr,
+        &["status", "--span", "2222222222222222"],
+    );
+
+    assert_command_succeeded(&output);
+    let stdout = stdout_string(&output);
+    assert!(stdout.contains("wf_alpha [project_run_started] alpha"));
+    assert!(!stdout.contains("wf_beta"));
+    assert!(!stdout.contains("No active workflows"));
+    assert_eq!(
+        std::fs::read(&trap_file).expect("read trap after block-only status"),
+        before,
+        "online status --span for a block-only span must not touch client trap traces"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_status_unknown_span_keeps_existing_not_found_message() {
+    let (service, _daemon_traces) = make_service();
+    let addr = start_server(service).await;
+    let client_home = tempfile::tempdir().expect("client home");
+    let (client_traces, trap_file, before) = seed_client_traces_trap(client_home.path());
+
+    let output = run_foundry(
+        client_home.path(),
+        &client_traces,
+        &addr,
+        &["status", "--span", "ffffffffffffffff"],
+    );
+
+    assert_command_succeeded(&output);
+    assert_eq!(stdout_string(&output).trim(), "No span found with id: ffffffffffffffff");
+    assert_eq!(
+        std::fs::read(&trap_file).expect("read trap after unknown span status"),
+        before,
+        "unknown online status spans must not touch client trap traces"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unreachable_online_observability_commands_leave_client_traces_unchanged() {
     let client_home = tempfile::tempdir().expect("client home");
     let (client_traces, trap_file, before) = seed_client_traces_trap(client_home.path());

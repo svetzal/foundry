@@ -75,7 +75,11 @@ pub async fn status(addr: &str, workflow_id: Option<String>, span: Option<String
             println!("No span found with id: {span_id}");
             return Ok(());
         }
-        span_response.events.first().map(|e| e.trace_id.clone())
+        if span_response.trace_id.is_empty() {
+            span_response.events.first().map(|event| event.trace_id.clone())
+        } else {
+            Some(span_response.trace_id)
+        }
     } else {
         None
     };

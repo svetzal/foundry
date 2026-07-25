@@ -297,7 +297,10 @@ foundry status --span <span-id>
 ```
 
 This is the fastest way to drill down from a known span without fetching the
-whole trace tree.
+whole trace tree. If the span belongs only to a block execution and has no
+events of its own, the daemon still returns the owning `trace_id`, so
+`foundry status --span` narrows the active workflow list to that trace instead
+of falling back to an unfiltered listing.
 
 ## Legacy Traces
 

@@ -135,6 +135,7 @@ pub(super) fn span_rpc(
             found: true,
             events: r.events.iter().map(trace_event_from).collect(),
             block_executions: r.blocks.iter().map(trace_block_from).collect(),
+            trace_id: r.trace_id,
             total_duration_ms: r.total_duration_ms,
         }
     } else {
@@ -143,6 +144,7 @@ pub(super) fn span_rpc(
             found: false,
             events: vec![],
             block_executions: vec![],
+            trace_id: String::new(),
             total_duration_ms: 0,
         }
     };

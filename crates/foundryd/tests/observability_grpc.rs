@@ -360,6 +360,7 @@ async fn generated_client_span_returns_exact_workflow_span_members() {
         .into_inner();
 
     assert!(response.found);
+    assert_eq!(response.trace_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     assert_eq!(response.total_duration_ms, 53);
     let event_ids: Vec<_> = response.events.iter().map(|event| event.event_id.as_str()).collect();
     assert_eq!(event_ids, vec!["evt_alpha_root", "evt_alpha_completed"]);
@@ -373,4 +374,47 @@ async fn generated_client_span_returns_exact_workflow_span_members() {
     assert_eq!(response.block_executions[0].block_name, "RunAlpha");
     assert_eq!(response.block_executions[0].parent_span_id, "1111111111111111");
     assert_eq!(response.block_executions[0].duration_ms, 53);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generated_client_span_returns_block_only_span_with_owning_trace() {
+    let (addr, _tmp_traces) = make_service().await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect client");
+
+    let response = client
+        .span(SpanRequest {
+            span_id: "2222222222222222".to_string(),
+        })
+        .await
+        .expect("span RPC should succeed")
+        .into_inner();
+
+    assert!(response.found);
+    assert_eq!(response.trace_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert!(response.events.is_empty());
+    assert_eq!(response.block_executions.len(), 1);
+    assert_eq!(response.block_executions[0].block_name, "RunAlpha");
+    assert_eq!(response.block_executions[0].span_id, "2222222222222222");
+    assert_eq!(response.block_executions[0].parent_span_id, "1111111111111111");
+    assert_eq!(response.total_duration_ms, 53);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generated_client_unknown_span_keeps_not_found_shape() {
+    let (addr, _tmp_traces) = make_service().await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect client");
+
+    let response = client
+        .span(SpanRequest {
+            span_id: "ffffffffffffffff".to_string(),
+        })
+        .await
+        .expect("span RPC should succeed")
+        .into_inner();
+
+    assert!(!response.found);
+    assert!(response.trace_id.is_empty());
+    assert!(response.events.is_empty());
+    assert!(response.block_executions.is_empty());
+    assert_eq!(response.total_duration_ms, 0);
 }

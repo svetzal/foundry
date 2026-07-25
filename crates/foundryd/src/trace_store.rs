@@ -35,6 +35,8 @@ struct State {
 /// Result of looking up a single span in the trace store.
 #[derive(Debug, Clone)]
 pub struct SpanResult {
+    /// The trace that owns this span.
+    pub trace_id: String,
     /// All events whose `span_id` matches the requested span.
     pub events: Vec<Event>,
     /// All block executions that either *are* the requested span
@@ -175,6 +177,7 @@ impl TraceStore {
         let total_duration_ms = blocks.iter().map(|b| b.duration_ms).sum();
 
         Some(SpanResult {
+            trace_id: trace_id.clone(),
             events,
             blocks,
             total_duration_ms,
@@ -398,6 +401,7 @@ mod tests {
         store.insert(root_event_id, result);
 
         let span_result = store.find_span(&span_a).expect("span_a must be found");
+        assert_eq!(span_result.trace_id, trace);
         assert_eq!(span_result.events.len(), 1);
         assert_eq!(span_result.events[0].span_id.as_deref(), Some(span_a.as_str()));
         assert!(span_result.blocks.is_empty());
@@ -437,6 +441,7 @@ mod tests {
         let span_result = store
             .find_span(&block_span)
             .expect("block span must be indexed via its trigger event's trace");
+        assert_eq!(span_result.trace_id, trace);
         assert!(span_result.events.is_empty(), "no events carry the block's own span_id");
         assert_eq!(span_result.blocks.len(), 1);
         assert_eq!(span_result.blocks[0].span_id.as_deref(), Some(block_span.as_str()));
@@ -469,6 +474,7 @@ mod tests {
         store.insert(trigger_event_id, result);
 
         let span_result = store.find_span(&workflow_span).expect("workflow span must be indexed");
+        assert_eq!(span_result.trace_id, trace);
         assert_eq!(span_result.events.len(), 1);
         assert_eq!(span_result.blocks.len(), 1);
         assert_eq!(span_result.total_duration_ms, 7);

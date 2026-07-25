@@ -689,11 +689,13 @@ Retrieve every event and block execution that belongs to one span.
 | `found`            | bool                         | Whether a span was found for the given span ID   |
 | `events`           | repeated TraceEvent          | Events whose `span_id` matches the requested span |
 | `block_executions` | repeated TraceBlockExecution | Blocks whose own span or parent span matches     |
+| `trace_id`         | string                       | Owning trace ID, including for block-only spans  |
 | `total_duration_ms`| uint64                       | Sum of returned block durations                  |
 
 `Span` is an in-memory lookup keyed by the daemon's span index. It is intended
 for live drill-down and status filtering rather than durable offline browsing.
-If the span is unknown, the response is `found = false` with empty collections.
+If the span is unknown, the response is `found = false` with empty collections
+and an empty `trace_id`.
 
 ## Messages
 
