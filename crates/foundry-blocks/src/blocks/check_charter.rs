@@ -52,9 +52,22 @@ impl TaskBlock for CheckCharter {
         let event_type = trigger.event_type.clone();
 
         // Parse payload for strategic flag and workflow detection.
-        // Use .ok() — this block sinks on multiple event types with different payload
-        // shapes (ProjectIterationRequested and ExecutionRequested).
-        let iter_payload = trigger.parse_payload::<ProjectIterationRequestedPayload>().ok();
+        let iter_payload = match trigger.parse_payload::<ProjectIterationRequestedPayload>() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                // Best-effort: this block sinks on multiple event types with different
+                // payload shapes (ProjectIterationRequested and ExecutionRequested), so a
+                // parse failure here just means the trigger is the other shape — routine,
+                // not an error the caller needs to act on. Fall back to event-type-derived
+                // workflow below, and log so unexpected drift is visible.
+                tracing::debug!(
+                    error = %e,
+                    event_type = ?event_type,
+                    "trigger payload did not match ProjectIterationRequestedPayload"
+                );
+                None
+            }
+        };
 
         // Derive workflow from typed payload if available; fall back to event type.
         let workflow = iter_payload.as_ref().map_or_else(

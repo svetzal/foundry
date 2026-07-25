@@ -22,11 +22,16 @@ struct GateOccurrence {
 /// counts consecutive failures from the most recent occurrence until a pass or
 /// the lookback boundary.
 ///
-/// Returns a map of `(project, gate) => streak_length`.
-pub fn streaks(events: &[Event], lookback_days: u32) -> HashMap<(String, String), u32> {
+/// Returns a map of `(project, gate) => streak_length` alongside a count of
+/// in-window `PreflightCompleted` events whose payload could not be parsed
+/// and were therefore skipped (Absorb: one malformed event must not prevent
+/// streak computation for the rest of the history; the caller surfaces the
+/// count in the emitted digest payload instead).
+pub fn streaks(events: &[Event], lookback_days: u32) -> (HashMap<(String, String), u32>, u64) {
     let cutoff = Utc::now() - Duration::days(i64::from(lookback_days));
 
     let mut gate_history: HashMap<(String, String), Vec<GateOccurrence>> = HashMap::new();
+    let mut unparsed_events = 0u64;
 
     for event in events {
         if event.event_type != EventType::PreflightCompleted {
@@ -35,8 +40,20 @@ pub fn streaks(events: &[Event], lookback_days: u32) -> HashMap<(String, String)
         if event.occurred_at < cutoff {
             continue;
         }
-        let Ok(payload) = event.parse_payload::<PreflightCompletedPayload>() else {
-            continue;
+        let payload = match event.parse_payload::<PreflightCompletedPayload>() {
+            Ok(payload) => payload,
+            Err(err) => {
+                // Best-effort: a malformed PreflightCompleted payload must not
+                // fail streak computation for the rest of the history; it is
+                // skipped and counted so the caller can surface it.
+                tracing::warn!(
+                    event_id = %event.id,
+                    error = %err,
+                    "triage: failed to parse PreflightCompleted payload while computing streaks, skipping"
+                );
+                unparsed_events += 1;
+                continue;
+            }
         };
         for result in &payload.results {
             let key = (payload.project.clone(), result.name.clone());
@@ -66,7 +83,7 @@ pub fn streaks(events: &[Event], lookback_days: u32) -> HashMap<(String, String)
         }
     }
 
-    result
+    (result, unparsed_events)
 }
 
 /// Build the full set of verdicts applying: correlation, classification,
@@ -75,14 +92,16 @@ pub fn streaks(events: &[Event], lookback_days: u32) -> HashMap<(String, String)
 /// 1. Correlate failures → (incidents, remaining)
 /// 2. Compute streaks over `all_events`
 /// 3. For each remaining failure: classify → base decision → apply overrides
-/// 4. Return (verdicts, incidents)
+/// 4. Return (verdicts, incidents, `unparsed_events`) — `unparsed_events` counts
+///    `PreflightCompleted` events in the streak lookback window whose payload
+///    could not be parsed (see `streaks`).
 pub fn build_verdicts(
     raw_failures: Vec<RawFailure>,
     all_events: &[Event],
     streak_lookback_days: u32,
-) -> (Vec<FailureVerdict>, Vec<InfraIncident>) {
+) -> (Vec<FailureVerdict>, Vec<InfraIncident>, u64) {
     let (incidents, remaining) = correlate(raw_failures);
-    let streak_map = streaks(all_events, streak_lookback_days);
+    let (streak_map, unparsed_events) = streaks(all_events, streak_lookback_days);
 
     let mut verdicts = Vec::new();
 
@@ -122,7 +141,7 @@ pub fn build_verdicts(
         });
     }
 
-    (verdicts, incidents)
+    (verdicts, incidents, unparsed_events)
 }
 
 #[cfg(test)]
@@ -167,9 +186,10 @@ mod tests {
             })
             .collect();
 
-        let result = streaks(&events, 30);
+        let (result, unparsed) = streaks(&events, 30);
         let streak = result.get(&("alpha".to_string(), "fmt".to_string())).copied().unwrap_or(0);
         assert_eq!(streak, 4);
+        assert_eq!(unparsed, 0);
     }
 
     #[test]
@@ -188,9 +208,32 @@ mod tests {
         old_fail.occurred_at = Utc::now() - Duration::hours(4);
         events.push(old_fail);
 
-        let result = streaks(&events, 30);
+        let (result, unparsed) = streaks(&events, 30);
         let streak = result.get(&("alpha".to_string(), "test".to_string())).copied().unwrap_or(0);
         assert_eq!(streak, 2);
+        assert_eq!(unparsed, 0);
+    }
+
+    #[test]
+    fn streaks_counts_unparsed_events_and_skips_them() {
+        let mut events: Vec<Event> = Vec::new();
+        let mut good = make_preflight_event("alpha", "fmt", false, false);
+        good.occurred_at = Utc::now() - Duration::hours(1);
+        events.push(good);
+
+        let mut malformed = Event::new(
+            EventType::PreflightCompleted,
+            "alpha".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "not": "a valid preflight payload shape" }),
+        );
+        malformed.occurred_at = Utc::now() - Duration::hours(1);
+        events.push(malformed);
+
+        let (result, unparsed) = streaks(&events, 30);
+        let streak = result.get(&("alpha".to_string(), "fmt".to_string())).copied().unwrap_or(0);
+        assert_eq!(streak, 1, "only the well-formed event should count toward the streak");
+        assert_eq!(unparsed, 1);
     }
 
     #[test]
@@ -222,10 +265,11 @@ mod tests {
             .take(1)
             .collect();
 
-        let (verdicts, _incidents) = build_verdicts(recent, &all_events, 30);
+        let (verdicts, _incidents, unparsed) = build_verdicts(recent, &all_events, 30);
 
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].class, FailureClass::ChronicDeadlock);
         assert_eq!(verdicts[0].decision, Decision::Escalate);
+        assert_eq!(unparsed, 0);
     }
 }

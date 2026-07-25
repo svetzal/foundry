@@ -29,38 +29,75 @@ pub fn check_charter(project_dir: &Path) -> CharterResult {
 
     // Simple content-length checks: read file, verify trimmed length meets threshold.
     for (filename, label) in &[("CHARTER.md", "CHARTER.md"), ("README.md", "README.md")] {
-        if let Ok(content) = std::fs::read_to_string(project_dir.join(filename))
-            && content.trim().len() >= MIN_CONTENT_LENGTH
-        {
-            sources.push((*label).to_string());
+        match std::fs::read_to_string(project_dir.join(filename)) {
+            Ok(content) if content.trim().len() >= MIN_CONTENT_LENGTH => {
+                sources.push((*label).to_string());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Best-effort: most projects don't carry every optional charter source
+                // file, so a missing/unreadable file here is routine, not an error the
+                // caller needs to act on; log for investigability and keep checking others.
+                tracing::debug!(error = %e, file = %filename, "charter source file not readable");
+            }
         }
     }
 
     // CLAUDE.md: requires section extraction rather than a raw length check.
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("CLAUDE.md"))
-        && let Some(section) = extract_section(&content, "## Project Charter")
-        && section.trim().len() >= MIN_CONTENT_LENGTH
-    {
-        sources.push("CLAUDE.md (Project Charter section)".to_string());
+    match std::fs::read_to_string(project_dir.join("CLAUDE.md")) {
+        Ok(content) => {
+            if let Some(section) = extract_section(&content, "## Project Charter")
+                && section.trim().len() >= MIN_CONTENT_LENGTH
+            {
+                sources.push("CLAUDE.md (Project Charter section)".to_string());
+            }
+        }
+        Err(e) => {
+            // Best-effort: CLAUDE.md is optional; an unreadable file just means this
+            // source contributes nothing, so log and move on to the other sources.
+            tracing::debug!(
+                error = %e,
+                "CLAUDE.md not readable while checking for Project Charter section"
+            );
+        }
     }
 
     // Cargo.toml: presence of a description field inside [package].
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("Cargo.toml"))
-        && content.contains("[package]")
-        && content.contains("description")
-    {
-        sources.push("Cargo.toml (package description)".to_string());
+    match std::fs::read_to_string(project_dir.join("Cargo.toml")) {
+        Ok(content) if content.contains("[package]") && content.contains("description") => {
+            sources.push("Cargo.toml (package description)".to_string());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            // Best-effort: Cargo.toml is optional (non-Rust projects won't have one);
+            // log and continue checking the remaining charter sources.
+            tracing::debug!(error = %e, "Cargo.toml not readable while checking charter");
+        }
     }
 
     // package.json: non-empty "description" key.
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json"))
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
-        && json
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|d| !d.is_empty())
-    {
-        sources.push("package.json (description)".to_string());
+    match std::fs::read_to_string(project_dir.join("package.json")) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(json) => {
+                if json
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|d| !d.is_empty())
+                {
+                    sources.push("package.json (description)".to_string());
+                }
+            }
+            Err(e) => {
+                // Best-effort: malformed package.json shouldn't fail the whole charter
+                // check; other sources may still satisfy it, so log and move on.
+                tracing::warn!(error = %e, "package.json present but not valid JSON while checking charter");
+            }
+        },
+        Err(e) => {
+            // Best-effort: package.json is optional (non-Node projects won't have one);
+            // log and continue checking the remaining charter sources.
+            tracing::debug!(error = %e, "package.json not readable while checking charter");
+        }
     }
 
     let passed = !sources.is_empty();

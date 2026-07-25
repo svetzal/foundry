@@ -314,10 +314,23 @@ fn decision_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let gates = serde_json::to_string_pretty(gate_results).unwrap_or_default();
+    #[allow(
+        clippy::expect_used,
+        reason = "GateResult contains no non-string map keys or non-finite floats"
+    )]
+    let gates = serde_json::to_string_pretty(gate_results)
+        .expect("gate results are infallibly serializable");
     let last_result = request.run_result.as_ref().map_or_else(
         || "none (initial/manual advance)".to_string(),
-        |result| serde_json::to_string_pretty(result).unwrap_or_default(),
+        |result| {
+            #[allow(
+                clippy::expect_used,
+                reason = "TaskRunCompletedPayload contains only strings, bools, and typed \
+                          sub-structs — no non-string map keys or non-finite floats"
+            )]
+            serde_json::to_string_pretty(result)
+                .expect("task run result is infallibly serializable")
+        },
     );
     let history = objective_history(campaign);
     format!(
@@ -1085,14 +1098,21 @@ impl SimulatedSuccess for AdvanceCampaign {
     type Outcome = Vec<Event>;
 
     fn simulate(&self, trigger: &Event) -> Vec<Event> {
-        let request = trigger.parse_payload::<CampaignAdvanceRequestedPayload>().unwrap_or(
-            CampaignAdvanceRequestedPayload {
-                campaign: "unknown".to_string(),
-                run_event_id: None,
-                run_result: None,
-            },
-        );
+        let Ok(request) = trigger.parse_payload::<CampaignAdvanceRequestedPayload>() else {
+            return vec![];
+        };
+        // Best-effort: dry-run simulation must not fail the caller when the
+        // campaign store is unreadable — it degrades to "no events" the same
+        // as an unparseable trigger payload.
         let campaign = CampaignStore::load(&self.store_path)
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    path = %self.store_path.display(),
+                    "campaign store unreadable during dry-run simulation"
+                );
+                e
+            })
             .ok()
             .and_then(|store| store.find(&request.campaign).cloned());
         let Some(campaign) = campaign else {
@@ -2172,6 +2192,13 @@ mod tests {
             !prompt.contains("single objective plus gates/"),
             "the response shape must stop inviting gate commands into the objective"
         );
+        // The rendered MECHANICAL DONE-GATE RESULTS section must actually carry
+        // the gate data (via serde_json::to_string_pretty), not an empty
+        // fallback — this campaign declared one done gate.
+        assert!(
+            prompt.contains("mdbook build book"),
+            "gate section must render the declared done-gate command, not come back empty: {prompt}"
+        );
     }
 
     /// The dispatched task must name its cycle, and name the same one its
@@ -2607,5 +2634,61 @@ mod tests {
             enforce_done_gate_truth(&campaign, decision.clone(), std::slice::from_ref(&gate)),
             decision
         );
+    }
+
+    #[test]
+    fn simulate_returns_no_events_when_payload_unparseable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let block = AdvanceCampaign::new(
+            FakeAgentGateway::success(),
+            FakeShellGateway::success(),
+            registry,
+            store_path,
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::DryRun,
+            serde_json::json!({"not": "a valid campaign advance payload shape"}),
+        );
+
+        let events = block.dry_run_events(&trigger);
+
+        assert!(events.is_empty());
+        assert!(events.iter().all(|e| !format!("{e:?}").contains("unknown")));
+    }
+
+    #[test]
+    fn simulate_returns_no_events_when_store_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        std::fs::write(&store_path, "not valid json{{{").unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let block = AdvanceCampaign::new(
+            FakeAgentGateway::success(),
+            FakeShellGateway::success(),
+            registry,
+            store_path,
+        );
+        let trigger = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::DryRun,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        );
+
+        let events = block.dry_run_events(&trigger);
+
+        assert!(events.is_empty());
+        assert!(events.iter().all(|e| !format!("{e:?}").contains("unknown")));
     }
 }

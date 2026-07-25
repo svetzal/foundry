@@ -143,7 +143,13 @@ fn validate_context_paths(
     campaign: &foundry_sdk::campaign::Campaign,
     repo_path: &Path,
 ) -> Result<(), Status> {
-    let repo = repo_path.canonicalize().map_err(|_| {
+    let repo = repo_path.canonicalize().map_err(|e| {
+        tracing::error!(
+            error = %e,
+            campaign = %campaign.name,
+            project = %campaign.project,
+            "validate_context_paths: project checkout is unreadable"
+        );
         Status::failed_precondition(format!(
             "campaign '{}' project '{}' checkout is unreadable",
             campaign.name, campaign.project
@@ -185,7 +191,13 @@ fn validate_context_path(
         )));
     }
 
-    let canonical = candidate.canonicalize().map_err(|_| {
+    let canonical = candidate.canonicalize().map_err(|e| {
+        tracing::error!(
+            error = %e,
+            campaign = %campaign.name,
+            context_path = %context_path,
+            "validate_context_path: context path is unreadable"
+        );
         Status::failed_precondition(format!(
             "campaign '{}' context path is unreadable: {context_path}",
             campaign.name
@@ -211,7 +223,10 @@ fn validate_campaign_definition(
     registry: &Arc<RwLock<Registry>>,
 ) -> Result<(), Status> {
     campaign.validate().map_err(|error| invalid_argument(error.to_string()))?;
-    let registry = registry.read().map_err(|_| Status::internal("registry lock poisoned"))?;
+    let registry = registry.read().map_err(|e| {
+        tracing::error!(error = %e, "validate_campaign_definition: registry lock poisoned");
+        Status::internal("registry lock poisoned")
+    })?;
     let project = registry.find_project(&campaign.project).ok_or_else(|| {
         Status::failed_precondition(format!(
             "campaign '{}' references unknown registered project '{}'",

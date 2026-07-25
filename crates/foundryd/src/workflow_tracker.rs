@@ -38,21 +38,30 @@ impl WorkflowTracker {
         // Best-effort: this guard protects a pure in-memory "what's running
         // now" cache with no cross-field invariant; recovering from poison
         // keeps tracking workflows instead of taking down the daemon.
-        let mut map = self.active.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut map = self.active.write().unwrap_or_else(|e| {
+            tracing::warn!("workflow tracker lock poisoned; recovering guard to insert workflow");
+            e.into_inner()
+        });
         map.insert(workflow.event_id.clone(), workflow);
     }
 
     /// Remove a workflow when processing completes (or panics).
     pub fn remove(&self, event_id: &str) -> Option<ActiveWorkflow> {
         // Best-effort: see `insert`.
-        let mut map = self.active.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut map = self.active.write().unwrap_or_else(|e| {
+            tracing::warn!("workflow tracker lock poisoned; recovering guard to remove workflow");
+            e.into_inner()
+        });
         map.remove(event_id)
     }
 
     /// Return a snapshot of all active workflows.
     pub fn list(&self) -> Vec<ActiveWorkflow> {
         // Best-effort: see `insert`.
-        let map = self.active.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = self.active.read().unwrap_or_else(|e| {
+            tracing::warn!("workflow tracker lock poisoned; recovering guard to list workflows");
+            e.into_inner()
+        });
         map.values().cloned().collect()
     }
 }

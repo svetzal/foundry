@@ -153,18 +153,34 @@ fn decide_commit(trigger: &Event) -> CommitDecision {
     }
 
     // 2. self-filter: payload explicitly says no changes.
-    let changes_flag =
-        trigger.parse_payload::<ProjectCompletedPayload>().ok().and_then(|p| p.changes);
+    let changes_flag = match trigger.parse_payload::<ProjectCompletedPayload>() {
+        Ok(p) => p.changes,
+        Err(e) => {
+            // Best-effort: this block sinks on multiple event types, so a trigger
+            // that doesn't carry a ProjectCompletedPayload shape is routine (not every
+            // sinked event type has a `changes` field); treat as "flag absent" same as
+            // the previous .ok() behaviour, but log so unexpected drift is visible.
+            tracing::debug!(error = %e, "trigger payload did not match ProjectCompletedPayload");
+            None
+        }
+    };
     if changes_flag == Some(false) {
         return CommitDecision::SkipNoChanges;
     }
 
     // 3. extract CVE (defaults to "unknown" when absent).
-    let cve = trigger
-        .parse_payload::<RemediationCompletedPayload>()
-        .ok()
-        .and_then(|p| p.cve)
-        .unwrap_or_else(|| "unknown".to_string());
+    let cve = match trigger.parse_payload::<RemediationCompletedPayload>() {
+        Ok(p) => p.cve,
+        Err(e) => {
+            // Best-effort: most triggers (ProjectIterationCompleted, ProjectMaintenanceCompleted)
+            // don't carry a RemediationCompletedPayload shape at all, so a parse failure here
+            // is routine; fall back to "unknown" same as the previous .ok() behaviour, logged
+            // for investigability.
+            tracing::debug!(error = %e, "trigger payload did not match RemediationCompletedPayload");
+            None
+        }
+    }
+    .unwrap_or_else(|| "unknown".to_string());
 
     CommitDecision::Proceed { cve }
 }

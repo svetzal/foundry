@@ -46,4 +46,9 @@ pub struct MaintenanceTriageCompletedPayload {
     /// Count of verdicts whose decision is `Escalate`.
     #[serde(default)]
     pub escalation_count: u64,
+    /// Count of `PreflightCompleted` events encountered in the run window or
+    /// streak lookback window whose payload could not be parsed and were
+    /// therefore skipped rather than classified.
+    #[serde(default)]
+    pub unparsed_events: u64,
 }

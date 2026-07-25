@@ -272,17 +272,29 @@ async fn remediate_project(
                     "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
                     target, f.cve
                 );
-                if git_commit_files(shell, &path, &applied.files, &msg).await {
-                    let detail = format!("{}; verified by gates and committed", applied.detail);
-                    outcomes.push(outcome(proj, f, "applied", Some(&detail)));
-                } else {
-                    git_restore_files(shell, &path, &applied.files).await;
-                    outcomes.push(outcome(
-                        proj,
-                        f,
-                        "rolled_back",
-                        Some("fix verified but commit failed; reverted"),
-                    ));
+                match git_commit_files(shell, &path, &applied.files, &msg).await {
+                    Ok(true) => {
+                        let detail = format!("{}; verified by gates and committed", applied.detail);
+                        outcomes.push(outcome(proj, f, "applied", Some(&detail)));
+                    }
+                    Ok(false) => {
+                        git_restore_files(shell, &path, &applied.files).await;
+                        outcomes.push(outcome(
+                            proj,
+                            f,
+                            "rolled_back",
+                            Some("fix verified but commit failed; reverted"),
+                        ));
+                    }
+                    Err(e) => {
+                        // Record: a gateway spawn failure while committing is a
+                        // distinct fault from git itself rejecting the commit —
+                        // name it explicitly rather than reusing the generic
+                        // "commit failed" text.
+                        git_restore_files(shell, &path, &applied.files).await;
+                        let detail = format!("fix verified but {e}; reverted");
+                        outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
+                    }
                 }
             }
             Ok(_) => {
@@ -335,22 +347,28 @@ async fn git_restore_files(shell: &dyn ShellGateway, path: &Path, files: &[Strin
     }
 }
 
+/// Commit `files` with `msg`. `Ok(bool)` reports whether `git add`/`git
+/// commit` themselves succeeded; `Err(String)` carries the gateway error from
+/// a spawn failure, kept distinct so a caller does not misreport "git
+/// returned nonzero" for a command that never ran at all.
 async fn git_commit_files(
     shell: &dyn ShellGateway,
     path: &Path,
     files: &[String],
     msg: &str,
-) -> bool {
+) -> Result<bool, String> {
     let mut add_args = vec!["add"];
     add_args.extend(files.iter().map(String::as_str));
-    let added = shell.run(path, "git", &add_args, None, None).await.is_ok_and(|r| r.success);
-    if !added {
-        return false;
+    match shell.run(path, "git", &add_args, None, None).await {
+        Ok(r) if !r.success => return Ok(false),
+        Ok(_) => {}
+        Err(e) => return Err(format!("git add failed to run: {e}")),
     }
     shell
         .run(path, "git", &["commit", "-m", msg], None, None)
         .await
-        .is_ok_and(|r| r.success)
+        .map(|r| r.success)
+        .map_err(|e| format!("git commit failed to run: {e}"))
 }
 
 fn outcome(
@@ -755,6 +773,63 @@ mod tests {
         assert!(result.success, "a failed rollback command must not fail the formation");
         let out = remediated(&result);
         assert_eq!(out.outcomes[0].status, "rolled_back");
+    }
+
+    /// Wraps `inner` but fails the `git add`/`git commit` step with a real
+    /// `Err` (spawn failure), rather than a nonzero exit. Used to prove a
+    /// gateway spawn failure while committing an already-verified fix is
+    /// recorded as a distinct fault, not conflated with git itself rejecting
+    /// the commit.
+    struct FailingCommitShellGateway {
+        inner: std::sync::Arc<FakeShellGateway>,
+    }
+
+    impl ShellGateway for FailingCommitShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            let is_commit_step = args.first() == Some(&"add") || args.first() == Some(&"commit");
+            if is_commit_step {
+                return Box::pin(async move { Err(anyhow::anyhow!("simulated spawn failure")) });
+            }
+            self.inner.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_gateway_failure_is_recorded_distinctly_and_rolled_back() {
+        let dir = project_dir_with_gate();
+        let inner = FakeShellGateway::success();
+        let shell = std::sync::Arc::new(FailingCommitShellGateway { inner });
+        let block = RemediateSupplyChain::with_enabled(
+            shell,
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 0);
+        assert_eq!(out.outcomes[0].status, "rolled_back");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("spawn failure") || detail.contains("failed to run"),
+            "detail should name the gateway failure that aborted the commit, not a generic \
+             commit-rejected message: {detail}"
+        );
     }
 
     #[tokio::test]

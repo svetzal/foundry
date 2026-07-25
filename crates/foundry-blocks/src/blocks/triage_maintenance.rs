@@ -78,7 +78,8 @@ fn triage(
     let all_events = triage_core::read_events_jsonl(events_dir, since);
 
     // Extract raw failures from the window.
-    let raw_failures = triage_core::run_failures(&all_events, window_start, window_end);
+    let (raw_failures, unparsed_from_failures) =
+        triage_core::run_failures(&all_events, window_start, window_end);
     let total_failures = raw_failures.len() as u64;
 
     if total_failures == 0 {
@@ -95,6 +96,7 @@ fn triage(
             policy_count: 0,
             investigation_count: 0,
             escalation_count: 0,
+            unparsed_events: unparsed_from_failures,
         };
         return emit_result(
             "triage: no failures to classify".to_string(),
@@ -106,8 +108,9 @@ fn triage(
     }
 
     // Build verdicts and incidents.
-    let (verdicts, infra_incidents) =
+    let (verdicts, infra_incidents, unparsed_from_streaks) =
         triage_core::build_verdicts(raw_failures, &all_events, streak_lookback_days);
+    let unparsed_events = unparsed_from_failures + unparsed_from_streaks;
 
     // Count by decision.
     let suppressed_count = infra_incidents.len() as u64;
@@ -127,6 +130,7 @@ fn triage(
         policy = policy_count,
         investigation = investigation_count,
         escalation = escalation_count,
+        unparsed_events,
         "triage: classification complete"
     );
 
@@ -142,6 +146,7 @@ fn triage(
         policy_count,
         investigation_count,
         escalation_count,
+        unparsed_events,
     };
 
     emit_result(

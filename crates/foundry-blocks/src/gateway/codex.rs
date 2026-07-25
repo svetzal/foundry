@@ -217,7 +217,14 @@ async fn read_last_message(path: &std::path::Path) -> Option<String> {
                 Some(trimmed)
             }
         }
-        Err(_) => None,
+        Err(e) => {
+            // Best-effort: the `-o` last-message file is expected to be missing or
+            // unreadable when codex exits before writing it (e.g. early failure);
+            // this is documented as a normal `None` case, but log at debug for
+            // investigability.
+            tracing::debug!(error = %e, path = %path.display(), "codex: last-message file not readable");
+            None
+        }
     }
 }
 

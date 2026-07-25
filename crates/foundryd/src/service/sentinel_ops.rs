@@ -48,9 +48,10 @@ pub(super) fn enable(
     let req = request.into_inner();
 
     let entry_proto = {
-        let mut store = sentinels
-            .write()
-            .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+        let mut store = sentinels.write().map_err(|e| {
+            tracing::error!(error = %e, "sentinel_enable: sentinel store lock poisoned");
+            Status::internal("sentinel store lock poisoned")
+        })?;
         let mut updated = store.clone();
         let entry = updated.enable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
@@ -80,9 +81,10 @@ pub(super) fn disable(
     let req = request.into_inner();
 
     let entry_proto = {
-        let mut store = sentinels
-            .write()
-            .map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+        let mut store = sentinels.write().map_err(|e| {
+            tracing::error!(error = %e, "sentinel_disable: sentinel store lock poisoned");
+            Status::internal("sentinel store lock poisoned")
+        })?;
         let mut updated = store.clone();
         let entry = updated.disable(&req.name).map_err(sentinel_error_to_status)?;
         let proto = sentinel_to_proto(entry);
@@ -107,7 +109,10 @@ pub(super) fn list(
     sentinels: &Arc<RwLock<SentinelStore>>,
     _request: Request<SentinelListRequest>,
 ) -> Result<Response<SentinelListResponse>, Status> {
-    let store = sentinels.read().map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+    let store = sentinels.read().map_err(|e| {
+        tracing::error!(error = %e, "sentinel_list: sentinel store lock poisoned");
+        Status::internal("sentinel store lock poisoned")
+    })?;
 
     Ok(Response::new(SentinelListResponse {
         sentinels: store.sentinels.iter().map(sentinel_to_proto).collect(),
@@ -119,7 +124,10 @@ pub(super) fn show(
     request: Request<SentinelShowRequest>,
 ) -> Result<Response<SentinelShowResponse>, Status> {
     let req = request.into_inner();
-    let store = sentinels.read().map_err(|_| Status::internal("sentinel store lock poisoned"))?;
+    let store = sentinels.read().map_err(|e| {
+        tracing::error!(error = %e, "sentinel_show: sentinel store lock poisoned");
+        Status::internal("sentinel store lock poisoned")
+    })?;
     let entry = store
         .find_sentinel(&req.name)
         .ok_or_else(|| Status::not_found(format!("sentinel '{}' not found", req.name)))?;

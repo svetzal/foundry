@@ -133,12 +133,25 @@ impl TaskBlock for WatchPipeline {
 
         // Extract the release tag from the trigger payload so we can filter
         // `gh run list` to only the run that was triggered by this release.
-        let new_tag =
-            trigger.parse_payload::<ReleaseCompletedPayload>().ok().and_then(|p| p.new_tag);
+        //
+        // Propagate: a malformed ReleaseCompleted payload must fail loudly
+        // rather than silently proceeding with `new_tag = None`, since that
+        // would fall back to watching the most-recent workflow run instead
+        // of the one this release actually triggered.
+        let parsed_payload = trigger.parse_payload::<ReleaseCompletedPayload>();
 
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
+            let new_tag = match parsed_payload {
+                Ok(p) => p.new_tag,
+                Err(err) => {
+                    return Ok(TaskBlockResult::failure(format!(
+                        "WatchPipeline: failed to parse ReleaseCompleted payload: {err}"
+                    )));
+                }
+            };
+
             match route {
                 PipelineRoute::NotInRegistry => {
                     tracing::warn!(project = %project, "project not found in registry");
@@ -547,6 +560,25 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
         assert!(result.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn watch_pipeline_returns_failure_when_trigger_payload_is_malformed() {
+        let registry = registry_with_repo("my-project", "acme/my-project");
+        let block = WatchPipeline::with_gateways(registry, FakeShellGateway::success());
+
+        // `new_tag` must be a string when present; a number is malformed.
+        let bad_trigger = Event::new(
+            EventType::ReleaseCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "success": true, "new_tag": 12345 }),
+        );
+
+        let result = block.execute(&bad_trigger).await.unwrap();
+
+        assert!(!result.success, "malformed ReleaseCompleted payload must fail the block");
+        assert!(result.events.is_empty(), "no events should be emitted on parse failure");
     }
 
     #[tokio::test]

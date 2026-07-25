@@ -587,6 +587,7 @@ mod tests {
             policy_count: 0,
             investigation_count: 1,
             escalation_count: 0,
+            unparsed_events: 0,
         };
 
         let json = serde_json::to_value(&payload).unwrap();

@@ -23,7 +23,16 @@ enum RemediateDecision {
 
 /// Evaluate the trigger and decide what `RemediateVulnerability` should do.
 fn decide_remediate(trigger: &Event) -> RemediateDecision {
-    let p = trigger.parse_payload::<MainBranchAuditedPayload>().ok();
+    let p = match trigger.parse_payload::<MainBranchAuditedPayload>() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            // Best-effort: an unparseable MainBranchAuditedPayload is treated as
+            // "assume dirty" (see is_none_or below), the same conservative default
+            // as the previous .ok() behaviour; log so unexpected payload drift is visible.
+            tracing::debug!(error = %e, "failed to parse MainBranchAuditedPayload in decide_remediate");
+            None
+        }
+    };
     let dirty = p.as_ref().is_none_or(|p| p.dirty);
     if !dirty {
         return RemediateDecision::SkipClean;

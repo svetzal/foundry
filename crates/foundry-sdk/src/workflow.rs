@@ -41,11 +41,19 @@ impl WorkflowType {
     /// Reads `payload["workflow"]` and parses it as a [`WorkflowType`].
     /// Falls back to [`WorkflowType::Unknown`] if the field is missing or unrecognized.
     pub fn from_payload(payload: &serde_json::Value) -> Self {
-        payload
-            .get("workflow")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(WorkflowType::Unknown)
+        let Some(raw) = payload.get("workflow").and_then(serde_json::Value::as_str) else {
+            return WorkflowType::Unknown;
+        };
+        match raw.parse() {
+            Ok(workflow) => workflow,
+            Err(e) => {
+                // Best-effort: an unrecognized workflow string falls back to Unknown
+                // rather than failing payload parsing, same as the previous `.ok()`
+                // behaviour; log so drift (a new/typo'd workflow value) is visible.
+                tracing::debug!(error = %e, raw = %raw, "unrecognized workflow value in payload");
+                WorkflowType::Unknown
+            }
+        }
     }
 }
 

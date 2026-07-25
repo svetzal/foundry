@@ -25,7 +25,16 @@ impl SimulatedSuccess for ExecuteRelease {
     type Outcome = Option<()>;
 
     fn simulate(&self, trigger: &Event) -> Option<()> {
-        let guard = super::super::read_registry(&self.registry).ok()?;
+        // Best-effort: simulation cannot proceed without the registry either
+        // way (a lock failure and "release disabled" both yield no events),
+        // but a poisoned lock is a distinct fault worth surfacing in logs
+        // rather than being silently indistinguishable from "release disabled".
+        let guard = super::super::read_registry(&self.registry)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "registry lock poisoned during release simulation");
+                e
+            })
+            .ok()?;
         let entry = guard.find_project(&trigger.project)?;
         if !entry.actions.release {
             return None;
@@ -61,7 +70,18 @@ impl TaskBlock for ExecuteRelease {
     fn execute(&self, trigger: &Event) -> BlockFuture<'_> {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let bump = trigger.parse_payload::<ReleaseRequestedPayload>().ok().and_then(|p| p.bump);
+        // Best-effort: an absent or unparseable bump field falls back to
+        // "let the agent determine the bump from the changelog," which is a
+        // legitimate release strategy on its own — not a fault worth failing
+        // the release over. Warn so a persistently malformed payload is visible.
+        let bump = trigger
+            .parse_payload::<ReleaseRequestedPayload>()
+            .map_err(|e| {
+                tracing::warn!(error = %e, "release-requested payload unreadable; defaulting to auto bump");
+                e
+            })
+            .ok()
+            .and_then(|p| p.bump);
         let entry = require_project!(self, project);
 
         if !entry.actions.release {
@@ -266,6 +286,26 @@ mod tests {
             Throttle::DryRun,
             serde_json::json!({}),
         );
+        assert!(block.dry_run_events(&trigger).is_empty());
+    }
+
+    #[test]
+    fn simulate_warns_and_skips_when_registry_poisoned() {
+        let registry = empty_registry();
+        let r2 = Arc::clone(&registry);
+        let _ = std::thread::spawn(move || {
+            let _guard = r2.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        let block = ExecuteRelease::new(FakeAgentGateway::success(), registry);
+        let trigger = Event::new(
+            EventType::ReleaseRequested,
+            "my-project".to_string(),
+            Throttle::DryRun,
+            serde_json::json!({}),
+        );
+
         assert!(block.dry_run_events(&trigger).is_empty());
     }
 

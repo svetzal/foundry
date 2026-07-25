@@ -237,10 +237,13 @@ pub(crate) fn dry_run_execution_event(
 /// Returns a formatted section if `gates` is `Some`, otherwise an empty string.
 pub(crate) fn format_gates_context(gates: Option<&serde_json::Value>) -> String {
     if let Some(gates) = gates {
-        format!(
-            "\n\nThe following quality gates must pass after your changes:\n{}",
-            serde_json::to_string_pretty(gates).unwrap_or_default()
-        )
+        #[allow(
+            clippy::expect_used,
+            reason = "gate results are infallibly serializable: no non-string map keys or non-finite floats"
+        )]
+        let rendered =
+            serde_json::to_string_pretty(gates).expect("gate results are infallibly serializable");
+        format!("\n\nThe following quality gates must pass after your changes:\n{rendered}")
     } else {
         String::new()
     }

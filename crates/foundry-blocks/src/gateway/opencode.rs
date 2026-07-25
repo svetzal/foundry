@@ -301,7 +301,16 @@ fn extract_text_from_stream(lines: &[StreamedLine]) -> String {
 /// leading status line before the JSON object (strips up to the first `{`).
 fn parse_export_result(stdout: &str) -> Option<String> {
     let start = stdout.find('{')?;
-    let v: Value = serde_json::from_str(&stdout[start..]).ok()?;
+    let v: Value = match serde_json::from_str(&stdout[start..]) {
+        Ok(v) => v,
+        Err(e) => {
+            // Best-effort: malformed export JSON just means no result can be extracted
+            // this way; the caller falls back to reading the streamed transcript instead,
+            // so log for investigability rather than failing the call.
+            tracing::debug!(error = %e, "failed to parse opencode export stdout as JSON");
+            return None;
+        }
+    };
     let messages = v.get("messages")?.as_array()?;
     let last_assistant = messages
         .iter()

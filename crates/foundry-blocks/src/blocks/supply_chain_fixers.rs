@@ -51,18 +51,21 @@ async fn apply_rust(
 ) -> Result<AppliedFix, ApplyFailure> {
     let files = vec!["Cargo.lock".to_string()];
     let args = ["update", "-p", package, "--precise", version];
-    if run_successfully(shell, path, "cargo", &args).await {
-        Ok(AppliedFix {
+    match run_command(shell, path, "cargo", &args).await {
+        Ok(true) => Ok(AppliedFix {
             files,
             detail: format!("cargo precise update to {version}"),
-        })
-    } else {
-        Err(ApplyFailure {
+        }),
+        Ok(false) => Err(ApplyFailure {
             files,
             detail: format!(
                 "cargo update -p {package} --precise {version} failed (version likely out of the manifest's range)"
             ),
-        })
+        }),
+        Err(e) => Err(ApplyFailure {
+            files,
+            detail: format!("cargo update -p {package} --precise {version} could not run: {e}"),
+        }),
     }
 }
 
@@ -119,24 +122,28 @@ async fn apply_typescript(
         files.insert(0, "package.json".to_string());
     }
 
-    let success =
-        run_typescript_update(shell, path, manager, manifest_changed, package, version).await;
-
-    if success {
-        let mode = if manifest_changed {
-            "manifest rewrite + lock refresh"
-        } else {
-            "lock update"
-        };
-        Ok(AppliedFix {
-            files,
-            detail: format!("{mode} for {package} to {version}"),
-        })
-    } else {
-        Err(ApplyFailure {
+    match run_typescript_update(shell, path, manager, manifest_changed, package, version).await {
+        Ok(true) => {
+            let mode = if manifest_changed {
+                "manifest rewrite + lock refresh"
+            } else {
+                "lock update"
+            };
+            Ok(AppliedFix {
+                files,
+                detail: format!("{mode} for {package} to {version}"),
+            })
+        }
+        Ok(false) => Err(ApplyFailure {
             files,
             detail: format!("TypeScript dependency update failed for {package} to {version}"),
-        })
+        }),
+        Err(e) => Err(ApplyFailure {
+            files,
+            detail: format!(
+                "TypeScript dependency update for {package} to {version} could not run: {e}"
+            ),
+        }),
     }
 }
 
@@ -147,20 +154,15 @@ async fn run_typescript_update(
     manifest_changed: bool,
     package: &str,
     version: &str,
-) -> bool {
+) -> Result<bool, String> {
     match (manager, manifest_changed) {
         (TypeScriptManager::Bun, true) => {
-            run_successfully(
-                shell,
-                path,
-                "bun",
-                &["install", "--lockfile-only", "--ignore-scripts"],
-            )
-            .await
+            run_command(shell, path, "bun", &["install", "--lockfile-only", "--ignore-scripts"])
+                .await
         }
         (TypeScriptManager::Bun, false) => {
             let spec = format!("{package}@{version}");
-            run_successfully(
+            run_command(
                 shell,
                 path,
                 "bun",
@@ -174,7 +176,7 @@ async fn run_typescript_update(
             .await
         }
         (TypeScriptManager::Npm, true) => {
-            run_successfully(
+            run_command(
                 shell,
                 path,
                 "npm",
@@ -189,7 +191,7 @@ async fn run_typescript_update(
         }
         (TypeScriptManager::Npm, false) => {
             let spec = format!("{package}@{version}");
-            run_successfully(
+            run_command(
                 shell,
                 path,
                 "npm",
@@ -239,21 +241,26 @@ async fn apply_python(
         files.insert(0, "pyproject.toml".to_string());
     }
     let spec = format!("{package}=={version}");
-    if run_successfully(shell, path, "uv", &["lock", "--upgrade-package", spec.as_str()]).await {
-        let mode = if manifest_changed {
-            "requirement rewrite + uv lock refresh"
-        } else {
-            "uv lock update"
-        };
-        Ok(AppliedFix {
-            files,
-            detail: format!("{mode} for {package} to {version}"),
-        })
-    } else {
-        Err(ApplyFailure {
+    match run_command(shell, path, "uv", &["lock", "--upgrade-package", spec.as_str()]).await {
+        Ok(true) => {
+            let mode = if manifest_changed {
+                "requirement rewrite + uv lock refresh"
+            } else {
+                "uv lock update"
+            };
+            Ok(AppliedFix {
+                files,
+                detail: format!("{mode} for {package} to {version}"),
+            })
+        }
+        Ok(false) => Err(ApplyFailure {
             files,
             detail: format!("uv lock update failed for {package} to {version}"),
-        })
+        }),
+        Err(e) => Err(ApplyFailure {
+            files,
+            detail: format!("uv lock update for {package} to {version} could not run: {e}"),
+        }),
     }
 }
 
@@ -274,20 +281,53 @@ fn write_manifest_if_changed(
     Ok(())
 }
 
+/// Run a shell command and distinguish "ran and exited nonzero" from "could
+/// not run at all" (spawn/gateway failure).
+///
+/// `Ok(bool)` reports the command's own success flag; `Err(String)` carries
+/// the gateway error so callers can record a fault that is distinct from an
+/// ordinary command failure — collapsing the two into a single bool used to
+/// misreport a spawn failure (e.g. a missing binary) as "the fix command
+/// failed," which points a reader at the wrong root cause.
+async fn run_command(
+    shell: &dyn ShellGateway,
+    path: &Path,
+    command: &str,
+    args: &[&str],
+) -> Result<bool, String> {
+    shell
+        .run(path, command, args, None, None)
+        .await
+        .map(|result| result.success)
+        .map_err(|e| e.to_string())
+}
+
+/// Convenience wrapper over [`run_command`] for call sites (currently only
+/// the `#[ignore]`d live-resolver tests) that don't need to distinguish a
+/// gateway failure from a plain command failure.
+#[cfg(test)]
 async fn run_successfully(
     shell: &dyn ShellGateway,
     path: &Path,
     command: &str,
     args: &[&str],
 ) -> bool {
-    shell
-        .run(path, command, args, None, None)
-        .await
-        .is_ok_and(|result| result.success)
+    run_command(shell, path, command, args).await.unwrap_or(false)
 }
 
 fn rewrite_json_requirement(content: &str, package: &str, version: &str) -> Option<String> {
-    let key = serde_json::to_string(package).ok()?;
+    // Best-effort: `package` is a plain Rust `String`; JSON-encoding it is
+    // infallible in practice (no NaN/Infinity floats, no non-string keys).
+    // Folding a hypothetical future failure into "no rewrite found" here
+    // keeps this a pure text-rewrite helper without a dedicated error type,
+    // but it is still logged so a real regression would not be silent.
+    let key = match serde_json::to_string(package) {
+        Ok(key) => key,
+        Err(e) => {
+            tracing::debug!(error = %e, package, "failed to JSON-encode package name for override rewrite");
+            return None;
+        }
+    };
     let mut output = content.to_string();
     let mut search_from = 0usize;
     let mut changed = false;
@@ -302,9 +342,28 @@ fn rewrite_json_requirement(content: &str, package: &str, version: &str) -> Opti
             continue;
         }
         let value_end = json_string_end(&output, cursor)?;
-        let old: String = serde_json::from_str(&output[cursor..value_end]).ok()?;
+        // Best-effort: `output[cursor..value_end]` was located by scanning
+        // for a JSON string literal (quote-delimited, escape-aware) just
+        // above, so decoding it back is expected to succeed; a failure here
+        // means the scan mis-detected a boundary, which is worth knowing
+        // about even though it only degrades to "no rewrite found."
+        let old: String = match serde_json::from_str(&output[cursor..value_end]) {
+            Ok(old) => old,
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to decode JSON string literal during override rewrite scan");
+                return None;
+            }
+        };
         let new = rewrite_version_token(&old, version)?;
-        let encoded = serde_json::to_string(&new).ok()?;
+        // Best-effort: `new` is a plain Rust `String`; JSON-encoding it is
+        // infallible in practice (no NaN/Infinity floats, no non-string keys).
+        let encoded = match serde_json::to_string(&new) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to JSON-encode rewritten version for override rewrite");
+                return None;
+            }
+        };
         output.replace_range(cursor..value_end, &encoded);
         search_from = cursor + encoded.len();
         changed = true;
@@ -425,6 +484,33 @@ mod tests {
         }
     }
 
+    /// A `ShellGateway` that always fails to spawn — simulating a gateway-
+    /// level fault (e.g. the command binary is missing) rather than a
+    /// command that ran and returned nonzero. Used to prove that
+    /// `apply_fix` records this distinct fault in `ApplyFailure.detail`
+    /// instead of collapsing it into a generic "command failed" message.
+    struct FakeErrorShellGateway;
+
+    impl foundry_sdk::gateway::ShellGateway for FakeErrorShellGateway {
+        fn run<'a>(
+            &'a self,
+            _working_dir: &'a Path,
+            _command: &'a str,
+            _args: &'a [&'a str],
+            _env: Option<&'a [(String, String)]>,
+            _timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = anyhow::Result<foundry_sdk::gateway::CommandResult>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { Err(anyhow::anyhow!("spawn failed: binary not found")) })
+        }
+    }
+
     #[test]
     fn json_rewrite_updates_override_without_reformatting_manifest() {
         let input =
@@ -442,6 +528,74 @@ mod tests {
         let output = rewrite_python_requirements(input, "chromadb", "1.6.1").unwrap();
         assert!(output.contains("chromadb>=1.6.1; python_version >= '3.11'"));
         assert!(output.contains("'3.11'"), "unrelated quoted marker is preserved");
+    }
+
+    #[tokio::test]
+    async fn apply_rust_names_gateway_failure_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = apply_fix(
+            &FakeErrorShellGateway,
+            dir.path(),
+            &Stack::Rust,
+            &finding("serde", None, "1.0.1"),
+        )
+        .await;
+
+        let failure = result.unwrap_err();
+        assert!(
+            failure.detail.contains("could not run") && failure.detail.contains("spawn failed"),
+            "detail should name the gateway failure, not read as a plain command failure: {}",
+            failure.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_typescript_names_gateway_failure_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+
+        let result = apply_fix(
+            &FakeErrorShellGateway,
+            dir.path(),
+            &Stack::TypeScript,
+            &finding("lodash", None, "4.17.21"),
+        )
+        .await;
+
+        let failure = result.unwrap_err();
+        assert!(
+            failure.detail.contains("could not run") && failure.detail.contains("spawn failed"),
+            "detail should name the gateway failure, not read as a plain command failure: {}",
+            failure.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_python_names_gateway_failure_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\ndependencies = [\"chromadb>=1.5.9\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "").unwrap();
+
+        let result = apply_fix(
+            &FakeErrorShellGateway,
+            dir.path(),
+            &Stack::Python,
+            &finding("chromadb", None, "1.6.1"),
+        )
+        .await;
+
+        let failure = result.unwrap_err();
+        assert!(
+            failure.detail.contains("could not run") && failure.detail.contains("spawn failed"),
+            "detail should name the gateway failure, not read as a plain command failure: {}",
+            failure.detail
+        );
     }
 
     #[tokio::test]

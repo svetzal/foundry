@@ -37,16 +37,29 @@ impl TraceWriter {
     /// if deserialisation fails.
     pub fn read(&self, event_id: &str) -> Option<ProcessResult> {
         let filename = format!("{event_id}.json");
+        // Best-effort: the base trace directory may not exist yet (no traces
+        // written so far); treat that as "not found" rather than an error.
         let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+            tracing::debug!(base_dir = %self.base_dir.display(), "trace base dir unreadable while looking up trace by event id");
             return None;
         };
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 let candidate = entry.path().join(&filename);
-                if candidate.exists()
-                    && let Ok(content) = std::fs::read_to_string(&candidate)
-                {
-                    return serde_json::from_str(&content).ok();
+                if candidate.exists() {
+                    // Best-effort: a trace file that fails to read or parse is
+                    // treated as absent rather than failing the whole lookup.
+                    match std::fs::read_to_string(&candidate) {
+                        Ok(content) => match serde_json::from_str(&content) {
+                            Ok(result) => return Some(result),
+                            Err(err) => {
+                                tracing::warn!(path = %candidate.display(), error = %err, "failed to parse trace file, treating as not found");
+                            }
+                        },
+                        Err(err) => {
+                            tracing::warn!(path = %candidate.display(), error = %err, "failed to read trace file, treating as not found");
+                        }
+                    }
                 }
             }
         }
@@ -83,6 +96,8 @@ impl TraceWriter {
     }
 
     fn read_index_from_dir(dir: &std::path::Path, project_filter: Option<&str>) -> Vec<TraceIndex> {
+        // Best-effort: a missing date directory just means no traces for that
+        // day; callers treat an empty listing the same as "not found".
         let Ok(entries) = std::fs::read_dir(dir) else {
             return vec![];
         };
@@ -92,11 +107,22 @@ impl TraceWriter {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
+            // Best-effort: a trace file that can't be read or parsed is
+            // skipped so one corrupt/unreadable file doesn't fail the whole
+            // listing; the remaining valid traces are still returned.
+            let content = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), error = %err, "failed to read trace file, skipping");
+                    continue;
+                }
             };
-            let Ok(result) = serde_json::from_str::<ProcessResult>(&content) else {
-                continue;
+            let result = match serde_json::from_str::<ProcessResult>(&content) {
+                Ok(result) => result,
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), error = %err, "failed to parse trace file, skipping");
+                    continue;
+                }
             };
             // Derive event_id from the filename stem.
             let event_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
@@ -207,6 +233,23 @@ mod tests {
         assert_eq!(indices[0].project, "proj-a");
         assert!(indices[0].success);
         assert_eq!(indices[0].total_duration_ms, 100);
+    }
+
+    #[test]
+    fn list_date_skips_corrupt_file_and_returns_remaining_valid_traces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = TraceWriter::new(dir.path().to_str().unwrap());
+        let result = sample_result(EventType::GreetingRequested, "proj-a");
+        writer.write("evt_good", &result).expect("write");
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let date_dir = dir.path().join(&today);
+        std::fs::write(date_dir.join("evt_bad.json"), "not valid json").expect("write corrupt");
+
+        let indices = writer.list_date(&today, None);
+
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].event_id, "evt_good");
     }
 
     #[test]

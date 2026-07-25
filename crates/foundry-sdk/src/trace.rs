@@ -109,10 +109,24 @@ impl ProcessResult {
         &self,
         event_type: EventType,
     ) -> impl Iterator<Item = T> + '_ {
+        let log_event_type = event_type.clone();
         self.events
             .iter()
             .filter(move |e| e.event_type == event_type)
-            .filter_map(|e| e.parse_payload::<T>().ok())
+            .filter_map(move |e| match e.parse_payload::<T>() {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    // Best-effort: a payload that doesn't match T is skipped rather than
+                    // failing the whole trace scan, matching the best-effort decode used
+                    // by trace consumers; log so unexpected payload-shape drift is visible.
+                    tracing::debug!(
+                        event_type = ?log_event_type,
+                        error = %err,
+                        "skipping event with unparseable payload in parsed_events_of"
+                    );
+                    None
+                }
+            })
     }
 
     /// Determine overall success of the processing chain.

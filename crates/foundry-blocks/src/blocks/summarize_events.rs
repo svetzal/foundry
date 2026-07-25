@@ -114,7 +114,13 @@ async fn summarize(
         &project,
         ReadOnlyAgentSpec {
             prompt,
-            working_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            working_dir: std::env::current_dir().unwrap_or_else(|e| {
+                // Best-effort: current_dir() failing (e.g. cwd deleted out from under the
+                // process) shouldn't block digest formation; fall back to "." same as
+                // before, but log so an unusual environment issue is investigable.
+                tracing::warn!(error = %e, "current_dir() failed while building ops-digest agent spec; falling back to \".\"");
+                ".".into()
+            }),
             agent_file: None,
             // Proactive ops-digest formation — not part of a request chain, so
             // there is no per-request override to honour. Uses the daemon default.

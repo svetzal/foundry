@@ -161,18 +161,31 @@ fn gather_context(project_dir: &Path) -> String {
     // CI configurations
     let mut found_ci = Vec::new();
     let workflows_dir = project_dir.join(".github/workflows");
-    if workflows_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&workflows_dir)
-    {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let path = Path::new(&file_name);
-            let is_yaml = path.extension().is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
-            });
-            if is_yaml {
-                let name = file_name.to_string_lossy();
-                found_ci.push(format!(".github/workflows/{name}"));
+    if workflows_dir.is_dir() {
+        match std::fs::read_dir(&workflows_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name();
+                    let path = Path::new(&file_name);
+                    let is_yaml = path.extension().is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+                    });
+                    if is_yaml {
+                        let name = file_name.to_string_lossy();
+                        found_ci.push(format!(".github/workflows/{name}"));
+                    }
+                }
+            }
+            Err(e) => {
+                // Best-effort: gather_context() builds advisory context for a prompt,
+                // not a hard requirement; an unreadable .github/workflows dir (e.g.
+                // permissions) just means CI files go undetected here, so log and
+                // continue rather than fail gate derivation.
+                tracing::debug!(
+                    error = %e,
+                    dir = %workflows_dir.display(),
+                    "could not read .github/workflows while gathering gate-derivation context"
+                );
             }
         }
     }
@@ -229,8 +242,20 @@ fn collect_tree(dir: &Path, depth: usize, max_depth: usize, lines: &mut Vec<Stri
         return;
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            // Best-effort: build_tree() produces advisory context for a prompt, not a
+            // hard requirement; an unreadable subdirectory (e.g. permissions) just
+            // means that branch is omitted from the tree, so log at debug and stop
+            // descending here rather than fail gate derivation.
+            tracing::debug!(
+                error = %e,
+                dir = %dir.display(),
+                "could not read directory while building gate-derivation tree"
+            );
+            return;
+        }
     };
 
     let mut items: Vec<_> = entries.filter_map(Result::ok).collect();

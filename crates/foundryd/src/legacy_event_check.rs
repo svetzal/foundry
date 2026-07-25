@@ -30,9 +30,20 @@ pub fn detect_legacy_event_names(events_dir: &std::path::Path) -> Option<String>
         "greet_requested",
     ];
 
-    // Missing dir = nothing to check.
-    let Ok(read_dir) = std::fs::read_dir(events_dir) else {
-        return None;
+    // Missing dir = nothing to check. Any other error (permissions, etc.) is
+    // unexpected and worth surfacing, since it silently skips the startup
+    // guard this function exists to provide.
+    let read_dir = match std::fs::read_dir(events_dir) {
+        Ok(read_dir) => read_dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!(
+                path = %events_dir.display(),
+                error = %e,
+                "unable to read events directory for legacy-event scan",
+            );
+            return None;
+        }
     };
 
     for entry in read_dir.flatten() {
@@ -41,6 +52,10 @@ pub fn detect_legacy_event_names(events_dir: &std::path::Path) -> Option<String>
             continue;
         }
         let Ok(file) = std::fs::File::open(&path) else {
+            tracing::warn!(
+                path = %path.display(),
+                "unable to open event file for legacy-event scan; skipping",
+            );
             continue;
         };
         let mut reader = BufReader::new(file);
@@ -49,6 +64,10 @@ pub fn detect_legacy_event_names(events_dir: &std::path::Path) -> Option<String>
         loop {
             line.clear();
             let Ok(read) = reader.read_line(&mut line) else {
+                tracing::warn!(
+                    path = %path.display(),
+                    "error reading event file during legacy-event scan; stopping scan of this file",
+                );
                 break;
             };
             if read == 0 {
@@ -113,5 +132,36 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("does-not-exist");
         assert!(detect_legacy_event_names(&missing).is_none());
+    }
+
+    #[test]
+    fn detect_legacy_event_names_returns_none_for_missing_dir() {
+        // Unchanged behaviour: a missing directory is not a fault to warn
+        // about — it's the common "no events written yet" case.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(detect_legacy_event_names(&missing).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_legacy_event_names_handles_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let unreadable = dir.path().join("locked");
+        std::fs::create_dir(&unreadable).unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Distinct from the missing-dir case (ErrorKind::NotFound): this is a
+        // permissions fault, which the function now warns about rather than
+        // silently treating identically to "nothing to check." It must still
+        // return a sane value (None) rather than panicking.
+        let result = std::panic::catch_unwind(|| detect_legacy_event_names(&unreadable));
+
+        // Always restore permissions so TempDir's Drop can clean up.
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(result.unwrap(), None);
     }
 }

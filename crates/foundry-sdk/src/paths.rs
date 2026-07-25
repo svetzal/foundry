@@ -14,7 +14,14 @@ pub const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:50051";
 
 /// Returns the Foundry home directory (`~/.foundry` by default).
 fn foundry_home() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = env::var("HOME").unwrap_or_else(|e| {
+        // Best-effort: HOME is expected to be set in every real environment; falling
+        // back to "." keeps foundry_home() infallible, but the resulting path would be
+        // process-cwd-relative rather than the intended ~/.foundry, so this is worth
+        // surfacing rather than swallowing.
+        tracing::warn!(error = %e, "HOME env var unavailable; foundry_home() falling back to \".\"");
+        ".".to_string()
+    });
     PathBuf::from(format!("{home}/.foundry"))
 }
 
@@ -172,7 +179,17 @@ pub fn ops_events_intake_dir() -> PathBuf {
     if let Ok(p) = env::var("FOUNDRY_OPS_EVENTS_DIR") {
         PathBuf::from(p)
     } else {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = env::var("HOME").unwrap_or_else(|e| {
+            // Best-effort: HOME is expected to be set in every real environment;
+            // falling back to "." keeps this function infallible, but the resulting
+            // path would be process-cwd-relative rather than under the real home
+            // directory, so this is worth surfacing rather than swallowing.
+            tracing::warn!(
+                error = %e,
+                "HOME env var unavailable; ops_events_intake_dir() falling back to \".\""
+            );
+            ".".to_string()
+        });
         PathBuf::from(format!("{home}/Work/Operations/Events/intake"))
     }
 }

@@ -361,12 +361,21 @@ fn parse_generic_audit(output: &str) -> AuditResult {
 
     // pip-audit --format=json emits an array of vulnerability objects.
     // Each object looks like: {"name": "pkg", "version": "1.0", "vulns": [{"id": "CVE-...", "fix_versions": [...]}]}
-    let Ok(root) = serde_json::from_str::<Value>(output) else {
-        return AuditResult::default();
+    let root: Value = match serde_json::from_str(output) {
+        Ok(v) => v,
+        Err(e) => {
+            return AuditResult {
+                vulnerabilities: vec![],
+                error: Some(format!("generic audit JSON parse error: {e}")),
+            };
+        }
     };
 
     let Some(items) = root.as_array() else {
-        return AuditResult::default();
+        return AuditResult {
+            vulnerabilities: vec![],
+            error: Some("generic audit JSON: expected top-level array".to_owned()),
+        };
     };
 
     let mut vulnerabilities = Vec::new();
@@ -810,10 +819,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_generic_audit_non_array_returns_clean() {
-        // If the tool emits a non-array JSON (unexpected), return clean rather than error.
+    fn parse_generic_audit_non_array_records_error() {
+        // If the tool emits a non-array JSON (unexpected shape), record the
+        // mismatch as an error rather than silently reporting a clean scan.
         let result = parse_generic_audit(r#"{"status": "ok"}"#);
-        assert!(result.error.is_none());
+        assert!(result.error.is_some());
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn parse_generic_audit_records_error_on_malformed_json() {
+        let result = parse_generic_audit("not json");
+        assert!(result.error.is_some());
         assert!(result.vulnerabilities.is_empty());
     }
 

@@ -180,6 +180,8 @@ pub(crate) fn render_trace(response: &TraceResponse, verbose: bool) {
 
 /// Read all trace index entries from a single date directory.
 fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceIndex> {
+    // Best-effort: a missing date directory just means no traces for that
+    // day; callers treat an empty listing the same as "not found".
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
     };
@@ -189,11 +191,22 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
+        // Best-effort: a trace file that can't be read or parsed is skipped
+        // so one corrupt/unreadable file doesn't fail the whole listing; the
+        // remaining valid traces are still returned.
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "failed to read trace file, skipping");
+                continue;
+            }
         };
-        let Ok(result) = serde_json::from_str::<ProcessResult>(&content) else {
-            continue;
+        let result = match serde_json::from_str::<ProcessResult>(&content) {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "failed to parse trace file, skipping");
+                continue;
+            }
         };
         let event_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
         let (event_type, project) = result
@@ -434,5 +447,56 @@ mod tests {
         let wfs = vec![test_workflow("a", "t1")];
         let out = filter_workflows_by_trace(wfs, Some("nope"));
         assert!(out.is_empty());
+    }
+
+    // -- read_index_from_dir tests --
+
+    #[test]
+    fn read_index_from_dir_skips_corrupt_file_and_returns_remaining_valid_traces() {
+        use foundry_sdk::event::{Event, EventType};
+        use foundry_sdk::throttle::Throttle;
+        use foundry_sdk::trace::BlockExecution;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "proj-a".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let event_id = event.id.clone();
+        let result = ProcessResult {
+            events: vec![event],
+            block_executions: vec![BlockExecution {
+                block_name: "TestBlock".to_string(),
+                trigger_event_id: event_id.clone(),
+                success: true,
+                summary: "ok".to_string(),
+                emitted_event_ids: vec![],
+                duration_ms: 1,
+                raw_output: None,
+                exit_code: Some(0),
+                trigger_payload: serde_json::json!({}),
+                emitted_payloads: vec![],
+                audit_artifacts: vec![],
+                span_id: None,
+                parent_span_id: None,
+            }],
+            total_duration_ms: 1,
+        };
+
+        std::fs::write(
+            dir.path().join(format!("{event_id}.json")),
+            serde_json::to_string_pretty(&result).expect("serialize"),
+        )
+        .expect("write good trace");
+        std::fs::write(dir.path().join("evt_bad.json"), "not valid json")
+            .expect("write corrupt trace");
+
+        let indices = read_index_from_dir(dir.path(), None);
+
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].event_id, event_id);
     }
 }

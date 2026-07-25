@@ -77,7 +77,10 @@ pub(super) fn list(
 ) -> Result<Response<RegistryListResponse>, Status> {
     let projects = registry
         .read()
-        .map_err(|_| Status::internal("registry lock poisoned"))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "registry_list: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?
         .projects
         .iter()
         .map(project_to_proto)
@@ -92,7 +95,10 @@ pub(super) fn show(
     let req = request.into_inner();
     let project = registry
         .read()
-        .map_err(|_| Status::internal("registry lock poisoned"))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "registry_show: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?
         .find_project(&req.name)
         .map(project_to_proto)
         .ok_or_else(|| Status::not_found(format!("project '{}' not found", req.name)))?;
@@ -161,11 +167,17 @@ pub(super) fn add(
     };
 
     let entry_proto = {
-        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
+        let mut reg = registry.write().map_err(|e| {
+            tracing::error!(error = %e, "registry_add: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?;
         let mut updated = reg.clone();
         let entry = updated.add_project(spec).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
-        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        updated.save(registry_path).map_err(|e| {
+            tracing::error!(error = %e, "registry_add: failed to persist registry state");
+            registry_persist_failed_status()
+        })?;
         *reg = updated;
         proto
     };
@@ -185,10 +197,16 @@ pub(super) fn remove(
     let req = request.into_inner();
 
     {
-        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
+        let mut reg = registry.write().map_err(|e| {
+            tracing::error!(error = %e, "registry_remove: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?;
         let mut updated = reg.clone();
         updated.remove_project(&req.name).map_err(mutation_error_to_status)?;
-        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        updated.save(registry_path).map_err(|e| {
+            tracing::error!(error = %e, "registry_remove: failed to persist registry state");
+            registry_persist_failed_status()
+        })?;
         *reg = updated;
     }
 
@@ -314,11 +332,17 @@ pub(super) fn edit(
     let edits = edits_from_request(&req)?;
 
     let entry_proto = {
-        let mut reg = registry.write().map_err(|_| Status::internal("registry lock poisoned"))?;
+        let mut reg = registry.write().map_err(|e| {
+            tracing::error!(error = %e, "registry_edit: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?;
         let mut updated = reg.clone();
         let entry = updated.edit_project(&req.name, edits).map_err(mutation_error_to_status)?;
         let proto = project_to_proto(entry);
-        updated.save(registry_path).map_err(|_| registry_persist_failed_status())?;
+        updated.save(registry_path).map_err(|e| {
+            tracing::error!(error = %e, "registry_edit: failed to persist registry state");
+            registry_persist_failed_status()
+        })?;
         *reg = updated;
         proto
     };

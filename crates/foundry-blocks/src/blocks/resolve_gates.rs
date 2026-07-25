@@ -66,6 +66,45 @@ fn charter_failure_result(
     )
 }
 
+/// Build the result for a `CharterCheckCompleted` trigger whose payload could
+/// not be parsed.
+///
+/// This is a distinct fault from a genuine charter-check failure (`success:
+/// false` in a well-formed payload) — it means the event itself is malformed,
+/// not that the charter check ran and failed. The workflow is unknowable
+/// without a parsed payload, so this defaults to `iterate` (matching the
+/// pre-existing default for a missing payload) but the summary and result
+/// text name the parse fault explicitly so it is never mistaken for a real
+/// "charter check failed" verdict.
+fn charter_payload_unreadable_result(
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    error: &str,
+) -> TaskBlockResult {
+    tracing::warn!(%project, error, "charter-check-completed payload unreadable, skipping gate resolution");
+    #[allow(
+        clippy::expect_used,
+        reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+    )]
+    super::emit_event_result(
+        format!("{project}: charter-check-completed payload unreadable: {error}"),
+        false,
+        EventType::ProjectIterationCompleted,
+        project,
+        throttle,
+        &ProjectCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            summary: format!("payload unreadable: {error}"),
+            workflow: "iterate".to_string(),
+            loop_context: None,
+            changes: None,
+            failure: AgentFailureMetadata::default(),
+        },
+    )
+    .expect("ProjectCompletedPayload is infallibly serializable")
+}
+
 impl TaskBlock for ResolveGates {
     task_block_meta! {
         name: "Resolve Gates",
@@ -82,8 +121,10 @@ impl TaskBlock for ResolveGates {
         let event_type = trigger.event_type.clone();
 
         // Parse typed payload for CharterCheckCompleted before entering the async block.
+        // A parse failure is a distinct fault from a genuine charter-check
+        // failure — keep the `Result` so the two are never conflated below.
         let charter_payload = if event_type == EventType::CharterCheckCompleted {
-            trigger.parse_payload::<CharterCheckCompletedPayload>().ok()
+            Some(trigger.parse_payload::<CharterCheckCompletedPayload>())
         } else {
             None
         };
@@ -93,19 +134,27 @@ impl TaskBlock for ResolveGates {
         Box::pin(async move {
             // CharterCheckCompleted: only proceed if charter passed.
             if event_type == EventType::CharterCheckCompleted {
-                let charter_success = charter_payload.as_ref().is_some_and(|p| p.success);
-                if !charter_success {
-                    let workflow = charter_payload
-                        .as_ref()
-                        .map_or_else(|| "iterate".to_string(), |p| p.workflow.clone());
-                    return Ok(charter_failure_result(&project, &workflow, throttle));
+                match &charter_payload {
+                    Some(Err(e)) => {
+                        return Ok(charter_payload_unreadable_result(
+                            &project,
+                            throttle,
+                            &e.to_string(),
+                        ));
+                    }
+                    Some(Ok(p)) if !p.success => {
+                        return Ok(charter_failure_result(&project, &p.workflow, throttle));
+                    }
+                    _ => {}
                 }
             }
 
             // Payload workflow overrides the event-type default — this allows
             // the prompt formation to carry workflow="prompt" through CharterCheckCompleted.
             let workflow = if event_type == EventType::CharterCheckCompleted {
-                charter_payload.map_or_else(|| "iterate".to_string(), |p| p.workflow)
+                charter_payload
+                    .and_then(Result::ok)
+                    .map_or_else(|| "iterate".to_string(), |p| p.workflow)
             } else {
                 match event_type {
                     EventType::ProjectMaintenanceRequested => "maintain".to_string(),
@@ -232,6 +281,41 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn malformed_charter_check_payload_is_distinguishable_from_genuine_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"fmt","command":"cargo fmt --check","required":true}]}"#,
+        )
+        .unwrap();
+
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = ResolveGates::new(registry);
+        // "success" is a string, not a bool — parse_payload fails.
+        let trigger = Event::new(
+            EventType::CharterCheckCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project", "success": "not-a-bool"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "unreadable payload should still fail the block");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        let summary = result.events[0].payload["summary"].as_str().unwrap();
+        assert!(
+            summary.contains("payload unreadable"),
+            "summary should name the parse fault, not read as a real charter failure: {summary}"
+        );
+        assert_ne!(summary, "charter check failed");
+        assert!(result.summary.contains("payload unreadable"));
     }
 
     #[tokio::test]

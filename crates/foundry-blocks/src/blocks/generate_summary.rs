@@ -70,23 +70,33 @@ fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResul
     let terminal = result.events.iter().find(|e| TERMINAL_EVENT_TYPES.contains(&e.event_type));
 
     let status = if let Some(event) = terminal {
-        let terminal_success =
-            event.parse_payload::<ProjectCompletedPayload>().ok().is_some_and(|p| p.success);
-        if terminal_success {
-            ProjectStatus::Success
-        } else {
-            let summary = event
-                .parse_payload::<ProjectCompletedPayload>()
-                .ok()
-                .map(|p| p.summary)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "terminal event reported failure".to_string());
-            // Check whether the agent concluded no real correction was needed.
-            // "triage rejected", "no correction warranted", etc. are benign outcomes.
-            if super::triage_core::is_benign_decline(&summary) {
-                ProjectStatus::Success
-            } else {
-                ProjectStatus::Failed(summary)
+        match event.parse_payload::<ProjectCompletedPayload>() {
+            Ok(p) if p.success => ProjectStatus::Success,
+            Ok(p) => {
+                let summary = if p.summary.is_empty() {
+                    "terminal event reported failure".to_string()
+                } else {
+                    p.summary
+                };
+                // Check whether the agent concluded no real correction was needed.
+                // "triage rejected", "no correction warranted", etc. are benign outcomes.
+                if super::triage_core::is_benign_decline(&summary) {
+                    ProjectStatus::Success
+                } else {
+                    ProjectStatus::Failed(summary)
+                }
+            }
+            Err(e) => {
+                // Record: a malformed terminal-event payload is not the same
+                // fault as a genuine project failure — keep the two
+                // distinguishable in the summary text rather than falling
+                // back to the generic "terminal event reported failure".
+                tracing::warn!(
+                    %project,
+                    error = %e,
+                    "terminal event payload unreadable while generating summary"
+                );
+                ProjectStatus::Failed(format!("payload unreadable: {e}"))
             }
         }
     } else {
@@ -686,6 +696,35 @@ mod tests {
             ProjectStatus::Success,
             "benign triage-rejection outcomes must count as success"
         );
+    }
+
+    #[test]
+    fn extract_project_result_unparseable_terminal_payload_distinguishable_from_genuine_failure() {
+        // "success" is a string, not a bool — parse_payload fails. This must
+        // not be silently reported with the generic "terminal event reported
+        // failure" text used for a genuine failure with an empty summary.
+        let mut trace = successful_trace("broken-payload");
+        let terminal = Event::new(
+            EventType::ProjectMaintenanceCompleted,
+            "broken-payload".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "broken-payload",
+                "success": "not-a-bool",
+                "workflow": "maintain",
+            }),
+        );
+        trace.events.push(terminal);
+
+        let result = extract_project_result("broken-payload", &trace);
+        assert!(matches!(result.status, ProjectStatus::Failed(_)));
+        if let ProjectStatus::Failed(reason) = &result.status {
+            assert!(
+                reason.contains("payload unreadable"),
+                "reason should name the parse fault, not read as a real failure: {reason}"
+            );
+            assert_ne!(reason, "terminal event reported failure");
+        }
     }
 
     #[test]

@@ -49,8 +49,10 @@ impl EventWriter {
 
         // Hold the lock while checking and writing so concurrent delivery of
         // one event id cannot append duplicate audit facts.
-        let mut written_ids =
-            self.written_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut written_ids = self.written_ids.lock().unwrap_or_else(|e| {
+            tracing::warn!("event writer lock poisoned; recovering guard to write event");
+            e.into_inner()
+        });
 
         if written_ids.contains(&event.id) {
             return Ok(());

@@ -264,7 +264,17 @@ pub fn classify_claude_result_record(
     session_id: Option<&str>,
     source_log_path: Option<&Path>,
 ) -> Option<AgentFailureMetadata> {
-    let value = serde_json::from_str::<Value>(raw_record).ok()?;
+    let value = match serde_json::from_str::<Value>(raw_record) {
+        Ok(v) => v,
+        Err(e) => {
+            // Best-effort: a line that isn't valid JSON just isn't a Claude result
+            // record — the caller scans a JSONL stream that may contain other line
+            // shapes, so skip it rather than fail classification; log for
+            // investigability.
+            tracing::debug!(error = %e, "line is not valid JSON while classifying Claude result record");
+            return None;
+        }
+    };
     if value.get("type").and_then(Value::as_str) != Some("result")
         || !value.get("is_error").and_then(Value::as_bool).unwrap_or(false)
     {

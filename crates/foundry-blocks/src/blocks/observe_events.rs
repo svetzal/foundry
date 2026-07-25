@@ -57,14 +57,23 @@ impl TaskBlock for ObserveEvents {
         } = TriggerContext::from_trigger(trigger);
         let intake_dir = self.intake_dir.clone();
         let watermark_path = self.watermark_path.clone();
-        let forced_event = trigger
-            .parse_payload::<OpsDigestStartedPayload>()
-            .ok()
-            .and_then(|payload| payload.forced_event);
+        // Propagate: a malformed OpsDigestStarted payload must fail loudly
+        // rather than silently proceeding as if `forced_event` were unset —
+        // that would re-evaluate the pressure gate as unforced and could
+        // incorrectly skip the digest.
+        let parsed_payload = trigger.parse_payload::<OpsDigestStartedPayload>();
 
-        Box::pin(
-            async move { observe(&project, throttle, &intake_dir, &watermark_path, forced_event) },
-        )
+        Box::pin(async move {
+            let forced_event = match parsed_payload {
+                Ok(payload) => payload.forced_event,
+                Err(err) => {
+                    return Ok(TaskBlockResult::failure(format!(
+                        "ObserveEvents: failed to parse OpsDigestStarted payload: {err}"
+                    )));
+                }
+            };
+            observe(&project, throttle, &intake_dir, &watermark_path, forced_event)
+        })
     }
 }
 
@@ -164,7 +173,16 @@ fn read_watermark(path: &Path) -> Option<DateTime<FixedOffset>> {
         }
     };
     let ts = content.trim();
-    DateTime::parse_from_rfc3339(ts).ok()
+    match DateTime::parse_from_rfc3339(ts) {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            // Best-effort: a malformed watermark value is treated the same as
+            // a missing watermark (fall back to the first-run lookback), but
+            // is worth surfacing since it likely indicates on-disk corruption.
+            tracing::warn!(path = %path.display(), value = %ts, error = %err, "failed to parse ops-digest watermark value");
+            None
+        }
+    }
 }
 
 /// Determine the earliest `occurredAt` to include in this run.
@@ -648,5 +666,30 @@ mod tests {
         let payload: OpsObservedPayload = result.events[0].parse_payload().unwrap();
         assert!(payload.proceed);
         assert!(payload.anomaly_present);
+    }
+
+    #[test]
+    fn malformed_trigger_payload_yields_failed_result() {
+        let intake = TempDir::new().unwrap();
+        let wm_dir = TempDir::new().unwrap();
+        let wm_path = wm_dir.path().join("ops-digest.watermark");
+        std::fs::write(&wm_path, "2026-05-01T00:00:00Z").unwrap();
+
+        // `forced_event` is expected to be an `OpsEventDigest` object, not a string.
+        let bad_trigger = Event::new(
+            EventType::OpsDigestStarted,
+            "system".to_string(),
+            Throttle::Full,
+            serde_json::json!({ "forced_event": "not-an-object" }),
+        );
+
+        let block = ObserveEvents::new(intake.path(), &wm_path);
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(block.execute(&bad_trigger))
+            .unwrap();
+
+        assert!(!result.success, "malformed OpsDigestStarted payload must fail the block");
+        assert!(result.events.is_empty(), "no events should be emitted on parse failure");
     }
 }
