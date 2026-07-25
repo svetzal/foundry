@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use chrono::Utc;
 
-use foundry_sdk::trace::ProcessResult;
-#[cfg(test)]
-use foundry_sdk::trace::TraceIndex;
+use foundry_sdk::trace::{ProcessResult, TraceIndex};
 
 /// Writes and reads completed process results to disk as JSON files, organised
 /// by date (`YYYY-MM-DD/{event_id}.json` under `base_dir`).
@@ -54,28 +52,29 @@ impl TraceWriter {
         }
         None
     }
-}
 
-#[cfg(test)]
-impl TraceWriter {
     /// List all traces stored under `{base_dir}/{date}/`.
     ///
     /// Returns an empty `Vec` when the directory does not exist or cannot be
     /// read.
-    pub fn list_date(&self, date: &str) -> Vec<TraceIndex> {
+    pub fn list_date(&self, date: &str, project_filter: Option<&str>) -> Vec<TraceIndex> {
         let dir = self.base_dir.join(date);
-        Self::read_index_from_dir(&dir)
+        Self::read_index_from_dir(&dir, project_filter)
     }
 
     /// Return the traces for the most recent `days` calendar days (today
     /// inclusive), newest first.  Days with no traces are omitted.
-    pub fn list_recent(&self, days: usize) -> Vec<(String, Vec<TraceIndex>)> {
+    pub fn list_recent(
+        &self,
+        days: usize,
+        project_filter: Option<&str>,
+    ) -> Vec<(String, Vec<TraceIndex>)> {
         let mut result = Vec::new();
         let today = Utc::now().date_naive();
         for offset in 0..days {
             let date = today - chrono::Duration::days(i64::try_from(offset).unwrap_or(0));
             let date_str = date.format("%Y-%m-%d").to_string();
-            let indices = self.list_date(&date_str);
+            let indices = self.list_date(&date_str, project_filter);
             if !indices.is_empty() {
                 result.push((date_str, indices));
             }
@@ -83,11 +82,11 @@ impl TraceWriter {
         result
     }
 
-    fn read_index_from_dir(dir: &std::path::Path) -> Vec<TraceIndex> {
+    fn read_index_from_dir(dir: &std::path::Path, project_filter: Option<&str>) -> Vec<TraceIndex> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return vec![];
         };
-        let mut indices = Vec::new();
+        let mut indices_with_time = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -107,18 +106,34 @@ impl TraceWriter {
                 .first()
                 .map(|e| (e.event_type.to_string(), e.project.clone()))
                 .unwrap_or_default();
+            if let Some(filter) = project_filter
+                && project != filter
+            {
+                continue;
+            }
             let success = result.is_success();
             let trace_id = result.events.first().and_then(|e| e.trace_id.clone());
-            indices.push(TraceIndex {
-                event_id,
-                event_type,
-                project,
-                success,
-                total_duration_ms: result.total_duration_ms,
-                trace_id,
-            });
+            let occurred_at = result
+                .events
+                .first()
+                .map(|event| event.occurred_at.to_rfc3339())
+                .unwrap_or_default();
+            indices_with_time.push((
+                occurred_at,
+                TraceIndex {
+                    event_id,
+                    event_type,
+                    project,
+                    success,
+                    total_duration_ms: result.total_duration_ms,
+                    trace_id,
+                },
+            ));
         }
-        indices
+        indices_with_time.sort_by(|(left_time, left), (right_time, right)| {
+            right_time.cmp(left_time).then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        indices_with_time.into_iter().map(|(_, index)| index).collect()
     }
 }
 
@@ -185,7 +200,7 @@ mod tests {
         writer.write("evt_111", &result).expect("write");
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let indices = writer.list_date(&today);
+        let indices = writer.list_date(&today, None);
 
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0].event_id, "evt_111");
@@ -198,7 +213,7 @@ mod tests {
     fn list_date_returns_empty_for_missing_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = TraceWriter::new(dir.path().to_str().unwrap());
-        let indices = writer.list_date("1999-01-01");
+        let indices = writer.list_date("1999-01-01", None);
         assert!(indices.is_empty());
     }
 
@@ -210,7 +225,7 @@ mod tests {
 
         writer.write("evt_222", &result).expect("write");
 
-        let recent = writer.list_recent(7);
+        let recent = writer.list_recent(7, None);
 
         // Today should appear since we just wrote a trace.
         assert!(!recent.is_empty());

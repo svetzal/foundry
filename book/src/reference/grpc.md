@@ -615,6 +615,37 @@ store is malformed; `INTERNAL` when the campaign store is unreadable.
 renders the returned `CampaignDetail` directly, without re-reading
 `FOUNDRY_CAMPAIGNS_PATH`.
 
+### `History(HistoryRequest) → HistoryResponse`
+
+List durable trace history from the daemon-owned trace store.
+
+**Request:**
+
+| Field         | Type   | Description                                                                |
+| ------------- | ------ | -------------------------------------------------------------------------- |
+| `date`        | string | Exact day in `YYYY-MM-DD` format, or empty to request recent history       |
+| `project`     | string | Exact project filter, or empty for all projects                            |
+| `recent_days` | uint32 | Number of recent days to return when `date` is empty; online CLI uses `7`  |
+
+**Response:**
+
+| Field  | Type                | Description                                  |
+| ------ | ------------------- | -------------------------------------------- |
+| `days` | repeated HistoryDay | Matching days, newest day first              |
+
+Each `HistoryDay` carries a `date` plus `repeated HistoryTrace`. `HistoryTrace`
+contains `event_id`, `event_type`, `project`, `success`, `total_duration_ms`,
+and `trace_id`.
+
+Completed traces are persisted to disk under `~/.foundry/traces/YYYY-MM-DD/`
+and survive daemon restarts. The daemon reads that store directly when serving
+history, preserving durable retention semantics even after in-memory cache
+entries expire.
+
+**CLI:** `foundry history` routes through this RPC by default, renders the
+daemon response directly, and does not read or create a client-side
+`FOUNDRY_TRACES_DIR` unless `--offline` is explicit.
+
 ### `Trace(TraceRequest) → TraceResponse`
 
 Retrieve the trace of a completed event chain. Returns all events produced
@@ -637,6 +668,32 @@ during processing and a record of each block execution.
 Completed traces are persisted to disk under `~/.foundry/traces/YYYY-MM-DD/` and
 survive daemon restarts. The `Trace` RPC checks the in-memory store first (for
 recently completed chains) and falls back to disk for older traces.
+
+**CLI:** `foundry trace <event-id>` routes through this RPC by default. When no
+trace is found, the CLI prints `No trace found for <event-id> (expired or unknown).`
+
+### `Span(SpanRequest) → SpanResponse`
+
+Retrieve every event and block execution that belongs to one span.
+
+**Request:**
+
+| Field     | Type   | Description              |
+| --------- | ------ | ------------------------ |
+| `span_id` | string | Exact span ID to look up |
+
+**Response:**
+
+| Field              | Type                         | Description                                      |
+| ------------------ | ---------------------------- | ------------------------------------------------ |
+| `found`            | bool                         | Whether a span was found for the given span ID   |
+| `events`           | repeated TraceEvent          | Events whose `span_id` matches the requested span |
+| `block_executions` | repeated TraceBlockExecution | Blocks whose own span or parent span matches     |
+| `total_duration_ms`| uint64                       | Sum of returned block durations                  |
+
+`Span` is an in-memory lookup keyed by the daemon's span index. It is intended
+for live drill-down and status filtering rather than durable offline browsing.
+If the span is unknown, the response is `found = false` with empty collections.
 
 ## Messages
 

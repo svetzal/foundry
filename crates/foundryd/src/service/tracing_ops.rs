@@ -4,10 +4,11 @@ use tonic::{Request, Response};
 
 use foundry_sdk::event::Event;
 use foundry_sdk::throttle::Throttle;
-use foundry_sdk::trace::BlockExecution;
+use foundry_sdk::trace::{BlockExecution, TraceIndex};
 
 use crate::proto::{
-    SpanRequest, SpanResponse, TraceBlockExecution, TraceEvent, TraceRequest, TraceResponse,
+    HistoryDay, HistoryRequest, HistoryResponse, HistoryTrace, SpanRequest, SpanResponse,
+    TraceBlockExecution, TraceEvent, TraceRequest, TraceResponse,
 };
 use crate::trace_store::TraceStore;
 
@@ -43,6 +44,48 @@ pub(super) fn trace_block_from(b: &BlockExecution) -> TraceBlockExecution {
         span_id: b.span_id.clone().unwrap_or_default(),
         parent_span_id: b.parent_span_id.clone().unwrap_or_default(),
     }
+}
+
+fn history_trace_from(index: &TraceIndex) -> HistoryTrace {
+    HistoryTrace {
+        event_id: index.event_id.clone(),
+        event_type: index.event_type.clone(),
+        project: index.project.clone(),
+        success: index.success,
+        total_duration_ms: index.total_duration_ms,
+        trace_id: index.trace_id.clone().unwrap_or_default(),
+    }
+}
+
+pub(super) fn history_rpc(
+    trace_store: &Arc<TraceStore>,
+    request: Request<HistoryRequest>,
+) -> Response<HistoryResponse> {
+    let req = request.into_inner();
+    let project_filter = (!req.project.is_empty()).then_some(req.project.as_str());
+
+    let span = tracing::info_span!("history", date = %req.date, project = %req.project);
+    let _guard = span.enter();
+
+    let days = if req.date.is_empty() {
+        let recent_days = usize::try_from(req.recent_days).unwrap_or(7).max(1);
+        trace_store
+            .list_recent(recent_days, project_filter)
+            .into_iter()
+            .map(|(date, traces)| HistoryDay {
+                date,
+                traces: traces.iter().map(history_trace_from).collect(),
+            })
+            .collect()
+    } else {
+        let traces = trace_store.list_date(&req.date, project_filter);
+        vec![HistoryDay {
+            date: req.date,
+            traces: traces.iter().map(history_trace_from).collect(),
+        }]
+    };
+
+    Response::new(HistoryResponse { days })
 }
 
 pub(super) fn trace_rpc(
@@ -118,10 +161,10 @@ mod tests {
     use foundry_sdk::throttle::Throttle;
     use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
-    use crate::proto::{SpanRequest, TraceRequest};
+    use crate::proto::{HistoryRequest, SpanRequest, TraceRequest};
     use crate::trace_store::TraceStore;
 
-    use super::{span_rpc, trace_block_from, trace_event_from, trace_rpc};
+    use super::{history_rpc, span_rpc, trace_block_from, trace_event_from, trace_rpc};
 
     fn event_with_spans() -> Event {
         let mut e = Event::new(
@@ -199,6 +242,68 @@ mod tests {
         assert_eq!(proto.emitted_payload_jsons.len(), 2);
         let p0: serde_json::Value = serde_json::from_str(&proto.emitted_payload_jsons[0]).unwrap();
         assert_eq!(p0["x"], 1);
+    }
+
+    #[test]
+    fn history_rpc_returns_exact_date_entries_in_deterministic_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
+            tmp.path().to_str().expect("trace dir must be UTF-8"),
+        ));
+        let store =
+            Arc::new(TraceStore::with_trace_writer(Duration::from_secs(60), Arc::clone(&writer)));
+
+        let mut newer = event_with_spans();
+        newer.project = "alpha".to_string();
+        newer.occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-24T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&chrono::Utc);
+        let newer_id = newer.id.clone();
+        writer
+            .write(
+                &newer_id,
+                &ProcessResult {
+                    events: vec![newer],
+                    block_executions: vec![],
+                    total_duration_ms: 11,
+                },
+            )
+            .expect("write newer trace");
+
+        let mut older = event_with_spans();
+        older.project = "alpha".to_string();
+        older.occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-24T08:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&chrono::Utc);
+        let older_id = older.id.clone();
+        writer
+            .write(
+                &older_id,
+                &ProcessResult {
+                    events: vec![older],
+                    block_executions: vec![],
+                    total_duration_ms: 7,
+                },
+            )
+            .expect("write older trace");
+
+        let response = history_rpc(
+            &store,
+            Request::new(HistoryRequest {
+                date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                project: "alpha".to_string(),
+                recent_days: 7,
+            }),
+        )
+        .into_inner();
+
+        assert_eq!(response.days.len(), 1);
+        let traces = &response.days[0].traces;
+        let event_ids: Vec<_> = traces.iter().map(|trace| trace.event_id.as_str()).collect();
+        assert_eq!(event_ids, vec![newer_id.as_str(), older_id.as_str()]);
+        assert_eq!(traces[0].project, "alpha");
+        assert_eq!(traces[0].total_duration_ms, 11);
+        assert_eq!(traces[1].total_duration_ms, 7);
     }
 
     #[test]

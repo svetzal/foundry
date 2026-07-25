@@ -89,7 +89,17 @@ foundry history 2026-03-22
 
 # Filter by project
 foundry history --project my-tool
+
+# Explicit local-file diagnostics when the daemon is stopped
+foundry --offline history 2026-03-22 --project my-tool
 ```
 
-You can retrieve the full trace for any on-disk event with `foundry trace`,
-even if the daemon has been restarted since the event was processed.
+By default `foundry history` is daemon-authoritative: it asks `foundryd` for
+the durable trace store and does not inspect the client-side
+`FOUNDRY_TRACES_DIR`. Use `--offline` deliberately when you want direct file
+diagnostics.
+
+You can retrieve the full trace for any persisted event with `foundry trace`,
+even if the daemon has been restarted since the event was processed. If the
+trace is missing, the CLI reports `No trace found for <event-id> (expired or
+unknown).`

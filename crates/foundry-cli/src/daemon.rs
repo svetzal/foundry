@@ -6,6 +6,8 @@
 //!   [`connect_daemon_required`] and fail cleanly when the daemon is
 //!   unreachable. The registry, sentinel, and campaign online paths are in
 //!   this category.
+//! - Commands whose only online source of truth is the daemon but that have no
+//!   offline recovery path use [`connect_daemon_online`].
 //!
 //! This module is the single home for connection and error-shaping logic so
 //! command modules do not duplicate it.
@@ -27,6 +29,13 @@ pub async fn connect_daemon_required(
             "foundryd is not reachable at {addr}; start the daemon or rerun with `{offline_hint}`"
         )
     })
+}
+
+/// Connect to the daemon for commands that have no offline recovery mode.
+pub async fn connect_daemon_online(addr: &str) -> Result<FoundryClient<tonic::transport::Channel>> {
+    FoundryClient::connect(addr.to_string())
+        .await
+        .map_err(|_| anyhow::anyhow!("foundryd is not reachable at {addr}; start the daemon"))
 }
 
 /// Convert a [`tonic::Status`] to an [`anyhow::Error`] with a consistent
@@ -60,6 +69,18 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "foundryd is not reachable at http://127.0.0.1:0; start the daemon or rerun with `foundry campaign decide c --offline`"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_daemon_online_returns_stable_live_only_error() {
+        let err = connect_daemon_online("http://127.0.0.1:0")
+            .await
+            .expect_err("unreachable daemon must error");
+
+        assert_eq!(
+            err.to_string(),
+            "foundryd is not reachable at http://127.0.0.1:0; start the daemon"
         );
     }
 

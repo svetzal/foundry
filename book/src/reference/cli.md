@@ -52,14 +52,18 @@ Total: 2ms (blocks: 1ms)
 Show status of active workflows. Queries the daemon for workflows that are
 currently being processed in the background. The daemon tracks these via an
 in-memory `WorkflowTracker` that is populated when each `Emit` request spawns a
-background task and cleared on completion.
+background task and cleared on completion. This is a live view only; completed
+work moves to durable trace history and no longer appears here.
 
 ```bash
-foundry status [workflow_id]
+foundry status [workflow_id] [--span <span-id>]
 ```
 
 Without an argument, shows all active workflows. With a workflow ID, shows
-details for that specific workflow.
+details for that specific workflow. `--span` first resolves the span through
+the daemon's `Span` RPC and then keeps only active workflows in that span's
+trace. If the daemon is unreachable, the command fails; there is no offline
+status cache or trace-file fallback.
 
 **Output example:**
 
@@ -313,20 +317,24 @@ Optional gate failures are reported but do not affect the exit code.
 
 ## `foundry trace`
 
-View the trace of a completed event chain.
+View one completed event chain from the daemon-owned trace store.
 
 ```bash
-foundry trace <event_id> [--verbose]
+foundry trace <event_id> [--verbose] [--flat]
 ```
 
 | Argument    | Required | Description                                                                         |
 | ----------- | -------- | ----------------------------------------------------------------------------------- |
 | `event_id`  | Yes      | Root event ID returned by `foundry emit` (positional)                               |
 | `--verbose` | No       | Show trigger payloads, emitted payloads, raw shell output, and audit artifact paths |
+| `--flat`    | No       | Force the legacy chronological event tree instead of the default span tree           |
 
-Displays the full event propagation tree with block execution results. Traces
-are stored on disk indefinitely under `~/.foundry/traces/YYYY-MM-DD/` and
-survive daemon restarts.
+By default this renders the daemon's span tree view. `--flat` forces the
+legacy chronological event tree. The CLI asks the daemon for the trace; it does
+not inspect `FOUNDRY_TRACES_DIR` directly unless you explicitly choose offline
+history browsing. Traces are persisted under `~/.foundry/traces/YYYY-MM-DD/`,
+survive daemon restarts, and are available through the daemon even after the
+in-memory cache has expired.
 
 **Output (default):**
 
@@ -361,20 +369,28 @@ No trace found for evt_unknown (expired or unknown).
 
 ## `foundry history`
 
-Browse completed traces stored on disk.
+Browse durable completed traces from the daemon-owned trace store.
 
 ```bash
-foundry history [<date>] [--project <project>]
+foundry history [<date>] [--project <project>] [--offline]
 ```
 
 | Argument    | Required | Description                                               |
 | ----------- | -------- | --------------------------------------------------------- |
 | `date`      | No       | Date in `YYYY-MM-DD` format; omit to show the last 7 days |
 | `--project` | No       | Filter results by project name                            |
+| `--offline` | No       | Explicitly read local trace files instead of the daemon   |
 
-Traces are read from `~/.foundry/traces/` (or `FOUNDRY_TRACES_DIR`). Each row
-shows the event ID, success status, duration, event type, and project. Dates
-with no traces are omitted.
+Without `--offline`, `history` is daemon-authoritative: it calls the daemon's
+typed `History` RPC, renders daemon-owned results directly, and never reads or
+creates a client-side `FOUNDRY_TRACES_DIR`. If the daemon is unreachable, the
+command fails and suggests rerunning with `--offline`. Use `--offline`
+deliberately when you want direct file diagnostics against
+`~/.foundry/traces/` (or `FOUNDRY_TRACES_DIR`).
+
+Each row shows the event ID, trace ID, success status, duration, event type,
+and project. Dates with no traces are omitted. Within a day, rows are rendered
+in deterministic newest-first order.
 
 **Output example:**
 

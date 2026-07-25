@@ -5,9 +5,10 @@ use anyhow::Result;
 use foundry_sdk::trace::{ProcessResult, TraceIndex};
 
 use crate::commands::parse_traceparent_from_env;
+use crate::daemon::{connect_daemon_online, connect_daemon_required};
 use crate::proto::{
-    EmitRequest, SpanRequest, StatusRequest, TraceRequest, TraceResponse, WatchRequest,
-    WorkflowStatus, foundry_client::FoundryClient,
+    EmitRequest, HistoryRequest, HistoryTrace, SpanRequest, StatusRequest, TraceRequest,
+    TraceResponse, WatchRequest, WorkflowStatus, foundry_client::FoundryClient,
 };
 use crate::render;
 
@@ -59,7 +60,7 @@ pub async fn emit(
 }
 
 pub async fn status(addr: &str, workflow_id: Option<String>, span: Option<String>) -> Result<()> {
-    let mut client = FoundryClient::connect(addr.to_string()).await?;
+    let mut client = connect_daemon_online(addr).await?;
 
     // If `--span` is set, resolve it to a trace_id first so we can filter the
     // Status response.
@@ -109,7 +110,7 @@ fn filter_workflows_by_trace(
 }
 
 pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
-    let mut client = FoundryClient::connect(addr.to_string()).await?;
+    let mut client = connect_daemon_online(addr).await?;
 
     let request = WatchRequest {
         project: project.unwrap_or_default(),
@@ -125,7 +126,7 @@ pub async fn watch(addr: &str, project: Option<String>) -> Result<()> {
 }
 
 pub async fn trace(addr: &str, event_id: &str, verbose: bool, flat: bool) -> Result<()> {
-    let mut client = FoundryClient::connect(addr.to_string()).await?;
+    let mut client = connect_daemon_online(addr).await?;
 
     let request = TraceRequest {
         event_id: event_id.to_string(),
@@ -178,7 +179,7 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
     };
-    let mut indices = Vec::new();
+    let mut indices_with_time = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -203,52 +204,124 @@ fn read_index_from_dir(dir: &Path, project_filter: Option<&str>) -> Vec<TraceInd
         }
         let success = result.is_success();
         let trace_id = result.events.first().and_then(|e| e.trace_id.clone());
-        indices.push(TraceIndex {
-            event_id,
-            event_type,
-            project,
-            success,
-            total_duration_ms: result.total_duration_ms,
-            trace_id,
-        });
+        let occurred_at = result
+            .events
+            .first()
+            .map(|event| event.occurred_at.to_rfc3339())
+            .unwrap_or_default();
+        indices_with_time.push((
+            occurred_at,
+            TraceIndex {
+                event_id,
+                event_type,
+                project,
+                success,
+                total_duration_ms: result.total_duration_ms,
+                trace_id,
+            },
+        ));
     }
-    indices
+    indices_with_time.sort_by(|(left_time, left), (right_time, right)| {
+        right_time.cmp(left_time).then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    indices_with_time.into_iter().map(|(_, index)| index).collect()
 }
 
-// The Result return type is consistent with the other command functions even
-// though this function's current body never fails.
-#[allow(clippy::unnecessary_wraps)]
-pub fn history(date: Option<&str>, project: Option<&str>) -> Result<()> {
+pub async fn history(
+    addr: &str,
+    offline: bool,
+    date: Option<&str>,
+    project: Option<&str>,
+) -> Result<()> {
+    if offline {
+        history_offline(date, project);
+        return Ok(());
+    }
+
+    let mut client = connect_daemon_required(addr, &history_offline_hint(date, project)).await?;
+    let response = client
+        .history(HistoryRequest {
+            date: date.unwrap_or_default().to_string(),
+            project: project.unwrap_or_default().to_string(),
+            recent_days: 7,
+        })
+        .await?
+        .into_inner();
+
+    render_history_days(
+        date,
+        response.days.into_iter().map(|day| {
+            (day.date, day.traces.into_iter().map(trace_index_from_proto).collect::<Vec<_>>())
+        }),
+    );
+    Ok(())
+}
+
+fn history_offline(date: Option<&str>, project: Option<&str>) {
     let base_dir = foundry_sdk::paths::traces_dir();
 
     if let Some(date_str) = date {
         let dir = base_dir.join(date_str);
         let indices = read_index_from_dir(&dir, project);
-        if indices.is_empty() {
-            println!("No traces found for {date_str}.");
-        } else {
-            print!("{}", render::event::trace_table(date_str, &indices));
-        }
+        render_history_days(Some(date_str), std::iter::once((date_str.to_string(), indices)));
     } else {
-        // List recent 7 days
         let today = chrono::Utc::now().date_naive();
-        let mut found_any = false;
+        let mut days = Vec::new();
         for offset in 0..7_i64 {
             let day = today - chrono::Duration::days(offset);
             let date_str = day.format("%Y-%m-%d").to_string();
             let dir = base_dir.join(&date_str);
             let indices = read_index_from_dir(&dir, project);
-            if !indices.is_empty() {
-                print!("{}", render::event::trace_table(&date_str, &indices));
-                found_any = true;
-            }
+            days.push((date_str, indices));
         }
-        if !found_any {
+        render_history_days(None, days);
+    }
+}
+
+fn render_history_days<I>(requested_date: Option<&str>, days: I)
+where
+    I: IntoIterator<Item = (String, Vec<TraceIndex>)>,
+{
+    let mut found_any = false;
+    for (date, indices) in days {
+        if indices.is_empty() {
+            continue;
+        }
+        print!("{}", render::event::trace_table(&date, &indices));
+        found_any = true;
+    }
+
+    if !found_any {
+        if let Some(date) = requested_date {
+            println!("No traces found for {date}.");
+        } else {
             println!("No traces found in the last 7 days.");
         }
     }
+}
 
-    Ok(())
+fn history_offline_hint(date: Option<&str>, project: Option<&str>) -> String {
+    let mut command = String::from("foundry --offline history");
+    if let Some(date) = date {
+        command.push(' ');
+        command.push_str(date);
+    }
+    if let Some(project) = project {
+        command.push_str(" --project ");
+        command.push_str(project);
+    }
+    command
+}
+
+fn trace_index_from_proto(trace: HistoryTrace) -> TraceIndex {
+    TraceIndex {
+        event_id: trace.event_id,
+        event_type: trace.event_type,
+        project: trace.project,
+        success: trace.success,
+        total_duration_ms: trace.total_duration_ms,
+        trace_id: (!trace.trace_id.is_empty()).then_some(trace.trace_id),
+    }
 }
 
 #[cfg(test)]

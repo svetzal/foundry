@@ -114,7 +114,7 @@ enum Commands {
         all: bool,
     },
 
-    /// Show trace history from disk
+    /// Show durable trace history from the daemon or explicit offline trace files
     History {
         /// Date to show (YYYY-MM-DD); omit for recent 7 days
         date: Option<String>,
@@ -639,7 +639,8 @@ async fn main() -> Result<()> {
             workflow_commands::release(&cli.addr, &project, bump).await
         }
         Commands::History { date, project } => {
-            event_commands::history(date.as_deref(), project.as_deref())
+            event_commands::history(&cli.addr, cli.offline, date.as_deref(), project.as_deref())
+                .await
         }
         Commands::Init {
             local,

@@ -14,14 +14,15 @@ use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
     CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
     DecideCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse,
-    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
-    RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
-    RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
-    RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
-    SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse,
-    SentinelListRequest, SentinelListResponse, SentinelShowRequest, SentinelShowResponse,
-    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse,
-    WatchRequest, WatchResponse, foundry_server::Foundry,
+    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
+    PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse,
+    RegistryEditRequest, RegistryEditResponse, RegistryListRequest, RegistryListResponse,
+    RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest, RegistryShowResponse,
+    ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse,
+    SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest, SentinelListResponse,
+    SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse, StatusRequest,
+    StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
+    foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -126,6 +127,13 @@ impl Foundry for FoundryService {
         request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
         Ok(eventing_ops::status_rpc(&self.ctx.workflow_tracker, request))
+    }
+
+    async fn history(
+        &self,
+        request: Request<HistoryRequest>,
+    ) -> Result<Response<HistoryResponse>, Status> {
+        Ok(tracing_ops::history_rpc(&self.ctx.trace_store, request))
     }
 
     type WatchStream =

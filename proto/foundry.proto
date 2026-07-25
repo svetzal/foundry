@@ -67,6 +67,35 @@ message StatusResponse {
     repeated WorkflowStatus workflows = 1;
 }
 
+// Request durable trace history from the daemon-owned trace store.
+// Online CLI callers render this response directly and do not read, create,
+// or mutate a client-side trace directory; if the client-side path is absent,
+// the online path leaves it absent. Pass `date` for one exact day or leave it
+// empty to request the most recent `recent_days` days (newest first).
+message HistoryRequest {
+    string date = 1;
+    string project = 2;
+    uint32 recent_days = 3;
+}
+
+message HistoryTrace {
+    string event_id = 1;
+    string event_type = 2;
+    string project = 3;
+    bool success = 4;
+    uint64 total_duration_ms = 5;
+    string trace_id = 6;
+}
+
+message HistoryDay {
+    string date = 1;
+    repeated HistoryTrace traces = 2;
+}
+
+message HistoryResponse {
+    repeated HistoryDay days = 1;
+}
+
 // A block execution record within a trace.
 message TraceBlockExecution {
     string block_name = 1;
@@ -485,6 +514,9 @@ service Foundry {
 
     // Get status of active workflows.
     rpc Status(StatusRequest) returns (StatusResponse);
+
+    // List durable trace history from the daemon-owned trace store.
+    rpc History(HistoryRequest) returns (HistoryResponse);
 
     // Stream events in real-time as they occur during engine processing.
     rpc Watch(WatchRequest) returns (stream WatchResponse);

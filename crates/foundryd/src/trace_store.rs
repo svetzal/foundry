@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use foundry_sdk::event::Event;
-use foundry_sdk::trace::{BlockExecution, ProcessResult};
+use foundry_sdk::trace::{BlockExecution, ProcessResult, TraceIndex};
 
 use foundry_blocks::trace_writer::TraceWriter;
 
@@ -179,6 +179,27 @@ impl TraceStore {
             blocks,
             total_duration_ms,
         })
+    }
+
+    /// List durable traces stored for one exact date, optionally filtered by
+    /// project. Returns an empty vector when no disk-backed trace writer is
+    /// configured or when the date directory has no matching traces.
+    pub fn list_date(&self, date: &str, project_filter: Option<&str>) -> Vec<TraceIndex> {
+        self.trace_writer
+            .as_ref()
+            .map_or_else(Vec::new, |writer| writer.list_date(date, project_filter))
+    }
+
+    /// List durable traces for the most recent `days` calendar days (today
+    /// inclusive), newest day first, optionally filtered by project.
+    pub fn list_recent(
+        &self,
+        days: usize,
+        project_filter: Option<&str>,
+    ) -> Vec<(String, Vec<TraceIndex>)> {
+        self.trace_writer
+            .as_ref()
+            .map_or_else(Vec::new, |writer| writer.list_recent(days, project_filter))
     }
 
     /// Record `(span_id, trace_id)` index entries for every event and block
