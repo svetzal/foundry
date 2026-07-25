@@ -65,7 +65,7 @@ async fn foundryd_serves_status_from_configured_non_default_listen_addr()
                 return Ok(());
             }
             Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(100)).await
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => {
                 return Err(io::Error::other(format!(
