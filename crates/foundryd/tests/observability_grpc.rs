@@ -35,37 +35,61 @@ fn parse_utc(timestamp: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-fn make_event(
-    event_id: &str,
+struct EventFixture<'a> {
+    id: &'a str,
     event_type: EventType,
-    project: &str,
-    occurred_at: &str,
-    trace_id: &str,
-    span_id: &str,
-    parent_span_id: Option<&str>,
-) -> Event {
-    let mut event =
-        Event::new(event_type, project.to_string(), Throttle::Full, serde_json::json!({}));
-    let occurred_at = parse_utc(occurred_at);
-    event.id = event_id.to_string();
+    project: &'a str,
+    occurred_at: &'a str,
+    trace_id: &'a str,
+    span_id: &'a str,
+    parent_span_id: Option<&'a str>,
+}
+
+fn make_event(fixture: EventFixture<'_>) -> Event {
+    let mut event = Event::new(
+        fixture.event_type,
+        fixture.project.to_string(),
+        Throttle::Full,
+        serde_json::json!({}),
+    );
+    let occurred_at = parse_utc(fixture.occurred_at);
+    event.id = fixture.id.to_string();
     event.occurred_at = occurred_at;
     event.recorded_at = occurred_at;
-    event.trace_id = Some(trace_id.to_string());
-    event.span_id = Some(span_id.to_string());
-    event.parent_span_id = parent_span_id.map(str::to_string);
+    event.trace_id = Some(fixture.trace_id.to_string());
+    event.span_id = Some(fixture.span_id.to_string());
+    event.parent_span_id = fixture.parent_span_id.map(str::to_string);
     event
 }
 
-fn make_block(
-    block_name: &str,
-    trigger_event_id: &str,
-    emitted_event_ids: &[&str],
+struct SpanFixture<'a> {
+    id: &'a str,
+    parent_id: &'a str,
+}
+
+struct BlockFixture<'a> {
+    block_name: &'a str,
+    trigger_event_id: &'a str,
+    emitted_event_ids: &'a [&'a str],
     success: bool,
     duration_ms: u64,
-    summary: &str,
-    span_id: &str,
-    parent_span_id: &str,
-) -> BlockExecution {
+    summary: &'a str,
+    span: SpanFixture<'a>,
+}
+
+fn make_block(fixture: BlockFixture<'_>) -> BlockExecution {
+    let BlockFixture {
+        block_name,
+        trigger_event_id,
+        emitted_event_ids,
+        success,
+        duration_ms,
+        summary,
+        span,
+    } = fixture;
+
+    let SpanFixture { id, parent_id } = span;
+
     BlockExecution {
         block_name: block_name.to_string(),
         trigger_event_id: trigger_event_id.to_string(),
@@ -78,8 +102,8 @@ fn make_block(
         trigger_payload: serde_json::json!({"from":"test"}),
         emitted_payloads: vec![serde_json::json!({"success": success})],
         audit_artifacts: vec!["/tmp/audit.txt".to_string()],
-        span_id: Some(span_id.to_string()),
-        parent_span_id: Some(parent_span_id.to_string()),
+        span_id: Some(id.to_string()),
+        parent_span_id: Some(parent_id.to_string()),
     }
 }
 
@@ -87,34 +111,36 @@ fn alpha_trace() -> ProcessResult {
     let trace_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let workflow_span = "1111111111111111";
     let block_span = "2222222222222222";
-    let root = make_event(
-        "evt_alpha_root",
-        EventType::ProjectRunStarted,
-        "alpha",
-        "2026-07-24T12:00:00Z",
+    let root = make_event(EventFixture {
+        id: "evt_alpha_root",
+        event_type: EventType::ProjectRunStarted,
+        project: "alpha",
+        occurred_at: "2026-07-24T12:00:00Z",
         trace_id,
-        workflow_span,
-        None,
-    );
-    let completed = make_event(
-        "evt_alpha_completed",
-        EventType::ProjectRunCompleted,
-        "alpha",
-        "2026-07-24T12:00:05Z",
+        span_id: workflow_span,
+        parent_span_id: None,
+    });
+    let completed = make_event(EventFixture {
+        id: "evt_alpha_completed",
+        event_type: EventType::ProjectRunCompleted,
+        project: "alpha",
+        occurred_at: "2026-07-24T12:00:05Z",
         trace_id,
-        workflow_span,
-        None,
-    );
-    let block = make_block(
-        "RunAlpha",
-        "evt_alpha_root",
-        &["evt_alpha_completed"],
-        true,
-        53,
-        "completed alpha",
-        block_span,
-        workflow_span,
-    );
+        span_id: workflow_span,
+        parent_span_id: None,
+    });
+    let block = make_block(BlockFixture {
+        block_name: "RunAlpha",
+        trigger_event_id: "evt_alpha_root",
+        emitted_event_ids: &["evt_alpha_completed"],
+        success: true,
+        duration_ms: 53,
+        summary: "completed alpha",
+        span: SpanFixture {
+            id: block_span,
+            parent_id: workflow_span,
+        },
+    });
     ProcessResult {
         events: vec![root, completed],
         block_executions: vec![block],
@@ -123,53 +149,57 @@ fn alpha_trace() -> ProcessResult {
 }
 
 fn alpha_failed_trace() -> ProcessResult {
-    let root = make_event(
-        "evt_alpha_failed",
-        EventType::ProjectRunStarted,
-        "alpha",
-        "2026-07-24T09:00:00Z",
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "3333333333333333",
-        None,
-    );
+    let root = make_event(EventFixture {
+        id: "evt_alpha_failed",
+        event_type: EventType::ProjectRunStarted,
+        project: "alpha",
+        occurred_at: "2026-07-24T09:00:00Z",
+        trace_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        span_id: "3333333333333333",
+        parent_span_id: None,
+    });
     ProcessResult {
         events: vec![root],
-        block_executions: vec![make_block(
-            "RunAlphaFailed",
-            "evt_alpha_failed",
-            &[],
-            false,
-            19,
-            "failed alpha",
-            "4444444444444444",
-            "3333333333333333",
-        )],
+        block_executions: vec![make_block(BlockFixture {
+            block_name: "RunAlphaFailed",
+            trigger_event_id: "evt_alpha_failed",
+            emitted_event_ids: &[],
+            success: false,
+            duration_ms: 19,
+            summary: "failed alpha",
+            span: SpanFixture {
+                id: "4444444444444444",
+                parent_id: "3333333333333333",
+            },
+        })],
         total_duration_ms: 19,
     }
 }
 
 fn beta_trace() -> ProcessResult {
-    let root = make_event(
-        "evt_beta_root",
-        EventType::ProjectRunStarted,
-        "beta",
-        "2026-07-24T10:30:00Z",
-        "cccccccccccccccccccccccccccccccc",
-        "5555555555555555",
-        None,
-    );
+    let root = make_event(EventFixture {
+        id: "evt_beta_root",
+        event_type: EventType::ProjectRunStarted,
+        project: "beta",
+        occurred_at: "2026-07-24T10:30:00Z",
+        trace_id: "cccccccccccccccccccccccccccccccc",
+        span_id: "5555555555555555",
+        parent_span_id: None,
+    });
     ProcessResult {
         events: vec![root],
-        block_executions: vec![make_block(
-            "RunBeta",
-            "evt_beta_root",
-            &[],
-            true,
-            31,
-            "completed beta",
-            "6666666666666666",
-            "5555555555555555",
-        )],
+        block_executions: vec![make_block(BlockFixture {
+            block_name: "RunBeta",
+            trigger_event_id: "evt_beta_root",
+            emitted_event_ids: &[],
+            success: true,
+            duration_ms: 31,
+            summary: "completed beta",
+            span: SpanFixture {
+                id: "6666666666666666",
+                parent_id: "5555555555555555",
+            },
+        })],
         total_duration_ms: 31,
     }
 }
