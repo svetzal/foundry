@@ -1057,7 +1057,7 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     // status off `Cancelled` — `Done` in particular would record the abandoned
     // campaign as completed, which is the false evidence claim the separate
     // status exists to prevent.
-    if matches!(campaign.status, CampaignStatus::Paused | CampaignStatus::Cancelled) {
+    if campaign.status.halts_formation() {
         let status = campaign.status;
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;

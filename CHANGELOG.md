@@ -7,6 +7,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `foundry campaign complete <name> --offline` on a `Cancelled` campaign no
+  longer silently flips it to `Completed`. Cancellation is terminal and
+  distinct from completion; recording a cancelled campaign as complete wrote
+  a false evidence claim into the store. The campaign status transition rules
+  (`pause`/`resume`/`decide`/`complete`/`cancel`/`advance`) now live in one
+  place, `foundry_sdk::campaign::transition`, and both the daemon's gRPC
+  handlers and the CLI's `--offline` recovery path delegate to it — see
+  `book/src/guide/campaigns.md`.
+
+### Changed
+
+- `foundry campaign resume --offline` and `foundry campaign decide --offline`
+  error wording now matches the daemon's canonical messages byte-for-byte
+  (e.g. "pass add_cycles > 0 to authorize more work" instead of "pass
+  --add-cycles N to authorize more work", and "requires Paused or Escalated
+  status" instead of "resume applies only to paused or escalated campaigns").
+  The legality of a transition no longer depends on which door — online or
+  `--offline` — the caller walked through.
+
 ## [0.35.0] - 2026-07-25
 
 ### Added

@@ -5,7 +5,7 @@ use chrono::Utc;
 use tonic::{Request, Response, Status};
 
 use foundry_sdk::campaign::{
-    CampaignStatus, CampaignStore, CampaignStoreGuard, DoneEvidence, OwnerDecision,
+    CampaignStore, CampaignStoreGuard, DoneEvidence, OwnerDecision, Transition, TransitionError,
 };
 use foundry_sdk::error::StoreError;
 use foundry_sdk::event::{Event, EventType};
@@ -30,7 +30,7 @@ fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaig
         name: campaign.name.clone(),
         project: campaign.project.clone(),
         mission: campaign.mission.clone(),
-        status: status_str(campaign.status),
+        status: campaign.status.to_string(),
         cycles_completed: campaign.cycles_completed,
         cycles_landed: campaign.cycles_landed,
         max_cycles: campaign.budget.max_cycles,
@@ -72,16 +72,12 @@ fn lock_store_exclusive(path: &Path) -> Result<CampaignStoreGuard, Status> {
     CampaignStore::lock_exclusive(path).map_err(map_store_error)
 }
 
-fn status_str(status: CampaignStatus) -> String {
-    match status {
-        CampaignStatus::Staged => "staged",
-        CampaignStatus::Active => "active",
-        CampaignStatus::Paused => "paused",
-        CampaignStatus::Escalated => "escalated",
-        CampaignStatus::Completed => "completed",
-        CampaignStatus::Cancelled => "cancelled",
-    }
-    .to_string()
+/// Map a [`TransitionError`] to its gRPC status.
+///
+/// Every variant here is a rule violation the caller could have avoided by
+/// checking state first, which is exactly what `FAILED_PRECONDITION` means.
+fn map_transition_error(error: &TransitionError) -> Status {
+    Status::failed_precondition(error.to_string())
 }
 
 fn done_evidence_to_proto(evidence: &DoneEvidence) -> ProtoDoneEvidence {
@@ -120,7 +116,7 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         name: campaign.name.clone(),
         project: campaign.project.clone(),
         mission: campaign.mission.clone(),
-        status: status_str(campaign.status),
+        status: campaign.status.to_string(),
         cycles_completed: campaign.cycles_completed,
         cycles_landed: campaign.cycles_landed,
         max_cycles: campaign.budget.max_cycles,
@@ -133,10 +129,6 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         escalation: campaign.escalation.clone(),
         owner_decisions: campaign.owner_decisions.iter().map(owner_decision_to_proto).collect(),
     }
-}
-
-fn invalid_state(name: &str, detail: &str) -> Status {
-    Status::failed_precondition(format!("campaign '{name}' {detail}"))
 }
 
 fn invalid_argument(message: impl Into<String>) -> Status {
@@ -298,8 +290,7 @@ pub(super) fn pause(
         .store
         .find_mut(&name)
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
-    campaign.status = CampaignStatus::Paused;
-    // pending_run_result is intentionally left untouched.
+    campaign.pause();
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
     Ok(Response::new(PauseCampaignResponse {
@@ -336,32 +327,7 @@ pub(super) fn resume(
         .find_mut(&name)
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-    if campaign.authorized_by.is_none() {
-        return Err(Status::failed_precondition(format!(
-            "campaign '{name}' has not been authorized; resume requires an authorized_by owner"
-        )));
-    }
-    if campaign.status != CampaignStatus::Paused && campaign.status != CampaignStatus::Escalated {
-        return Err(Status::failed_precondition(format!(
-            "campaign '{name}' is '{}'; resume requires Paused or Escalated status",
-            campaign.status
-        )));
-    }
-    if add_cycles == 0 && campaign.cycles_completed >= campaign.budget.max_cycles {
-        return Err(Status::failed_precondition(format!(
-            "campaign '{name}' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
-        )));
-    }
-    if add_cycles > 0 {
-        campaign.budget.max_cycles =
-            campaign.budget.max_cycles.checked_add(add_cycles).ok_or_else(|| {
-                Status::failed_precondition(format!(
-                    "add_cycles ({add_cycles}) would overflow max_cycles for campaign '{name}'"
-                ))
-            })?;
-    }
-    campaign.status = CampaignStatus::Active;
-    // pending_run_result is intentionally left untouched.
+    campaign.resume(add_cycles).map_err(|e| map_transition_error(&e))?;
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
     Ok(Response::new(ResumeCampaignResponse {
@@ -387,22 +353,9 @@ pub(super) fn decide(
         .find_mut(&name)
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
-        invalid_state(&name, "has not been authorized; decide requires authorized_by")
-    })?;
-    if campaign.status != CampaignStatus::Escalated {
-        return Err(invalid_state(
-            &name,
-            &format!("is '{}'; decide requires Escalated status", campaign.status),
-        ));
-    }
-
-    campaign.owner_decisions.push(OwnerDecision {
-        decision,
-        authorized_by,
-        decided_at: Utc::now(),
-    });
-    campaign.status = CampaignStatus::Active;
+    campaign
+        .record_owner_decision(decision, Utc::now())
+        .map_err(|e| map_transition_error(&e))?;
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
     Ok(Response::new(DecideCampaignResponse {
@@ -432,29 +385,13 @@ pub(super) fn complete(
             .store
             .find_mut(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
-        let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
-            invalid_state(&name, "has not been authorized; complete requires authorized_by")
-        })?;
-
-        if campaign.status == CampaignStatus::Completed {
+        if campaign.complete(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
+            == Transition::AlreadySettled
+        {
             return Ok(Response::new(CompleteCampaignResponse {
                 campaign: Some(campaign_to_detail(campaign)),
             }));
         }
-        if campaign.status == CampaignStatus::Cancelled {
-            return Err(invalid_state(
-                &name,
-                "was cancelled; a cancelled campaign cannot be recorded as complete",
-            ));
-        }
-
-        campaign.owner_decisions.push(OwnerDecision {
-            decision: format!("Completed externally: {reason}"),
-            authorized_by,
-            decided_at: Utc::now(),
-        });
-        campaign.status = CampaignStatus::Completed;
-        campaign.pending_run_result = None;
         let detail = campaign_to_detail(campaign);
         let payload = Event::serialize_payload(&CampaignTerminalPayload {
             campaign: campaign.name.clone(),
@@ -521,12 +458,7 @@ pub(super) async fn cancel(
         let campaign = store
             .find(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
-        if campaign.status == CampaignStatus::Completed {
-            return Err(invalid_state(
-                &name,
-                "is already completed; there is nothing in flight to cancel",
-            ));
-        }
+        let _ = campaign.check_cancellable().map_err(|e| map_transition_error(&e))?;
     }
 
     let aborted_event_id = if req.terminate_now {
@@ -547,34 +479,14 @@ pub(super) async fn cancel(
             .find_mut(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-        if campaign.status == CampaignStatus::Cancelled {
+        if campaign.cancel(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
+            == Transition::AlreadySettled
+        {
             return Ok(Response::new(CancelCampaignResponse {
                 campaign: Some(campaign_to_detail(campaign)),
                 event_id: String::new(),
             }));
         }
-        if campaign.status == CampaignStatus::Completed {
-            return Err(invalid_state(
-                &name,
-                "is already completed; there is nothing in flight to cancel",
-            ));
-        }
-
-        // Unlike `complete`, cancellation does not require an owner. Refusing
-        // to stop an unauthorized campaign would strand it: it can never be
-        // advanced to completion either, so there would be no way out of the
-        // state at all. The reason still reaches the event and the audit trail
-        // regardless; only the owner-decision record needs an owner to attach
-        // itself to.
-        if let Some(authorized_by) = campaign.authorized_by.clone() {
-            campaign.owner_decisions.push(OwnerDecision {
-                decision: format!("Cancelled externally: {reason}"),
-                authorized_by,
-                decided_at: Utc::now(),
-            });
-        }
-        campaign.status = CampaignStatus::Cancelled;
-        campaign.pending_run_result = None;
         let detail = campaign_to_detail(campaign);
 
         let payload = Event::serialize_payload(&CampaignCancelledPayload {
@@ -635,14 +547,7 @@ pub(super) fn advance(
             .find(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-        match campaign.status {
-            CampaignStatus::Active | CampaignStatus::Staged => {}
-            status => {
-                return Err(Status::failed_precondition(format!(
-                    "campaign '{name}' is '{status}'; advance requires Active or Staged status"
-                )));
-            }
-        }
+        campaign.check_advanceable().map_err(|e| map_transition_error(&e))?;
 
         (campaign_to_detail(campaign), campaign.project.clone())
         // guard drops here, releasing the exclusive lock before the event is emitted.
@@ -703,7 +608,9 @@ pub(super) fn list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_sdk::campaign::{Campaign, CampaignBudget, DoneEvidence, OwnerDecision};
+    use foundry_sdk::campaign::{
+        Campaign, CampaignBudget, CampaignStatus, DoneEvidence, OwnerDecision,
+    };
 
     fn sample_campaign(name: &str, project: &str) -> Campaign {
         Campaign {

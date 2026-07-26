@@ -241,6 +241,36 @@ reviews the repository and context artifacts, then makes exactly one decision:
 | `completed` | Evidence or owner authorization closed the mission     | None                                   |
 | `cancelled` | An owner abandoned the mission before its evidence     | None                                   |
 
+### The status transition table
+
+Every rule governing which control is legal from which status lives in exactly
+one place: `foundry_sdk::campaign::transition`. The daemon's gRPC handlers, the
+CLI's `--offline` recovery path, and the `AdvanceCampaign` formation block all
+delegate to the same `Campaign` methods (`pause`, `resume`,
+`record_owner_decision`, `complete`, `cancel`, `check_advanceable`) rather than
+re-deriving the rules independently — `--offline` differs from the online path
+only in transport and event emission, never in legality. The table below is
+generated from that module's exhaustive state-machine test and is the
+authoritative specification:
+
+| Status      | `pause`   | `resume`                  | `decide`                | `complete`                  | `cancel`                 | `advance`                |
+| ----------- | --------- | -------------------------- | ------------------------ | ---------------------------- | ------------------------- | ------------------------- |
+| `staged`    | allowed † | rejected: wrong status      | rejected: wrong status    | allowed                      | allowed                   | allowed                   |
+| `active`    | allowed † | rejected: wrong status      | rejected: wrong status    | allowed                      | allowed                   | allowed                   |
+| `paused`    | allowed † | allowed                    | rejected: wrong status    | allowed                      | allowed                   | rejected: wrong status     |
+| `escalated` | allowed † | allowed                    | allowed                  | allowed                      | allowed                   | rejected: wrong status     |
+| `completed` | allowed † | rejected: wrong status      | rejected: wrong status    | no-op (already settled)      | rejected: already complete | rejected: wrong status     |
+| `cancelled` | allowed † | rejected: wrong status      | rejected: wrong status    | rejected: cancelled campaign  | no-op (already settled)   | rejected: wrong status     |
+
+`resume` and `complete` additionally require `authorized_by` to be set,
+regardless of status; `cancel` deliberately does not, so an unauthorized
+campaign is never stranded with no reachable terminal state.
+
+† `pause` is unconditional today, including on a `completed` or `cancelled`
+campaign — see the `TODO(campaign-status)` on `Campaign::pause` in
+`foundry-sdk`. That this can resurrect a terminal status into `paused` is a
+known open question, not a decision this table is asserting is correct.
+
 A `done` decision made while a required done-evidence gate is red is rewritten
 into an `advance`. The synthesized objective carries the campaign mission and
 each failing gate's own output, not just the command that failed, and forbids
@@ -466,7 +496,11 @@ from `foundry trace`.
 `--offline` cancellation is graceful-only and emits no terminal event, matching
 offline `complete`. `--offline --now` is refused rather than quietly downgraded:
 with no daemon there is no workflow to abort, and reporting a kill that never
-happened would be worse than failing.
+happened would be worse than failing. The *legality* of the cancellation
+itself — whether this status may become `cancelled` at all — is not a separate
+offline rule; it is the same `Campaign::cancel` the daemon calls, so a
+`completed` campaign is rejected and an already-`cancelled` one is a no-op on
+both paths identically. See "The status transition table" above.
 
 ## Online and Offline Control
 

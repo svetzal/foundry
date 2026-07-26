@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::StoreError;
 use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
 
+pub mod transition;
+pub use transition::{Transition, TransitionError};
+
 /// How many recent objectives a campaign remembers.
 ///
 /// This is formation's working memory, not an archive — every objective is
@@ -464,6 +467,34 @@ pub enum CampaignStatus {
     Cancelled,
 }
 
+impl CampaignStatus {
+    /// A terminal status the campaign can never leave.
+    ///
+    /// Exhaustive with no wildcard arm: a new `CampaignStatus` variant fails
+    /// to compile here until this function says which side of terminal it
+    /// falls on, the same discipline `EventType::is_span_opener` uses for a
+    /// new `EventType`.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        match self {
+            Self::Completed | Self::Cancelled => true,
+            Self::Staged | Self::Active | Self::Paused | Self::Escalated => false,
+        }
+    }
+
+    /// Whether formation must stop advancing a campaign in this status.
+    ///
+    /// `Paused` is not terminal — `resume` can bring it back — but formation
+    /// must still not run while it holds, same as a cancelled campaign.
+    #[must_use]
+    pub fn halts_formation(self) -> bool {
+        match self {
+            Self::Paused | Self::Cancelled => true,
+            Self::Staged | Self::Active | Self::Escalated | Self::Completed => false,
+        }
+    }
+}
+
 impl std::fmt::Display for CampaignStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -571,6 +602,26 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().campaigns.len(), 1);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn is_terminal_holds_only_for_completed_and_cancelled() {
+        assert!(CampaignStatus::Completed.is_terminal());
+        assert!(CampaignStatus::Cancelled.is_terminal());
+        assert!(!CampaignStatus::Staged.is_terminal());
+        assert!(!CampaignStatus::Active.is_terminal());
+        assert!(!CampaignStatus::Paused.is_terminal());
+        assert!(!CampaignStatus::Escalated.is_terminal());
+    }
+
+    #[test]
+    fn halts_formation_holds_only_for_paused_and_cancelled() {
+        assert!(CampaignStatus::Paused.halts_formation());
+        assert!(CampaignStatus::Cancelled.halts_formation());
+        assert!(!CampaignStatus::Staged.halts_formation());
+        assert!(!CampaignStatus::Active.halts_formation());
+        assert!(!CampaignStatus::Escalated.halts_formation());
+        assert!(!CampaignStatus::Completed.halts_formation());
     }
 
     #[test]

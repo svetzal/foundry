@@ -181,6 +181,13 @@ fn paused_campaign(name: &str, max_cycles: u64) -> Campaign {
     }
 }
 
+fn cancelled_campaign(name: &str) -> Campaign {
+    Campaign {
+        status: CampaignStatus::Cancelled,
+        ..active_campaign(name)
+    }
+}
+
 fn write_campaigns(file: &NamedTempFile, campaigns: Vec<Campaign>) {
     let store = CampaignStore {
         version: 1,
@@ -272,6 +279,38 @@ async fn complete_requires_non_empty_reason_and_authorized_owner() {
         .await
         .expect_err("unauthorized completion must fail");
     assert_eq!(error.code(), Code::FailedPrecondition);
+}
+
+/// A cancelled campaign is terminal and not resumable; recording it as
+/// completed would write a false evidence claim into the store. This pins the
+/// canonical wording and status code that the CLI's `--offline` path must
+/// reproduce byte-for-byte once its own guard is centralized in the SDK.
+#[tokio::test]
+async fn complete_refuses_a_cancelled_campaign() {
+    let (service, tmp_campaigns, _rx, _tmp_traces) = make_service();
+    write_single(&tmp_campaigns, cancelled_campaign("c"));
+
+    let err = service
+        .complete_campaign(Request::new(CompleteCampaignRequest {
+            name: "c".to_string(),
+            reason: "shipped anyway".to_string(),
+        }))
+        .await
+        .expect_err("completing a cancelled campaign must fail");
+
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(
+        err.message().contains("was cancelled"),
+        "must say the campaign was cancelled: {}",
+        err.message()
+    );
+
+    let stored = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+    assert_eq!(
+        stored.find("c").expect("campaign exists").status,
+        CampaignStatus::Cancelled,
+        "a refused complete must not change the status"
+    );
 }
 
 #[cfg(unix)]

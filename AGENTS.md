@@ -136,6 +136,12 @@ Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
 campaign state. Pass `--offline` only for explicit recovery when the daemon is
 stopped and you intentionally need direct file access.
 
+The status transition rules for `pause`/`resume`/`decide`/`complete`/`cancel`/
+`advance` live in exactly one place, `foundry_sdk::campaign::transition`
+(`crates/foundry-sdk/src/campaign/transition.rs`); `--offline` differs from the
+online path only in transport and event emission, never in which transitions
+are legal.
+
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
 | `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |

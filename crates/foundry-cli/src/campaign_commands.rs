@@ -10,7 +10,7 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use foundry_sdk::campaign::{
-    Campaign, CampaignStatus, CampaignStore, OwnerDecision, check_inline_context_budget,
+    Campaign, CampaignStatus, CampaignStore, Transition, check_inline_context_budget,
 };
 use foundry_sdk::registry::Registry;
 
@@ -322,25 +322,11 @@ fn cancel_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Res
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    if campaign.status == CampaignStatus::Cancelled {
-        return Ok(render::campaign::campaign_detail(campaign));
-    }
-    if campaign.status == CampaignStatus::Completed {
-        bail!("campaign '{name}' is already completed; there is nothing in flight to cancel");
-    }
-    // No `authorized_by` requirement — see the daemon-side `cancel`: an
-    // unauthorized campaign must still be stoppable, or it is stranded.
-    if let Some(authorized_by) = campaign.authorized_by.clone() {
-        campaign.owner_decisions.push(OwnerDecision {
-            decision: format!("Cancelled externally: {reason}"),
-            authorized_by,
-            decided_at: Utc::now(),
-        });
-    }
-    campaign.status = CampaignStatus::Cancelled;
-    campaign.pending_run_result = None;
+    let transition = campaign.cancel(reason, Utc::now())?;
     let rendered = render::campaign::campaign_detail(campaign);
-    guard.save()?;
+    if transition == Transition::Applied {
+        guard.save()?;
+    }
     Ok(rendered)
 }
 
@@ -388,10 +374,16 @@ pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -
         let store = CampaignStore::load(store_path)?;
         let campaign =
             store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-        match campaign.status {
-            CampaignStatus::Active | CampaignStatus::Staged => bail!(
+        // The SDK owns *which statuses may advance*; the CLI owns *what to
+        // tell the operator next*. An `Ok` here means the daemon would accept
+        // the advance, so offline still can't do it — there is no formation
+        // loop without a running daemon.
+        if campaign.check_advanceable().is_ok() {
+            bail!(
                 "`foundry campaign advance` requires a running daemon; rerun without `--offline` once foundryd is available"
-            ),
+            );
+        }
+        match campaign.status {
             CampaignStatus::Paused => bail!(
                 "campaign '{name}' is {}; run `foundry campaign resume {name}` before advancing",
                 campaign.status
@@ -403,6 +395,9 @@ pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -
             CampaignStatus::Cancelled => bail!(
                 "campaign '{name}' was cancelled; cancellation is terminal, so there is nothing to advance"
             ),
+            CampaignStatus::Active | CampaignStatus::Staged => {
+                unreachable!("check_advanceable() already returned Ok for these statuses above")
+            }
         }
     }
 
@@ -521,7 +516,7 @@ fn pause_offline(store_path: &Path, name: &str) -> Result<()> {
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    campaign.status = CampaignStatus::Paused;
+    campaign.pause();
     guard.save()?;
     Ok(())
 }
@@ -536,18 +531,7 @@ fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> R
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
-        anyhow::anyhow!("campaign '{name}' has not been authorized; decide requires authorized_by")
-    })?;
-    if campaign.status != CampaignStatus::Escalated {
-        bail!("campaign '{name}' is '{}'; decide requires Escalated status", campaign.status);
-    }
-    campaign.owner_decisions.push(OwnerDecision {
-        decision: decision.to_string(),
-        authorized_by,
-        decided_at: Utc::now(),
-    });
-    campaign.status = CampaignStatus::Active;
+    campaign.record_owner_decision(decision.to_string(), Utc::now())?;
     let rendered = render::campaign::campaign_detail(campaign);
     guard.save()?;
     Ok(rendered)
@@ -563,23 +547,11 @@ fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> R
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    let authorized_by = campaign.authorized_by.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "campaign '{name}' has not been authorized; complete requires authorized_by"
-        )
-    })?;
-    if campaign.status == CampaignStatus::Completed {
-        return Ok(render::campaign::campaign_detail(campaign));
-    }
-    campaign.owner_decisions.push(OwnerDecision {
-        decision: format!("Completed externally: {reason}"),
-        authorized_by,
-        decided_at: Utc::now(),
-    });
-    campaign.status = CampaignStatus::Completed;
-    campaign.pending_run_result = None;
+    let transition = campaign.complete(reason, Utc::now())?;
     let rendered = render::campaign::campaign_detail(campaign);
-    guard.save()?;
+    if transition == Transition::Applied {
+        guard.save()?;
+    }
     Ok(rendered)
 }
 
@@ -589,29 +561,7 @@ fn resume_offline(store_path: &Path, name: &str, add_cycles: u64) -> Result<()> 
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    if campaign.authorized_by.is_none() {
-        bail!("campaign '{name}' cannot resume until authorized_by is set");
-    }
-    // The daemon-side `resume` has always required this; the offline path did
-    // not, so `--offline` could resume a campaign from any state — including,
-    // once cancellation existed, silently reviving a cancelled one.
-    if !matches!(campaign.status, CampaignStatus::Paused | CampaignStatus::Escalated) {
-        bail!(
-            "campaign '{name}' is {}; resume applies only to paused or escalated campaigns",
-            campaign.status
-        );
-    }
-    if add_cycles == 0 && campaign.cycles_completed >= campaign.budget.max_cycles {
-        bail!(
-            "campaign '{name}' exhausted its cycle budget; pass --add-cycles N to authorize more work"
-        );
-    }
-    campaign.budget.max_cycles = campaign
-        .budget
-        .max_cycles
-        .checked_add(add_cycles)
-        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' cycle budget overflow"))?;
-    campaign.status = CampaignStatus::Active;
+    campaign.resume(add_cycles)?;
     guard.save()?;
     Ok(())
 }
@@ -753,6 +703,46 @@ mod tests {
         assert!(output.contains("completed"));
     }
 
+    /// `complete_offline_and_render` historically guarded only `Completed`, so
+    /// `--offline` could silently flip a `Cancelled` campaign to `Completed`,
+    /// writing a false evidence claim into the store. The daemon-side
+    /// `complete` has always rejected a cancelled campaign outright.
+    #[tokio::test]
+    async fn offline_complete_refuses_a_cancelled_campaign() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "status":"active"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+        cancel_and_render(&store, "http://127.0.0.1:0", true, "c", "abandoned", false, false)
+            .await
+            .unwrap();
+
+        let err = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "shipped anyway")
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("cancelled"),
+            "the refusal must say the campaign was cancelled, got: {err}"
+        );
+        assert_eq!(
+            CampaignStore::load(&store).unwrap().find("c").unwrap().status,
+            CampaignStatus::Cancelled,
+            "a refused complete must not change the status"
+        );
+    }
+
     #[tokio::test]
     async fn offline_complete_requires_owner_authorization_and_reason() {
         let dir = tempfile::tempdir().unwrap();
@@ -814,7 +804,7 @@ mod tests {
         let error = resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 0)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("--add-cycles"));
+        assert!(error.to_string().contains("add_cycles > 0"));
 
         resume_and_render(&store_path, "http://127.0.0.1:0", true, "c", 1)
             .await
@@ -846,7 +836,7 @@ mod tests {
         add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
         let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
-        assert!(err.to_string().contains("--add-cycles"));
+        assert!(err.to_string().contains("add_cycles > 0"));
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
             CampaignStatus::Paused,
@@ -862,8 +852,9 @@ mod tests {
 
     /// `resume_offline` historically checked `authorized_by` and the cycle
     /// budget but never the status, so `--offline` could resume a campaign from
-    /// any state — including reviving a cancelled one, which is terminal. The
-    /// daemon-side `resume` has always required `paused` or `escalated`.
+    /// any state — including reviving a cancelled one, which is terminal. Now
+    /// that both paths delegate to `Campaign::resume`, the offline wording is
+    /// the same canonical message the daemon has always returned.
     #[tokio::test]
     async fn offline_resume_refuses_a_cancelled_campaign() {
         let dir = tempfile::tempdir().unwrap();
@@ -890,7 +881,7 @@ mod tests {
 
         let err = resume_and_render(&store, "http://127.0.0.1:0", true, "c", 0).await.unwrap_err();
         assert!(
-            err.to_string().contains("paused or escalated"),
+            err.to_string().contains("Paused or Escalated"),
             "the refusal must say which states resume applies to, got: {err}"
         );
         assert_eq!(
@@ -925,6 +916,31 @@ mod tests {
 
         let err = advance("http://127.0.0.1:0", &store, true, "c").await.unwrap_err();
         assert!(err.to_string().contains("cancelled"), "got: {err}");
+    }
+
+    /// `Staged` is one of the two statuses `check_advanceable()` accepts, so
+    /// the offline path must fall through to the daemon-required message
+    /// rather than one of the remediation hints meant for a stopped campaign.
+    #[tokio::test]
+    async fn offline_advance_on_a_staged_campaign_requires_a_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "status":"staged"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+
+        let err = advance("http://127.0.0.1:0", &store, true, "c").await.unwrap_err();
+        assert!(err.to_string().contains("requires a running daemon"), "got: {err}");
     }
 
     #[tokio::test]
