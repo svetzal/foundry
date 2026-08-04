@@ -87,6 +87,41 @@ pub(crate) struct Interpreted {
     pub(crate) failure: Option<AgentFailureMetadata>,
 }
 
+/// The run's terminal state, ready to be turned into an `AgentSessionEnded`.
+struct EndedSession<'a> {
+    session_id: &'a str,
+    status: &'a str,
+    exit_code: Option<i32>,
+    bytes_written: u64,
+    error: Option<String>,
+    failure: Option<AgentFailureMetadata>,
+}
+
+/// Build the session-ended payload, reading the transcript back for what the
+/// session spent.
+///
+/// `model` is the id the gateway resolved for this request — the only way a
+/// Codex session's tokens can be priced, since its transcript never names a
+/// model of its own.
+fn ended_payload(
+    session: EndedSession<'_>,
+    log_path: &Path,
+    model: &str,
+) -> AgentSessionEndedPayload {
+    let (usage, cost) = crate::gateway::price_session(log_path, model);
+    AgentSessionEndedPayload {
+        session_id: session.session_id.to_string(),
+        status: session.status.to_string(),
+        exit_code: session.exit_code,
+        ended_at: chrono::Utc::now().to_rfc3339(),
+        bytes_written: session.bytes_written,
+        error: session.error,
+        failure: session.failure.unwrap_or_default(),
+        usage,
+        cost: Some(cost),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SessionContext<'a> {
     pub(crate) session_id: &'a str,
@@ -129,6 +164,73 @@ impl<A: CliAgentAdapter> CliAgentGateway<A> {
         self.models = models;
         self
     }
+
+    /// Turn a finished (or failed-to-start) stream run into the settled facts
+    /// the session-ended event and the response both need.
+    ///
+    /// A run that never started still settles — as `unavailable`, with no
+    /// output — so the caller always has a terminal state to report.
+    async fn settle(
+        &self,
+        outcome: Result<AgentStreamOutcome>,
+        session_id: &str,
+        provider: AgentProvider,
+        log_path: &Path,
+        inv: &Invocation,
+        request: &AgentRequest,
+    ) -> SettledRun {
+        match outcome {
+            Ok(o) => {
+                let interpreted = self
+                    .adapter
+                    .interpret(
+                        &o,
+                        SessionContext {
+                            session_id,
+                            provider,
+                            log_path,
+                        },
+                        inv,
+                        request,
+                        &self.shell,
+                    )
+                    .await;
+                SettledRun {
+                    status: if interpreted.success {
+                        "ok"
+                    } else {
+                        "agent_failed"
+                    },
+                    exit_code: Some(interpreted.exit_code),
+                    stderr: o.stderr,
+                    bytes_written: o.bytes_written,
+                    error: None,
+                    stdout: interpreted.stdout,
+                    failure: interpreted.failure,
+                }
+            }
+            Err(e) => SettledRun {
+                status: "unavailable",
+                exit_code: None,
+                stderr: String::new(),
+                bytes_written: 0,
+                error: Some(e.to_string()),
+                stdout: String::new(),
+                failure: None,
+            },
+        }
+    }
+}
+
+/// The settled result of one agent run.
+struct SettledRun {
+    status: &'static str,
+    exit_code: Option<i32>,
+    stderr: String,
+    bytes_written: u64,
+    error: Option<String>,
+    stdout: String,
+    failure: Option<AgentFailureMetadata>,
 }
 
 impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGateway<A> {
@@ -177,69 +279,32 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                 )
                 .await;
 
-            let (status, exit_code, stderr, bytes_written, error_msg, stdout_text, failure) =
-                match outcome {
-                    Ok(o) => {
-                        let interpreted = self
-                            .adapter
-                            .interpret(
-                                &o,
-                                SessionContext {
-                                    session_id: &session_id,
-                                    provider,
-                                    log_path: &log_path,
-                                },
-                                &inv,
-                                request,
-                                &self.shell,
-                            )
-                            .await;
-                        let status = if interpreted.success {
-                            "ok"
-                        } else {
-                            "agent_failed"
-                        };
-                        (
-                            status,
-                            Some(interpreted.exit_code),
-                            o.stderr,
-                            o.bytes_written,
-                            None,
-                            interpreted.stdout,
-                            interpreted.failure,
-                        )
-                    }
-                    Err(e) => (
-                        "unavailable",
-                        None,
-                        String::new(),
-                        0u64,
-                        Some(e.to_string()),
-                        String::new(),
-                        None,
-                    ),
-                };
+            let run = self.settle(outcome, &session_id, provider, &log_path, &inv, request).await;
 
             emit_session_ended(
                 &self.event_tx,
                 &request.project,
-                &AgentSessionEndedPayload {
-                    session_id: session_id.clone(),
-                    status: status.to_string(),
-                    exit_code,
-                    ended_at: chrono::Utc::now().to_rfc3339(),
-                    bytes_written,
-                    error: error_msg,
-                    failure: failure.clone().unwrap_or_default(),
-                },
+                request.trace_id.clone(),
+                &ended_payload(
+                    EndedSession {
+                        session_id: &session_id,
+                        status: run.status,
+                        exit_code: run.exit_code,
+                        bytes_written: run.bytes_written,
+                        error: run.error,
+                        failure: run.failure.clone(),
+                    },
+                    &log_path,
+                    &model,
+                ),
             )?;
 
             Ok(AgentResponse {
-                stdout: stdout_text,
-                stderr,
-                exit_code: exit_code.unwrap_or(-1),
-                success: status == "ok",
-                failure,
+                stdout: run.stdout,
+                stderr: run.stderr,
+                exit_code: run.exit_code.unwrap_or(-1),
+                success: run.status == "ok",
+                failure: run.failure,
             })
         })
     }
@@ -336,6 +401,7 @@ mod tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -393,6 +459,7 @@ mod tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");

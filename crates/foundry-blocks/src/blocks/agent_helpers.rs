@@ -58,6 +58,9 @@ pub(crate) struct AgentBlockSpec {
     /// Environment applied only to the invoked agent process.
     pub env: Vec<(String, String)>,
     pub timeout: Duration,
+    /// Trace this invocation belongs to, from the block's triggering event.
+    /// Carries the session's token spend into the workflow that incurred it.
+    pub trace_id: Option<String>,
 }
 
 /// Invoke an agent with the given spec, returning the outcome.
@@ -81,6 +84,7 @@ pub(crate) async fn invoke_agent(
         provider: spec.provider,
         env: spec.env,
         timeout: spec.timeout,
+        trace_id: spec.trace_id,
     };
     tracing::info!(project = %project, "{trace_label}: invoking agent");
     let response = agent.invoke(&request).await;
@@ -102,6 +106,8 @@ pub(crate) struct CodingAgentSpec {
     pub provider: Option<AgentProvider>,
     pub env: Vec<(String, String)>,
     pub timeout: Duration,
+    /// Trace this invocation belongs to, from the block's triggering event.
+    pub trace_id: Option<String>,
 }
 
 /// Invoke an agent with `Full` access at the `Balanced` tier and `Medium`
@@ -127,6 +133,7 @@ pub(crate) async fn invoke_coding_agent(
             provider: spec.provider,
             env: spec.env,
             timeout: spec.timeout,
+            trace_id: spec.trace_id,
         },
         trace_label,
         project,
@@ -240,6 +247,8 @@ pub(crate) struct ReadOnlyAgentSpec {
     pub agent_file: Option<PathBuf>,
     pub provider: Option<AgentProvider>,
     pub timeout: Duration,
+    /// Trace this invocation belongs to, from the block's triggering event.
+    pub trace_id: Option<String>,
 }
 
 /// Invoke an agent with `ReadOnly` access at the `Deep` tier and `High`
@@ -266,6 +275,7 @@ pub(crate) async fn invoke_reasoning_agent(
             provider: spec.provider,
             env: Vec::new(),
             timeout: spec.timeout,
+            trace_id: spec.trace_id,
         },
         trace_label,
         project,
@@ -297,6 +307,7 @@ pub(crate) async fn invoke_summary_agent(
             provider: spec.provider,
             env: Vec::new(),
             timeout: spec.timeout,
+            trace_id: spec.trace_id,
         },
         trace_label,
         project,
@@ -568,6 +579,7 @@ mod tests {
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(60),
+            trace_id: Some("trc_abc".to_string()),
         };
         invoke_reasoning_agent(&*agent, "proj", spec, "test").await;
         let invocations = agent.invocations();
@@ -575,6 +587,25 @@ mod tests {
         assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
         assert_eq!(invocations[0].tier, ModelTier::Deep);
         assert_eq!(invocations[0].effort, ReasoningEffort::High);
+    }
+
+    // The trace has to survive the wrapper, or the session's token spend cannot
+    // be attributed to the workflow that incurred it.
+    #[tokio::test]
+    async fn read_only_wrappers_forward_the_trace_to_the_request() {
+        use crate::gateway::fakes::FakeAgentGateway;
+
+        let agent = FakeAgentGateway::success_with("done");
+        let spec = ReadOnlyAgentSpec {
+            working_dir: std::path::PathBuf::from("/tmp"),
+            prompt: "analyze".to_string(),
+            agent_file: None,
+            provider: None,
+            timeout: Duration::from_secs(60),
+            trace_id: Some("trc_carried".to_string()),
+        };
+        invoke_reasoning_agent(&*agent, "proj", spec, "test").await;
+        assert_eq!(agent.invocations()[0].trace_id.as_deref(), Some("trc_carried"));
     }
 
     #[tokio::test]
@@ -588,6 +619,7 @@ mod tests {
             agent_file: None,
             provider: None,
             timeout: Duration::from_secs(60),
+            trace_id: None,
         };
         invoke_summary_agent(&*agent, "proj", spec, "test").await;
         let invocations = agent.invocations();

@@ -53,10 +53,11 @@ impl TaskBlock for SummarizeEvents {
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, OpsObservedPayload);
         let project = trigger.project.clone();
+        let trace_id = trigger.trace_id.clone();
         let throttle = trigger.throttle;
         let agent = Arc::clone(&self.agent);
 
-        Box::pin(summarize(project, throttle, p, agent))
+        Box::pin(summarize(project, throttle, p, agent, trace_id))
     }
 }
 
@@ -65,6 +66,7 @@ async fn summarize(
     throttle: Throttle,
     observed: OpsObservedPayload,
     agent: Arc<dyn AgentGateway>,
+    trace_id: Option<String>,
 ) -> anyhow::Result<TaskBlockResult> {
     // Domain skip: emitting OpsDigestCompleted { skipped: true } is the
     // intended domain behavior here — it signals the downstream write block to
@@ -126,6 +128,7 @@ async fn summarize(
             // there is no per-request override to honour. Uses the daemon default.
             provider: None,
             timeout: AGENT_TIMEOUT,
+            trace_id: trace_id.clone(),
         },
         TRACE_LABEL,
     )

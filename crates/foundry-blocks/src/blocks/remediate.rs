@@ -88,6 +88,7 @@ impl TaskBlock for RemediateVulnerability {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         // Extract CVE from the decision. accepts() already filtered non-Proceed variants.
@@ -125,6 +126,7 @@ impl TaskBlock for RemediateVulnerability {
                     provider,
                     env: Vec::new(),
                     timeout: entry.timeout(),
+                    trace_id: trace_id.clone(),
                 },
                 &format!("remediate {cve}"),
             )

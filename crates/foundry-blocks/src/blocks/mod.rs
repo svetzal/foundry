@@ -42,6 +42,13 @@ pub(super) struct TriggerContext {
     pub project: String,
     pub throttle: foundry_sdk::throttle::Throttle,
     pub payload: serde_json::Value,
+    /// The trace this block is running inside.
+    ///
+    /// Blocks forward it into every agent invocation so the session's token
+    /// spend lands in the workflow that incurred it. Without it, cost can only
+    /// be attributed to a project and a timestamp — ambiguous the moment two
+    /// runs on one project overlap.
+    pub trace_id: Option<String>,
 }
 
 impl TriggerContext {
@@ -50,6 +57,7 @@ impl TriggerContext {
             project: trigger.project.clone(),
             throttle: trigger.throttle,
             payload: trigger.payload.clone(),
+            trace_id: trigger.trace_id.clone(),
         }
     }
 }

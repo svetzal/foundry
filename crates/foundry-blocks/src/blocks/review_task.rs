@@ -69,6 +69,7 @@ impl TaskBlock for ReviewTask {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
         let p = parse_payload!(trigger, GateVerificationCompletedPayload);
         let entry = require_project!(self, project);
@@ -120,6 +121,7 @@ impl TaskBlock for ReviewTask {
                     provider,
                     env: Vec::new(),
                     timeout: entry.timeout(),
+                    trace_id: trace_id.clone(),
                 },
                 "task review",
                 &project,

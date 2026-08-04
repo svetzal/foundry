@@ -292,6 +292,39 @@ fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore>
     }
 }
 
+/// Seed the token price book on first start, and additively fill in any model
+/// added since. Mirrors [`load_or_seed_agent_config`].
+///
+/// Rates are runtime data an operator edits between runs, so nothing here is
+/// held in memory — the gateway reads the file when it prices a session. This
+/// exists only so the file is present and current to edit.
+fn seed_token_rates(path: &std::path::Path) {
+    use foundry_sdk::token_rates::{RateBook, merge_default_seed_into as merge_rate_seed};
+    match RateBook::load(path) {
+        Ok(mut book) => {
+            if merge_rate_seed(&mut book) {
+                if let Err(e) = book.save(path) {
+                    tracing::warn!(error = %e, path = %path.display(), "could not persist merged token rates");
+                } else {
+                    tracing::info!(path = %path.display(), "filled missing token rates from default seed");
+                }
+            }
+        }
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
+            if let Err(e) = RateBook::default_seed().save(path) {
+                tracing::warn!(error = %e, path = %path.display(), "could not seed token rates");
+            } else {
+                tracing::info!(path = %path.display(), "token rates seeded on first start");
+            }
+        }
+        // A corrupt book must not stop the daemon: pricing degrades to the
+        // baked seed, and the operator's file is left untouched to be fixed.
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "token rate book unreadable; pricing will use baked defaults");
+        }
+    }
+}
+
 fn spawn_scheduler(
     ctx: &service::RuntimeContext,
     sentinels: &Arc<RwLock<SentinelStore>>,
@@ -365,6 +398,8 @@ fn build_agent_gateway(
             tracing::warn!(error = %e, "failed to load/seed agent config; using baked defaults");
             AgentConfigStore::default_seed()
         });
+    seed_token_rates(&foundry_sdk::paths::token_rates_path());
+
     tracing::info!(default_provider = %default, "agent providers: claude, opencode, codex");
 
     let mut gateways: std::collections::HashMap<

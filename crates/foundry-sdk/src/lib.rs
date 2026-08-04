@@ -16,6 +16,8 @@ pub mod span_context;
 pub mod supply_chain;
 pub mod task_block;
 pub mod throttle;
+pub mod token_rates;
+pub mod token_usage;
 pub mod trace;
 pub mod triage;
 pub mod workflow;

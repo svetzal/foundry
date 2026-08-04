@@ -45,7 +45,10 @@ impl TaskBlock for StrategicAssessor {
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let TriggerContext {
-            project, throttle, ..
+            project,
+            throttle,
+            trace_id,
+            ..
         } = TriggerContext::from_trigger(trigger);
 
         // accepts() already filtered non-strategic events.
@@ -83,6 +86,7 @@ impl TaskBlock for StrategicAssessor {
                     agent_file,
                     provider,
                     timeout: entry.timeout(),
+                    trace_id: trace_id.clone(),
                 },
                 "strategic assessment",
             )

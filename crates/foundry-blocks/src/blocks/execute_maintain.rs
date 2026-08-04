@@ -76,6 +76,7 @@ impl TaskBlock for ExecuteMaintain {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, GateResolutionCompletedPayload);
@@ -88,6 +89,7 @@ impl TaskBlock for ExecuteMaintain {
         Box::pin(async move {
             let prompt = build_maintain_prompt(&project, Some(&gates).filter(|v| !v.is_null()));
             let ctx = ExecutionContext {
+                trace_id: trace_id.clone(),
                 project: &project,
                 workflow: WorkflowType::Maintain,
                 payload: &payload,

@@ -117,6 +117,7 @@ impl TaskBlock for ResolveGates {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 

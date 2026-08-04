@@ -37,6 +37,7 @@ impl TaskBlock for TriageAssessment {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         let entry = require_project!(self, project);
@@ -63,9 +64,16 @@ impl TaskBlock for TriageAssessment {
             );
 
             let provider = super::chain_agent_provider(&payload);
-            let (accepted, reason) =
-                run_triage_agent(&*agent, project_path, agent_file, prompt, provider, &project)
-                    .await;
+            let (accepted, reason) = run_triage_agent(
+                &*agent,
+                project_path,
+                agent_file,
+                prompt,
+                provider,
+                &project,
+                trace_id.clone(),
+            )
+            .await;
 
             tracing::info!(
                 project = %project,
@@ -134,6 +142,7 @@ async fn run_triage_agent(
     prompt: String,
     provider: Option<AgentProvider>,
     project: &str,
+    trace_id: Option<String>,
 ) -> (bool, String) {
     let outcome = invoke_summary_agent(
         agent,
@@ -144,6 +153,7 @@ async fn run_triage_agent(
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(120),
+            trace_id: trace_id.clone(),
         },
         "triage assessment",
     )

@@ -33,6 +33,9 @@ pub(super) struct ReleaseInput {
     pub project: String,
     pub project_path: PathBuf,
     pub prompt: String,
+    /// Trace this release belongs to, forwarded into the agent session so its
+    /// token spend is attributed to the release workflow.
+    pub trace_id: Option<String>,
 }
 
 /// Typed output from the release agent invocation.
@@ -119,6 +122,7 @@ pub(super) async fn run_release(
         provider: None,
         env: Vec::new(),
         timeout: CLAUDE_TIMEOUT,
+        trace_id: input.trace_id.clone(),
     };
 
     let run_result = agent.invoke(&request).await;

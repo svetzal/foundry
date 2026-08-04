@@ -45,6 +45,7 @@ impl TaskBlock for RouteGateResult {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, GateVerificationCompletedPayload);

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::AgentFailureMetadata;
+use crate::token_rates::CostEstimate;
+use crate::token_usage::SessionUsage;
 
 // ---------------------------------------------------------------------------
 // Agent session lifecycle payloads
@@ -34,4 +36,14 @@ pub struct AgentSessionEndedPayload {
     pub error: Option<String>,
     #[serde(default, flatten)]
     pub failure: AgentFailureMetadata,
+    /// Tokens the session spent, recovered from its transcript.
+    ///
+    /// `None` means the session ended without writing a terminal usage record —
+    /// unmeasured spend, not zero spend. Consumers must not treat an absent
+    /// `usage` as free work; `cost.basis` says `unmeasured` in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SessionUsage>,
+    /// What those tokens are worth, and how much that figure can be trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostEstimate>,
 }

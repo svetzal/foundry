@@ -49,6 +49,7 @@ impl TaskBlock for RunPreflightGates {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, GateResolutionCompletedPayload);

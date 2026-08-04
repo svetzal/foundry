@@ -41,6 +41,7 @@ impl TaskBlock for StrategicLoopController {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 
@@ -84,7 +85,8 @@ impl TaskBlock for StrategicLoopController {
                         reason = "inner_payload is Some whenever event_type == InnerIterationCompleted, set above"
                     )]
                     let p = inner_payload.expect("parsed above");
-                    handle_inner_completed(&project, throttle, &payload, &p, entry, agent).await
+                    handle_inner_completed(&project, throttle, &payload, &p, entry, agent, trace_id)
+                        .await
                 }
                 _ => Ok(TaskBlockResult::success("Skipped: unexpected event type", vec![])),
             }
@@ -155,6 +157,7 @@ async fn handle_inner_completed(
     p: &InnerIterationCompletedPayload,
     entry: Option<foundry_sdk::registry::ProjectEntry>,
     agent: Arc<dyn AgentGateway>,
+    trace_id: Option<String>,
 ) -> anyhow::Result<TaskBlockResult> {
     let loop_context = p.loop_context.clone();
     let iteration = loop_context.strategic.iteration;
@@ -187,7 +190,8 @@ async fn handle_inner_completed(
     // Use AI to decide whether to continue
     let provider = super::chain_agent_provider(payload);
     let should_continue =
-        assess_continue(project, entry.as_ref(), &agent, custom_prompt, provider).await;
+        assess_continue(project, entry.as_ref(), &agent, custom_prompt, provider, trace_id.clone())
+            .await;
 
     if !should_continue {
         tracing::info!(
@@ -262,6 +266,7 @@ async fn assess_continue(
     agent: &Arc<dyn AgentGateway>,
     custom_prompt: Option<&str>,
     provider: Option<AgentProvider>,
+    trace_id: Option<String>,
 ) -> bool {
     let Some(entry) = entry else {
         return false;
@@ -298,6 +303,7 @@ async fn assess_continue(
             provider,
             env: Vec::new(),
             timeout: std::time::Duration::from_secs(120),
+            trace_id: trace_id.clone(),
         },
         "strategic continue assessment",
         project,

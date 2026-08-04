@@ -47,6 +47,7 @@ impl TaskBlock for RunVerifyGates {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
 
         let p = parse_payload!(trigger, ExecutionCompletedPayload);

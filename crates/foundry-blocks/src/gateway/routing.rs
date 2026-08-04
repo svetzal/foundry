@@ -158,6 +158,7 @@ mod tests {
             provider,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         }
     }
 

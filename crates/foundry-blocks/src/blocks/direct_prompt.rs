@@ -48,6 +48,7 @@ impl TaskBlock for DirectPrompt {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
 
         // accepts() already filtered non-prompt and failed-preflight events.

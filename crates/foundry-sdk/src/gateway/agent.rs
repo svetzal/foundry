@@ -434,6 +434,15 @@ pub struct AgentRequest {
     pub env: Vec<(String, String)>,
     /// Maximum duration for the invocation.
     pub timeout: std::time::Duration,
+    /// The trace this invocation belongs to, taken from the block's triggering
+    /// event.
+    ///
+    /// Agent sessions are where every token is spent, so without this the
+    /// estate's cost cannot be attributed to the workflow that incurred it —
+    /// only to a project and a timestamp, which is ambiguous whenever runs
+    /// overlap. `None` means the caller had no trace context (a direct CLI
+    /// invocation), not that attribution was skipped.
+    pub trace_id: Option<String>,
 }
 
 /// Response from an agent invocation.

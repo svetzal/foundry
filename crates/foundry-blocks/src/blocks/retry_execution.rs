@@ -64,6 +64,7 @@ impl TaskBlock for RetryExecution {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         let workflow = WorkflowType::from_payload(&payload);
@@ -88,6 +89,7 @@ impl TaskBlock for RetryExecution {
             );
             let label = format!("retry {retry_count}");
             let ctx = ExecutionContext {
+                trace_id: trace_id.clone(),
                 project: &project,
                 workflow,
                 payload: &payload,

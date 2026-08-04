@@ -178,6 +178,7 @@ impl TaskBlock for ScoutDrift {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
         let provider = super::chain_agent_provider(&payload);
 
@@ -203,6 +204,7 @@ impl TaskBlock for ScoutDrift {
                     agent_file,
                     provider,
                     timeout: entry.timeout(),
+                    trace_id: trace_id.clone(),
                 },
                 "scout drift",
             )

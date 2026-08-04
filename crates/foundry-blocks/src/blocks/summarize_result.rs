@@ -47,6 +47,7 @@ impl TaskBlock for SummarizeResult {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         // accepts() already filtered loop-context and failed completions.
@@ -78,6 +79,7 @@ impl TaskBlock for SummarizeResult {
                     agent_file,
                     provider,
                     timeout: std::time::Duration::from_secs(120),
+                    trace_id: trace_id.clone(),
                 },
                 "summarize result",
             )

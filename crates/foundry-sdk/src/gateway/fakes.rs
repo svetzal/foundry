@@ -196,6 +196,9 @@ pub struct AgentInvocation {
     pub effort: ReasoningEffort,
     pub agent_file: Option<String>,
     pub provider: Option<AgentProvider>,
+    /// Trace the request carried. Recorded so tests can prove a block forwards
+    /// its trigger's trace into the session that spends the tokens.
+    pub trace_id: Option<String>,
 }
 
 /// Behaviour specification for a single `FakeAgentGateway` response.
@@ -278,6 +281,7 @@ impl AgentGateway for FakeAgentGateway {
             access: request.access,
             tier: request.tier,
             effort: request.effort,
+            trace_id: request.trace_id.clone(),
             agent_file: request.agent_file.as_ref().map(|p| p.display().to_string()),
             provider: request.provider,
         };

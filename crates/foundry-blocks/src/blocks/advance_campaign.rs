@@ -443,6 +443,7 @@ struct DecisionRequest {
     agent_file: Option<PathBuf>,
     provider: Option<AgentProvider>,
     timeout: Duration,
+    trace_id: Option<String>,
 }
 
 impl DecisionRequest {
@@ -457,6 +458,7 @@ impl DecisionRequest {
             provider: self.provider,
             env: Vec::new(),
             timeout: self.timeout,
+            trace_id: self.trace_id.clone(),
         }
     }
 }
@@ -661,6 +663,9 @@ fn terminal_error_result(
 }
 
 struct AdvanceExecution {
+    /// Trace this advance belongs to, so the decision agent's spend lands in
+    /// the campaign's own workflow.
+    trace_id: Option<String>,
     agent: Arc<dyn AgentGateway>,
     shell: Arc<dyn ShellGateway>,
     registry: Arc<std::sync::RwLock<Registry>>,
@@ -807,6 +812,7 @@ async fn derive_advance_outcome(
     entry: &foundry_sdk::registry::ProjectEntry,
     campaign: &Campaign,
     request: &CampaignAdvanceRequestedPayload,
+    trace_id: Option<String>,
 ) -> anyhow::Result<(AdvanceOutcome, FormationRecord)> {
     let repo = Path::new(&entry.path);
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
@@ -816,6 +822,7 @@ async fn derive_advance_outcome(
     // The gates, the snapshot, and the prompt are all deterministic for this
     // advance, so a retry re-asks the same question rather than re-deriving it.
     let decision_request = DecisionRequest {
+        trace_id: trace_id.clone(),
         prompt: decision_prompt(
             campaign,
             &context,
@@ -961,6 +968,7 @@ async fn choose_advance_outcome(
         &entry,
         campaign,
         &execution.request,
+        execution.trace_id.clone(),
     )
     .await
     .unwrap_or_else(|error| {
@@ -986,6 +994,7 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
     }
     AdvanceExecution {
         request,
+        trace_id: execution.trace_id.clone(),
         agent: Arc::clone(&execution.agent),
         shell: Arc::clone(&execution.shell),
         registry: Arc::clone(&execution.registry),
@@ -1164,6 +1173,7 @@ impl TaskBlock for AdvanceCampaign {
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let request = parse_payload!(trigger, CampaignAdvanceRequestedPayload);
         let project = trigger.project.clone();
+        let trace_id = trigger.trace_id.clone();
         let throttle = trigger.throttle;
         let agent = Arc::clone(&self.agent);
         let shell = Arc::clone(&self.shell);
@@ -1173,6 +1183,7 @@ impl TaskBlock for AdvanceCampaign {
 
         Box::pin(async move {
             Ok(execute_campaign_advance(AdvanceExecution {
+                trace_id,
                 agent,
                 shell,
                 registry,

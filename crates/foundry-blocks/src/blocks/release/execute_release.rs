@@ -69,6 +69,7 @@ impl TaskBlock for ExecuteRelease {
 
     fn execute(&self, trigger: &Event) -> BlockFuture<'_> {
         let project = trigger.project.clone();
+        let trace_id = trigger.trace_id.clone();
         let throttle = trigger.throttle;
         // Best-effort: an absent or unparseable bump field falls back to
         // "let the agent determine the bump from the changelog," which is a
@@ -121,6 +122,7 @@ impl TaskBlock for ExecuteRelease {
                 project: project.clone(),
                 project_path,
                 prompt,
+                trace_id: trace_id.clone(),
             };
             match run_release(agent.as_ref(), shell.as_ref(), input).await {
                 Ok(output) => {

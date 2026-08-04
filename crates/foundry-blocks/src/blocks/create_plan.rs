@@ -68,6 +68,7 @@ impl TaskBlock for CreatePlan {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         // Self-filter: only create plan for accepted triages.
@@ -113,6 +114,7 @@ impl TaskBlock for CreatePlan {
                     provider,
                     env: Vec::new(),
                     timeout: entry.timeout(),
+                    trace_id: trace_id.clone(),
                 },
                 "create plan",
                 &project,

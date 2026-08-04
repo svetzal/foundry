@@ -371,6 +371,8 @@ mod tests {
             bytes_written: 1234,
             error: None,
             failure: crate::gateway::AgentFailureMetadata::default(),
+            usage: None,
+            cost: None,
         };
 
         let json = serde_json::to_value(&payload).unwrap();
@@ -392,6 +394,8 @@ mod tests {
             bytes_written: 0,
             error: Some("spawn failed: claude not on PATH".to_string()),
             failure: crate::gateway::AgentFailureMetadata::default(),
+            usage: None,
+            cost: None,
         };
 
         let json = serde_json::to_value(&payload).unwrap();

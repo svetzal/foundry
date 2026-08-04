@@ -92,6 +92,7 @@ impl TaskBlock for CutRelease {
         };
 
         let project = trigger.project.clone();
+        let trace_id = trigger.trace_id.clone();
         let throttle = trigger.throttle;
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
@@ -109,6 +110,7 @@ impl TaskBlock for CutRelease {
                 project: project.clone(),
                 project_path,
                 prompt,
+                trace_id: trace_id.clone(),
             };
             match run_release(agent.as_ref(), shell.as_ref(), input).await {
                 Ok(output) => {

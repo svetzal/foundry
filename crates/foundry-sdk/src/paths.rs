@@ -112,6 +112,22 @@ pub fn agent_config_path() -> PathBuf {
     }
 }
 
+/// Returns the token price-book file path.
+///
+/// This JSON store holds published vendor list rates per model per token type
+/// (see [`crate::token_rates`]). Rates change on vendor schedules rather than
+/// release schedules, so defaults are baked in and this file overrides them
+/// without a rebuild.
+///
+/// Override with `FOUNDRY_TOKEN_RATES_PATH`.
+pub fn token_rates_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_TOKEN_RATES_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("token-rates.json")
+    }
+}
+
 /// Returns the JSONL event output directory.
 ///
 /// Override with `FOUNDRY_EVENTS_DIR`.

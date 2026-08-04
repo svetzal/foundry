@@ -6,9 +6,12 @@ use std::time::Duration;
 use anyhow::Result;
 use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::paths;
 use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
 use foundry_sdk::registry::Stack;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::token_rates::{self, CostEstimate, RateBook};
+use foundry_sdk::token_usage::{self, SessionUsage};
 use tokio::sync::broadcast;
 
 use crate::agent_stream::{
@@ -276,14 +279,18 @@ pub(crate) fn emit_session_started(
         effort: request.effort.as_str().to_string(),
         access: request.access.label().to_string(),
         started_at: Utc::now().to_rfc3339(),
-        trace_id: String::new(),
+        trace_id: request.trace_id.clone().unwrap_or_default(),
     };
+    // Set on the envelope as well as the payload: everything that reconstructs
+    // a workflow reads the envelope, so this is what makes a session's spend
+    // land inside the trace that incurred it rather than beside it.
     let started_event = Event::new(
         EventType::AgentSessionStarted,
         request.project.clone(),
         Throttle::Full,
         serde_json::to_value(&started_payload)?,
-    );
+    )
+    .with_trace_id(request.trace_id.clone());
     // Best-effort: a send error means no Watch subscribers are attached,
     // which is the normal steady state; session emission must not depend on
     // a listener.
@@ -293,10 +300,56 @@ pub(crate) fn emit_session_started(
     Ok(())
 }
 
+/// Recover what a finished session spent, and price it.
+///
+/// Every token Foundry spends passes through a session transcript, so this is
+/// the one place the estate's cost becomes visible. `model_hint` is the model
+/// the gateway resolved for the request — Codex transcripts never name their
+/// own model, and without the hint its spend cannot be priced at all.
+///
+/// A session that ended before writing a terminal usage record returns
+/// `(None, CostEstimate::unmeasured())`: the work happened and the tokens were
+/// billed, so reporting zero would understate the estate. Unmeasured is a
+/// distinct answer from free.
+pub(crate) fn price_session(
+    log_path: &std::path::Path,
+    model_hint: &str,
+) -> (Option<SessionUsage>, CostEstimate) {
+    let usage = match token_usage::parse_transcript(log_path, Some(model_hint)) {
+        Ok(Some(usage)) => usage,
+        Ok(None) => return (None, CostEstimate::unmeasured()),
+        Err(e) => {
+            tracing::debug!(error = %e, path = %log_path.display(), "could not read session transcript for usage");
+            return (None, CostEstimate::unmeasured());
+        }
+    };
+
+    // Read the book per session rather than caching it: rates are runtime data
+    // an operator edits between runs, and a session ends rarely enough that a
+    // few-KB read is irrelevant next to the inference that preceded it.
+    let book =
+        RateBook::load(&paths::token_rates_path()).unwrap_or_else(|_| RateBook::default_seed());
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let cost = token_rates::estimate(&usage, &book, &today);
+
+    if !cost.unpriced_models.is_empty() {
+        // A model missing from the book means real spend is being counted at
+        // zero. Warn rather than debug: this silently understates the estate.
+        tracing::warn!(
+            models = ?cost.unpriced_models,
+            path = %log_path.display(),
+            "agent session spent tokens on models absent from the price book; cost understated"
+        );
+    }
+
+    (Some(usage), cost)
+}
+
 /// Emit an `AgentSessionEnded` event on `event_tx`.
 pub(crate) fn emit_session_ended(
     event_tx: &broadcast::Sender<Event>,
     project: &str,
+    trace_id: Option<String>,
     payload: &AgentSessionEndedPayload,
 ) -> Result<()> {
     let ended_event = Event::new(
@@ -304,7 +357,8 @@ pub(crate) fn emit_session_ended(
         project.to_string(),
         Throttle::Full,
         serde_json::to_value(payload)?,
-    );
+    )
+    .with_trace_id(trace_id);
     // Best-effort: a send error means no Watch subscribers are attached,
     // which is the normal steady state; session emission must not depend on
     // a listener.
@@ -430,6 +484,7 @@ mod claude_agent_gateway_streaming_tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(60),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -501,6 +556,7 @@ mod claude_agent_gateway_streaming_tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -548,6 +604,7 @@ mod claude_agent_gateway_streaming_tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -641,6 +698,7 @@ mod claude_agent_gateway_streaming_tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
         let _ = gateway.invoke(&request).await.unwrap();
 

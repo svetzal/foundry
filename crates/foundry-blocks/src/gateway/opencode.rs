@@ -504,6 +504,7 @@ mod tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -551,6 +552,7 @@ mod tests {
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            trace_id: None,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");

@@ -7,6 +7,38 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Token accounting on agent sessions. Every token Foundry spends is spent inside
+  an agent CLI session, and every session already writes its own usage into its
+  transcript — but nothing read it back, so the estate's cost was invisible.
+  `AgentSessionEnded` now carries `usage` (per-model input/output/cache-read/
+  cache-write counts) and `cost` (USD, plus a `basis` saying how much to trust
+  it). Reconstructed over 30 days of history, this was ~$1,800/month of
+  previously unmeasured spend at list price.
+- A token price book at `~/.foundry/token-rates.json` — published vendor list
+  rates per model per token type, seeded and seed-merged on start exactly like
+  `agents.json`, with each rate carrying the source URL and date it was verified.
+  Rates are runtime data: they change on vendor schedules, not release
+  schedules, so the file is editable without a rebuild. Rates may carry an
+  `until` date and a `then` successor so introductory and negotiated pricing
+  expires on its own date. Override the path with `FOUNDRY_TOKEN_RATES_PATH`.
+- Codex sessions are now priceable. Their transcripts report token counts but
+  never name a model, so their spend could not be costed at all; the gateway now
+  supplies the model it resolved from the request's tier.
+- A session that ends without writing a terminal usage record reports
+  `basis: "unmeasured"` rather than a cost of zero. Spend that happened but
+  could not be measured must not read as free.
+
+### Changed
+
+- `AgentSessionStarted` / `AgentSessionEnded` now carry the `trace_id` of the
+  workflow that spawned the session, on the event envelope as well as in the
+  payload. Previously both were always empty, so token spend could be attributed
+  only to a project and a timestamp — ambiguous the moment two runs on one
+  project overlap. `AgentRequest` gained a `trace_id` field and blocks forward it
+  from their triggering event.
+
 ### Fixed
 
 - `foundry campaign complete <name> --offline` on a `Cancelled` campaign no

@@ -48,6 +48,7 @@ impl TaskBlock for AssessProject {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         let entry = require_project!(self, project);
@@ -66,6 +67,7 @@ impl TaskBlock for AssessProject {
                 agent_file.clone(),
                 provider,
                 entry.timeout(),
+                trace_id.clone(),
             )
             .await
             {
@@ -84,6 +86,7 @@ impl TaskBlock for AssessProject {
                     project_path,
                     agent_file,
                     provider,
+                    trace_id: trace_id.clone(),
                 },
             )
             .await;
@@ -127,6 +130,7 @@ async fn run_assessment_agent(
     agent_file: Option<PathBuf>,
     provider: Option<AgentProvider>,
     timeout: std::time::Duration,
+    trace_id: Option<String>,
 ) -> anyhow::Result<(i64, String, String, String)> {
     let assess_prompt = super::json_output_prompt(
         &format!(
@@ -152,6 +156,7 @@ async fn run_assessment_agent(
             agent_file,
             provider,
             timeout,
+            trace_id,
         },
         "assess project",
     )
@@ -178,6 +183,7 @@ struct NamingAgentArgs {
     project_path: PathBuf,
     agent_file: Option<PathBuf>,
     provider: Option<AgentProvider>,
+    trace_id: Option<String>,
 }
 
 async fn run_naming_agent(
@@ -191,6 +197,7 @@ async fn run_naming_agent(
         project_path,
         agent_file,
         provider,
+        trace_id,
     } = args;
     let name_prompt = format!(
         "Generate a short kebab-case filename (no extension) that describes this assessment: \
@@ -207,6 +214,7 @@ async fn run_naming_agent(
             agent_file,
             provider,
             timeout: std::time::Duration::from_secs(60),
+            trace_id: trace_id.clone(),
         },
         "name assessment",
     )

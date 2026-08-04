@@ -91,6 +91,7 @@ impl TaskBlock for RemediatePipeline {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         // SkipPassing is handled by accepts(); InvalidPayload is an error condition.
@@ -118,6 +119,7 @@ impl TaskBlock for RemediatePipeline {
                 failure_logs,
                 entry,
                 provider,
+                trace_id,
             },
             agent,
         ))
@@ -131,6 +133,7 @@ struct RemediationRequest {
     failure_logs: String,
     entry: foundry_sdk::registry::ProjectEntry,
     provider: Option<AgentProvider>,
+    trace_id: Option<String>,
 }
 
 async fn run_remediation(
@@ -144,6 +147,7 @@ async fn run_remediation(
         failure_logs,
         entry,
         provider,
+        trace_id,
     } = request;
     let project_path = PathBuf::from(&entry.path);
 
@@ -175,6 +179,7 @@ async fn run_remediation(
             provider,
             env: Vec::new(),
             timeout: RemediatePipeline::CLAUDE_TIMEOUT,
+            trace_id: trace_id.clone(),
         },
         "remediate pipeline",
     )

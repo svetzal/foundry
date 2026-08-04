@@ -88,6 +88,7 @@ impl TaskBlock for ExecutePlan {
             project,
             throttle,
             payload,
+            trace_id,
         } = TriggerContext::from_trigger(trigger);
 
         let entry = require_project!(self, project);
@@ -179,6 +180,7 @@ impl TaskBlock for ExecutePlan {
             let gates = plan_payload.chain.gates.as_ref();
             let prompt = build_execution_prompt(&project, plan, principle, gates);
             let ctx = ExecutionContext {
+                trace_id: trace_id.clone(),
                 project: &project,
                 workflow,
                 payload: &execution_payload,

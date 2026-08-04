@@ -19,6 +19,9 @@ use super::change_detection::{
 /// [`execute_agent_block`].
 pub(crate) struct ExecutionContext<'a> {
     pub project: &'a str,
+    /// Trace this execution belongs to, forwarded into the agent session so
+    /// its token spend lands in the right workflow.
+    pub trace_id: Option<String>,
     pub workflow: WorkflowType,
     pub payload: &'a serde_json::Value,
     pub throttle: Throttle,
@@ -183,6 +186,7 @@ pub(crate) async fn execute_agent_block(
             provider,
             env: execution_environment(ctx.workflow),
             timeout: entry.timeout(),
+            trace_id: ctx.trace_id.clone(),
         },
         ctx.label,
     )
@@ -256,6 +260,7 @@ mod tests {
     fn iterate_clean_tree_overrides_to_failure() {
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,
@@ -295,6 +300,7 @@ mod tests {
     fn iterate_clean_tree_no_correction_needed_remains_success() {
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,
@@ -327,6 +333,7 @@ mod tests {
     fn iterate_dirty_tree_remains_success() {
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,
@@ -352,6 +359,7 @@ mod tests {
     fn terminal_provider_failure_uses_account_limit_summary_and_payload() {
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,
@@ -393,6 +401,7 @@ mod tests {
     fn maintain_clean_tree_remains_success() {
         let payload = serde_json::json!({ "project": "p", "workflow": "maintain" });
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Maintain,
             payload: &payload,
@@ -420,6 +429,7 @@ mod tests {
     fn iterate_aux_only_changes_treated_as_clean() {
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,
@@ -458,6 +468,7 @@ mod tests {
         });
         let payload = trigger_payload();
         let ctx = ExecutionContext {
+            trace_id: None,
             project: "proj",
             workflow: WorkflowType::Iterate,
             payload: &payload,

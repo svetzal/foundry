@@ -48,6 +48,7 @@ impl TaskBlock for CheckCharter {
             project,
             throttle,
             payload,
+            ..
         } = TriggerContext::from_trigger(trigger);
         let event_type = trigger.event_type.clone();
 

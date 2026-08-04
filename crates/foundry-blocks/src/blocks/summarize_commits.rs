@@ -60,10 +60,11 @@ impl TaskBlock for SummarizeCommits {
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, CommitsObservedPayload);
         let project = trigger.project.clone();
+        let trace_id = trigger.trace_id.clone();
         let throttle = trigger.throttle;
         let agent = Arc::clone(&self.agent);
 
-        Box::pin(summarize(project, throttle, p, agent))
+        Box::pin(summarize(project, throttle, p, agent, trace_id))
     }
 }
 
@@ -72,6 +73,7 @@ async fn summarize(
     throttle: Throttle,
     observed: CommitsObservedPayload,
     agent: Arc<dyn AgentGateway>,
+    trace_id: Option<String>,
 ) -> anyhow::Result<TaskBlockResult> {
     let project_count = observed.project_count();
     let total_commits = observed.total_commits();
@@ -120,6 +122,7 @@ async fn summarize(
             // is no per-request override to honour. Uses the daemon default.
             provider: None,
             timeout: AGENT_TIMEOUT,
+            trace_id: trace_id.clone(),
         },
         TRACE_LABEL,
     )
