@@ -23,7 +23,8 @@
     {
       "name": "coverage",
       "command": "cargo tarpaulin --workspace --fail-under 61",
-      "required": true
+      "required": true,
+      "timeout": 1200
     },
     {
       "name": "deny",
