@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-18
+
 ### Added
 
 - Optional per-tier effort caps in `~/.foundry/agents.json`. Each provider may
