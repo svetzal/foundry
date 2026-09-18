@@ -41,6 +41,43 @@ flowchart TD
     V -->|fail, retries left| X[[Retry Execution]]
 ```
 
+### Syncing the Checkout With Its Remote
+
+The nightly chain works directly in each project's registered checkout, not in
+a disposable worktree. A checkout that lags `origin` — common on a second host
+whose clones are not in daily use — would otherwise be maintained as stale
+code, and its push would be rejected or, worse, land on a remote that has since
+moved. So `Validate Project` syncs the checkout before anything else touches
+it, on the registered branch:
+
+1. **Dirty tree → refuse.** If `git status --porcelain` is non-empty the
+   project fails with `sync_failure: "dirty_tree"`. Nothing is fetched,
+   merged, or cleaned; the uncommitted work is left for a human.
+2. **Fetch.** `git fetch origin <branch>`. If the fetch fails, or
+   `origin/<branch>` cannot be resolved, the project fails with
+   `sync_failure: "remote_unavailable"`.
+3. **Fast-forward only.** `git merge --ff-only origin/<branch>`. The number of
+   commits applied is recorded as `fast_forwarded` on
+   `project_validation_completed` (`0` when already level, or when the local
+   branch is only ahead).
+4. **Diverged → refuse.** If both the local branch and the remote have moved,
+   no fast-forward is possible and the project fails with
+   `sync_failure: "diverged"`. The checkout is left exactly as found.
+
+A failed sync sets `status: "error"`, so `Route Project Workflow` stops the
+chain (and, inside a maintenance cycle, reports the project run as failed).
+
+Before pushing, `Commit and Push` repeats the fetch and fast-forward in case
+the remote moved *during* the run. If it did, the maintenance commit is
+replayed with `git rebase origin/<branch>` and pushed only if the rebase
+applied cleanly. A conflicting rebase is aborted and nothing is pushed: the
+commit stays on the local branch for a human, and `project_changes_committed`
+records `push_failure: "push_rejected_diverged"`. A failed pre-push fetch
+records `push_failure: "remote_unavailable"`. Foundry never force-pushes.
+
+The one-shot `foundry task` / campaign path is unaffected — it already builds
+its isolated worktree from the fetched remote tip.
+
 ### Routing Logic
 
 `Route Project Workflow` reads the `actions` flags forwarded in the
@@ -82,6 +119,11 @@ foundry emit maintenance_run_started my-project
 
 Under `dry_run`, only `iteration_requested` or `maintenance_requested` are
 emitted (by the Observer router). No execution blocks run.
+
+`Validate Project` still checks for a dirty tree under `dry_run`, but it does
+not fetch or merge. It reports the fast-forward that *would* happen, measured
+against the last-fetched `origin/<branch>`, as `fast_forwarded` with
+`dry_run: true` on `project_validation_completed`.
 
 ## Agent Capabilities
 

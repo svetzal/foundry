@@ -29,6 +29,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - A session that ends without writing a terminal usage record reports
   `basis: "unmeasured"` rather than a cost of zero. Spend that happened but
   could not be measured must not read as free.
+- The nightly per-project chain now syncs each registered checkout with its
+  remote before any work. `Validate Project` refuses a dirty tree
+  (`sync_failure: "dirty_tree"`), fetches `origin/<branch>`, fast-forwards
+  only, and refuses a diverged branch (`sync_failure: "diverged"`) — in every
+  refusal leaving the checkout untouched. `project_validation_completed`
+  records how many commits were fast-forwarded (`fast_forwarded`). Previously
+  the chain never fetched, so a clone lagging `origin` was maintained as stale
+  code. Under `dry_run` nothing is fetched or merged; the would-be count is
+  reported with `dry_run: true`.
+- `Commit and Push` fetches and fast-forwards before pushing. If the remote
+  moved during the run, the maintenance commit is rebased onto it and pushed
+  only if the rebase is clean; otherwise the rebase is aborted, the commit is
+  left on the local branch for a human, and `project_changes_committed`
+  records `push_failure: "push_rejected_diverged"`. Never forces.
 
 ### Changed
 

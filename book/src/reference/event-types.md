@@ -117,11 +117,14 @@ Every event carries these common fields:
 
 **`project_validation_completed` payload**
 
-| Field       | Type              | Description                                            |
-| ----------- | ----------------- | ------------------------------------------------------ |
-| `status`    | string            | `"ok"`, `"error"`, or `"skipped"`                      |
-| `reason`    | string (optional) | Human-readable explanation when status is not `"ok"`   |
-| `has_gates` | bool (optional)   | Whether `.hone-gates.json` is present (only on `"ok"`) |
+| Field            | Type              | Description                                                                                                  |
+| ---------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `status`         | string            | `"ok"`, `"error"`, or `"skipped"`                                                                            |
+| `reason`         | string (optional) | Human-readable explanation when status is not `"ok"`                                                         |
+| `has_gates`      | bool (optional)   | Whether `.hone-gates.json` is present (only on `"ok"`)                                                       |
+| `fast_forwarded` | int (optional)    | Commits fast-forwarded from `origin/<branch>` before work began (only on `"ok"`)                             |
+| `sync_failure`   | string (optional) | Typed reason the checkout sync was refused: `"dirty_tree"`, `"diverged"`, or `"remote_unavailable"`          |
+| `dry_run`        | bool (optional)   | `true` when the sync was simulated; `fast_forwarded` is then the count that would be applied                 |
 
 **`project_iteration_completed` payload**
 
@@ -145,10 +148,11 @@ Every event carries these common fields:
 
 **`project_changes_committed` payload**
 
-| Field     | Type   | Description                                |
-| --------- | ------ | ------------------------------------------ |
-| `cve`     | string | CVE or `"unknown"` (from remediation path) |
-| `message` | string | Git commit message used                    |
+| Field          | Type              | Description                                                                                                                   |
+| -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `cve`          | string            | CVE or `"unknown"` (from remediation path)                                                                                    |
+| `message`      | string            | Git commit message used                                                                                                       |
+| `push_failure` | string (optional) | Why the commit was not pushed: `"push_rejected_diverged"` (rebase onto the moved remote conflicted) or `"remote_unavailable"` |
 
 **`project_changes_pushed` payload**
 

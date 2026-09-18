@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    ProjectChangesCommittedPayload, ProjectChangesPushedPayload, ProjectCompletedPayload,
-    RemediationCompletedPayload,
+    GitSyncFailure, ProjectChangesCommittedPayload, ProjectChangesPushedPayload,
+    ProjectCompletedPayload, RemediationCompletedPayload,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
@@ -14,6 +14,7 @@ use foundry_sdk::loop_context::has_loop_context;
 use crate::gateway::ShellGateway;
 
 use super::SimulatedSuccess;
+use super::checkout_sync::{PrePushSync, integrate_remote_before_push};
 
 task_block_new! {
     /// Commits staged changes and pushes to the remote.
@@ -23,7 +24,14 @@ task_block_new! {
     /// - Self-filters when the trigger payload explicitly sets `"changes": false`.
     /// - Checks `git status --porcelain`; self-filters when the tree is clean.
     /// - Runs `git add -A` then `git commit`.
-    /// - Runs `git push` only when `registry.actions.push` is `true`.
+    /// - Runs `git push` only when `registry.actions.push` is `true`. Before
+    ///   pushing it fetches `origin/<branch>` and fast-forwards onto it; if the
+    ///   remote moved during the run the local commit is rebased with
+    ///   `git rebase origin/<branch>` and pushed only when that is clean.
+    ///   A conflicting rebase is aborted, nothing is pushed, the commit stays
+    ///   on the local branch, and `ProjectChangesCommitted` records
+    ///   `push_failure: "push_rejected_diverged"`. A failed fetch records
+    ///   `push_failure: "remote_unavailable"`. Never forces.
     /// - Emits [`EventType::ProjectChangesCommitted`] after a successful commit.
     /// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
     ///
@@ -83,9 +91,9 @@ impl CommitAndPush {
         // Extract synchronously before any .await point so the lock is not held across yields.
         let entry_data = super::read_registry(&registry)?
             .find_project(&project)
-            .map(|e| (e.path.clone(), e.actions.push));
+            .map(|e| (e.path.clone(), e.branch.clone(), e.actions.push));
 
-        let Some((path_str, push_enabled)) = entry_data else {
+        let Some((path_str, branch, push_enabled)) = entry_data else {
             tracing::warn!(project = %project, "project not found in registry");
             return Ok(TaskBlockResult::project_not_found(&project));
         };
@@ -105,7 +113,18 @@ impl CommitAndPush {
             return Ok(TaskBlockResult::success("No changes to commit", vec![]));
         };
 
-        let push_payload = push_if_enabled(&*shell, path, &project, &cve, push_enabled).await?;
+        let push = if push_enabled {
+            push_changes(&*shell, path, &project, &branch, &cve).await?
+        } else {
+            tracing::info!(%project, "push disabled in registry, skipping");
+            PushOutcome::NotPushed
+        };
+
+        let (push_payload, push_failure) = match push {
+            PushOutcome::Pushed(payload) => (Some(payload), None),
+            PushOutcome::NotPushed => (None, None),
+            PushOutcome::Refused(failure) => (None, Some(failure)),
+        };
 
         let events = build_commit_push_events(
             &project,
@@ -115,11 +134,22 @@ impl CommitAndPush {
                 cve: cve.clone(),
                 message: commit_msg.clone(),
                 dry_run: None,
+                push_failure,
             },
             push_payload.as_ref(),
         )?;
 
-        Ok(TaskBlockResult::success("Committed and pushed changes", events))
+        // Record, not fail: the refusal travels as a typed `push_failure` on the
+        // emitted payload. Returning a failed result would be retried by the
+        // engine, and the retry — now on a clean tree — would report "No changes
+        // to commit" and erase the refusal entirely.
+        let summary = match push_failure {
+            Some(failure) => {
+                format!("Committed locally; push refused ({failure}) — commit left on local branch")
+            }
+            None => "Committed and pushed changes".to_string(),
+        };
+        Ok(TaskBlockResult::success(summary, events))
     }
 }
 
@@ -220,6 +250,7 @@ impl SimulatedSuccess for CommitAndPush {
                 cve: data.cve.clone(),
                 message: commit_message(&trigger.event_type, &trigger.project),
                 dry_run: Some(true),
+                push_failure: None,
             },
             push_payload.as_ref(),
         )
@@ -314,22 +345,34 @@ async fn commit_changes(
     }
 }
 
-/// Push the committed changes when `push_enabled`; returns the push payload on success.
-async fn push_if_enabled(
+/// Result of the push step.
+enum PushOutcome {
+    Pushed(ProjectChangesPushedPayload),
+    /// Push disabled, or `git push` itself failed (logged).
+    NotPushed,
+    /// The pre-push sync refused; nothing was pushed.
+    Refused(GitSyncFailure),
+}
+
+/// Integrate any remote movement, then push. Never forces.
+async fn push_changes(
     shell: &dyn ShellGateway,
     path: &std::path::Path,
     project: &str,
+    branch: &str,
     cve: &str,
-    push_enabled: bool,
-) -> anyhow::Result<Option<ProjectChangesPushedPayload>> {
-    if !push_enabled {
-        tracing::info!(%project, "push disabled in registry, skipping");
-        return Ok(None);
+) -> anyhow::Result<PushOutcome> {
+    if let PrePushSync::Refused { failure, detail } =
+        integrate_remote_before_push(shell, path, project, branch).await?
+    {
+        tracing::warn!(%project, %failure, %detail, "push refused; commit left on local branch");
+        return Ok(PushOutcome::Refused(failure));
     }
+
     tracing::info!(%project, "pushing changes");
     let push = shell.run(path, "git", &["push"], None, None).await?;
     if push.success {
-        Ok(Some(ProjectChangesPushedPayload {
+        Ok(PushOutcome::Pushed(ProjectChangesPushedPayload {
             project: project.to_string(),
             cve: cve.to_string(),
             message: None,
@@ -337,7 +380,7 @@ async fn push_if_enabled(
         }))
     } else {
         tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
-        Ok(None)
+        Ok(PushOutcome::NotPushed)
     }
 }
 
@@ -447,6 +490,20 @@ mod tests {
             // git commit
             CommandResult {
                 stdout: "[main abc1234] committed\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git fetch origin main
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git merge --ff-only origin/main (remote unmoved)
+            CommandResult {
+                stdout: "Already up to date.\n".to_string(),
                 stderr: String::new(),
                 exit_code: 0,
                 success: true,
@@ -575,6 +632,109 @@ mod tests {
         assert!(result.success);
         let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
+    }
+
+    fn ok(stdout: &str) -> CommandResult {
+        CommandResult {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
+
+    fn fail(stderr: &str) -> CommandResult {
+        CommandResult {
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            exit_code: 1,
+            success: false,
+        }
+    }
+
+    fn git_calls(shell: &FakeShellGateway) -> Vec<String> {
+        shell.invocations().into_iter().map(|i| i.args.join(" ")).collect()
+    }
+
+    #[tokio::test]
+    async fn remote_moved_and_clean_rebase_pushes() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(" M file.txt\n"),                                     // status
+            ok(""),                                                  // add -A
+            ok("[main abc1234] committed\n"),                        // commit
+            ok(""),                                                  // fetch origin main
+            fail("fatal: Not possible to fast-forward, aborting."),  // merge --ff-only
+            ok("Successfully rebased and updated refs/heads/main."), // rebase
+            ok(""),                                                  // push
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
+        assert!(result.events[0].payload.get("push_failure").is_none());
+        assert_eq!(
+            git_calls(&shell)[3..],
+            [
+                "fetch origin main",
+                "merge --ff-only origin/main",
+                "rebase origin/main",
+                "push"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_moved_and_rebase_conflicts_records_push_rejected_diverged() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(" M file.txt\n"),
+            ok(""),
+            ok("[main abc1234] committed\n"),
+            ok(""),
+            fail("fatal: Not possible to fast-forward, aborting."),
+            fail("CONFLICT (content): Merge conflict in file.txt"),
+            ok(""), // rebase --abort
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_committed"], "no push event on refusal");
+        assert_eq!(result.events[0].payload["push_failure"], "push_rejected_diverged");
+        assert!(result.summary.contains("push_rejected_diverged"), "{}", result.summary);
+        let calls = git_calls(&shell);
+        assert_eq!(calls.last().map(String::as_str), Some("rebase --abort"));
+        assert!(!calls.iter().any(|c| c.starts_with("push")), "must not push: {calls:?}");
+        assert!(!calls.iter().any(|c| c.contains("--force")), "must never force: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn failed_pre_push_fetch_records_remote_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(" M file.txt\n"),
+            ok(""),
+            ok("[main abc1234] committed\n"),
+            fail("fatal: could not read from remote repository"),
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger("my-project", "CVE-2026-0005");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["push_failure"], "remote_unavailable");
+        assert!(!git_calls(&shell).iter().any(|c| c.starts_with("push")));
     }
 
     #[tokio::test]

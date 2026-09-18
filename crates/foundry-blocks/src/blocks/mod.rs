@@ -9,6 +9,7 @@ use foundry_sdk::task_block::TaskBlockResult;
 
 mod agent_helpers;
 mod change_detection;
+mod checkout_sync;
 mod digest_io;
 mod event_builders;
 mod execution;

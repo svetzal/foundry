@@ -27,6 +27,48 @@ pub struct ProjectCompletedPayload {
     pub failure: AgentFailureMetadata,
 }
 
+/// Typed reason a project's checkout could not be kept in step with its remote.
+///
+/// Recorded on `ProjectValidationCompleted` (the pre-work sync that opens every
+/// per-project maintenance run) and on `ProjectChangesCommitted` (the pre-push
+/// sync in `CommitAndPush`). Serialized as a `snake_case` string so consumers
+/// can match on it without parsing the human-readable `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSyncFailure {
+    /// `git status --porcelain` was non-empty before any work began; nothing was touched.
+    DirtyTree,
+    /// The local branch and `origin/<branch>` have both moved, so a
+    /// fast-forward is impossible; nothing was touched.
+    Diverged,
+    /// `git fetch origin <branch>` failed, or `origin/<branch>` could not be
+    /// resolved, so the checkout's position relative to the remote is unknown.
+    RemoteUnavailable,
+    /// The remote moved during the run and rebasing the local commit onto it
+    /// did not apply cleanly. The rebase was aborted and the commit was left on
+    /// the local branch for a human; nothing was pushed.
+    PushRejectedDiverged,
+}
+
+impl GitSyncFailure {
+    /// The stable wire form (`"dirty_tree"`, `"diverged"`, …).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirtyTree => "dirty_tree",
+            Self::Diverged => "diverged",
+            Self::RemoteUnavailable => "remote_unavailable",
+            Self::PushRejectedDiverged => "push_rejected_diverged",
+        }
+    }
+}
+
+impl std::fmt::Display for GitSyncFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Payload for `ProjectChangesCommitted`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectChangesCommittedPayload {
@@ -35,6 +77,10 @@ pub struct ProjectChangesCommittedPayload {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+    /// Set when the commit landed locally but could not be pushed because the
+    /// remote diverged from it (see [`GitSyncFailure::PushRejectedDiverged`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_failure: Option<GitSyncFailure>,
 }
 
 /// Payload for `ProjectChangesPushed`.
@@ -62,4 +108,16 @@ pub struct ProjectValidationCompletedPayload {
     /// Human-readable explanation when `status` is `"error"` or `"skipped"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Typed reason when `status` is `"error"` because the checkout could not
+    /// be synced with its remote before work began.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_failure: Option<GitSyncFailure>,
+    /// Commits fast-forwarded from `origin/<branch>` before work began. Under
+    /// `dry_run` this is the count that *would* be fast-forwarded, measured
+    /// against the last-fetched remote-tracking ref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forwarded: Option<u32>,
+    /// `true` when the checkout sync was simulated (no fetch, no merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
 }
