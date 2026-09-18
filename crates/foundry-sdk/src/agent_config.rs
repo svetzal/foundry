@@ -14,6 +14,11 @@
 //! migrates retired canonical model aliases. Custom model overrides remain
 //! untouched. New providers, tiers, effort levels, and replacement defaults
 //! therefore reach existing installs automatically.
+//!
+//! A provider may also declare optional per-tier `effort_caps` — a ceiling on
+//! the reasoning effort any request for that tier may use (for example
+//! `{"deep": "high", "balanced": "medium"}`). Caps are operator policy: the seed
+//! carries none, and the seed merge never adds, removes, or rewrites them.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,7 +31,8 @@ use crate::gateway::{AgentProvider, ModelTier, ReasoningEffort};
 /// Current agent-config store format version.
 pub const AGENT_CONFIG_VERSION: u32 = 1;
 
-/// Per-provider resolution maps: tier→model id and effort→CLI token.
+/// Per-provider resolution maps: tier→model id, effort→CLI token, and optional
+/// per-tier effort caps.
 ///
 /// On disk these may be partial; missing keys fall back to
 /// [`ProviderModels::default_for`]. After [`AgentConfigStore::resolved`] they
@@ -39,6 +45,12 @@ pub struct ProviderModels {
     /// Abstract reasoning effort → the provider CLI's reasoning-effort token.
     #[serde(default)]
     pub effort: BTreeMap<ReasoningEffort, String>,
+    /// Optional ceiling on reasoning effort per model tier. A request whose
+    /// effort exceeds its tier's cap is lowered to the cap before it is mapped
+    /// to a CLI token; a lower request is never raised. Absent tiers are
+    /// uncapped. Omitted from the JSON when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effort_caps: BTreeMap<ModelTier, ReasoningEffort>,
 }
 
 impl ProviderModels {
@@ -56,6 +68,7 @@ impl ProviderModels {
             ProviderModels {
                 models: models.iter().map(|(t, m)| (*t, (*m).to_string())).collect(),
                 effort: effort.iter().map(|(e, v)| (*e, (*v).to_string())).collect(),
+                effort_caps: BTreeMap::new(),
             }
         }
         match provider {
@@ -123,6 +136,13 @@ impl ProviderModels {
             .get(&effort)
             .cloned()
             .unwrap_or_else(|| Self::default_for(provider).effort[&effort].clone())
+    }
+
+    /// The effort a request for `tier` actually runs at: `requested`, lowered
+    /// to the tier's cap when one is configured and `requested` exceeds it.
+    /// Never raises a request; an uncapped tier returns `requested` unchanged.
+    pub fn effective_effort(&self, tier: ModelTier, requested: ReasoningEffort) -> ReasoningEffort {
+        self.effort_caps.get(&tier).map_or(requested, |cap| requested.min(*cap))
     }
 }
 
@@ -213,6 +233,7 @@ impl AgentConfigStore {
             for (effort, token) in &overrides.effort {
                 resolved.effort.insert(*effort, token.clone());
             }
+            resolved.effort_caps.clone_from(&overrides.effort_caps);
         }
         resolved
     }
@@ -223,7 +244,8 @@ impl AgentConfigStore {
 ///
 /// Returns `true` when anything changed (the caller should persist). Only
 /// previously shipped canonical aliases are replaced; all other hand-edited
-/// model ids and effort tokens survive.
+/// model ids and effort tokens survive. `effort_caps` are operator policy and
+/// are never added, removed, or rewritten.
 pub fn merge_default_seed_into(store: &mut AgentConfigStore) -> bool {
     let mut changed = false;
     for provider in [
@@ -412,6 +434,92 @@ mod tests {
         let claude = &store.providers[&AgentProvider::Claude];
         assert_eq!(claude.models[&ModelTier::Deep], "custom-opus");
         assert_eq!(claude.models[&ModelTier::Balanced], "custom-sonnet");
+    }
+
+    fn codex_with_caps() -> ProviderModels {
+        let mut pm = ProviderModels::default_for(AgentProvider::Codex);
+        pm.effort_caps.insert(ModelTier::Deep, ReasoningEffort::High);
+        pm.effort_caps.insert(ModelTier::Balanced, ReasoningEffort::Medium);
+        pm
+    }
+
+    #[test]
+    fn effort_cap_lowers_a_higher_request() {
+        let pm = codex_with_caps();
+        assert_eq!(
+            pm.effective_effort(ModelTier::Balanced, ReasoningEffort::High),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            pm.effective_effort(ModelTier::Deep, ReasoningEffort::Max),
+            ReasoningEffort::High
+        );
+    }
+
+    #[test]
+    fn effort_cap_does_not_raise_a_lower_request() {
+        let pm = codex_with_caps();
+        assert_eq!(
+            pm.effective_effort(ModelTier::Balanced, ReasoningEffort::Low),
+            ReasoningEffort::Low
+        );
+        assert_eq!(
+            pm.effective_effort(ModelTier::Deep, ReasoningEffort::High),
+            ReasoningEffort::High
+        );
+    }
+
+    #[test]
+    fn missing_effort_cap_is_a_no_op() {
+        let pm = codex_with_caps();
+        assert_eq!(
+            pm.effective_effort(ModelTier::Fast, ReasoningEffort::Max),
+            ReasoningEffort::Max
+        );
+        let uncapped = ProviderModels::default_for(AgentProvider::Codex);
+        for tier in ModelTier::ALL {
+            for effort in ReasoningEffort::ALL {
+                assert_eq!(uncapped.effective_effort(tier, effort), effort);
+            }
+        }
+    }
+
+    #[test]
+    fn default_seed_carries_no_effort_caps_and_omits_the_key() {
+        let seed = AgentConfigStore::default_seed();
+        assert!(seed.providers.values().all(|pm| pm.effort_caps.is_empty()));
+        let json = serde_json::to_string(&seed).unwrap();
+        assert!(!json.contains("effort_caps"), "json: {json}");
+    }
+
+    #[test]
+    fn resolved_carries_operator_effort_caps() {
+        let json = r#"{"version":1,"providers":{"codex":{"effort_caps":{"deep":"high","balanced":"medium"}}}}"#;
+        let store: AgentConfigStore = serde_json::from_str(json).unwrap();
+        let resolved = store.resolved(AgentProvider::Codex);
+        assert_eq!(resolved.effort_caps[&ModelTier::Deep], ReasoningEffort::High);
+        assert_eq!(resolved.effort_caps[&ModelTier::Balanced], ReasoningEffort::Medium);
+        // Caps on one provider do not leak to another.
+        assert!(store.resolved(AgentProvider::Claude).effort_caps.is_empty());
+    }
+
+    #[test]
+    fn merge_preserves_operator_effort_caps_and_adds_none() {
+        let mut store = AgentConfigStore::default_seed();
+        store
+            .providers
+            .get_mut(&AgentProvider::Codex)
+            .unwrap()
+            .effort_caps
+            .insert(ModelTier::Balanced, ReasoningEffort::Medium);
+        store.providers.get_mut(&AgentProvider::Claude).unwrap().effort.clear();
+
+        assert!(merge_default_seed_into(&mut store));
+        let codex = &store.providers[&AgentProvider::Codex];
+        assert_eq!(codex.effort_caps.len(), 1);
+        assert_eq!(codex.effort_caps[&ModelTier::Balanced], ReasoningEffort::Medium);
+        assert!(store.providers[&AgentProvider::Claude].effort_caps.is_empty());
+        assert!(store.providers[&AgentProvider::Opencode].effort_caps.is_empty());
     }
 
     #[test]

@@ -265,6 +265,7 @@ pub(crate) fn strip_frontmatter(s: &str) -> String {
 pub(crate) fn emit_session_started(
     event_tx: &broadcast::Sender<Event>,
     request: &AgentRequest,
+    effective_effort: ReasoningEffort,
     session_id: &str,
     agent_type: &str,
     log_path: &std::path::Path,
@@ -277,6 +278,7 @@ pub(crate) fn emit_session_started(
         source_log_path: log_path.to_path_buf(),
         tier: request.tier.as_str().to_string(),
         effort: request.effort.as_str().to_string(),
+        effective_effort: effective_effort.as_str().to_string(),
         access: request.access.label().to_string(),
         started_at: Utc::now().to_rfc3339(),
         trace_id: request.trace_id.clone().unwrap_or_default(),

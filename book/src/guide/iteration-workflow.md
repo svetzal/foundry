@@ -264,6 +264,55 @@ level:
 | Retry | Coding | Sonnet | Full | Fix gate failures |
 | Summarisation | Quick | Haiku | Read-only | Generate headline and summary |
 
+### Agent profile (`~/.foundry/agents.json`)
+
+Blocks ask for a model *tier* (`deep`, `balanced`, `fast`) and a reasoning
+*effort* (`minimal`, `low`, `medium`, `high`, `max`). They never name a
+concrete model. `~/.foundry/agents.json` maps these values to concrete values
+for each provider. Set `FOUNDRY_AGENT_CONFIG_PATH` to use a different file.
+
+- `models` maps a tier to the model id that the provider CLI gets.
+- `effort` maps an effort level to the provider CLI's reasoning-effort token.
+- `effort_caps` (optional) sets the maximum effort for a tier.
+
+The daemon writes the full default seed on first start. On each restart, it
+adds the provider, tier, and effort keys that are missing. It does not change
+your model or token edits.
+
+#### Per-tier effort caps
+
+Several blocks ask for `high` effort on the `balanced` tier. Use a cap to
+limit effort for each model tier, not only for each requested level:
+
+```json
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "models": { "deep": "gpt-6-astra", "balanced": "gpt-5.6-sol" },
+      "effort_caps": { "deep": "high", "balanced": "medium" }
+    },
+    "claude": {
+      "effort_caps": { "deep": "high" }
+    }
+  }
+}
+```
+
+Foundry applies the cap before it maps the effort to a CLI token:
+
+- If the requested effort is more than the tier's cap, Foundry uses the cap.
+  With the example above, a `balanced` request for `high` runs at `medium`.
+- If the requested effort is less than the cap, Foundry does not change it.
+- If a tier has no cap, Foundry does not change the requested effort.
+
+The default seed has no caps. The seed merge does not add, remove, or change
+caps. Caps are your policy.
+
+The `AgentSessionStarted` event records both values. `effort` is the level the
+block requested. `effective_effort` is the level the session used after the
+cap. Compare the two fields to see where a cap applied.
+
 All agent invocations use the `--print` flag (non-interactive output) and
 `--dangerously-skip-permissions` (unattended execution). Blocks that
 reference a project agent file pass it via `--agent`. Timeouts are set

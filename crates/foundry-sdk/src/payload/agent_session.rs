@@ -17,7 +17,13 @@ pub struct AgentSessionStartedPayload {
     pub working_dir: std::path::PathBuf,
     pub source_log_path: std::path::PathBuf,
     pub tier: String,
+    /// The reasoning effort the block requested.
     pub effort: String,
+    /// The reasoning effort the session actually runs at, after the provider's
+    /// per-tier `effort_caps` are applied. Equal to `effort` when no cap
+    /// applies. Empty on events recorded before caps existed.
+    #[serde(default)]
+    pub effective_effort: String,
     pub access: String,
     pub started_at: String,
     pub trace_id: String,

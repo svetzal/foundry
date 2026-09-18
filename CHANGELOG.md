@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-tier effort caps in `~/.foundry/agents.json`. Each provider may
+  declare `effort_caps` keyed by model tier (for example
+  `{"deep": "high", "balanced": "medium"}`); a request whose reasoning effort
+  exceeds its tier's cap is lowered to the cap before it is mapped to the
+  provider's CLI token, and a lower request is never raised. Absent caps change
+  nothing, the default seed carries none, and the seed merge never adds or
+  rewrites them. `AgentSessionStarted` now carries `effective_effort` alongside
+  the requested `effort`, so a cap is visible in the event stream.
+
 ## [0.36.0] - 2026-09-18
 
 ### Added

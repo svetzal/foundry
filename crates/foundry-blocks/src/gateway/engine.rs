@@ -244,7 +244,8 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
 
             let provider = self.adapter.provider();
             let model = self.models.model(request.tier, provider);
-            let effort = self.models.effort_token(request.effort, provider);
+            let effective_effort = self.models.effective_effort(request.tier, request.effort);
+            let effort = self.models.effort_token(effective_effort, provider);
 
             let inv = with_request_environment(
                 self.adapter.build_invocation(
@@ -262,6 +263,7 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
             emit_session_started(
                 &self.event_tx,
                 request,
+                effective_effort,
                 &session_id,
                 self.adapter.agent_type(),
                 &log_path,
@@ -413,10 +415,94 @@ mod tests {
         assert_eq!(started.event_type, EventType::AgentSessionStarted);
         assert_eq!(started.payload["agent_type"], "echo-test");
         assert_eq!(started.payload["project"], "test-project");
+        assert_eq!(started.payload["effective_effort"], "medium");
 
         let ended = rx.recv().await.expect("ended event");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
         assert_eq!(ended.payload["status"], "ok");
+    }
+
+    /// Delegates to [`EchoAdapter`] but records the effort token it was handed.
+    struct EffortCapturingAdapter(Arc<std::sync::Mutex<Option<String>>>);
+
+    impl CliAgentAdapter for EffortCapturingAdapter {
+        fn provider(&self) -> AgentProvider {
+            EchoAdapter.provider()
+        }
+
+        fn agent_type(&self) -> &'static str {
+            EchoAdapter.agent_type()
+        }
+
+        fn command(&self) -> &'static str {
+            EchoAdapter.command()
+        }
+
+        fn build_invocation(
+            &self,
+            request: &AgentRequest,
+            model: &str,
+            effort: &str,
+            session_id: &str,
+            session_log_dir: &Path,
+        ) -> Invocation {
+            *self.0.lock().expect("capture lock") = Some(effort.to_string());
+            EchoAdapter.build_invocation(request, model, effort, session_id, session_log_dir)
+        }
+
+        fn interpret<'a>(
+            &'a self,
+            outcome: &'a AgentStreamOutcome,
+            session: SessionContext<'a>,
+            inv: &'a Invocation,
+            request: &'a AgentRequest,
+            shell: &'a Arc<dyn ShellGateway>,
+        ) -> Pin<Box<dyn Future<Output = Interpreted> + Send + 'a>> {
+            EchoAdapter.interpret(outcome, session, inv, request, shell)
+        }
+    }
+
+    #[tokio::test]
+    async fn effort_cap_lowers_the_cli_token_and_is_recorded_in_session_started() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let runner = Arc::new(FakeRunner {
+            transcript: vec!["ok".to_string()],
+            last_message: None,
+            outcome: ok_outcome(),
+        });
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let mut models = ProviderModels::default_for(AgentProvider::Claude);
+        models.effort_caps.insert(ModelTier::Balanced, ReasoningEffort::Medium);
+        let gateway = CliAgentGateway::new_with_adapter(
+            FakeShellGateway::success(),
+            runner,
+            tmp_dir("engine-cap-test"),
+            tx,
+            EffortCapturingAdapter(Arc::clone(&captured)),
+        )
+        .with_models(models);
+
+        let request = AgentRequest {
+            prompt: "hello".to_string(),
+            project: "test-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::High,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+        };
+
+        gateway.invoke(&request).await.expect("invoke ok");
+
+        assert_eq!(captured.lock().expect("capture lock").as_deref(), Some("medium"));
+        let started = rx.recv().await.expect("started event");
+        assert_eq!(started.event_type, EventType::AgentSessionStarted);
+        assert_eq!(started.payload["effort"], "high");
+        assert_eq!(started.payload["effective_effort"], "medium");
     }
 
     #[tokio::test]

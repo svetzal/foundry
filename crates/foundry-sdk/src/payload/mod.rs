@@ -342,7 +342,8 @@ mod tests {
             working_dir: PathBuf::from("/tmp/demo"),
             source_log_path: PathBuf::from("/home/u/.foundry/agent-sessions/11111111.jsonl"),
             tier: "balanced".to_string(),
-            effort: "medium".to_string(),
+            effort: "high".to_string(),
+            effective_effort: "medium".to_string(),
             access: "full".to_string(),
             started_at: "2026-05-09T12:00:00Z".to_string(),
             trace_id: "trace-abc".to_string(),
@@ -355,7 +356,8 @@ mod tests {
         assert_eq!(json["working_dir"], "/tmp/demo");
         assert_eq!(json["source_log_path"], "/home/u/.foundry/agent-sessions/11111111.jsonl");
         assert_eq!(json["tier"], "balanced");
-        assert_eq!(json["effort"], "medium");
+        assert_eq!(json["effort"], "high");
+        assert_eq!(json["effective_effort"], "medium");
         assert_eq!(json["access"], "full");
         assert_eq!(json["started_at"], "2026-05-09T12:00:00Z");
         assert_eq!(json["trace_id"], "trace-abc");
