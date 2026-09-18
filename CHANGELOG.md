@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-18
+
 ### Added
 
 - Token accounting on agent sessions. Every token Foundry spends is spent inside
