@@ -38,6 +38,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
   only to a project and a timestamp — ambiguous the moment two runs on one
   project overlap. `AgentRequest` gained a `trace_id` field and blocks forward it
   from their triggering event.
+- Supply-chain auto-fix (`RemediateSupplyChain`, still gated dark behind
+  `FOUNDRY_SUPPLY_CHAIN_REMEDIATE`) now prefers a full compatible dependency
+  update over a single-package pin. For a project with fixable findings it first
+  runs the ecosystem's full update (`cargo update`, `uv lock --upgrade`,
+  `npm update` / `bun update`), re-runs the same scanner that detected the
+  findings to confirm which cleared, re-runs the gates, and commits the lockfile
+  as `chore: update dependency lockfile to latest compatible versions (fixes
+  <CVE>)`. Only findings the full update does not clear — or every finding, when
+  it fails, clears nothing, or fails a required gate — fall back to the previous
+  targeted pin (`cargo update -p <pkg> --precise <ver>`, `uv lock
+  --upgrade-package`, or the manifest rewrite), still committed as
+  `chore(deps): bump …`. Each outcome's `detail` now starts with the path taken,
+  `full_update` or `targeted_pin`. The verify-and-rollback contract is
+  unchanged: dirty trees and gate-less repos are skipped, and any failure
+  restores the touched files.
 
 ### Fixed
 

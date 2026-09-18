@@ -23,17 +23,27 @@
 //!
 //! Every fix runs the verify-and-rollback rail, all reversible (commit-only,
 //! never pushed):
-//! 1. refuse to touch a project whose working tree is not clean;
-//! 2. apply the stack-specific fix (Cargo precise update, npm/bun lock update
-//!    or manifest rewrite, or uv requirement/lock update);
-//! 3. re-run the repo's own gates;
-//! 4. on a passing required-gate set → commit only the touched dependency
-//!    files; otherwise restore those files from HEAD.
+//! 1. refuse to touch a project whose working tree is not clean, or one with no
+//!    gates to verify against;
+//! 2. **full update first** (owner policy, 2026-09-18): run the ecosystem's full
+//!    compatible update (`cargo update`, `uv lock --upgrade`, `npm update` /
+//!    `bun update`), re-run the same scanner that detected the findings to
+//!    confirm which ones cleared, then re-run the repo's gates. On a cleared
+//!    finding and passing required gates → commit the lockfile as
+//!    `chore: update dependency lockfile to latest compatible versions (fixes …)`;
+//!    otherwise restore the touched files from HEAD;
+//! 3. **targeted fallback**: every finding the full update did not clear (or
+//!    every finding, when the full update was reverted) gets the stack-specific
+//!    pin (Cargo precise update, npm/bun lock update or manifest rewrite, or uv
+//!    requirement/lock update), re-verified by the gates and committed as
+//!    `chore(deps): bump …` or restored from HEAD.
 //!
-//! Committing each applied fix immediately means a later finding's rollback
-//! cannot clobber an earlier success. TypeScript and Python fixers rewrite a
-//! matching direct or override requirement before refreshing the lockfile;
-//! transitive fixes target the audit tool's explicit `fix_package` when present.
+//! Each outcome's `detail` starts with the path taken — `full_update` or
+//! `targeted_pin`. Committing each applied fix immediately means a later
+//! finding's rollback cannot clobber an earlier success. TypeScript and Python
+//! targeted fixers rewrite a matching direct or override requirement before
+//! refreshing the lockfile; transitive fixes target the audit tool's explicit
+//! `fix_package` when present.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -46,7 +56,10 @@ use foundry_sdk::registry::{ProjectEntry, Registry, Stack};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 
-use crate::gateway::ShellGateway;
+use crate::gateway::{ScannerGateway, ShellGateway};
+use crate::scanner::Vulnerability;
+
+use super::supply_chain_fixers::{self, FixStrategy};
 
 /// Triages each live supply-chain finding and, when explicitly enabled, applies
 /// verified, reversible auto-fixes. Observer — it self-gates mutation on the
@@ -56,6 +69,9 @@ use crate::gateway::ShellGateway;
 pub struct RemediateSupplyChain {
     registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
+    /// The same audit scanner `ScanSupplyChain` uses, re-run after a full
+    /// update to confirm which findings it actually cleared.
+    scanner: Arc<dyn ScannerGateway>,
     enabled: bool,
 }
 
@@ -64,19 +80,34 @@ impl RemediateSupplyChain {
         Self {
             registry,
             shell,
+            scanner: Arc::new(crate::gateway::ProcessScannerGateway),
             enabled: remediation_enabled_from_env(),
         }
     }
 
+    /// Test constructor with a scanner that reports a clean tree, so a full
+    /// update always clears its findings.
     #[cfg(test)]
     fn with_enabled(
         shell: Arc<dyn ShellGateway>,
         registry: Arc<RwLock<Registry>>,
         enabled: bool,
     ) -> Self {
+        let scanner = crate::gateway::fakes::FakeScannerGateway::clean();
+        Self::with_scanner(shell, scanner, registry, enabled)
+    }
+
+    #[cfg(test)]
+    fn with_scanner(
+        shell: Arc<dyn ShellGateway>,
+        scanner: Arc<dyn ScannerGateway>,
+        registry: Arc<RwLock<Registry>>,
+        enabled: bool,
+    ) -> Self {
         Self {
             registry,
             shell,
+            scanner,
             enabled,
         }
     }
@@ -127,11 +158,13 @@ impl TaskBlock for RemediateSupplyChain {
             Err(e) => return Box::pin(async move { Err(e) }),
         };
         let shell = Arc::clone(&self.shell);
+        let scanner = Arc::clone(&self.scanner);
 
         Box::pin(async move {
             let mut outcomes = Vec::new();
             for proj in &scan.projects {
-                remediate_project(proj, &entries, shell.as_ref(), &mut outcomes).await;
+                remediate_project(proj, &entries, shell.as_ref(), scanner.as_ref(), &mut outcomes)
+                    .await;
             }
             let applied = outcomes.iter().filter(|o| o.status == "applied").count();
             tracing::info!(
@@ -176,7 +209,7 @@ fn plan_project_remediation(
         return ProjectRemediationPlan::NotInRegistry;
     };
 
-    if !super::supply_chain_fixers::supports(&entry.stack) {
+    if !supply_chain_fixers::supports(&entry.stack) {
         return ProjectRemediationPlan::NoFixer {
             stack: entry.stack.to_string(),
         };
@@ -211,6 +244,7 @@ async fn remediate_project(
     proj: &foundry_sdk::payload::ProjectSupplyChainScan,
     entries: &[ProjectEntry],
     shell: &dyn ShellGateway,
+    scanner: &dyn ScannerGateway,
     outcomes: &mut Vec<RemediationOutcome>,
 ) {
     let fixable: Vec<&SupplyChainFinding> =
@@ -253,66 +287,194 @@ async fn remediate_project(
         return;
     }
 
-    for f in fixable {
-        let fix_version = f.fix_version.as_deref().unwrap_or_default();
+    let rail = Rail {
+        shell,
+        path: &path,
+        stack: &stack,
+        gates: &gates,
+    };
 
-        let applied = match super::supply_chain_fixers::apply_fix(shell, &path, &stack, f).await {
+    // Policy: the full compatible update is tried first; only what it leaves
+    // unresolved falls back to a targeted pin.
+    let (fallback, fallback_reason) = match attempt_full_update(&rail, scanner, &fixable).await {
+        FullUpdateAttempt::Committed {
+            detail,
+            cleared,
+            unresolved,
+        } => {
+            let detail = format!(
+                "{}: {detail}; cleared per re-scan, verified by gates and committed",
+                FixStrategy::FullUpdate.as_str()
+            );
+            push_each(outcomes, proj, &cleared, "applied", Some(&detail));
+            (unresolved, "committed full update did not clear this finding".to_string())
+        }
+        FullUpdateAttempt::Reverted { reason } => (fixable, reason),
+    };
+
+    for f in fallback {
+        outcomes.push(apply_targeted_pin(&rail, proj, f, &fallback_reason).await);
+    }
+}
+
+/// The per-project context every fix attempt verifies and rolls back against.
+struct Rail<'a> {
+    shell: &'a dyn ShellGateway,
+    path: &'a Path,
+    stack: &'a Stack,
+    gates: &'a [foundry_sdk::gates::GateDefinition],
+}
+
+/// Result of the project-level full compatible update.
+enum FullUpdateAttempt<'a> {
+    /// The update cleared at least one finding, passed the gates, and was
+    /// committed. `unresolved` findings still need a targeted pin.
+    Committed {
+        detail: String,
+        cleared: Vec<&'a SupplyChainFinding>,
+        unresolved: Vec<&'a SupplyChainFinding>,
+    },
+    /// The update was not kept (failed, cleared nothing, or failed
+    /// verification) and its files were restored; every finding falls back.
+    Reverted { reason: String },
+}
+
+/// Run the full compatible update, confirm with the scanner which findings it
+/// cleared, verify with the gates, and commit — or restore the touched files.
+///
+/// The re-scan runs before the gates: an update that clears nothing is
+/// reverted without paying for a gate run.
+async fn attempt_full_update<'a>(
+    rail: &Rail<'_>,
+    scanner: &dyn ScannerGateway,
+    fixable: &[&'a SupplyChainFinding],
+) -> FullUpdateAttempt<'a> {
+    let applied =
+        match supply_chain_fixers::apply_full_update(rail.shell, rail.path, rail.stack).await {
             Ok(applied) => applied,
             Err(failure) => {
-                git_restore_files(shell, &path, &failure.files).await;
-                outcomes.push(outcome(proj, f, "apply_failed", Some(&failure.detail)));
-                continue;
+                git_restore_files(rail.shell, rail.path, &failure.files).await;
+                return FullUpdateAttempt::Reverted {
+                    reason: format!("full update failed: {}", failure.detail),
+                };
             }
         };
 
-        match crate::gate_runner::run_gates(&gates, &path, shell).await {
-            Ok(r) if r.required_passed => {
-                let target = f.fix_package.as_deref().unwrap_or(&f.package);
-                let msg = format!(
-                    "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
-                    target, f.cve
-                );
-                match git_commit_files(shell, &path, &applied.files, &msg).await {
-                    Ok(true) => {
-                        let detail = format!("{}; verified by gates and committed", applied.detail);
-                        outcomes.push(outcome(proj, f, "applied", Some(&detail)));
-                    }
-                    Ok(false) => {
-                        git_restore_files(shell, &path, &applied.files).await;
-                        outcomes.push(outcome(
-                            proj,
-                            f,
-                            "rolled_back",
-                            Some("fix verified but commit failed; reverted"),
-                        ));
-                    }
-                    Err(e) => {
-                        // Record: a gateway spawn failure while committing is a
-                        // distinct fault from git itself rejecting the commit —
-                        // name it explicitly rather than reusing the generic
-                        // "commit failed" text.
-                        git_restore_files(shell, &path, &applied.files).await;
-                        let detail = format!("fix verified but {e}; reverted");
-                        outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
-                    }
-                }
-            }
-            Ok(_) => {
-                git_restore_files(shell, &path, &applied.files).await;
-                outcomes.push(outcome(
-                    proj,
-                    f,
-                    "rolled_back",
-                    Some("gate verification failed after the bump; reverted"),
-                ));
-            }
+    let reverted = |reason: String| async {
+        git_restore_files(rail.shell, rail.path, &applied.files).await;
+        FullUpdateAttempt::Reverted { reason }
+    };
+
+    let (cleared, unresolved) =
+        match crate::scanner::audit_outcome(scanner.run_audit(rail.path, rail.stack).await) {
+            Ok(audit) => partition_cleared(fixable, &audit.vulnerabilities),
             Err(e) => {
-                git_restore_files(shell, &path, &applied.files).await;
-                let detail = format!("gate run errored: {e}; reverted");
-                outcomes.push(outcome(proj, f, "rolled_back", Some(&detail)));
+                return reverted(format!("re-scan after full update could not run: {e}")).await;
+            }
+        };
+    if cleared.is_empty() {
+        return reverted("full update did not clear the finding per re-scan".to_string()).await;
+    }
+
+    match crate::gate_runner::run_gates(rail.gates, rail.path, rail.shell).await {
+        Ok(r) if r.required_passed => {}
+        Ok(_) => {
+            return reverted("gate verification failed after the full update".to_string()).await;
+        }
+        Err(e) => return reverted(format!("gate run errored after the full update: {e}")).await,
+    }
+
+    let msg = full_update_commit_message(&cleared);
+    match git_commit_files(rail.shell, rail.path, &applied.files, &msg).await {
+        Ok(true) => FullUpdateAttempt::Committed {
+            detail: applied.detail,
+            cleared,
+            unresolved,
+        },
+        Ok(false) => reverted("full update verified but commit failed".to_string()).await,
+        Err(e) => reverted(format!("full update verified but {e}")).await,
+    }
+}
+
+/// Split `fixable` into findings the re-scan no longer reports (cleared) and
+/// those it still reports (unresolved). A finding is still present when the
+/// scanner reports the same advisory id against the same package.
+fn partition_cleared<'a>(
+    fixable: &[&'a SupplyChainFinding],
+    rescan: &[Vulnerability],
+) -> (Vec<&'a SupplyChainFinding>, Vec<&'a SupplyChainFinding>) {
+    fixable.iter().copied().partition(|f| {
+        !rescan
+            .iter()
+            .any(|v| v.cve.as_deref() == Some(f.cve.as_str()) && v.package == f.package)
+    })
+}
+
+fn full_update_commit_message(cleared: &[&SupplyChainFinding]) -> String {
+    let mut cves: Vec<&str> = cleared.iter().map(|f| f.cve.as_str()).collect();
+    cves.sort_unstable();
+    cves.dedup();
+    format!(
+        "chore: update dependency lockfile to latest compatible versions (fixes {})",
+        cves.join(", ")
+    )
+}
+
+/// The targeted fallback for one finding: pin its package to the fix version,
+/// verify with the gates, and commit — or restore the touched files.
+async fn apply_targeted_pin(
+    rail: &Rail<'_>,
+    proj: &foundry_sdk::payload::ProjectSupplyChainScan,
+    f: &SupplyChainFinding,
+    fallback_reason: &str,
+) -> RemediationOutcome {
+    let label = format!("{} (after {fallback_reason})", FixStrategy::TargetedPin.as_str());
+    let fix_version = f.fix_version.as_deref().unwrap_or_default();
+
+    let applied = match supply_chain_fixers::apply_fix(rail.shell, rail.path, rail.stack, f).await {
+        Ok(applied) => applied,
+        Err(failure) => {
+            git_restore_files(rail.shell, rail.path, &failure.files).await;
+            let detail = format!("{label}: {}", failure.detail);
+            return outcome(proj, f, "apply_failed", Some(&detail));
+        }
+    };
+
+    let (status, detail) = match crate::gate_runner::run_gates(rail.gates, rail.path, rail.shell)
+        .await
+    {
+        Ok(r) if r.required_passed => {
+            let target = f.fix_package.as_deref().unwrap_or(&f.package);
+            let msg = format!(
+                "chore(deps): bump {} to {fix_version} for {} (supply-chain auto-fix)",
+                target, f.cve
+            );
+            match git_commit_files(rail.shell, rail.path, &applied.files, &msg).await {
+                Ok(true) => {
+                    return outcome(
+                        proj,
+                        f,
+                        "applied",
+                        Some(&format!(
+                            "{label}: {}; verified by gates and committed",
+                            applied.detail
+                        )),
+                    );
+                }
+                Ok(false) => {
+                    ("rolled_back", "fix verified but commit failed; reverted".to_string())
+                }
+                // Record: a gateway spawn failure while committing is a
+                // distinct fault from git itself rejecting the commit — name it
+                // explicitly rather than reusing the generic "commit failed" text.
+                Err(e) => ("rolled_back", format!("fix verified but {e}; reverted")),
             }
         }
-    }
+        Ok(_) => ("rolled_back", "gate verification failed after the bump; reverted".to_string()),
+        Err(e) => ("rolled_back", format!("gate run errored: {e}; reverted")),
+    };
+    git_restore_files(rail.shell, rail.path, &applied.files).await;
+    outcome(proj, f, status, Some(&format!("{label}: {detail}")))
 }
 
 async fn git_tree_clean(shell: &dyn ShellGateway, path: &Path) -> bool {
@@ -442,7 +604,7 @@ mod tests {
     use foundry_sdk::payload::ProjectSupplyChainScan;
     use foundry_sdk::registry::{ProjectEntry, Stack};
 
-    use crate::gateway::fakes::FakeShellGateway;
+    use crate::gateway::fakes::{FakeScannerGateway, FakeShellGateway};
     use crate::shell::CommandResult;
 
     use super::super::test_helpers;
@@ -600,11 +762,92 @@ mod tests {
 
     // --- engine (enabled + Full) -----------------------------------------
 
+    /// A shell that succeeds at every command but scripts the outcome of each
+    /// gate run (`sh -c <gate>`), in order; the last outcome repeats. Every
+    /// invocation is recorded on `inner`.
+    struct ScriptedGateShell {
+        inner: Arc<FakeShellGateway>,
+        gate_outcomes: std::sync::Mutex<std::collections::VecDeque<bool>>,
+    }
+
+    impl ScriptedGateShell {
+        fn new(gate_outcomes: &[bool]) -> Arc<Self> {
+            Arc::new(Self {
+                inner: FakeShellGateway::success(),
+                gate_outcomes: std::sync::Mutex::new(gate_outcomes.iter().copied().collect()),
+            })
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.inner
+                .invocations()
+                .iter()
+                .map(|i| format!("{} {}", i.command, i.args.join(" ")))
+                .collect()
+        }
+    }
+
+    impl ShellGateway for ScriptedGateShell {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            let recorded = self.inner.run(working_dir, command, args, env, timeout);
+            if command != "sh" {
+                return recorded;
+            }
+            let passed = {
+                let mut queue = self.gate_outcomes.lock().unwrap();
+                if queue.len() > 1 {
+                    queue.pop_front().unwrap()
+                } else {
+                    queue.front().copied().unwrap_or(true)
+                }
+            };
+            Box::pin(async move {
+                recorded.await?;
+                Ok(if passed { ok() } else { fail() })
+            })
+        }
+    }
+
+    /// A scanner whose re-scan still reports every given finding — the full
+    /// update did not clear them.
+    fn still_vulnerable(findings: &[&SupplyChainFinding]) -> Arc<FakeScannerGateway> {
+        FakeScannerGateway::with_vulnerabilities(
+            findings
+                .iter()
+                .map(|f| Vulnerability {
+                    cve: Some(f.cve.clone()),
+                    severity: f.severity.clone(),
+                    package: f.package.clone(),
+                    version: f.version.clone(),
+                    fix_version: f.fix_version.clone(),
+                    fix_package: f.fix_package.clone(),
+                })
+                .collect(),
+        )
+    }
+
+    fn commit_messages(calls: &[String]) -> Vec<String> {
+        calls
+            .iter()
+            .filter_map(|c| c.strip_prefix("git commit -m ").map(str::to_string))
+            .collect()
+    }
+
     #[tokio::test]
-    async fn applies_and_commits_when_gates_pass() {
+    async fn full_update_that_clears_the_finding_is_committed() {
         let dir = project_dir_with_gate();
-        // git status (clean) → cargo update (ok) → gate (pass) → git add → git commit
-        let shell = FakeShellGateway::success();
+        // git status (clean) → cargo update (ok) → re-scan (clean) → gate (pass)
+        // → git add → git commit
+        let shell = ScriptedGateShell::new(&[true]);
         let block = RemediateSupplyChain::with_enabled(
             shell.clone(),
             registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
@@ -623,11 +866,185 @@ mod tests {
         assert_eq!(out.outcomes.len(), 1);
         assert_eq!(out.outcomes[0].status, "applied");
         assert_eq!(out.outcomes[0].cve, "CVE-1");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.starts_with("full_update:"), "{detail}");
 
-        // A commit happened; no rollback.
-        let cmds: Vec<String> = shell.invocations().iter().map(|i| i.args.join(" ")).collect();
-        assert!(cmds.iter().any(|c| c.contains("commit -m")), "applied fix is committed");
-        assert!(!cmds.iter().any(|c| c.contains("checkout")), "no rollback on success");
+        let calls = shell.calls();
+        assert!(calls.contains(&"cargo update".to_string()), "full update ran: {calls:?}");
+        assert!(!calls.iter().any(|c| c.contains("--precise")), "no targeted pin needed");
+        assert!(calls.contains(&"git add Cargo.lock".to_string()));
+        assert_eq!(
+            commit_messages(&calls),
+            vec![
+                "chore: update dependency lockfile to latest compatible versions (fixes CVE-1)"
+                    .to_string()
+            ]
+        );
+        assert!(!calls.iter().any(|c| c.contains("checkout")), "no rollback on success");
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_targeted_pin_when_full_update_leaves_finding_unresolved() {
+        let dir = project_dir_with_gate();
+        let fix = finding("CVE-1", Some("1.2.3"));
+        let shell = ScriptedGateShell::new(&[true]);
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&fix]),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project("alpha", "rust", vec![fix.clone()])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 1);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.starts_with("targeted_pin"), "{detail}");
+        assert!(detail.contains("did not clear"), "fallback reason recorded: {detail}");
+
+        let calls = shell.calls();
+        let full = calls.iter().position(|c| c == "cargo update").unwrap();
+        let restore = calls.iter().position(|c| c == "git checkout -- Cargo.lock").unwrap();
+        let pin = calls
+            .iter()
+            .position(|c| c == "cargo update -p vulnerable-crate --precise 1.2.3")
+            .unwrap();
+        assert!(full < restore && restore < pin, "full update reverted before pin: {calls:?}");
+        assert_eq!(
+            calls.iter().filter(|c| c.starts_with("sh ")).count(),
+            1,
+            "an update that cleared nothing is reverted without a gate run"
+        );
+        assert_eq!(
+            commit_messages(&calls),
+            vec![
+                "chore(deps): bump vulnerable-crate to 1.2.3 for CVE-1 (supply-chain auto-fix)"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_targeted_pin_when_full_update_fails_a_gate() {
+        let dir = project_dir_with_gate();
+        // Full update: gate FAILS → reverted. Targeted pin: gate passes.
+        let shell = ScriptedGateShell::new(&[false, true]);
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 1);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.starts_with("targeted_pin"), "{detail}");
+        assert!(detail.contains("gate verification failed after the full update"), "{detail}");
+
+        let calls = shell.calls();
+        assert!(
+            calls.contains(&"git checkout -- Cargo.lock".to_string()),
+            "full update reverted"
+        );
+        assert!(calls.iter().any(|c| c.contains("--precise 1.2.3")));
+        let messages = commit_messages(&calls);
+        assert_eq!(messages.len(), 1, "only the targeted pin is committed: {messages:?}");
+        assert!(messages[0].starts_with("chore(deps): bump"));
+    }
+
+    #[tokio::test]
+    async fn falls_back_when_the_rescan_cannot_run() {
+        let dir = project_dir_with_gate();
+        let shell = ScriptedGateShell::new(&[true]);
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            FakeScannerGateway::with_error("cargo audit not found"),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.starts_with("targeted_pin"), "{detail}");
+        assert!(detail.contains("cargo audit not found"), "an unconfirmed update is not kept");
+        assert!(shell.calls().contains(&"git checkout -- Cargo.lock".to_string()));
+    }
+
+    #[tokio::test]
+    async fn full_update_commits_what_it_cleared_and_pins_the_rest() {
+        let dir = project_dir_with_gate();
+        let cleared = finding("CVE-1", Some("1.2.3"));
+        let mut stubborn = finding("CVE-2", Some("4.5.6"));
+        stubborn.package = "stubborn-crate".to_string();
+        let shell = ScriptedGateShell::new(&[true]);
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&stubborn]),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project("alpha", "rust", vec![cleared, stubborn.clone()])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.remediated_count, 2);
+        let by_cve =
+            |cve: &str| out.outcomes.iter().find(|o| o.cve == cve).unwrap().detail.clone().unwrap();
+        assert!(by_cve("CVE-1").starts_with("full_update:"));
+        assert!(by_cve("CVE-2").starts_with("targeted_pin"));
+        assert!(by_cve("CVE-2").contains("committed full update did not clear"));
+        assert_eq!(
+            commit_messages(&shell.calls()),
+            vec![
+                "chore: update dependency lockfile to latest compatible versions (fixes CVE-1)"
+                    .to_string(),
+                "chore(deps): bump stubborn-crate to 4.5.6 for CVE-2 (supply-chain auto-fix)"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn typescript_full_update_commits_manifest_and_lockfile() {
+        let dir = project_dir_with_gate();
+        std::fs::write(dir.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+        let shell = ScriptedGateShell::new(&[true]);
+        let entry = entry_for_stack("alpha", dir.path().to_str().unwrap(), Stack::TypeScript);
+        let block =
+            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
+        let p = scanned(vec![project(
+            "alpha",
+            "typescript",
+            vec![finding("GHSA-1", Some("1.0.1"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert!(out.outcomes[0].detail.as_deref().unwrap().starts_with("full_update:"));
+        let calls = shell.calls();
+        assert!(calls.iter().any(|c| c.starts_with("npm update ")), "{calls:?}");
+        assert!(calls.contains(&"git add package.json package-lock.json".to_string()));
     }
 
     #[tokio::test]
@@ -641,10 +1058,15 @@ mod tests {
         std::fs::write(dir.path().join("bun.lock"), "").unwrap();
         let shell = FakeShellGateway::success();
         let entry = entry_for_stack("alpha", dir.path().to_str().unwrap(), Stack::TypeScript);
-        let block =
-            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
         let mut fix = finding("GHSA-esbuild", Some("0.28.1"));
         fix.package = "esbuild".to_string();
+        // The full update leaves esbuild vulnerable, so the targeted rewrite runs.
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&fix]),
+            registry_with(vec![entry]),
+            true,
+        );
         let p = scanned(vec![project("alpha", "typescript", vec![fix])]);
 
         let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
@@ -673,10 +1095,15 @@ mod tests {
         std::fs::write(dir.path().join("uv.lock"), "").unwrap();
         let shell = FakeShellGateway::success();
         let entry = entry_for_stack("alpha", dir.path().to_str().unwrap(), Stack::Python);
-        let block =
-            RemediateSupplyChain::with_enabled(shell.clone(), registry_with(vec![entry]), true);
         let mut fix = finding("PYSEC-1", Some("1.6.1"));
         fix.package = "chromadb".to_string();
+        // The full update leaves chromadb vulnerable, so the targeted rewrite runs.
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&fix]),
+            registry_with(vec![entry]),
+            true,
+        );
         let p = scanned(vec![project("alpha", "python", vec![fix])]);
 
         let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
@@ -685,7 +1112,15 @@ mod tests {
         assert_eq!(out.remediated_count, 1);
         assert_eq!(out.outcomes[0].status, "applied");
         let calls = shell.invocations();
-        assert!(calls.iter().any(|call| call.command == "uv"));
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.command == "uv" && call.args == ["lock", "--upgrade"]),
+            "full update attempted first"
+        );
+        assert!(calls.iter().any(
+            |call| call.command == "uv" && call.args.contains(&"--upgrade-package".to_string())
+        ));
         let add = calls
             .iter()
             .find(|call| call.command == "git" && call.args.first().is_some_and(|arg| arg == "add"))
@@ -697,8 +1132,8 @@ mod tests {
     #[tokio::test]
     async fn rolls_back_when_gates_fail() {
         let dir = project_dir_with_gate();
-        // git status (clean) → cargo update (ok) → gate (FAIL) → git checkout
-        let shell = FakeShellGateway::sequence(vec![ok(), ok(), fail(), ok()]);
+        // Every gate run fails: the full update and the targeted pin both revert.
+        let shell = ScriptedGateShell::new(&[false]);
         let block = RemediateSupplyChain::with_enabled(
             shell.clone(),
             registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
@@ -715,20 +1150,54 @@ mod tests {
         let out = remediated(&result);
         assert_eq!(out.remediated_count, 0);
         assert_eq!(out.outcomes[0].status, "rolled_back");
+        assert!(out.outcomes[0].detail.as_deref().unwrap().starts_with("targeted_pin"));
 
-        let cmds: Vec<String> = shell.invocations().iter().map(|i| i.args.join(" ")).collect();
-        assert!(
-            cmds.iter().any(|c| c.contains("checkout")),
-            "failed verify reverts the lockfile"
+        let calls = shell.calls();
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "git checkout -- Cargo.lock").count(),
+            2,
+            "both the full update and the pin revert the lockfile"
         );
-        assert!(!cmds.iter().any(|c| c.contains("commit -m")), "nothing committed on failure");
+        assert!(commit_messages(&calls).is_empty(), "nothing committed on failure");
+    }
+
+    #[test]
+    fn partition_cleared_matches_on_advisory_and_package() {
+        let gone = finding("CVE-1", Some("1.0.0"));
+        let stays = finding("CVE-2", Some("1.0.0"));
+        let mut other_pkg = finding("CVE-1", Some("1.0.0"));
+        other_pkg.package = "other-crate".to_string();
+        let rescan = vec![Vulnerability {
+            cve: Some("CVE-2".to_string()),
+            severity: None,
+            package: "vulnerable-crate".to_string(),
+            version: None,
+            fix_version: None,
+            fix_package: None,
+        }];
+
+        let (cleared, unresolved) = partition_cleared(&[&gone, &stays, &other_pkg], &rescan);
+
+        assert_eq!(cleared.iter().map(|f| f.cve.as_str()).collect::<Vec<_>>(), ["CVE-1", "CVE-1"]);
+        assert_eq!(unresolved.iter().map(|f| f.cve.as_str()).collect::<Vec<_>>(), ["CVE-2"]);
+    }
+
+    #[test]
+    fn full_update_commit_message_lists_each_cleared_advisory_once() {
+        let a = finding("CVE-2", None);
+        let b = finding("CVE-1", None);
+        let c = finding("CVE-2", None);
+        assert_eq!(
+            full_update_commit_message(&[&a, &b, &c]),
+            "chore: update dependency lockfile to latest compatible versions (fixes CVE-1, CVE-2)"
+        );
     }
 
     /// Wraps `inner` but fails every `git reset`/`git checkout --` rollback
     /// command with a real `Err` (spawn failure). Used to prove a failed
     /// rollback is logged but does not abort the formation.
     struct FailingRollbackShellGateway {
-        inner: std::sync::Arc<FakeShellGateway>,
+        inner: std::sync::Arc<ScriptedGateShell>,
     }
 
     impl ShellGateway for FailingRollbackShellGateway {
@@ -754,8 +1223,9 @@ mod tests {
     #[tokio::test]
     async fn rollback_failure_is_logged_but_does_not_fail_the_formation() {
         let dir = project_dir_with_gate();
-        // git status (clean) → cargo update (ok) → gate (FAIL) → rollback (Err)
-        let inner = FakeShellGateway::sequence(vec![ok(), ok(), fail()]);
+        // Every gate fails, so both the full update and the pin roll back —
+        // and every rollback command fails to spawn.
+        let inner = ScriptedGateShell::new(&[false]);
         let shell = std::sync::Arc::new(FailingRollbackShellGateway { inner });
         let block = RemediateSupplyChain::with_enabled(
             shell,

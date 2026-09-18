@@ -16,10 +16,132 @@ pub(super) struct ApplyFailure {
     pub detail: String,
 }
 
+/// Which remediation path produced (or attempted) a fix.
+///
+/// Owner policy (2026-09-18): prefer the ecosystem's full compatible update of
+/// the whole lockfile; fall back to a targeted single-package pin only when the
+/// full update does not clear the finding or fails verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FixStrategy {
+    /// Every dependency moved to its latest version compatible with the
+    /// manifest (`cargo update`, `uv lock --upgrade`, `npm update`/`bun update`).
+    FullUpdate,
+    /// One package moved to the advisory's fix version ([`apply_fix`]).
+    TargetedPin,
+}
+
+impl FixStrategy {
+    /// Stable label recorded in the remediation outcome detail.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::FullUpdate => "full_update",
+            Self::TargetedPin => "targeted_pin",
+        }
+    }
+}
+
 pub(super) fn supports(stack: &Stack) -> bool {
     matches!(stack, Stack::Rust | Stack::TypeScript | Stack::Python)
 }
 
+/// Run the stack's full compatible dependency update — every package moves to
+/// the newest version the manifest already allows. No manifest requirement is
+/// rewritten; only the lockfile is expected to change.
+///
+/// `files` on both success and failure name every dependency file the command
+/// may touch, so the caller can commit or restore exactly those.
+pub(super) async fn apply_full_update(
+    shell: &dyn ShellGateway,
+    path: &Path,
+    stack: &Stack,
+) -> Result<AppliedFix, ApplyFailure> {
+    match stack {
+        Stack::Rust => run_full_update(shell, path, vec!["Cargo.lock"], "cargo", &["update"]).await,
+        Stack::Python => {
+            if !path.join("uv.lock").exists() {
+                return Err(ApplyFailure {
+                    files: vec![],
+                    detail: "no uv.lock; Python auto-fix currently requires a uv project"
+                        .to_string(),
+                });
+            }
+            run_full_update(shell, path, vec!["uv.lock"], "uv", &["lock", "--upgrade"]).await
+        }
+        Stack::TypeScript => {
+            let Some((manager, lockfile)) = TypeScriptManager::detect(path) else {
+                return Err(ApplyFailure {
+                    files: vec![],
+                    detail:
+                        "no supported TypeScript lockfile (bun.lock, bun.lockb, package-lock.json)"
+                            .to_string(),
+                });
+            };
+            // package.json is listed so any range the package manager rewrites
+            // is committed or restored together with the lockfile — the tree
+            // is never left dirty.
+            let files = vec!["package.json", lockfile];
+            match manager {
+                TypeScriptManager::Bun => {
+                    run_full_update(
+                        shell,
+                        path,
+                        files,
+                        "bun",
+                        &["update", "--lockfile-only", "--ignore-scripts"],
+                    )
+                    .await
+                }
+                TypeScriptManager::Npm => {
+                    run_full_update(
+                        shell,
+                        path,
+                        files,
+                        "npm",
+                        &[
+                            "update",
+                            "--package-lock-only",
+                            "--ignore-scripts",
+                            "--no-audit",
+                        ],
+                    )
+                    .await
+                }
+            }
+        }
+        unsupported => Err(ApplyFailure {
+            files: vec![],
+            detail: format!("no auto-fix mechanism for {unsupported} yet"),
+        }),
+    }
+}
+
+async fn run_full_update(
+    shell: &dyn ShellGateway,
+    path: &Path,
+    files: Vec<&str>,
+    command: &str,
+    args: &[&str],
+) -> Result<AppliedFix, ApplyFailure> {
+    let files = files.into_iter().map(str::to_string).collect();
+    let invocation = format!("{command} {}", args.join(" "));
+    match run_command(shell, path, command, args).await {
+        Ok(true) => Ok(AppliedFix {
+            files,
+            detail: format!("{invocation} to latest compatible versions"),
+        }),
+        Ok(false) => Err(ApplyFailure {
+            files,
+            detail: format!("{invocation} failed"),
+        }),
+        Err(e) => Err(ApplyFailure {
+            files,
+            detail: format!("{invocation} could not run: {e}"),
+        }),
+    }
+}
+
+/// Apply the targeted fallback: move only the advisory's package to its fix
+/// version (see [`FixStrategy::TargetedPin`]).
 pub(super) async fn apply_fix(
     shell: &dyn ShellGateway,
     path: &Path,
@@ -674,6 +796,136 @@ mod tests {
             shell.invocations()[0].args,
             vec!["lock", "--upgrade-package", "chromadb==1.6.1"]
         );
+    }
+
+    #[tokio::test]
+    async fn full_update_runs_cargo_update_for_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        let applied = apply_full_update(shell.as_ref(), dir.path(), &Stack::Rust).await.unwrap();
+
+        assert_eq!(applied.files, vec!["Cargo.lock"]);
+        let calls = shell.invocations();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].command, "cargo");
+        assert_eq!(calls[0].args, vec!["update"], "no -p/--precise on the full update");
+    }
+
+    #[tokio::test]
+    async fn full_update_runs_uv_lock_upgrade_for_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = "[project]\ndependencies = [\"chromadb>=1.5.9\"]\n";
+        std::fs::write(dir.path().join("pyproject.toml"), manifest).unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "").unwrap();
+        let shell = FakeShellGateway::success();
+
+        let applied = apply_full_update(shell.as_ref(), dir.path(), &Stack::Python).await.unwrap();
+
+        assert_eq!(applied.files, vec!["uv.lock"]);
+        assert_eq!(shell.invocations()[0].command, "uv");
+        assert_eq!(shell.invocations()[0].args, vec!["lock", "--upgrade"]);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pyproject.toml")).unwrap(),
+            manifest,
+            "the full update never rewrites a requirement"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_update_requires_uv_lock_for_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        let failure =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::Python).await.unwrap_err();
+
+        assert!(failure.detail.contains("uv.lock"));
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_update_runs_npm_update_for_all_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+        let shell = FakeShellGateway::success();
+
+        let applied =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::TypeScript).await.unwrap();
+
+        assert_eq!(applied.files, vec!["package.json", "package-lock.json"]);
+        let call = &shell.invocations()[0];
+        assert_eq!(call.command, "npm");
+        assert_eq!(call.args[0], "update");
+        assert!(
+            call.args.iter().all(|arg| arg.starts_with("--") || arg == "update"),
+            "no package is named, so every package is updated: {:?}",
+            call.args
+        );
+    }
+
+    #[tokio::test]
+    async fn full_update_runs_bun_update_for_bun_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
+        let shell = FakeShellGateway::success();
+
+        let applied =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::TypeScript).await.unwrap();
+
+        assert_eq!(applied.files, vec!["package.json", "bun.lock"]);
+        assert_eq!(shell.invocations()[0].command, "bun");
+        assert_eq!(
+            shell.invocations()[0].args,
+            vec!["update", "--lockfile-only", "--ignore-scripts"]
+        );
+    }
+
+    #[tokio::test]
+    async fn full_update_command_failure_names_files_to_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::failure("resolver conflict");
+
+        let failure =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::Rust).await.unwrap_err();
+
+        assert_eq!(failure.files, vec!["Cargo.lock"]);
+        assert!(failure.detail.contains("cargo update failed"), "{}", failure.detail);
+    }
+
+    #[tokio::test]
+    async fn full_update_names_gateway_failure_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let failure = apply_full_update(&FakeErrorShellGateway, dir.path(), &Stack::Rust)
+            .await
+            .unwrap_err();
+
+        assert!(
+            failure.detail.contains("could not run") && failure.detail.contains("spawn failed"),
+            "{}",
+            failure.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn full_update_reports_unsupported_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        let failure =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::Elixir).await.unwrap_err();
+
+        assert!(failure.detail.contains("no auto-fix mechanism"));
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[test]
+    fn strategy_labels_are_stable() {
+        assert_eq!(FixStrategy::FullUpdate.as_str(), "full_update");
+        assert_eq!(FixStrategy::TargetedPin.as_str(), "targeted_pin");
     }
 
     #[tokio::test]

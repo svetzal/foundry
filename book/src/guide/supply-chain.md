@@ -114,27 +114,53 @@ until two conditions both hold — the env var `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` 
 truthy *and* the run is at `Full` throttle (never under `dry_run`). With the gate
 off, the block is byte-for-byte the classifier.
 
-When enabled, each fixable finding goes through a mandatory verify-and-rollback
-rail, and every change is **reversible — committed locally, never pushed**:
+When enabled, each project with fixable findings goes through a mandatory
+verify-and-rollback rail, and every change is **reversible — committed locally,
+never pushed**:
 
-1. **Refuse a dirty tree.** A project whose working tree carries uncommitted
-   changes is skipped, so a rollback can always return to a known-clean `HEAD`.
-2. **Apply.** The fixer follows the project's stack and lockfile:
+1. **Refuse a dirty tree, or one with no gates.** A project whose working tree
+   carries uncommitted changes is skipped, so a rollback can always return to a
+   known-clean `HEAD`. A repo with no `.hone-gates.json` gates is skipped too —
+   an unverifiable fix is never applied.
+2. **Full compatible update first.** Rather than pinning one package, the engine
+   first moves *every* dependency to the newest version the manifest already
+   allows. This clears the advisory the same way a routine dependency refresh
+   would, and keeps the lockfile close to current instead of accumulating
+   one-off pins:
+   - Rust: `cargo update` refreshes `Cargo.lock`.
+   - TypeScript: `npm update --package-lock-only` or `bun update
+     --lockfile-only` refreshes the native lockfile (with `package.json`
+     committed or restored alongside it).
+   - Python: `uv lock --upgrade` refreshes `uv.lock`.
+
+   The engine then **re-runs the same scanner** that detected the findings to
+   confirm which ones the update cleared, and re-runs the repo's gates. If at
+   least one finding cleared and the required gates pass, the lockfile is
+   committed as `chore: update dependency lockfile to latest compatible
+   versions (fixes <CVE>)`. If the update fails, clears nothing, cannot be
+   re-scanned, or fails a required gate, its files are unstaged and restored
+   from `HEAD`.
+3. **Targeted fallback.** Every finding the full update did not clear — or every
+   finding, when the full update was reverted — falls back to a single-package
+   fix that follows the project's stack and lockfile:
    - Rust: `cargo update -p <pkg> --precise <fix>` updates `Cargo.lock`.
    - TypeScript: Bun and npm projects update their native lockfile. A matching
      direct dependency or override pin is rewritten in `package.json` first;
      transitive advisories target npm's explicit `fixAvailable.name` package.
    - Python: uv projects rewrite a matching `pyproject.toml` requirement and
      run `uv lock --upgrade-package <pkg>==<fix>`.
-   Unsupported stacks or projects without a supported lockfile report a
-   visible `apply_failed`/`no_fixer` outcome rather than guessing.
-3. **Verify.** The repo's own `.hone-gates.json` gates are re-run. A repo with no
-   gates is skipped — an unverifiable fix is never applied.
-4. **Commit or revert.** If the required gates pass, only the dependency files
-   touched by that fixer are committed (`chore(deps): bump … (supply-chain
-   auto-fix)`); otherwise those files are unstaged and restored from `HEAD`.
-   Each applied fix commits immediately, so a later finding's rollback can
-   never clobber an earlier success.
+
+   The gates are re-run; on a pass only the files that fixer touched are
+   committed (`chore(deps): bump … (supply-chain auto-fix)`), otherwise they are
+   restored from `HEAD`. Unsupported stacks or projects without a supported
+   lockfile report a visible `apply_failed`/`no_fixer` outcome rather than
+   guessing.
+
+Each applied fix commits immediately, so a later finding's rollback can never
+clobber an earlier success. Every outcome's `detail` starts with the path taken
+— `full_update` or `targeted_pin` — and a targeted outcome names why the full
+update was not enough (for example, `targeted_pin (after gate verification
+failed after the full update): …`).
 
 The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, and *Not
 auto-fixed (needs attention)* — only when the engine actually ran. Enable it by
