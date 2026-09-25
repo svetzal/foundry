@@ -1413,12 +1413,25 @@ mod tests {
 
     /// A stand-in `gradlew` that runs `body` as a shell script. The real
     /// wrapper is a shell script too, so this exercises the same spawn path.
+    ///
+    /// The file is written by a child `sh`, never through a file descriptor in
+    /// this process: tests run in parallel, and a sibling test forking while we
+    /// held the script open for writing would make exec fail with ETXTBSY
+    /// ("Text file busy") on Linux.
     #[cfg(unix)]
     fn fake_gradlew(dir: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        let wrapper = dir.join("gradlew");
-        std::fs::write(&wrapper, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!("#!/bin/sh\n{body}\n");
+        let status = std::process::Command::new("sh")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > gradlew && chmod 755 gradlew",
+                "sh",
+                &script,
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "writing the fake gradlew failed");
     }
 
     const DEPENDENCY_CHECK_ONE_FINDING: &str = r#"{
