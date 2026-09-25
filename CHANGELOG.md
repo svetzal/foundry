@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.3] - 2026-09-24
+
+### Fixed
+
+- Kotlin audits run `./gradlew dependencyCheckAggregate --rerun`. Without
+  `--rerun`, Gradle reported the task UP-TO-DATE on a repeat scan, left the
+  previous report untouched, and the scan was recorded as "exited 0 without
+  writing a fresh report" (seen on mojentic-kt with 0.38.2). `--rerun` makes
+  every audit check the current vulnerability data.
+
 ## [0.38.2] - 2026-09-24
 
 ### Fixed
