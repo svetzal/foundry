@@ -83,7 +83,17 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
                 return Ok(exit_failure(stack, result.exit_code, &result.stderr));
             }
 
-            Ok(parse_audit_output(stack, &result.stdout))
+            let mut parsed = parse_audit_output(stack, &result.stdout);
+            if let Some(err) = parsed.error.take() {
+                // The report is missing or unreadable: say why, from stderr.
+                let detail = tail(result.stderr.trim(), 500);
+                parsed.error = Some(if detail.is_empty() {
+                    format!("{err} (exit {})", result.exit_code)
+                } else {
+                    format!("{err} (exit {}): {detail}", result.exit_code)
+                });
+            }
+            Ok(parsed)
         }
         AuditPlan::MixProjects { dirs } => {
             let (command, args) = audit_command(stack);
@@ -157,7 +167,10 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             }
             AuditPlan::Stdout {
                 command: tool.to_string_lossy().into_owned(),
-                args: vec!["--format=json".to_string()],
+                // --skip-editable: the project's own (editable) install is
+                // not a dependency, and asking PyPI about an unpublished name
+                // can fail the whole audit.
+                args: vec!["--skip-editable".to_string(), "--format=json".to_string()],
             }
         }
         Stack::Swift if !path.join("Package.resolved").exists() => AuditPlan::Unavailable(
@@ -368,7 +381,9 @@ fn tail(s: &str, max: usize) -> &str {
 /// ```
 fn parse_cargo_audit(output: &str) -> AuditResult {
     if output.trim().is_empty() {
-        return AuditResult::default();
+        // The tool always prints a JSON report, even when clean; no output
+        // means it did not run to completion.
+        return tool_error("cargo audit printed no JSON report".to_owned());
     }
 
     let root: Value = match serde_json::from_str(output) {
@@ -484,7 +499,9 @@ fn cvss_to_severity(score: f32) -> &'static str {
 /// ```
 fn parse_npm_audit(output: &str) -> AuditResult {
     if output.trim().is_empty() {
-        return AuditResult::default();
+        // The tool always prints a JSON report, even when clean; no output
+        // means it did not run to completion.
+        return tool_error("npm audit printed no JSON report".to_owned());
     }
 
     let root: Value = match serde_json::from_str(output) {
@@ -556,7 +573,9 @@ fn parse_npm_audit(output: &str) -> AuditResult {
 /// (a policy call). pip-audit does not report a severity tier in this form.
 fn parse_pip_audit(output: &str) -> AuditResult {
     if output.trim().is_empty() {
-        return AuditResult::default();
+        // The tool always prints a JSON report, even when clean; no output
+        // means it did not run to completion.
+        return tool_error("pip-audit printed no JSON report".to_owned());
     }
 
     let root: Value = match serde_json::from_str(output) {
@@ -574,6 +593,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
         return AuditResult::default();
     };
 
+    let mut seen = HashSet::new();
     let mut vulnerabilities = Vec::new();
     for dep in deps {
         let package = dep["name"].as_str().unwrap_or("unknown").to_owned();
@@ -583,6 +603,10 @@ fn parse_pip_audit(output: &str) -> AuditResult {
         };
         for vuln in vulns {
             let cve = vuln["id"].as_str().map(str::to_owned);
+            // pip-audit can list the same advisory twice for one package.
+            if !seen.insert((package.clone(), version.clone(), cve.clone())) {
+                continue;
+            }
             let fix_version = vuln["fix_versions"]
                 .as_array()
                 .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
@@ -1524,10 +1548,59 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_audit_empty_output() {
-        let result = parse_cargo_audit("");
-        assert!(result.error.is_none());
-        assert!(result.vulnerabilities.is_empty());
+    fn empty_output_is_never_a_clean_scan() {
+        // cargo audit, npm audit and pip-audit always print a JSON report,
+        // even when clean. pip-audit on ops-01 (2026-09-25) exited 1 with no
+        // stdout after a PyPI 503, and that read as "no vulnerabilities".
+        assert!(parse_cargo_audit("").error.is_some());
+        assert!(parse_npm_audit("  \n").error.is_some());
+        assert!(parse_pip_audit("").error.is_some());
+    }
+
+    #[test]
+    fn python_plan_skips_the_projects_own_editable_install() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".venv/bin")).unwrap();
+        std::fs::write(dir.path().join(".venv/bin/pip-audit"), "").unwrap();
+        let AuditPlan::Stdout { args, .. } = audit_plan(dir.path(), &Stack::Python) else {
+            panic!("pip-audit prints to stdout");
+        };
+        // The project itself is not a dependency, and querying PyPI for an
+        // unpublished name failed the whole audit with a 503.
+        assert_eq!(args, ["--skip-editable", "--format=json"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pip_audit_exit_1_without_a_report_is_a_failure_that_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".venv/bin")).unwrap();
+        let script = "#!/bin/sh\necho 'pip_audit._service.interface.ServiceError: 503 Server Error' >&2\nexit 1\n";
+        let status = std::process::Command::new("sh")
+            .current_dir(dir.path())
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > .venv/bin/pip-audit && chmod 755 .venv/bin/pip-audit",
+                "sh",
+                script,
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let result = run_audit(dir.path(), &Stack::Python).await.unwrap();
+
+        let err = result.error.expect("no report is not a clean scan");
+        assert!(err.contains("no JSON report") && err.contains("503"), "{err}");
+    }
+
+    #[test]
+    fn parse_pip_audit_reports_a_repeated_advisory_once() {
+        let json = r#"{"dependencies": [{"name": "chromadb", "version": "1.5.9", "vulns": [
+            {"id": "PYSEC-2026-311", "fix_versions": [], "aliases": ["CVE-2026-45829"]},
+            {"id": "PYSEC-2026-311", "fix_versions": [], "aliases": ["CVE-2026-45829"]}
+        ]}], "fixes": []}"#;
+        assert_eq!(parse_pip_audit(json).vulnerabilities.len(), 1);
     }
 
     #[test]
