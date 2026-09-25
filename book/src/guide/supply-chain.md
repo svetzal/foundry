@@ -37,15 +37,20 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
 ```
 
 - **`ScanSupplyChain`** iterates every active registry project, runs the
-  stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`) against the
-  working-tree lockfile, classifies each advisory against that repo's committed
+  stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`,
+  `osv-scanner` on Swift's `Package.resolved`) against the working-tree
+  lockfile, classifies each advisory against that repo's committed
   allowlist, and emits `SupplyChainScanned`. Each finding carries a **fix
   version** when the audit tool reports one and, where npm supplies it, the
   direct **fix package** whose upgrade removes a vulnerable transitive package.
   Python is the exception to "global tool": `pip-audit` is a project
   dependency, so it is run from the project's own `.venv/bin/pip-audit` — a
   repo that hasn't installed it reports cleanly under "Not scanned" rather than
-  relying on a global PATH.
+  relying on a global PATH. Kotlin is the other exception: Foundry runs the
+  project's own `./gradlew dependencyCheckAggregate` and reads the JSON report
+  it writes, so the project's suppression file decides what counts.
+  Dependency-Check names no fix version, so every Kotlin finding is a policy
+  call.
 - **`RemediateSupplyChain`** triages every live finding by fix availability and
   emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
   version means the advisory is mechanically **auto-fixable**; an *empty* one
@@ -132,6 +137,8 @@ never pushed**:
      --lockfile-only` refreshes the native lockfile (with `package.json`
      committed or restored alongside it).
    - Python: `uv lock --upgrade` refreshes `uv.lock`.
+   - Swift: `swift package update` refreshes `Package.resolved` (never
+     `Package.swift`).
 
    The engine then **re-runs the same scanner** that detected the findings to
    confirm which ones the update cleared, and re-runs the repo's gates. If at
@@ -149,6 +156,10 @@ never pushed**:
      transitive advisories target npm's explicit `fixAvailable.name` package.
    - Python: uv projects rewrite a matching `pyproject.toml` requirement and
      run `uv lock --upgrade-package <pkg>==<fix>`.
+   - Swift: no targeted pin. osv-scanner names packages by repository URL and
+     SwiftPM pins by package identity, so Foundry does not guess the mapping;
+     the finding is reported as `apply_failed`.
+   - Kotlin, Elixir, C++: no fixer (`no_fixer`).
 
    The gates are re-run; on a pass only the files that fixer touched are
    committed (`chore(deps): bump … (supply-chain auto-fix)`), otherwise they are

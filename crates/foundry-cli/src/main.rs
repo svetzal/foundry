@@ -325,7 +325,7 @@ enum RegistryCommands {
         #[arg(long)]
         path: String,
 
-        /// Technology stack: rust, python, typescript, elixir
+        /// Technology stack: rust, python, typescript, elixir, cpp, swift, kotlin
         #[arg(long)]
         stack: String,
 

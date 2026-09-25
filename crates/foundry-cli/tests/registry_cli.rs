@@ -679,6 +679,51 @@ fn run_online_registry_remove(
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn add_offline_cli_accepts_swift_and_kotlin_stacks() {
+    let home = TempDir::new().expect("temp home");
+    let registry_path = seed_offline_registry(home.path());
+
+    for (name, stack) in [("sw", "swift"), ("kt", "kotlin")] {
+        let path = format!("/tmp/{name}");
+        let output = run_foundry(
+            home.path(),
+            &registry_path,
+            DUMMY_ADDR,
+            &[
+                "--offline",
+                "registry",
+                "add",
+                "--name",
+                name,
+                "--path",
+                &path,
+                "--stack",
+                stack,
+                "--agent",
+                "claude",
+                "--repo",
+                "owner/repo",
+                "--audit",
+            ],
+        );
+        assert_command_succeeded(&output);
+
+        let show = run_foundry(
+            home.path(),
+            &registry_path,
+            DUMMY_ADDR,
+            &["--offline", "registry", "show", name],
+        );
+        assert_command_succeeded(&show);
+        assert_stdout_contains(&show, stack, "show renders the stack");
+    }
+
+    let registry = Registry::load(&registry_path).expect("registry must be readable");
+    let stacks: Vec<_> = registry.projects.iter().map(|p| p.stack.clone()).collect();
+    assert!(stacks.contains(&Stack::Swift) && stacks.contains(&Stack::Kotlin), "{stacks:?}");
+}
+
+#[tokio::test]
 async fn add_offline_writes_project_to_file() {
     let tmp = init_registry();
 

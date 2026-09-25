@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `swift` and `kotlin` registry stacks, so SwiftPM and Gradle projects can be
+  registered for maintenance, audit, and push.
+  - Swift audits run `osv-scanner scan source --format json --lockfile
+    Package.resolved`. Each osv-scanner advisory group is one finding, named by
+    its CVE alias when there is one. Exit 1 means findings; 127/128 and a
+    missing `Package.resolved` are reported as not scanned.
+  - Kotlin audits run the project's own `./gradlew dependencyCheckAggregate
+    --no-parallel --no-daemon` with a 60-minute timeout and read
+    `build/reports/dependency-check-report.json`, so the project's
+    Dependency-Check suppression file decides what counts. A report is accepted
+    only when this run wrote it; Gradle exits 1 for both a CVSS failure and a
+    broken build, so a missing or stale report is a scan failure, never a clean
+    one. Findings carry no fix version and are policy calls.
+  - Supply-chain auto-fix: Swift gets the full update (`swift package update`,
+    `Package.resolved` only) and explicitly refuses a targeted pin; Kotlin
+    reports `no_fixer`.
+
 ## [0.37.0] - 2026-09-18
 
 ### Added

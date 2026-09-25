@@ -73,7 +73,7 @@ Add a project to the daemon's in-memory registry and persist the change to
 | ----------------- | ------ | ------------------------------------------------------------------------------ |
 | `name`            | string | Unique project name                                                            |
 | `path`            | string | Absolute path on the local filesystem                                          |
-| `stack`           | string | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp`              |
+| `stack`           | string | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp`, `swift`, `kotlin`              |
 | `agent`           | string | AI agent name                                                                  |
 | `repo`            | string | GitHub repo slug (`owner/repo`)                                                |
 | `branch`          | string | Default branch (empty → `main`)                                                |

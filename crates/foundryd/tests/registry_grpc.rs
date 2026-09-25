@@ -438,6 +438,27 @@ async fn edit_nonexistent_returns_not_found() {
 }
 
 #[tokio::test]
+async fn add_accepts_swift_and_kotlin_stacks() {
+    let (service, tmp_registry, _tmp_traces) = make_service();
+
+    for (name, stack, expected) in [
+        ("sw", "swift", foundry_sdk::registry::Stack::Swift),
+        ("kt", "kotlin", foundry_sdk::registry::Stack::Kotlin),
+    ] {
+        let mut req = add_request(name);
+        req.stack = stack.to_string();
+        service
+            .registry_add(Request::new(req))
+            .await
+            .unwrap_or_else(|e| panic!("adding a {stack} project should succeed: {e}"));
+
+        let registry = read_registry(&tmp_registry);
+        let entry = registry.projects.iter().find(|p| p.name == name).unwrap();
+        assert_eq!(entry.stack, expected);
+    }
+}
+
+#[tokio::test]
 async fn add_with_invalid_stack_returns_invalid_argument() {
     let (service, _tmp_registry, _tmp_traces) = make_service();
 

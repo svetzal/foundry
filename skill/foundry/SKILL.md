@@ -377,6 +377,11 @@ persistence fails during an online add/edit/remove, the daemon returns a stable
 Missing or duplicate projects surface typed `NotFound` and `AlreadyExists`
 daemon statuses.
 
+Valid `--stack` values: `rust`, `python`, `typescript`, `elixir`, `cpp`,
+`swift`, `kotlin`. The stack picks the audit tool: Swift runs `osv-scanner` on
+`Package.resolved`; Kotlin runs the project's own
+`./gradlew dependencyCheckAggregate` and reads its JSON report.
+
 ```bash
 # Initialize an empty registry during offline recovery
 foundry --offline registry init

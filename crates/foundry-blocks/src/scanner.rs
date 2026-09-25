@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use foundry_sdk::registry::Stack;
@@ -8,92 +10,197 @@ use serde_json::Value;
 // Re-exported here so the existing `crate::scanner::…` paths keep resolving.
 pub use foundry_sdk::gateway::{AuditResult, Vulnerability};
 
+/// Where a Kotlin project's `OWASP` Dependency-Check aggregate report lands,
+/// relative to the project root (the plugin's default output directory).
+const DEPENDENCY_CHECK_REPORT: &str = "build/reports/dependency-check-report.json";
+
+/// Dependency-Check downloads and refreshes the NVD database before it scans,
+/// which routinely takes several minutes and far longer on a cold cache. The
+/// shell's five-minute default would kill a healthy scan.
+const KOTLIN_AUDIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// How a stack's audit runs and where its findings are read from.
+#[derive(Debug, PartialEq, Eq)]
+enum AuditPlan {
+    /// The stack has no audit tool wired (C++).
+    NotAudited,
+    /// A precondition failed before any tool could run. The message becomes
+    /// [`AuditResult::error`], so the scan is reported as "not scanned", never
+    /// as clean.
+    Unavailable(String),
+    /// Run the tool and parse the JSON it prints on stdout.
+    Stdout { command: String, args: Vec<String> },
+    /// Run the tool and parse the JSON report file it writes. The report must
+    /// be written by *this* run; a stale report from an earlier run is an error.
+    ReportFile {
+        command: String,
+        args: Vec<String>,
+        report: PathBuf,
+        timeout: Duration,
+    },
+}
+
 /// Run the appropriate audit tool for the given stack and return parsed results.
 ///
 /// Returns `Err` only for unrecoverable I/O failures (e.g. disk read error).
 /// When the audit tool is not installed or returns a non-vulnerability failure,
 /// the error is captured in [`AuditResult::error`] and `Ok` is returned.
 pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
-    if *stack == Stack::Cpp {
-        tracing::info!("no standard audit tool for C++ projects");
-        return Ok(AuditResult {
-            vulnerabilities: vec![],
-            error: None,
-        });
-    }
-
-    // Resolve the audit tool. Most stacks audit through their global package
-    // manager (`cargo`, `npm`, `mix`), which reads the project's local lockfile
-    // and resolves any project-declared audit dependency itself. Python is the
-    // exception: `pip-audit` is an ordinary project dependency that lives in the
-    // project's own virtualenv, so we run it from `.venv/bin/` rather than any
-    // global PATH — language/project tooling never belongs on a global path.
-    let venv_pip_audit;
-    let (command, args): (&str, Vec<&str>) = if *stack == Stack::Python {
-        let tool = path.join(".venv/bin/pip-audit");
-        if !tool.exists() {
-            tracing::info!(path = %path.display(), "pip-audit not present in project .venv");
-            return Ok(AuditResult {
+    match audit_plan(path, stack) {
+        AuditPlan::NotAudited => {
+            tracing::info!("no standard audit tool for C++ projects");
+            Ok(AuditResult {
                 vulnerabilities: vec![],
-                error: Some(
-                    "pip-audit not found in .venv (add it as a dev dependency)".to_string(),
-                ),
-            });
+                error: None,
+            })
         }
-        venv_pip_audit = tool.to_string_lossy().into_owned();
-        (venv_pip_audit.as_str(), vec!["--format=json"])
-    } else {
-        audit_command(stack)
-    };
-
-    let result = match crate::shell::run(path, command, &args, None, None).await {
-        Err(e) => {
-            // Command could not be spawned — likely not installed.
-            let msg = e.to_string();
-            tracing::warn!(stack = %stack, %msg, "audit tool not available");
-            return Ok(AuditResult {
-                vulnerabilities: vec![],
-                error: Some(msg),
-            });
+        AuditPlan::Unavailable(msg) => {
+            tracing::info!(path = %path.display(), stack = %stack, %msg, "audit precondition not met");
+            Ok(tool_error(msg))
         }
-        Ok(output) => output,
-    };
+        AuditPlan::Stdout { command, args } => {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let result = match crate::shell::run(path, &command, &args, None, None).await {
+                Ok(output) => output,
+                Err(e) => return Ok(spawn_failure(stack, &e)),
+            };
 
-    // Some tools exit non-zero when vulnerabilities are found; that is not a failure.
-    if !result.success && !is_audit_vuln_exit_code(stack, result.exit_code) {
-        let msg = format!("Audit tool failed (exit {}): {}", result.exit_code, result.stderr);
-        tracing::warn!(stack = %stack, %msg, "audit tool reported failure");
-        return Ok(AuditResult {
-            vulnerabilities: vec![],
-            error: Some(msg),
-        });
+            // Some tools exit non-zero when vulnerabilities are found; that is not a failure.
+            if !result.success && !is_audit_vuln_exit_code(stack, result.exit_code) {
+                return Ok(exit_failure(stack, result.exit_code, &result.stderr));
+            }
+
+            Ok(parse_audit_output(stack, &result.stdout))
+        }
+        AuditPlan::ReportFile {
+            command,
+            args,
+            report,
+            timeout,
+        } => {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let started = SystemTime::now();
+            let result = match crate::shell::run(path, &command, &args, None, Some(timeout)).await {
+                Ok(output) => output,
+                Err(e) => return Ok(spawn_failure(stack, &e)),
+            };
+
+            if !result.success && !is_audit_vuln_exit_code(stack, result.exit_code) {
+                return Ok(exit_failure(stack, result.exit_code, &result.stderr));
+            }
+
+            // The exit code alone cannot tell a finding from a broken build
+            // (Gradle exits 1 for both), so a fresh report is the proof the
+            // scan ran. Without one the run is a failure, whatever it exited.
+            match read_fresh_report(&report, started) {
+                Some(contents) => Ok(parse_audit_output(stack, &contents)),
+                None => Ok(exit_failure_without_report(
+                    stack,
+                    result.exit_code,
+                    &report,
+                    &result.stderr,
+                )),
+            }
+        }
     }
-
-    Ok(parse_audit_output(stack, &result.stdout))
 }
 
-/// Map each global-package-manager stack to its audit command and arguments.
+/// Decide how to audit a project of the given stack.
 ///
-/// Python is *not* handled here — `pip-audit` is resolved from the project's
-/// `.venv` in [`run_audit`], because it is a project dependency rather than a
-/// global tool. C++ early-returns before this is reached.
+/// Most stacks audit through a global tool (`cargo`, `npm`, `mix`,
+/// `osv-scanner`) that reads the project's committed lockfile. Two stacks run
+/// project-local tooling instead, because language/project tooling never
+/// belongs on a global path: Python runs `pip-audit` from the project's own
+/// `.venv`, and Kotlin runs the project's own Gradle wrapper so its configured
+/// Dependency-Check task (with its suppression file) is the one that decides.
+fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
+    match stack {
+        Stack::Cpp => AuditPlan::NotAudited,
+        Stack::Python => {
+            let tool = path.join(".venv/bin/pip-audit");
+            if !tool.exists() {
+                return AuditPlan::Unavailable(
+                    "pip-audit not found in .venv (add it as a dev dependency)".to_string(),
+                );
+            }
+            AuditPlan::Stdout {
+                command: tool.to_string_lossy().into_owned(),
+                args: vec!["--format=json".to_string()],
+            }
+        }
+        Stack::Swift if !path.join("Package.resolved").exists() => AuditPlan::Unavailable(
+            "Package.resolved not found (commit the resolved SwiftPM lockfile to audit it)"
+                .to_string(),
+        ),
+        Stack::Kotlin => {
+            let wrapper = path.join("gradlew");
+            if !wrapper.exists() {
+                return AuditPlan::Unavailable(
+                    "gradlew not found (Kotlin audit runs the project's own Gradle wrapper)"
+                        .to_string(),
+                );
+            }
+            AuditPlan::ReportFile {
+                command: wrapper.to_string_lossy().into_owned(),
+                args: ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]
+                    .map(str::to_string)
+                    .to_vec(),
+                report: path.join(DEPENDENCY_CHECK_REPORT),
+                timeout: KOTLIN_AUDIT_TIMEOUT,
+            }
+        }
+        Stack::Rust | Stack::TypeScript | Stack::Elixir | Stack::Swift => {
+            let (command, args) = audit_command(stack);
+            AuditPlan::Stdout {
+                command: command.to_string(),
+                args: args.into_iter().map(str::to_string).collect(),
+            }
+        }
+    }
+}
+
+/// Map each global-tool stack to its audit command and arguments.
+///
+/// Python and Kotlin are *not* handled here — they run project-local tooling
+/// resolved in [`audit_plan`]. C++ has no audit tool.
 fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
     match stack {
         Stack::Rust => ("cargo", vec!["audit", "--json"]),
         Stack::TypeScript => ("npm", vec!["audit", "--json"]),
         Stack::Elixir => ("mix", vec!["deps.audit", "--format=json"]),
-        Stack::Python => unreachable!("Python resolves pip-audit from .venv in run_audit"),
-        Stack::Cpp => unreachable!("C++ early-returns before audit_command"),
+        Stack::Swift => (
+            "osv-scanner",
+            vec![
+                "scan",
+                "source",
+                "--format",
+                "json",
+                "--lockfile",
+                "Package.resolved",
+            ],
+        ),
+        Stack::Python => unreachable!("Python resolves pip-audit from .venv in audit_plan"),
+        Stack::Kotlin => unreachable!("Kotlin runs the project's Gradle wrapper in audit_plan"),
+        Stack::Cpp => unreachable!("C++ has no audit tool; audit_plan never asks for one"),
     }
 }
 
 /// Return true when the given non-zero exit code is the tool's conventional way
 /// of signalling "vulnerabilities found" rather than "tool failed".
 fn is_audit_vuln_exit_code(stack: &Stack, exit_code: i32) -> bool {
-    // `cargo audit`, `npm audit`, and `pip-audit` exit 1 when vulnerabilities
-    // are present (the report still goes to stdout; stderr may carry unrelated
-    // warnings).
-    matches!(stack, Stack::Rust | Stack::TypeScript | Stack::Python) && exit_code == 1
+    // `cargo audit`, `npm audit`, `pip-audit`, and `osv-scanner` exit 1 when
+    // vulnerabilities are present (the report still goes to stdout; stderr may
+    // carry unrelated warnings). osv-scanner's other non-zero codes (127
+    // general error, 128 no packages found) are failures.
+    //
+    // Gradle exits 1 when Dependency-Check fails the build on a finding at or
+    // above the project's `failBuildOnCVSS` — but also for any other build
+    // failure. For Kotlin, exit 1 only means "read the report"; the report's
+    // freshness decides whether the scan actually ran.
+    matches!(
+        stack,
+        Stack::Rust | Stack::TypeScript | Stack::Python | Stack::Swift | Stack::Kotlin
+    ) && exit_code == 1
 }
 
 /// Dispatch JSON parsing to the stack-specific parser.
@@ -103,8 +210,78 @@ fn parse_audit_output(stack: &Stack, output: &str) -> AuditResult {
         Stack::TypeScript => parse_npm_audit(output),
         Stack::Python => parse_pip_audit(output),
         Stack::Elixir => parse_generic_audit(output),
-        Stack::Cpp => unreachable!("C++ early-returns before parse_audit_output"),
+        Stack::Swift => parse_osv_scanner(output),
+        Stack::Kotlin => parse_dependency_check(output),
+        Stack::Cpp => unreachable!("C++ has no audit output to parse"),
     }
+}
+
+/// Read `report` only if it was written at or after `started`. A missing,
+/// unreadable, or older report yields `None`.
+fn read_fresh_report(report: &Path, started: SystemTime) -> Option<String> {
+    let modified = std::fs::metadata(report).and_then(|m| m.modified()).ok()?;
+    // Allow for filesystems that store modification times at one-second
+    // resolution: a report written in the same second as the run started
+    // must still count as fresh.
+    let threshold = started.checked_sub(Duration::from_secs(1)).unwrap_or(started);
+    if modified < threshold {
+        return None;
+    }
+    match std::fs::read_to_string(report) {
+        Ok(contents) => Some(contents),
+        Err(e) => {
+            tracing::warn!(report = %report.display(), error = %e, "audit report unreadable");
+            None
+        }
+    }
+}
+
+fn tool_error(msg: String) -> AuditResult {
+    AuditResult {
+        vulnerabilities: vec![],
+        error: Some(msg),
+    }
+}
+
+/// The audit command could not be spawned (likely not installed) or timed out.
+fn spawn_failure(stack: &Stack, e: &anyhow::Error) -> AuditResult {
+    let msg = format!("{e:#}");
+    tracing::warn!(stack = %stack, %msg, "audit tool not available");
+    tool_error(msg)
+}
+
+fn exit_failure(stack: &Stack, exit_code: i32, stderr: &str) -> AuditResult {
+    let msg = format!("Audit tool failed (exit {exit_code}): {stderr}");
+    tracing::warn!(stack = %stack, %msg, "audit tool reported failure");
+    tool_error(msg)
+}
+
+fn exit_failure_without_report(
+    stack: &Stack,
+    exit_code: i32,
+    report: &Path,
+    stderr: &str,
+) -> AuditResult {
+    let msg = format!(
+        "Audit tool exited {exit_code} without writing a fresh report at {}: {}",
+        report.display(),
+        tail(stderr, 2000)
+    );
+    tracing::warn!(stack = %stack, %msg, "audit report missing or stale");
+    tool_error(msg)
+}
+
+/// The last `max` bytes of `s`, cut on a character boundary. Gradle failures
+/// put the useful part at the end of a long log.
+fn tail(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
 }
 
 /// Parse `cargo audit --json` output.
@@ -425,6 +602,214 @@ fn parse_generic_audit(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
     }
+}
+
+/// Parse `osv-scanner scan source --format json` output (Swift).
+///
+/// Expected shape (osv-scanner v2):
+/// ```json
+/// {
+///   "results": [{
+///     "source": {"path": ".../Package.resolved", "type": "lockfile"},
+///     "packages": [{
+///       "package": {"name": "github.com/apple/swift-nio-http2", "version": "1.19.0", "ecosystem": "SwiftURL"},
+///       "vulnerabilities": [{"id": "GHSA-…", "aliases": ["CVE-…"], "affected": [{
+///         "package": {"name": "github.com/apple/swift-nio-http2"},
+///         "ranges": [{"events": [{"introduced": "1.0.0"}, {"fixed": "1.19.2"}]}]
+///       }]}],
+///       "groups": [{"ids": ["GHSA-…"], "aliases": ["CVE-…", "GHSA-…"], "max_severity": "7.5"}]
+///     }]
+///   }]
+/// }
+/// ```
+///
+/// Each *group* is one advisory (osv-scanner merges aliases into a group), so
+/// each group becomes one finding. Its identifier is the CVE alias when one
+/// exists, otherwise the group's first id, so allowlists and audit exceptions
+/// can name the advisory the way the rest of Foundry does. The fix version is
+/// the first `fixed` event recorded for this package.
+///
+/// Package names are the `SwiftURL` ecosystem's repository URLs, not `SwiftPM`
+/// package identities.
+fn parse_osv_scanner(output: &str) -> AuditResult {
+    let root: Value = match serde_json::from_str(output) {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("osv-scanner JSON parse error: {e}")),
+    };
+
+    let Some(results) = root["results"].as_array() else {
+        return tool_error("osv-scanner JSON: expected a top-level \"results\" array".to_owned());
+    };
+
+    let mut vulnerabilities = Vec::new();
+    for pkg in results.iter().filter_map(|r| r["packages"].as_array()).flatten() {
+        let package = pkg["package"]["name"].as_str().unwrap_or("unknown").to_owned();
+        let version = pkg["package"]["version"].as_str().map(str::to_owned);
+        let vulns = pkg["vulnerabilities"].as_array().map_or(&[][..], Vec::as_slice);
+
+        for group in osv_groups(pkg, vulns) {
+            let primary_id = group.ids.first().copied();
+            let cve = group
+                .aliases
+                .iter()
+                .chain(group.ids.iter())
+                .find(|id| id.starts_with("CVE-"))
+                .or(group.ids.first())
+                .map(|id| (*id).to_owned());
+            let severity = group
+                .max_severity
+                .and_then(|s| s.parse::<f32>().ok())
+                .map(|score| cvss_to_severity(score).to_owned());
+            let fix_version = primary_id
+                .and_then(|id| vulns.iter().find(|v| v["id"].as_str() == Some(id)))
+                .and_then(|v| osv_fixed_version(v, &package));
+
+            vulnerabilities.push(Vulnerability {
+                cve,
+                severity,
+                package: package.clone(),
+                version: version.clone(),
+                fix_version,
+                fix_package: None,
+            });
+        }
+    }
+
+    AuditResult {
+        vulnerabilities,
+        error: None,
+    }
+}
+
+/// One advisory as osv-scanner groups it.
+struct OsvGroup<'a> {
+    ids: Vec<&'a str>,
+    aliases: Vec<&'a str>,
+    max_severity: Option<&'a str>,
+}
+
+/// The advisory groups for one package. osv-scanner always emits `groups`;
+/// if it is absent, each vulnerability stands as its own group so no finding
+/// is lost.
+fn osv_groups<'a>(pkg: &'a Value, vulns: &'a [Value]) -> Vec<OsvGroup<'a>> {
+    let strs = |v: &'a Value| -> Vec<&'a str> {
+        v.as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    };
+    match pkg["groups"].as_array() {
+        Some(groups) => groups
+            .iter()
+            .map(|g| OsvGroup {
+                ids: strs(&g["ids"]),
+                aliases: strs(&g["aliases"]),
+                max_severity: g["max_severity"].as_str(),
+            })
+            .collect(),
+        None => vulns
+            .iter()
+            .map(|v| OsvGroup {
+                ids: v["id"].as_str().into_iter().collect(),
+                aliases: strs(&v["aliases"]),
+                max_severity: None,
+            })
+            .collect(),
+    }
+}
+
+/// The first `fixed` version an OSV record gives for `package`, reduced to a
+/// bare version. Records can list several ecosystems; only entries for this
+/// package count.
+fn osv_fixed_version(vuln: &Value, package: &str) -> Option<String> {
+    vuln["affected"]
+        .as_array()?
+        .iter()
+        .filter(|a| a["package"]["name"].as_str() == Some(package))
+        .filter_map(|a| a["ranges"].as_array())
+        .flatten()
+        .filter_map(|r| r["events"].as_array())
+        .flatten()
+        .find_map(|e| e["fixed"].as_str())
+        .and_then(bare_version)
+}
+
+/// Parse an `OWASP` Dependency-Check JSON report (Kotlin).
+///
+/// Expected shape (report schema 1.1):
+/// ```json
+/// {
+///   "reportSchema": "1.1",
+///   "dependencies": [{
+///     "fileName": "kotlin-stdlib-2.2.0.jar",
+///     "packages": [{"id": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@2.2.0"}],
+///     "vulnerabilities": [{"name": "CVE-2026-53914", "severity": "CRITICAL"}]
+///   }]
+/// }
+/// ```
+///
+/// Only `vulnerabilities` are findings; anything the project's suppression
+/// file matched is reported under `suppressedVulnerabilities` and is ignored
+/// here, because the project has already made that call. Dependency-Check
+/// names no fix version, so every finding is a policy call. The same advisory
+/// on the same package is reported once.
+fn parse_dependency_check(output: &str) -> AuditResult {
+    let root: Value = match serde_json::from_str(output) {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Dependency-Check report JSON parse error: {e}")),
+    };
+
+    let Some(dependencies) = root["dependencies"].as_array() else {
+        return tool_error(
+            "Dependency-Check report: expected a top-level \"dependencies\" array".to_owned(),
+        );
+    };
+
+    let mut seen = HashSet::new();
+    let mut vulnerabilities = Vec::new();
+    for dep in dependencies {
+        let Some(vulns) = dep["vulnerabilities"].as_array() else {
+            continue;
+        };
+        let (package, version) = dependency_check_coordinates(dep);
+        for vuln in vulns {
+            let cve = vuln["name"].as_str().map(str::to_owned);
+            if !seen.insert((package.clone(), version.clone(), cve.clone())) {
+                continue;
+            }
+            vulnerabilities.push(Vulnerability {
+                cve,
+                severity: vuln["severity"].as_str().map(str::to_ascii_lowercase),
+                package: package.clone(),
+                version: version.clone(),
+                fix_version: None,
+                fix_package: None,
+            });
+        }
+    }
+
+    AuditResult {
+        vulnerabilities,
+        error: None,
+    }
+}
+
+/// Name a Dependency-Check dependency as `group:artifact` plus version, from
+/// its Maven package URL. Falls back to the file name when there is no
+/// package URL.
+fn dependency_check_coordinates(dep: &Value) -> (String, Option<String>) {
+    let purl = dep["packages"]
+        .as_array()
+        .and_then(|p| p.iter().find_map(|p| p["id"].as_str()))
+        .and_then(|id| id.strip_prefix("pkg:maven/"))
+        .map(|purl| purl.split(['?', '#']).next().unwrap_or(purl));
+    if let Some(purl) = purl {
+        let (coordinates, version) = match purl.split_once('@') {
+            Some((c, v)) => (c, Some(v.to_owned())),
+            None => (purl, None),
+        };
+        return (coordinates.replacen('/', ":", 1), version);
+    }
+    (dep["fileName"].as_str().unwrap_or("unknown").to_owned(), None)
 }
 
 /// Collapse a scanner gateway call into either a usable result or the reason
@@ -832,6 +1217,348 @@ mod tests {
         let result = parse_generic_audit("not json");
         assert!(result.error.is_some());
         assert!(result.vulnerabilities.is_empty());
+    }
+
+    // --- Swift (osv-scanner) ---
+
+    #[test]
+    fn swift_uses_osv_scanner_on_package_resolved() {
+        let (cmd, args) = audit_command(&Stack::Swift);
+        assert_eq!(cmd, "osv-scanner");
+        assert_eq!(
+            args,
+            [
+                "scan",
+                "source",
+                "--format",
+                "json",
+                "--lockfile",
+                "Package.resolved"
+            ]
+        );
+    }
+
+    #[test]
+    fn swift_plan_runs_osv_scanner_when_package_resolved_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Package.resolved"), "{}").unwrap();
+        assert!(matches!(
+            audit_plan(dir.path(), &Stack::Swift),
+            AuditPlan::Stdout { ref command, .. } if command == "osv-scanner"
+        ));
+    }
+
+    #[tokio::test]
+    async fn swift_without_package_resolved_is_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_audit(dir.path(), &Stack::Swift).await.unwrap();
+        assert!(result.vulnerabilities.is_empty());
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Package.resolved not found")),
+            "{:?}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn osv_scanner_exit_code_1_is_not_failure() {
+        assert!(is_audit_vuln_exit_code(&Stack::Swift, 1));
+    }
+
+    #[test]
+    fn osv_scanner_error_exit_codes_are_failures() {
+        // 127: general error; 128: no packages found.
+        assert!(!is_audit_vuln_exit_code(&Stack::Swift, 127));
+        assert!(!is_audit_vuln_exit_code(&Stack::Swift, 128));
+    }
+
+    /// Trimmed from a real osv-scanner 2.6.0 run against a Package.resolved
+    /// pinning swift-nio-http2 1.19.0.
+    const OSV_SWIFT_NIO_HTTP2: &str = r#"
+    {
+      "results": [{
+        "source": {"path": "/p/Package.resolved", "type": "lockfile"},
+        "packages": [{
+          "package": {"name": "github.com/apple/swift-nio-http2", "version": "1.19.0", "ecosystem": "SwiftURL"},
+          "vulnerabilities": [
+            {"id": "GHSA-w3f6-pc54-gfw7", "aliases": ["CVE-2022-24667"], "affected": [{
+              "package": {"ecosystem": "SwiftURL", "name": "github.com/apple/swift-nio-http2"},
+              "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.19.2"}]}]
+            }]},
+            {"id": "GHSA-qppj-fm5r-hxr3", "aliases": ["CVE-2023-44487"], "affected": [
+              {"package": {"ecosystem": "Go", "name": "golang.org/x/net"},
+               "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "0.17.0"}]}]},
+              {"package": {"ecosystem": "SwiftURL", "name": "github.com/apple/swift-nio-http2"},
+               "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.28.0"}]}]}
+            ]},
+            {"id": "GHSA-xvr7-p2c6-j83w", "affected": [{
+              "package": {"ecosystem": "SwiftURL", "name": "github.com/apple/swift-nio-http2"},
+              "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]
+            }]}
+          ],
+          "groups": [
+            {"ids": ["GHSA-w3f6-pc54-gfw7"], "aliases": ["CVE-2022-24667", "GHSA-w3f6-pc54-gfw7"], "max_severity": "7.5"},
+            {"ids": ["GHSA-qppj-fm5r-hxr3"], "aliases": ["BIT-golang-2023-44487", "CVE-2023-44487", "GHSA-qppj-fm5r-hxr3"], "max_severity": "6.9"},
+            {"ids": ["GHSA-xvr7-p2c6-j83w"], "aliases": ["GHSA-xvr7-p2c6-j83w"], "max_severity": "6.3"}
+          ]
+        }]
+      }]
+    }"#;
+
+    #[test]
+    fn parse_osv_scanner_emits_one_finding_per_group() {
+        let result = parse_osv_scanner(OSV_SWIFT_NIO_HTTP2);
+        assert!(result.error.is_none());
+        assert_eq!(result.vulnerabilities.len(), 3);
+
+        let first = &result.vulnerabilities[0];
+        assert_eq!(first.cve.as_deref(), Some("CVE-2022-24667"), "CVE alias preferred");
+        assert_eq!(first.package, "github.com/apple/swift-nio-http2");
+        assert_eq!(first.version.as_deref(), Some("1.19.0"));
+        assert_eq!(first.severity.as_deref(), Some("high"), "max_severity 7.5 → high");
+        assert_eq!(first.fix_version.as_deref(), Some("1.19.2"));
+        assert!(first.fix_package.is_none());
+    }
+
+    #[test]
+    fn parse_osv_scanner_takes_fix_version_for_this_package_only() {
+        let result = parse_osv_scanner(OSV_SWIFT_NIO_HTTP2);
+        let multi = &result.vulnerabilities[1];
+        assert_eq!(multi.cve.as_deref(), Some("CVE-2023-44487"));
+        assert_eq!(
+            multi.fix_version.as_deref(),
+            Some("1.28.0"),
+            "the Go entry's fixed version must not leak into the Swift finding"
+        );
+        assert_eq!(multi.severity.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn parse_osv_scanner_without_cve_alias_uses_group_id_and_no_fix() {
+        let result = parse_osv_scanner(OSV_SWIFT_NIO_HTTP2);
+        let no_cve = &result.vulnerabilities[2];
+        assert_eq!(no_cve.cve.as_deref(), Some("GHSA-xvr7-p2c6-j83w"));
+        assert!(no_cve.fix_version.is_none(), "no fixed event → policy call");
+    }
+
+    #[test]
+    fn parse_osv_scanner_falls_back_to_vulnerabilities_without_groups() {
+        let json = r#"{"results": [{"packages": [{
+            "package": {"name": "github.com/x/y", "version": "1.0.0"},
+            "vulnerabilities": [{"id": "GHSA-aaaa", "aliases": ["CVE-2026-1"]}]
+        }]}]}"#;
+        let result = parse_osv_scanner(json);
+        assert_eq!(result.vulnerabilities.len(), 1);
+        assert_eq!(result.vulnerabilities[0].cve.as_deref(), Some("CVE-2026-1"));
+    }
+
+    #[test]
+    fn parse_osv_scanner_clean_scan() {
+        // Real clean-run output shape from osv-scanner 2.6.0.
+        let json = r#"{"results": [], "experimental_config": {"licenses": {"summary": false, "allowlist": null}}}"#;
+        let result = parse_osv_scanner(json);
+        assert!(result.error.is_none());
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn parse_osv_scanner_records_unexpected_shape_and_bad_json() {
+        assert!(parse_osv_scanner(r#"{"status": "ok"}"#).error.is_some());
+        assert!(parse_osv_scanner("").error.is_some(), "no output is not a clean scan");
+        assert!(parse_osv_scanner("not json").error.is_some());
+    }
+
+    // --- Kotlin (OWASP Dependency-Check via the project's Gradle wrapper) ---
+
+    #[test]
+    fn kotlin_plan_runs_project_gradle_wrapper_with_long_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gradlew"), "").unwrap();
+        let plan = audit_plan(dir.path(), &Stack::Kotlin);
+        let AuditPlan::ReportFile {
+            command,
+            args,
+            report,
+            timeout,
+        } = plan
+        else {
+            panic!("Kotlin reads a report file: {plan:?}");
+        };
+        assert_eq!(command, dir.path().join("gradlew").to_string_lossy());
+        assert_eq!(args, ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]);
+        assert_eq!(report, dir.path().join("build/reports/dependency-check-report.json"));
+        assert!(timeout > Duration::from_secs(300), "longer than the shell default");
+    }
+
+    #[tokio::test]
+    async fn kotlin_without_gradle_wrapper_is_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+        assert!(result.vulnerabilities.is_empty());
+        assert!(
+            result.error.as_deref().is_some_and(|e| e.contains("gradlew not found")),
+            "{:?}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn gradle_exit_code_1_means_read_the_report() {
+        assert!(is_audit_vuln_exit_code(&Stack::Kotlin, 1));
+        assert!(!is_audit_vuln_exit_code(&Stack::Kotlin, 2));
+    }
+
+    /// A stand-in `gradlew` that runs `body` as a shell script. The real
+    /// wrapper is a shell script too, so this exercises the same spawn path.
+    #[cfg(unix)]
+    fn fake_gradlew(dir: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let wrapper = dir.join("gradlew");
+        std::fs::write(&wrapper, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    const DEPENDENCY_CHECK_ONE_FINDING: &str = r#"{
+      "reportSchema": "1.1",
+      "dependencies": [
+        {"fileName": "clean.jar", "packages": [{"id": "pkg:maven/org.example/clean@1.0.0"}]},
+        {"fileName": "kotlin-stdlib-2.2.0.jar",
+         "packages": [{"id": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@2.2.0"}],
+         "vulnerabilities": [{"source": "NVD", "name": "CVE-2026-53914", "severity": "CRITICAL",
+                              "cvssv3": {"baseScore": 9.8}}],
+         "suppressedVulnerabilities": [{"name": "CVE-2020-29582", "severity": "MEDIUM"}]}
+      ]
+    }"#;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_fresh_report_after_exit_1_is_parsed_as_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("build/reports");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        std::fs::write(dir.path().join("report.json"), DEPENDENCY_CHECK_ONE_FINDING).unwrap();
+        // Writes the report, then fails the build as failBuildOnCVSS does.
+        fake_gradlew(
+            dir.path(),
+            "cp report.json build/reports/dependency-check-report.json\necho 'BUILD FAILED' >&2\nexit 1",
+        );
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.vulnerabilities.len(), 1);
+        assert_eq!(result.vulnerabilities[0].cve.as_deref(), Some("CVE-2026-53914"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_exit_1_with_only_a_stale_report_is_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("build/reports");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let report = report_dir.join("dependency-check-report.json");
+        std::fs::write(&report, DEPENDENCY_CHECK_ONE_FINDING).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&report)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // A broken build: exits 1 and never reaches the scan.
+        fake_gradlew(dir.path(), "echo 'Could not resolve plugin' >&2\nexit 1");
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.vulnerabilities.is_empty(), "stale findings must not be reported");
+        let err = result.error.expect("a stale report is not a scan");
+        assert!(err.contains("without writing a fresh report"), "{err}");
+        assert!(err.contains("Could not resolve plugin"), "stderr carried through: {err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_clean_exit_without_report_is_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_gradlew(dir.path(), "exit 0");
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.error.is_some(), "exit 0 without a report is not a clean scan");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_other_exit_codes_are_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_gradlew(dir.path(), "exit 2");
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.error.as_deref().is_some_and(|e| e.contains("exit 2")));
+    }
+
+    #[test]
+    fn parse_dependency_check_reports_live_findings_only() {
+        let result = parse_dependency_check(DEPENDENCY_CHECK_ONE_FINDING);
+        assert!(result.error.is_none());
+        assert_eq!(result.vulnerabilities.len(), 1, "suppressed findings are the project's call");
+
+        let vuln = &result.vulnerabilities[0];
+        assert_eq!(vuln.cve.as_deref(), Some("CVE-2026-53914"));
+        assert_eq!(vuln.package, "org.jetbrains.kotlin:kotlin-stdlib");
+        assert_eq!(vuln.version.as_deref(), Some("2.2.0"));
+        assert_eq!(vuln.severity.as_deref(), Some("critical"));
+        assert!(vuln.fix_version.is_none(), "Dependency-Check names no fix → policy call");
+    }
+
+    #[test]
+    fn parse_dependency_check_deduplicates_repeated_findings() {
+        let json = r#"{"dependencies": [
+          {"fileName": "a.jar", "packages": [{"id": "pkg:maven/g/a@1?type=jar"}],
+           "vulnerabilities": [{"name": "CVE-1", "severity": "HIGH"}, {"name": "CVE-1", "severity": "HIGH"}]},
+          {"fileName": "a.jar", "packages": [{"id": "pkg:maven/g/a@1"}],
+           "vulnerabilities": [{"name": "CVE-1", "severity": "HIGH"}]}
+        ]}"#;
+        let result = parse_dependency_check(json);
+        assert_eq!(result.vulnerabilities.len(), 1);
+        assert_eq!(result.vulnerabilities[0].package, "g:a");
+        assert_eq!(result.vulnerabilities[0].version.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn parse_dependency_check_falls_back_to_file_name() {
+        let json = r#"{"dependencies": [
+          {"fileName": "vendored.jar", "vulnerabilities": [{"name": "CVE-2", "severity": "LOW"}]}
+        ]}"#;
+        let result = parse_dependency_check(json);
+        assert_eq!(result.vulnerabilities[0].package, "vendored.jar");
+        assert!(result.vulnerabilities[0].version.is_none());
+    }
+
+    #[test]
+    fn parse_dependency_check_records_unexpected_shape_and_bad_json() {
+        assert!(parse_dependency_check(r#"{"scanInfo": {}}"#).error.is_some());
+        assert!(parse_dependency_check("").error.is_some());
+        assert!(parse_dependency_check("{nope").error.is_some());
+    }
+
+    #[test]
+    fn tail_keeps_the_end_on_a_char_boundary() {
+        assert_eq!(tail("short", 10), "short");
+        assert_eq!(tail("abcdef", 3), "def");
+        assert_eq!(tail("aé", 1), "", "never splits a multi-byte char");
+    }
+
+    // --- C++ ---
+
+    #[test]
+    fn cpp_is_explicitly_not_audited() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(audit_plan(dir.path(), &Stack::Cpp), AuditPlan::NotAudited);
     }
 
     // --- filter_audit_exceptions ---

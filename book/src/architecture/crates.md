@@ -69,7 +69,8 @@ with `FOUNDRYD_LISTEN_ADDR`) and runs the workflow engine.
   and stderr, and returns a `CommandResult`.
 - `scanner.rs` — vulnerability scanner abstraction. Dispatches to the
   stack-appropriate tool (`cargo audit`, `npm audit`, `pip-audit`,
-  `mix deps.audit`) and normalizes output into a `Vec<Vulnerability>`.
+  `mix deps.audit`, `osv-scanner` for Swift, the project's Gradle
+  Dependency-Check task for Kotlin) and normalizes output into a `Vec<Vulnerability>`.
 - `gateway.rs` — I/O abstraction layer for task blocks. Defines `ShellGateway`
   and `ScannerGateway` traits with `ProcessShellGateway` and
   `ProcessScannerGateway` production implementations. Also provides

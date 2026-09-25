@@ -184,6 +184,8 @@ pub enum Stack {
     TypeScript,
     Elixir,
     Cpp,
+    Swift,
+    Kotlin,
 }
 
 /// How to install the project locally after automation completes.
@@ -254,6 +256,8 @@ impl std::fmt::Display for Stack {
             Self::TypeScript => write!(f, "typescript"),
             Self::Elixir => write!(f, "elixir"),
             Self::Cpp => write!(f, "cpp"),
+            Self::Swift => write!(f, "swift"),
+            Self::Kotlin => write!(f, "kotlin"),
         }
     }
 }
@@ -279,7 +283,7 @@ pub enum RegistryMutationError {
     #[error("project '{0}' not found in registry")]
     NotFound(String),
     /// The given stack name is not recognised.
-    #[error("invalid stack '{0}'; use: rust, python, typescript, elixir, cpp")]
+    #[error("invalid stack '{0}'; use: rust, python, typescript, elixir, cpp, swift, kotlin")]
     InvalidStack(String),
     /// Both `install_command` and `install_brew` were provided; only one is allowed.
     #[error("provide at most one of install_command or install_brew")]
@@ -904,6 +908,8 @@ mod tests {
             ("typescript", Stack::TypeScript),
             ("elixir", Stack::Elixir),
             ("cpp", Stack::Cpp),
+            ("swift", Stack::Swift),
+            ("kotlin", Stack::Kotlin),
         ] {
             let stack: Stack = serde_json::from_str(&format!(r#""{json}""#)).unwrap();
             assert_eq!(stack, expected);
@@ -919,6 +925,8 @@ mod tests {
         assert_eq!(parse_stack("typescript").unwrap(), Stack::TypeScript);
         assert_eq!(parse_stack("elixir").unwrap(), Stack::Elixir);
         assert_eq!(parse_stack("cpp").unwrap(), Stack::Cpp);
+        assert_eq!(parse_stack("swift").unwrap(), Stack::Swift);
+        assert_eq!(parse_stack("kotlin").unwrap(), Stack::Kotlin);
     }
 
     #[test]
@@ -1179,6 +1187,34 @@ mod tests {
         let e = RegistryMutationError::NotFound("proj".to_string());
         assert!(e.to_string().contains("proj"));
         assert!(e.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn stack_display_round_trips_through_parse_stack() {
+        for stack in [
+            Stack::Rust,
+            Stack::Python,
+            Stack::TypeScript,
+            Stack::Elixir,
+            Stack::Cpp,
+            Stack::Swift,
+            Stack::Kotlin,
+        ] {
+            assert_eq!(parse_stack(&stack.to_string()).unwrap(), stack);
+        }
+    }
+
+    #[test]
+    fn swift_and_kotlin_serialize_lowercase() {
+        assert_eq!(serde_json::to_string(&Stack::Swift).unwrap(), r#""swift""#);
+        assert_eq!(serde_json::to_string(&Stack::Kotlin).unwrap(), r#""kotlin""#);
+    }
+
+    #[test]
+    fn mutation_error_display_invalid_stack_lists_swift_and_kotlin() {
+        let e = RegistryMutationError::InvalidStack("cobol".to_string());
+        assert!(e.to_string().contains("swift"));
+        assert!(e.to_string().contains("kotlin"));
     }
 
     #[test]

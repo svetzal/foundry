@@ -573,7 +573,7 @@ foundry registry add \
 | ------------------- | -------- | ----------------------------------------------------------------- |
 | `--name`            | Yes      | Unique project name                                               |
 | `--path`            | Yes      | Absolute path to the project                                      |
-| `--stack`           | Yes      | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp` |
+| `--stack`           | Yes      | Technology stack: `rust`, `python`, `typescript`, `elixir`, `cpp`, `swift`, `kotlin` |
 | `--agent`           | Yes      | AI agent name (e.g. `claude`)                                     |
 | `--repo`            | Yes      | GitHub slug (`owner/repo`)                                        |
 | `--branch`          | No       | Default branch (default: `main`)                                  |

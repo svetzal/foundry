@@ -110,9 +110,17 @@ stack-specific commands.
 |-------|------------|-------|
 | `"rust"` | `cargo audit --json` | Requires `cargo-audit` to be installed |
 | `"typescript"` | `npm audit --json` | Exit code 1 = vulnerabilities found (not a tool failure) |
-| `"python"` | `pip-audit --format=json` | Requires `pip-audit` to be installed |
+| `"python"` | `.venv/bin/pip-audit --format=json` | Runs the project's own `pip-audit` from `.venv`; a project without it is reported as not scanned |
 | `"elixir"` | `mix deps.audit --format=json` | — |
 | `"cpp"` | — | Placeholder for C++ projects; audit tooling not yet wired |
+| `"swift"` | `osv-scanner scan source --format json --lockfile Package.resolved` | Requires `osv-scanner` on the daemon's `PATH` and a committed `Package.resolved`. Exit code 1 = vulnerabilities found; 127/128 are tool failures. Findings carry the CVE alias when the advisory has one, otherwise the GHSA id |
+| `"kotlin"` | `./gradlew dependencyCheckAggregate --no-parallel --no-daemon` | Runs the project's own OWASP Dependency-Check task, so its suppression file and settings apply. The project must configure `formats` to include `JSON`; Foundry reads `build/reports/dependency-check-report.json` and accepts it only when this run wrote it. Gradle exits 1 both for a `failBuildOnCVSS` finding and for a broken build, so a missing or stale report is a scan failure. Timeout is 60 minutes because the NVD download is slow; set `NVD_API_KEY` in the daemon's environment |
+
+Supply-chain auto-fix support differs by stack: Rust, TypeScript, and Python
+have a full update and a targeted pin; Swift has the full update
+(`swift package update`) only; Kotlin, Elixir, and C++ report `no_fixer`.
+Dependency updates in the `maintain` workflow are agent-driven and do not
+depend on the stack.
 
 ### ActionFlags
 

@@ -24,7 +24,8 @@ pub(super) struct ApplyFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FixStrategy {
     /// Every dependency moved to its latest version compatible with the
-    /// manifest (`cargo update`, `uv lock --upgrade`, `npm update`/`bun update`).
+    /// manifest (`cargo update`, `uv lock --upgrade`, `npm update`/`bun update`,
+    /// `swift package update`).
     FullUpdate,
     /// One package moved to the advisory's fix version ([`apply_fix`]).
     TargetedPin,
@@ -40,8 +41,15 @@ impl FixStrategy {
     }
 }
 
+/// Whether the stack has any auto-fix mechanism.
+///
+/// Swift has the full update only (see [`apply_fix`] for why it has no
+/// targeted pin). Kotlin has neither: a Gradle version catalog has no
+/// ecosystem command that moves dependencies within their declared ranges, so
+/// its findings stay with the maintain workflow's agent. Elixir and C++ have
+/// no fixer yet.
 pub(super) fn supports(stack: &Stack) -> bool {
-    matches!(stack, Stack::Rust | Stack::TypeScript | Stack::Python)
+    matches!(stack, Stack::Rust | Stack::TypeScript | Stack::Python | Stack::Swift)
 }
 
 /// Run the stack's full compatible dependency update — every package moves to
@@ -57,6 +65,18 @@ pub(super) async fn apply_full_update(
 ) -> Result<AppliedFix, ApplyFailure> {
     match stack {
         Stack::Rust => run_full_update(shell, path, vec!["Cargo.lock"], "cargo", &["update"]).await,
+        Stack::Swift => {
+            if !path.join("Package.resolved").exists() {
+                return Err(ApplyFailure {
+                    files: vec![],
+                    detail: "no Package.resolved; Swift auto-fix updates the committed lockfile"
+                        .to_string(),
+                });
+            }
+            // Package.swift ranges are never rewritten; only the pins move.
+            run_full_update(shell, path, vec!["Package.resolved"], "swift", &["package", "update"])
+                .await
+        }
         Stack::Python => {
             if !path.join("uv.lock").exists() {
                 return Err(ApplyFailure {
@@ -158,6 +178,15 @@ pub(super) async fn apply_fix(
         Stack::Rust => apply_rust(shell, path, package, version).await,
         Stack::TypeScript => apply_typescript(shell, path, package, version).await,
         Stack::Python => apply_python(shell, path, package, version).await,
+        // osv-scanner names Swift packages by repository URL, while SwiftPM
+        // pins by package identity, and SwiftPM has no in-range precise pin.
+        // Guessing the mapping could pin the wrong package, so the full update
+        // is the only Swift fix path.
+        Stack::Swift => Err(ApplyFailure {
+            files: vec![],
+            detail: "no targeted pin for swift; only the full `swift package update` applies"
+                .to_string(),
+        }),
         unsupported => Err(ApplyFailure {
             files: vec![],
             detail: format!("no auto-fix mechanism for {unsupported} yet"),
@@ -920,6 +949,71 @@ mod tests {
 
         assert!(failure.detail.contains("no auto-fix mechanism"));
         assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_update_runs_swift_package_update_for_swift() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Package.resolved"), "{}").unwrap();
+        let shell = FakeShellGateway::success();
+
+        let applied = apply_full_update(shell.as_ref(), dir.path(), &Stack::Swift).await.unwrap();
+
+        assert_eq!(applied.files, vec!["Package.resolved"], "Package.swift is never touched");
+        let call = &shell.invocations()[0];
+        assert_eq!(call.command, "swift");
+        assert_eq!(call.args, vec!["package", "update"], "no package named → every pin moves");
+    }
+
+    #[tokio::test]
+    async fn full_update_requires_package_resolved_for_swift() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        let failure =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::Swift).await.unwrap_err();
+
+        assert!(failure.detail.contains("Package.resolved"), "{}", failure.detail);
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn targeted_pin_is_explicitly_refused_for_swift() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        let failure = apply_fix(
+            shell.as_ref(),
+            dir.path(),
+            &Stack::Swift,
+            &finding("github.com/apple/swift-nio-http2", None, "1.19.2"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(failure.detail.contains("no targeted pin for swift"), "{}", failure.detail);
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn kotlin_has_no_fixer() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = FakeShellGateway::success();
+
+        assert!(!supports(&Stack::Kotlin));
+        let failure =
+            apply_full_update(shell.as_ref(), dir.path(), &Stack::Kotlin).await.unwrap_err();
+        assert!(
+            failure.detail.contains("no auto-fix mechanism for kotlin"),
+            "{}",
+            failure.detail
+        );
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[test]
+    fn swift_is_supported_for_remediation() {
+        assert!(supports(&Stack::Swift));
     }
 
     #[test]

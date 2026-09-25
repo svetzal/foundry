@@ -27,16 +27,19 @@
 //!    gates to verify against;
 //! 2. **full update first** (owner policy, 2026-09-18): run the ecosystem's full
 //!    compatible update (`cargo update`, `uv lock --upgrade`, `npm update` /
-//!    `bun update`), re-run the same scanner that detected the findings to
-//!    confirm which ones cleared, then re-run the repo's gates. On a cleared
-//!    finding and passing required gates → commit the lockfile as
+//!    `bun update`, `swift package update`), re-run the same scanner that
+//!    detected the findings to confirm which ones cleared, then re-run the
+//!    repo's gates. On a cleared finding and passing required gates → commit
+//!    the lockfile as
 //!    `chore: update dependency lockfile to latest compatible versions (fixes …)`;
 //!    otherwise restore the touched files from HEAD;
 //! 3. **targeted fallback**: every finding the full update did not clear (or
 //!    every finding, when the full update was reverted) gets the stack-specific
 //!    pin (Cargo precise update, npm/bun lock update or manifest rewrite, or uv
 //!    requirement/lock update), re-verified by the gates and committed as
-//!    `chore(deps): bump …` or restored from HEAD.
+//!    `chore(deps): bump …` or restored from HEAD. Swift has no targeted pin,
+//!    so a Swift finding the full update leaves behind is an `apply_failed`
+//!    outcome. Kotlin and Elixir have no fixer at all (`no_fixer`).
 //!
 //! Each outcome's `detail` starts with the path taken — `full_update` or
 //! `targeted_pin`. Committing each applied fix immediately means a later
@@ -884,6 +887,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn swift_full_update_that_clears_the_finding_commits_package_resolved() {
+        let dir = project_dir_with_gate();
+        std::fs::write(dir.path().join("Package.resolved"), "{}").unwrap();
+        let shell = ScriptedGateShell::new(&[true]);
+        let block = RemediateSupplyChain::with_enabled(
+            shell.clone(),
+            registry_with(vec![entry_for_stack(
+                "alpha",
+                dir.path().to_str().unwrap(),
+                Stack::Swift,
+            )]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "swift",
+            vec![finding("CVE-2022-24667", Some("1.19.2"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let calls = shell.calls();
+        assert!(calls.contains(&"swift package update".to_string()), "{calls:?}");
+        assert!(calls.contains(&"git add Package.resolved".to_string()), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn swift_finding_left_by_full_update_is_an_explicit_apply_failure() {
+        let dir = project_dir_with_gate();
+        std::fs::write(dir.path().join("Package.resolved"), "{}").unwrap();
+        let fix = finding("CVE-2022-24667", Some("1.19.2"));
+        let shell = ScriptedGateShell::new(&[true]);
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&fix]),
+            registry_with(vec![entry_for_stack(
+                "alpha",
+                dir.path().to_str().unwrap(),
+                Stack::Swift,
+            )]),
+            true,
+        );
+        let p = scanned(vec![project("alpha", "swift", vec![fix.clone()])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes.len(), 1);
+        assert_eq!(out.outcomes[0].status, "apply_failed");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.contains("no targeted pin for swift"), "{detail}");
+    }
+
+    #[tokio::test]
     async fn falls_back_to_targeted_pin_when_full_update_leaves_finding_unresolved() {
         let dir = project_dir_with_gate();
         let fix = finding("CVE-1", Some("1.2.3"));
@@ -1465,6 +1524,19 @@ mod tests {
     }
 
     #[test]
+    fn plan_returns_no_fixer_for_kotlin() {
+        let proj = project("alpha", "kotlin", vec![finding("CVE-1", Some("1.2.3"))]);
+        let mut entry = rust_entry("alpha", "some/path");
+        entry.stack = Stack::Kotlin;
+        assert_eq!(
+            plan_project_remediation(&proj, &[entry]),
+            ProjectRemediationPlan::NoFixer {
+                stack: "kotlin".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn plan_returns_proceed_for_rust_project_with_fixable_findings() {
         let proj = project("alpha", "rust", vec![finding("CVE-1", Some("1.2.3"))]);
         let entry = rust_entry("alpha", "some/path");
@@ -1478,8 +1550,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_returns_proceed_for_typescript_and_python_projects() {
-        for stack in [Stack::TypeScript, Stack::Python] {
+    fn plan_returns_proceed_for_typescript_python_and_swift_projects() {
+        for stack in [Stack::TypeScript, Stack::Python, Stack::Swift] {
             let proj = project("alpha", &stack.to_string(), vec![finding("CVE-1", Some("1.2.3"))]);
             let mut entry = rust_entry("alpha", "some/path");
             entry.stack = stack.clone();
