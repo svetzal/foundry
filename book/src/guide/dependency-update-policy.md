@@ -161,6 +161,23 @@ release:
 The supply-chain auto-fix engine follows the same rule. See
 [Supply-chain scan](supply-chain.md#the-auto-fix-engine-gated-dark).
 
+### Suppressions are not fixes
+
+Maintenance has no reviewer, so the maintain prompt, its retry prompt and the
+task prompt carry three rules: never suppress, ignore or allowlist an advisory
+that has a fixed release (upgrade instead, past the policy ceiling if need
+be); never edit `.supply-chain-allow.json`, `ignore_advisories`,
+Dependency-Check suppressions, `pip-audit --ignore-vuln`, cargo deny/audit
+ignore lists or equivalent files; and never claim that no fix exists without
+citing the registry or OSV entry.
+
+Foundry also checks the result. After the maintain agent, it diffs the
+checkout against `origin/<branch>`. A run that added an allowlist entry, an
+`ignore_advisories` entry, a Dependency-Check suppression, an ignore flag or
+an ignore-list advisory, or an npm override that pins a package to a version
+the latest supply-chain scan marks vulnerable, fails with "needs review: …".
+It is never green, and its commits are not pushed.
+
 ## Holds
 
 A hold keeps a package at or below a version. Commit a

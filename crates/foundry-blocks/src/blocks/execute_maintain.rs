@@ -136,7 +136,11 @@ fn build_maintain_prompt(
          {dependency_brief}\n\
          Vulnerabilities: a security fix appears in the list above with its advisory. \
          If a vulnerability needs a dependency change that is not listed, report it \
-         in your final message instead of making the change.{gates_context}"
+         in your final message instead of making the change.\n\n\
+         {rules}\n\
+         Foundry checks this run for new suppressions; a run that adds one fails and \
+         needs review.{gates_context}",
+        rules = super::suppression_guard::ADVISORY_RULES,
     )
 }
 
@@ -724,5 +728,12 @@ mod tests {
             "the agent no longer decides compatibility"
         );
         assert!(prompt.contains("mix test"), "gates still reach the agent");
+        assert!(
+            prompt.contains(
+                "Never suppress, ignore or allowlist an advisory that has a fixed release"
+            )
+        );
+        assert!(prompt.contains("Never edit .supply-chain-allow.json"));
+        assert!(prompt.contains("unless you cite"));
     }
 }

@@ -123,12 +123,16 @@ fn build_retry_prompt(
         )
     };
     let dependency_rule = if workflow == WorkflowType::Maintain {
-        "\n\nThis is dependency maintenance. Do not move any dependency version or \
-         constraint beyond what the previous attempt applied. If one of those updates \
-         causes a failure you cannot fix, revert that update and say which in your \
-         final message."
+        format!(
+            "\n\nThis is dependency maintenance. Do not move any dependency version or \
+             constraint beyond what the previous attempt applied, except to fix an \
+             advisory. If one of those updates causes a failure you cannot fix, revert \
+             that update and say which in your final message. If the previous attempt \
+             added an advisory suppression, remove it and upgrade instead.\n\n{}",
+            super::suppression_guard::ADVISORY_RULES
+        )
     } else {
-        ""
+        String::new()
     };
     format!(
         "You are retrying a {workflow} operation on project '{project}' \
@@ -442,6 +446,8 @@ mod tests {
 
         let invocations = agent.invocations();
         assert!(invocations[0].prompt.contains("Do not move any dependency version"));
+        assert!(invocations[0].prompt.contains("remove it and upgrade instead"));
+        assert!(invocations[0].prompt.contains("Never edit .supply-chain-allow.json"));
         assert!(!invocations[1].prompt.contains("Do not move any dependency version"));
     }
 }

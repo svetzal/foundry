@@ -134,6 +134,7 @@ mod summarize_commits;
 mod summarize_events;
 mod summarize_result;
 mod supply_chain_fixers;
+mod suppression_guard;
 mod surface_campaign_terminal;
 mod triage_assessment;
 pub mod triage_core;

@@ -250,8 +250,10 @@ fn build_execution_prompt(
          - Do NOT skip the plan because quality gates currently pass. Passing gates is necessary, not sufficient — the purpose of this run is to apply the plan, not to re-verify a clean tree.\n\
          - After applying the plan, the working tree MUST contain modifications to the files named or implied by the plan. If `git status --porcelain` would be empty when you finish, you have not done the job and the run has failed.\n\
          - Foundry owns Git finalization for this run. Do NOT commit, push, merge, rebase, tag, or modify refs. Repository guidance that normally requires a commit or push does not apply inside this Foundry task worktree. Leave the completed changes in the working tree for Foundry to review and finalize.\n\
-         - Make only the changes the plan describes; do not expand scope.\n\
-         - Once the plan is applied, the following quality gates must still pass:{gates_context}"
+         - Make only the changes the plan describes; do not expand scope.\n\n\
+         {rules}\n\
+         - Once the plan is applied, the following quality gates must still pass:{gates_context}",
+        rules = super::suppression_guard::ADVISORY_RULES,
     )
 }
 
@@ -716,5 +718,16 @@ mod tests {
         );
         assert!(prompt.contains("SRP"), "expected principle 'SRP' in:\n{prompt}");
         assert!(prompt.contains("1. Do the thing"), "expected plan content in:\n{prompt}");
+    }
+
+    #[test]
+    fn the_task_and_iterate_prompt_carries_the_advisory_rules() {
+        let prompt = super::build_execution_prompt("p", "Upgrade axios", "security", None);
+        assert!(
+            prompt.contains(
+                "Never suppress, ignore or allowlist an advisory that has a fixed release"
+            )
+        );
+        assert!(prompt.contains("unless you cite"));
     }
 }

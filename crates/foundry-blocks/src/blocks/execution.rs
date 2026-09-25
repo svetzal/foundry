@@ -193,11 +193,45 @@ pub(crate) async fn execute_agent_block(
     )
     .await;
     let outcome = if ctx.workflow == WorkflowType::Maintain {
-        guard_configured_branch(shell, &project_path, &entry.branch, outcome).await
+        let outcome = guard_configured_branch(shell, &project_path, &entry.branch, outcome).await;
+        guard_suppressions(shell, &project_path, entry, &foundry_sdk::paths::events_dir(), outcome)
+            .await
     } else {
         outcome
     };
     build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await
+}
+
+/// Fail a maintain run that suppressed an advisory instead of fixing it.
+/// The run is not green, so its commits are not pushed, and the summary says
+/// it needs review.
+async fn guard_suppressions(
+    shell: &dyn ShellGateway,
+    project_path: &Path,
+    entry: &ProjectEntry,
+    events_dir: &Path,
+    outcome: AgentOutcome,
+) -> AgentOutcome {
+    if !matches!(outcome, AgentOutcome::Success { .. }) {
+        return outcome;
+    }
+    let found = super::suppression_guard::run_suppressions(
+        shell,
+        project_path,
+        &entry.branch,
+        &entry.name,
+        events_dir,
+    )
+    .await;
+    if found.is_empty() {
+        return outcome;
+    }
+    let reason = super::suppression_guard::needs_review(&found);
+    tracing::warn!(project = %entry.name, %reason, "maintain run added advisory suppressions");
+    AgentOutcome::AgentFailed {
+        stderr: reason,
+        failure: None,
+    }
 }
 
 /// Put the checkout back on its configured branch after the maintain agent,
@@ -544,5 +578,49 @@ mod tests {
             "must not be flagged silent no-op when files changed since pre_sha"
         );
         assert_eq!(result.events[0].payload["changes_detected"], true);
+    }
+
+    #[tokio::test]
+    async fn a_maintain_run_that_adds_a_suppression_fails_and_needs_review() {
+        let diff = "+++ b/.supply-chain-allow.json\n+  {\"cve\": \"CVE-2026-64941\", \"reason\": \"no fix\"}\n";
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: diff.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::blocks::test_helpers::project_entry(
+            "ops-visualizer",
+            dir.path().to_str().unwrap(),
+        );
+        let ok = crate::gateway::AgentOutcome::Success {
+            stdout: "done".to_string(),
+        };
+        let outcome = super::guard_suppressions(&*shell, dir.path(), &entry, dir.path(), ok).await;
+        let crate::gateway::AgentOutcome::AgentFailed { stderr, .. } = outcome else {
+            panic!("expected a failure");
+        };
+        assert!(stderr.starts_with("needs review: "), "{stderr}");
+        assert!(stderr.contains("CVE-2026-64941"));
+        let calls = shell.invocations();
+        assert_eq!(calls[0].args, ["diff", "-U0", "--no-color", "origin/main"]);
+    }
+
+    #[tokio::test]
+    async fn a_maintain_run_without_suppressions_is_unchanged() {
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "+++ b/mix.lock\n+  \"jason\": {:hex, :jason, \"1.4.5\"},\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::blocks::test_helpers::project_entry("p", dir.path().to_str().unwrap());
+        let ok = crate::gateway::AgentOutcome::Success {
+            stdout: "done".to_string(),
+        };
+        let outcome = super::guard_suppressions(&*shell, dir.path(), &entry, dir.path(), ok).await;
+        assert!(matches!(outcome, crate::gateway::AgentOutcome::Success { .. }));
     }
 }
