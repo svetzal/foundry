@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.4] - 2026-09-25
+
+### Fixed
+
+- npm audit findings reached through a dependency chain were reported with a
+  package name (`@serenity-js/rest`) as the advisory ID and as a policy call
+  with no fix. Foundry now reads npm's `via` chains: each finding carries the
+  GHSA ID (npm's advisory number as an alias), the vulnerable package and
+  range, and npm's fix availability, including `fixAvailable: true` without a
+  version and semver-major fixes. A fixable finding is never a policy call.
+- A repository with no dependency manifest in any ecosystem (such as
+  CloudFormation templates with Python tests) is reported under "No
+  dependency manifests: nothing to audit", not as a scan failure. A manifest
+  without a lockfile is still "not scanned".
+
+### Added
+
+- Low-disk protection. Before a maintenance run (`Validate Project`) or a task
+  (before its worktree is created) starts, Foundry checks free space on the
+  filesystems holding the project, the worktree and `~/.foundry`. Under
+  `FOUNDRY_MIN_FREE_DISK_GB` (15) and `FOUNDRY_MIN_FREE_DISK_PERCENT` (10) it
+  fails at once with "insufficient disk: …" instead of failing late ("Out of
+  diskspace" at finalize). The maintenance summary gains a "Low disk" section
+  and the ops digest raises a P0 `host_disk_low` anomaly.
+- `scripts/build-linux-release.sh <tag>`: the on-host Linux release build. It
+  uses one target directory and deletes it (and its worktree) on exit, keeping
+  only the tarball. AGENTS.md documents the ops-host release procedure.
+
 ## [0.39.3] - 2026-09-25
 
 ### Fixed
