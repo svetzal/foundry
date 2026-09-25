@@ -71,6 +71,29 @@ specifiers, Gradle catalog versions and Maven ranges, and SwiftPM `from:`,
 Maven qualifier is a flavor, not an upgrade: `33.1.0-jre` follows
 `33.0.0-jre`, and `0.8.0-0.6.x-compat` is not an upgrade of `0.8.0`.
 
+### Vendored code
+
+A vendored project changes only through its own repository, so its
+dependencies are not classified and never appear in the brief. A scope is
+vendored when its path has a `vendor/` or `third_party/` directory, or when
+`.gitattributes` marks the path with the GitHub Linguist attribute:
+
+```text
+libs/forked/** linguist-vendored
+```
+
+`foundry deps` and the summary list these scopes as "vendored, updated
+upstream". The security audit still scans them, because an advisory in
+vendored code still needs a person to see it.
+
+### The checkout
+
+Foundry classifies the files in the registered checkout. The nightly run syncs
+the checkout with its remote first. `foundry deps` fetches and compares: when
+the checkout is behind `origin/<branch>`, the output starts with a warning,
+because the lockfiles it read are not the remote's. The output also names the
+commit it read.
+
 A Gradle `[versions]` key that several libraries share (for example `ktor`)
 moves as one, so it is classified once, under the key's name.
 
@@ -161,6 +184,13 @@ A hold keeps a package at or below a version. Commit a
 
 An active hold caps the brief at the newest release inside the hold. A major
 that the hold blocks does not go to the majors lane.
+
+A hold whose cap is below the version already locked is stale. Foundry
+reports it as "stale hold: locked X is above cap Y, re-decide" in the brief,
+`foundry deps` and the summary. It never tells the agent to downgrade. While
+the stale hold stays in the file, it still blocks further upgrades of that
+package. `foundry deps` never says "Everything classified is up to date"
+while a hold is holding something back or is stale.
 
 A security fix respects a hold when a fixed release exists inside it. When no
 fixed release exists inside the hold, the fix overrides the hold, and the brief

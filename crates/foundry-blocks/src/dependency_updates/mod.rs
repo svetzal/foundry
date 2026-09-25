@@ -41,7 +41,7 @@ use chrono::NaiveDate;
 use foundry_sdk::dependency_holds::{DependencyHolds, HoldDecision};
 use foundry_sdk::payload::{
     Advisory, AppliedHold, DependencyClassification, Ecosystem, LapsedHold, OutdatedDependency,
-    SupplyChainFinding, TransitiveAdvisory, UnclassifiedScope, UpdateClass,
+    StaleHold, SupplyChainFinding, TransitiveAdvisory, UnclassifiedScope, UpdateClass,
 };
 use foundry_sdk::registry::Stack;
 
@@ -168,6 +168,43 @@ pub fn discover(root: &Path, stack: &Stack) -> Vec<Scope> {
     scopes
 }
 
+/// Directory names whose contents are vendored by convention.
+const VENDOR_DIRS: [&str; 2] = ["vendor", "third_party"];
+
+/// Path prefixes a repository marks as vendored with the GitHub Linguist
+/// convention in `.gitattributes` (`vendor/roost/** linguist-vendored`).
+/// `-linguist-vendored` and `linguist-vendored=false` unmark a path and are
+/// ignored.
+pub fn gitattributes_vendored(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pattern = parts.next()?;
+            let marked = parts.any(|a| a == "linguist-vendored" || a == "linguist-vendored=true");
+            marked.then(|| {
+                pattern
+                    .trim_start_matches('/')
+                    .trim_end_matches("**")
+                    .trim_end_matches('*')
+                    .trim_end_matches('/')
+                    .to_string()
+            })
+        })
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Whether a manifest location is vendored: under a `vendor/` or
+/// `third_party/` directory, or under a path `.gitattributes` marks as
+/// vendored.
+pub fn is_vendored(manifest: &str, marked: &[String]) -> bool {
+    let path = Path::new(manifest);
+    path.components().any(|c| VENDOR_DIRS.iter().any(|v| c.as_os_str() == *v))
+        || marked.iter().any(|m| path.starts_with(m))
+}
+
 /// The locked version of every direct dependency, keyed
 /// `"<ecosystem> <manifest> <package>"`.
 ///
@@ -270,8 +307,14 @@ pub async fn classify(
         }
     };
 
-    let scopes = discover(root, stack);
-    if scopes.is_empty() {
+    let marked = std::fs::read_to_string(root.join(".gitattributes"))
+        .map(|t| gitattributes_vendored(&t))
+        .unwrap_or_default();
+    let (vendored, scopes): (Vec<Scope>, Vec<Scope>) = discover(root, stack)
+        .into_iter()
+        .partition(|s| is_vendored(&s.manifest, &marked));
+    out.vendored = vendored.iter().map(Scope::label).collect();
+    if scopes.is_empty() && vendored.is_empty() {
         out.unclassified.push(UnclassifiedScope {
             scope: stack.to_string(),
             reason: match stack {
@@ -303,6 +346,8 @@ pub async fn classify(
                 });
                 continue;
             };
+            let hold = holds.decide(scope.ecosystem.as_str(), &dep.package, today);
+            record_hold(&mut out, scope, dep, &current, &hold);
             let published = match source.versions(scope.ecosystem, dep, current_raw).await {
                 Ok(v) => v,
                 Err(reason) => {
@@ -313,24 +358,6 @@ pub async fn classify(
                     continue;
                 }
             };
-            let hold = holds.decide(scope.ecosystem.as_str(), &dep.package, today);
-            if let HoldDecision::Lapsed {
-                max,
-                reason,
-                expired_on,
-            } = &hold
-                && !out
-                    .lapsed_holds
-                    .iter()
-                    .any(|l| same_package(scope.ecosystem, &l.package, &dep.package))
-            {
-                out.lapsed_holds.push(LapsedHold {
-                    package: dep.package.clone(),
-                    max: max.clone(),
-                    reason: reason.clone(),
-                    expired_on: expired_on.clone(),
-                });
-            }
             let versions = stable_versions(scope.ecosystem, published.iter().map(String::as_str));
             match assess(scope.ecosystem, &scope.manifest, dep, &current, &versions, &hold) {
                 Ok(Some(outdated)) => out.outdated.push(outdated),
@@ -344,6 +371,46 @@ pub async fn classify(
 
     attach_advisories(&mut out, &declared_names, stack_ecosystem(stack), &advisories.findings);
     out
+}
+
+/// Note a hold that needs a person: one capped below the locked version
+/// (stale), or one past its expiry (lapsed, reported once per package).
+fn record_hold(
+    out: &mut DependencyClassification,
+    scope: &Scope,
+    dep: &Declared,
+    current: &Version,
+    hold: &HoldDecision,
+) {
+    match hold {
+        HoldDecision::Active { max, reason, .. } if current.within_prefix(max) == Some(false) => {
+            out.stale_holds.push(StaleHold {
+                ecosystem: scope.ecosystem,
+                manifest: scope.manifest.clone(),
+                package: dep.package.clone(),
+                locked: current.as_str().to_string(),
+                max: max.clone(),
+                reason: reason.clone(),
+            });
+        }
+        HoldDecision::Lapsed {
+            max,
+            reason,
+            expired_on,
+        } if !out
+            .lapsed_holds
+            .iter()
+            .any(|l| same_package(scope.ecosystem, &l.package, &dep.package)) =>
+        {
+            out.lapsed_holds.push(LapsedHold {
+                package: dep.package.clone(),
+                max: max.clone(),
+                reason: reason.clone(),
+                expired_on: expired_on.clone(),
+            });
+        }
+        _ => {}
+    }
 }
 
 /// One dependency against its published stable releases (sorted ascending).
@@ -882,6 +949,116 @@ mod tests {
         assert_eq!(c.unclassified.len(), 1);
         assert_eq!(c.unclassified[0].scope, "cargo (.) rand");
         assert!(c.unclassified[0].reason.contains("registry has no rand"));
+    }
+
+    #[test]
+    fn vendored_paths_follow_the_directory_and_linguist_conventions() {
+        let marked = gitattributes_vendored(
+            "# comment\nvendor/roost/** linguist-vendored\n/libs/forked/ linguist-vendored=true\nsrc/gen/* -linguist-vendored\ndocs/** linguist-documentation\n",
+        );
+        assert_eq!(marked, ["vendor/roost", "libs/forked"]);
+        assert!(is_vendored("vendor/roost", &[]));
+        assert!(is_vendored("apps/x/third_party/lib", &[]));
+        assert!(is_vendored("libs/forked/sub", &marked));
+        assert!(!is_vendored("apps/bedrock", &marked));
+        assert!(!is_vendored(".", &marked));
+        assert!(!is_vendored("apps/vendorish", &[]));
+    }
+
+    fn mix_project(root: &Path, dir: &str) {
+        write(
+            root,
+            &format!("{dir}/mix.exs"),
+            "defp deps do\n [{:jason, \"~> 1.4\"}, {:mix_audit, \"~> 2.1\"}]\nend\n",
+        );
+        write(
+            root,
+            &format!("{dir}/mix.lock"),
+            "%{\n  \"jason\": {:hex, :jason, \"1.4.4\", \"x\", [:mix], [], \"hexpm\", \"y\"},\n}\n",
+        );
+    }
+
+    #[tokio::test]
+    async fn vendored_mix_projects_are_left_out_and_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        mix_project(dir.path(), "apps/bedrock");
+        mix_project(dir.path(), "vendor/roost");
+        let source = FakeVersionSource::with(&[("jason", &["1.4.4", "1.4.5"])]);
+        let c = classify(
+            dir.path(),
+            &Stack::Elixir,
+            Ok(DependencyHolds::default()),
+            Advisories::default(),
+            &source,
+            day(),
+        )
+        .await;
+        assert_eq!(c.classified, ["hex (apps/bedrock)"]);
+        assert_eq!(c.vendored, ["hex (vendor/roost)"]);
+        assert!(c.outdated.iter().all(|d| d.manifest == "apps/bedrock"));
+        assert_eq!(c.outdated.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hold_capped_below_the_locked_version_is_stale_and_never_downgrades() {
+        let repo = cargo_repo();
+        // rand is locked at 0.8.5; the hold caps it at 0.7.
+        let holds = DependencyHolds {
+            version: 1,
+            holds: vec![HoldEntry {
+                package: "rand".to_string(),
+                max: "0.7".to_string(),
+                reason: "old pin".to_string(),
+                expires: None,
+                ecosystem: None,
+            }],
+        };
+        let source = FakeVersionSource::with(&[
+            ("serde", &["1.0.100"]),
+            ("rand", &["0.7.3", "0.8.5", "0.8.6", "0.9.2"]),
+        ]);
+        let c =
+            classify(repo.path(), &Stack::Rust, Ok(holds), Advisories::default(), &source, day())
+                .await;
+        assert_eq!(c.stale_holds.len(), 1);
+        assert_eq!(
+            (c.stale_holds[0].locked.as_str(), c.stale_holds[0].max.as_str()),
+            ("0.8.5", "0.7")
+        );
+        let b = brief::build(Some(foundry_sdk::registry::UpdatePolicy::Major), &c);
+        assert!(
+            b.apply.iter().all(|u| u.package != "rand"),
+            "no move, and never a downgrade: {:?}",
+            b.apply
+        );
+        assert!(b.majors.iter().all(|u| u.package != "rand"));
+        let rendered = brief::render(&b, &c);
+        assert!(
+            rendered.contains("stale hold: locked 0.8.5 is above cap 0.7, re-decide"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("-> 0.7"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn a_stale_hold_on_an_up_to_date_package_is_still_reported() {
+        let repo = cargo_repo();
+        let holds = DependencyHolds {
+            version: 1,
+            holds: vec![HoldEntry {
+                package: "serde".to_string(),
+                max: "0.9".to_string(),
+                reason: "x".to_string(),
+                expires: None,
+                ecosystem: None,
+            }],
+        };
+        let source = FakeVersionSource::with(&[("serde", &["1.0.100"]), ("rand", &["0.8.5"])]);
+        let c =
+            classify(repo.path(), &Stack::Rust, Ok(holds), Advisories::default(), &source, day())
+                .await;
+        assert!(c.outdated.is_empty());
+        assert_eq!(c.stale_holds[0].package, "serde");
     }
 
     #[tokio::test]

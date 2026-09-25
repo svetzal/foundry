@@ -140,10 +140,18 @@ fn decide(policy: UpdatePolicy, dep: &OutdatedDependency, brief: &mut Dependency
         let blocked_major = dep.major.as_ref().filter(|m| !within_hold(eco, m, &hold.max));
         let blocked_target = target.as_ref().filter(|t| !within_hold(eco, t, &hold.max));
         if let Some(blocked) = blocked_major.or(blocked_target) {
+            let stale = if within_hold(eco, &dep.current, &hold.max) {
+                String::new()
+            } else {
+                format!(
+                    " (stale hold: locked {} is above cap {}, re-decide)",
+                    dep.current, hold.max
+                )
+            };
             brief.held_by_hold.push(held(
                 dep,
                 blocked,
-                format!("held at {}: {}", hold.max, hold.reason),
+                format!("held at {}: {}{stale}", hold.max, hold.reason),
             ));
         }
         hold_blocked_major = blocked_major.is_some();
@@ -191,7 +199,8 @@ fn decide(policy: UpdatePolicy, dep: &OutdatedDependency, brief: &mut Dependency
 
     let update =
         update.or_else(|| target.filter(|t| newer(eco, t, &dep.current)).map(|t| planned(dep, t)));
-    if let Some(u) = update {
+    // Never a downgrade, whatever a hold or an advisory says.
+    if let Some(u) = update.filter(|u| newer(eco, &u.to, &dep.current)) {
         brief.apply.push(u);
     }
 
@@ -310,6 +319,25 @@ pub fn render(brief: &DependencyBrief, classification: &DependencyClassification
         for u in &brief.majors {
             let _ = writeln!(out, "- {}", describe(u));
         }
+    }
+    if !classification.stale_holds.is_empty() {
+        out.push_str(
+            "\nStale holds (the locked version is already above the cap; do not downgrade):\n",
+        );
+        for h in &classification.stale_holds {
+            let _ = writeln!(
+                out,
+                "- [{} {}] {}: stale hold: locked {} is above cap {}, re-decide ({})",
+                h.ecosystem, h.manifest, h.package, h.locked, h.max, h.reason
+            );
+        }
+    }
+    if !classification.vendored.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nVendored, updated upstream (do not change their dependencies): {}",
+            classification.vendored.join(", ")
+        );
     }
     if !classification.unclassified.is_empty() {
         out.push_str(

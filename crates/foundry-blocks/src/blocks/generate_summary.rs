@@ -348,6 +348,8 @@ pub(crate) fn dependency_report(
         held_by_policy: brief.held_by_policy.clone(),
         held_by_hold: brief.held_by_hold.clone(),
         lapsed_holds: source.classification.lapsed_holds.clone(),
+        stale_holds: source.classification.stale_holds.clone(),
+        vendored: source.classification.vendored.clone(),
         unclassified: source.classification.unclassified.clone(),
         holds_warning: source.classification.holds_warning.clone(),
     }
@@ -441,6 +443,10 @@ fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
         .count();
     if beyond > 0 {
         warnings.push(format!("{beyond} project(s) applied dependency updates beyond the brief"));
+    }
+    let stale: usize = summary.dependencies.iter().map(|d| d.stale_holds.len()).sum();
+    if stale > 0 {
+        warnings.push(format!("{stale} stale dependency hold(s) to re-decide"));
     }
     let lapsed: usize = summary.dependencies.iter().map(|d| d.lapsed_holds.len()).sum();
     if lapsed > 0 {
@@ -1433,6 +1439,15 @@ mod tests {
                 vec![],
                 false,
             );
+            after.classification.vendored = vec!["hex (vendor/roost)".to_string()];
+            after.classification.stale_holds = vec![foundry_sdk::payload::StaleHold {
+                ecosystem: Ecosystem::Hex,
+                manifest: ".".to_string(),
+                package: "lv".to_string(),
+                locked: "1.2.12".to_string(),
+                max: "1.1".to_string(),
+                reason: "Roost".to_string(),
+            }];
             after.classification.lapsed_holds = vec![LapsedHold {
                 package: "phoenix_live_view".to_string(),
                 max: "1.1".to_string(),
@@ -1477,6 +1492,11 @@ mod tests {
             );
             assert!(md.contains("**No update policy set** (behaving as minor): bedrock"));
             assert!(md.contains("**Lapsed holds \u{2014} re-decide:** bedrock: phoenix_live_view"));
+            assert!(md.contains("Vendored, updated upstream (1):\n- hex (vendor/roost)"), "{md}");
+            assert!(
+                md.contains("**Stale holds \u{2014} re-decide:** bedrock: lv (locked 1.2.12 is above cap 1.1)"),
+                "{md}"
+            );
             assert!(md.contains("### bedrock \u{2014} policy minor (not set)"));
             assert!(md.contains("- [hex .] jason 1.4.4 -> 1.4.5 (patch)"));
             assert!(md.contains("proposed: req 0.7.4 -> 0.8.0"));

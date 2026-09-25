@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 use foundry_sdk::payload::{
-    Ecosystem, HeldUpdate, LapsedHold, MajorUpgrade, MajorUpgradeStatus, PlannedUpdate,
+    Ecosystem, HeldUpdate, LapsedHold, MajorUpgrade, MajorUpgradeStatus, PlannedUpdate, StaleHold,
     UnclassifiedScope, UpdateClass,
 };
 use foundry_sdk::registry::UpdatePolicy;
@@ -104,6 +104,8 @@ pub(crate) struct ProjectDependencyReport {
     pub(crate) held_by_policy: Vec<HeldUpdate>,
     pub(crate) held_by_hold: Vec<HeldUpdate>,
     pub(crate) lapsed_holds: Vec<LapsedHold>,
+    pub(crate) stale_holds: Vec<StaleHold>,
+    pub(crate) vendored: Vec<String>,
     pub(crate) unclassified: Vec<UnclassifiedScope>,
     pub(crate) holds_warning: Option<String>,
 }
@@ -365,7 +367,11 @@ fn render_dependency_drift(summary: &MaintenanceRunSummary, out: &mut String) {
         );
     }
     wln!(out);
+    render_drift_notes(summary, out);
+}
 
+/// The dependency items that need a person, under the drift table.
+fn render_drift_notes(summary: &MaintenanceRunSummary, out: &mut String) {
     let beyond: Vec<String> = summary
         .dependencies
         .iter()
@@ -412,6 +418,19 @@ fn render_dependency_drift(summary: &MaintenanceRunSummary, out: &mut String) {
         .collect();
     if !lapsed.is_empty() {
         wln!(out, "**Lapsed holds \u{2014} re-decide:** {}", cell(&lapsed.join("; ")));
+        wln!(out);
+    }
+    let stale: Vec<String> = summary
+        .dependencies
+        .iter()
+        .flat_map(|d| {
+            d.stale_holds.iter().map(move |h| {
+                format!("{}: {} (locked {} is above cap {})", d.name, h.package, h.locked, h.max)
+            })
+        })
+        .collect();
+    if !stale.is_empty() {
+        wln!(out, "**Stale holds \u{2014} re-decide:** {}", cell(&stale.join("; ")));
         wln!(out);
     }
     if let Some(w) = &summary.majors.history_warning {
@@ -537,6 +556,20 @@ fn render_project_dependencies(
             })
             .collect::<Vec<_>>(),
     );
+    render_update_list(
+        out,
+        "Stale holds",
+        &d.stale_holds
+            .iter()
+            .map(|h| {
+                format!(
+                    "[{} {}] {}: stale hold: locked {} is above cap {}, re-decide ({})",
+                    h.ecosystem, h.manifest, h.package, h.locked, h.max, h.reason
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    render_update_list(out, "Vendored, updated upstream", &d.vendored.clone());
     render_update_list(
         out,
         "Not classified",

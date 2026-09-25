@@ -38,14 +38,18 @@ pub struct ClassifyDependencyUpdates {
     registry: Arc<RwLock<Registry>>,
     source: Arc<dyn VersionSource>,
     events_dir: PathBuf,
+    /// Reads the checkout's revision and how far it is behind its remote.
+    /// `None` skips that check (tests without a git repository).
+    git: Option<Arc<dyn ShellGateway>>,
 }
 
 impl ClassifyDependencyUpdates {
     pub fn new(shell: Arc<dyn ShellGateway>, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             registry,
-            source: Arc::new(RegistryVersionSource::new(shell)),
+            source: Arc::new(RegistryVersionSource::new(Arc::clone(&shell))),
             events_dir: foundry_sdk::paths::events_dir(),
+            git: Some(shell),
         }
     }
 
@@ -59,8 +63,68 @@ impl ClassifyDependencyUpdates {
             registry,
             source,
             events_dir,
+            git: None,
         }
     }
+
+    /// Also check the checkout's revision against its remote with `git`.
+    #[must_use]
+    pub fn with_git(mut self, git: Arc<dyn ShellGateway>) -> Self {
+        self.git = Some(git);
+        self
+    }
+}
+
+/// The checkout's short revision, and a warning when it is behind
+/// `origin/<branch>`. A review fetches first (it may run long after the
+/// nightly synced the checkout); the nightly phases compare against the ref
+/// the sync just fetched.
+async fn checkout_state(
+    git: &dyn ShellGateway,
+    root: &std::path::Path,
+    branch: &str,
+    fetch: bool,
+) -> (Option<String>, Option<String>) {
+    let run = |args: Vec<String>| async move {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        git.run(root, "git", &refs, None, None)
+            .await
+            .ok()
+            .filter(|r| r.success)
+            .map(|r| r.stdout.trim().to_string())
+    };
+    let revision = run(vec!["rev-parse".into(), "--short".into(), "HEAD".into()]).await;
+    if fetch
+        && run(vec![
+            "fetch".into(),
+            "-q".into(),
+            "origin".into(),
+            branch.to_string(),
+        ])
+        .await
+        .is_none()
+    {
+        return (
+            revision,
+            Some(format!("could not fetch origin/{branch}; the checkout may be behind it")),
+        );
+    }
+    let behind = run(vec![
+        "rev-list".into(),
+        "--count".into(),
+        format!("HEAD..origin/{branch}"),
+    ])
+    .await
+    .and_then(|n| n.parse::<u64>().ok());
+    let warning = match behind {
+        Some(0) => None,
+        Some(n) => Some(format!(
+            "the checkout is {n} commit(s) behind origin/{branch}; this describes {}, not the remote",
+            revision.as_deref().unwrap_or("the local checkout")
+        )),
+        None => Some(format!("could not compare the checkout with origin/{branch}")),
+    };
+    (revision, warning)
 }
 
 /// Which phase a trigger asks for, or `None` when it is not for this block.
@@ -173,6 +237,7 @@ impl TaskBlock for ClassifyDependencyUpdates {
         let policy = policy_preview.or(entry.update_policy);
         let source = Arc::clone(&self.source);
         let events_dir = self.events_dir.clone();
+        let git = self.git.clone();
 
         Box::pin(async move {
             let root = PathBuf::from(&entry.path);
@@ -202,6 +267,18 @@ impl TaskBlock for ClassifyDependencyUpdates {
                 today,
             )
             .await;
+            let mut classification = classification;
+            if let Some(git) = git {
+                let (revision, warning) = checkout_state(
+                    git.as_ref(),
+                    &root,
+                    &entry.branch,
+                    phase == ClassificationPhase::Review,
+                )
+                .await;
+                classification.revision = revision;
+                classification.checkout_warning = warning;
+            }
             let decided = brief::build(policy, &classification);
             let rendered = brief::render(&decided, &classification);
 
@@ -525,5 +602,49 @@ mod tests {
         let p: DependencyUpdatesClassifiedPayload = result.events[0].parse_payload().unwrap();
 
         assert_eq!(p.brief.policy, UpdatePolicy::Patch);
+    }
+
+    fn git_repo_behind(dir: &std::path::Path) -> tempfile::TempDir {
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let out =
+                std::process::Command::new("git").current_dir(cwd).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+        git(dir, &["config", "user.name", "T"]);
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", "one"]);
+        git(dir, &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+        git(dir, &["push", "-q", "origin", "main"]);
+        // Someone else pushes a commit the checkout does not have.
+        let other = tempfile::tempdir().unwrap();
+        git(other.path(), &["clone", "-q", remote.path().to_str().unwrap(), "."]);
+        git(other.path(), &["config", "user.email", "t@example.com"]);
+        git(other.path(), &["config", "user.name", "T"]);
+        std::fs::write(other.path().join("x"), "x").unwrap();
+        git(other.path(), &["add", "-A"]);
+        git(other.path(), &["commit", "-q", "-m", "two"]);
+        git(other.path(), &["push", "-q", "origin", "main"]);
+        remote
+    }
+
+    #[tokio::test]
+    async fn a_review_warns_when_the_checkout_is_behind_its_remote() {
+        let dir = repo();
+        let _remote = git_repo_behind(dir.path());
+        let events = tempfile::tempdir().unwrap();
+        let b = block(dir.path(), None, events.path())
+            .with_git(Arc::new(crate::gateway::ProcessShellGateway));
+        let review = test_event!(EventType::DependencyReviewRequested, "my-project", {});
+
+        let result = b.execute(&review).await.unwrap();
+        let p: DependencyUpdatesClassifiedPayload = result.events[0].parse_payload().unwrap();
+
+        assert!(p.classification.revision.is_some());
+        let warning = p.classification.checkout_warning.unwrap();
+        assert!(warning.contains("1 commit(s) behind origin/main"), "{warning}");
     }
 }

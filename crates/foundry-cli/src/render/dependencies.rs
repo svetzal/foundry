@@ -42,11 +42,10 @@ fn held_line(h: &HeldUpdate) -> String {
     )
 }
 
-/// Render a classification: the outdated table, then the brief's decisions.
-pub fn classification(p: &DependencyUpdatesClassifiedPayload) -> String {
+/// The lines above the table: policy, scopes, advisory source, checkout.
+fn header(p: &DependencyUpdatesClassifiedPayload, out: &mut String) {
     let c = &p.classification;
     let b = &p.brief;
-    let mut out = String::new();
     let policy_note = if b.policy_set {
         ""
     } else {
@@ -59,10 +58,30 @@ pub fn classification(p: &DependencyUpdatesClassifiedPayload) -> String {
     if let Some(source) = &c.advisory_source {
         let _ = writeln!(out, "Advisories: {source}");
     }
+    if let Some(revision) = &c.revision {
+        let _ = writeln!(out, "Checkout: {revision}");
+    }
+    if let Some(w) = &c.checkout_warning {
+        let _ = writeln!(out, "Warning: {w}");
+    }
+    for scope in &c.vendored {
+        let _ = writeln!(out, "Skipped: {scope}: vendored, updated upstream");
+    }
     out.push('\n');
+}
 
-    if c.outdated.is_empty() {
+/// Render a classification: the outdated table, then the brief's decisions.
+pub fn classification(p: &DependencyUpdatesClassifiedPayload) -> String {
+    let c = &p.classification;
+    let b = &p.brief;
+    let mut out = String::new();
+    header(p, &mut out);
+
+    let holds_active = !c.stale_holds.is_empty() || !b.held_by_hold.is_empty();
+    if c.outdated.is_empty() && !holds_active {
         out.push_str("Everything classified is up to date.\n");
+    } else if c.outdated.is_empty() {
+        out.push_str("Nothing outdated, but holds need attention (below).\n");
     } else {
         let mut table = Table::new();
         table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -111,6 +130,19 @@ pub fn classification(p: &DependencyUpdatesClassifiedPayload) -> String {
         b.held_by_policy.iter().map(held_line).collect(),
     );
     section(&mut out, "Held by holds", b.held_by_hold.iter().map(held_line).collect());
+    section(
+        &mut out,
+        "Stale holds",
+        c.stale_holds
+            .iter()
+            .map(|h| {
+                format!(
+                    "[{} {}] {}: stale hold: locked {} is above cap {}, re-decide ({})",
+                    h.ecosystem, h.manifest, h.package, h.locked, h.max, h.reason
+                )
+            })
+            .collect(),
+    );
     section(
         &mut out,
         "Lapsed holds — re-decide",
@@ -271,5 +303,33 @@ mod tests {
         assert!(text.contains("plan only"));
         assert!(text.contains("- [would dispatch] zod 3.22.4 -> 4.1.0 (npm .)"));
         assert!(text.contains("    foundry task app 'Upgrade zod ...'"));
+    }
+
+    #[test]
+    fn up_to_date_is_not_claimed_while_a_hold_needs_attention() {
+        let mut p = payload();
+        p.classification.outdated.clear();
+        p.brief.apply.clear();
+        p.classification.stale_holds = vec![foundry_sdk::payload::StaleHold {
+            ecosystem: Ecosystem::Hex,
+            manifest: "apps/bedrock".to_string(),
+            package: "phoenix_live_view".to_string(),
+            locked: "1.2.12".to_string(),
+            max: "1.1".to_string(),
+            reason: "Roost".to_string(),
+        }];
+        p.classification.vendored = vec!["hex (vendor/roost)".to_string()];
+        let text = classification(&p);
+        assert!(!text.contains("Everything classified is up to date"), "{text}");
+        assert!(text.contains("stale hold: locked 1.2.12 is above cap 1.1, re-decide"));
+        assert!(text.contains("Skipped: hex (vendor/roost): vendored, updated upstream"));
+    }
+
+    #[test]
+    fn up_to_date_is_claimed_only_when_nothing_is_held() {
+        let mut p = payload();
+        p.classification.outdated.clear();
+        p.brief.apply.clear();
+        assert!(classification(&p).contains("Everything classified is up to date."));
     }
 }

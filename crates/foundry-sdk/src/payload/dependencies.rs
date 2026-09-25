@@ -192,6 +192,35 @@ pub struct DependencyClassification {
     /// scan), or why there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisory_source: Option<String>,
+    /// Vendored scopes left out of classification: their dependencies are
+    /// updated upstream, in the vendored project's own repository. The audit
+    /// still scans them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vendored: Vec<String>,
+    /// Holds whose cap is below the version already locked. They never
+    /// produce a downgrade; they need a new decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_holds: Vec<StaleHold>,
+    /// The commit the classification read (short SHA), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// Set when the checkout was behind its remote, so the classification
+    /// may describe old lockfiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_warning: Option<String>,
+}
+
+/// A hold whose cap is already below the locked version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleHold {
+    pub ecosystem: Ecosystem,
+    pub manifest: String,
+    pub package: String,
+    /// The version locked now.
+    pub locked: String,
+    /// The hold's cap.
+    pub max: String,
+    pub reason: String,
 }
 
 /// Whether an update moves only the lockfile or needs a manifest edit.
