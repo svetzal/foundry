@@ -14,26 +14,37 @@ use foundry_sdk::loop_context::has_loop_context;
 use crate::gateway::ShellGateway;
 
 use super::SimulatedSuccess;
-use super::checkout_sync::{PrePushSync, integrate_remote_before_push};
+use super::checkout_sync::{PrePushSync, commits_ahead, integrate_remote_before_push};
 
 task_block_new! {
-    /// Commits staged changes and pushes to the remote.
+    /// Commits what the run left uncommitted, then pushes every commit the
+    /// branch has ahead of `origin/<branch>`.
     /// Mutator — simulated success at `dry_run`.
     ///
     /// Real behaviour:
-    /// - Self-filters when the trigger payload explicitly sets `"changes": false`.
-    /// - Checks `git status --porcelain`; self-filters when the tree is clean.
-    /// - Runs `git add -A` then `git commit`.
-    /// - Runs `git push` only when `registry.actions.push` is `true`. Before
-    ///   pushing it fetches `origin/<branch>` and fast-forwards onto it; if the
-    ///   remote moved during the run the local commit is rebased with
-    ///   `git rebase origin/<branch>` and pushed only when that is clean.
-    ///   A conflicting rebase is aborted, nothing is pushed, the commit stays
-    ///   on the local branch, and `ProjectChangesCommitted` records
-    ///   `push_failure: "push_rejected_diverged"`. A failed fetch records
-    ///   `push_failure: "remote_unavailable"`. Never forces.
-    /// - Emits [`EventType::ProjectChangesCommitted`] after a successful commit.
-    /// - Emits [`EventType::ProjectChangesPushed`] after a successful push.
+    /// - Commits with `git add -A` + `git commit` when `git status --porcelain`
+    ///   is non-empty.
+    /// - The push decision is "is the local branch ahead of its remote?", not
+    ///   "did this block commit anything?". Agents routinely commit their own
+    ///   work, which leaves nothing for this block to commit; those commits
+    ///   must still be pushed. For the same reason a trigger reporting
+    ///   `"changes": false` is still accepted, so commits stranded by an earlier
+    ///   run are pushed on the next one.
+    /// - Pushes only when `registry.actions.push` is `true` and the trigger did
+    ///   not report `"success": false` (a failed run's commits stay local:
+    ///   `push_failure: "run_failed"`).
+    /// - Before pushing it fetches `origin/<branch>` and fast-forwards onto it.
+    ///   If the remote moved during the run, the local commits are rebased
+    ///   with `git rebase origin/<branch>` and the project's required gates are
+    ///   re-run on the rebased commits; the push happens only when they pass
+    ///   (`push_failure: "gates_failed_after_rebase"` otherwise, including when
+    ///   the project has no gates). A conflicting rebase is aborted
+    ///   (`push_rejected_diverged`); a failed fetch records
+    ///   `remote_unavailable`; a rejected `git push` records `push_failed`.
+    ///   Never forces.
+    /// - Emits [`EventType::ProjectChangesCommitted`] after a commit (carrying
+    ///   any `push_failure`), and [`EventType::ProjectChangesPushed`] after a
+    ///   successful push.
     ///
     /// Commit message varies by trigger event type:
     /// - [`EventType::ProjectIterationCompleted`] → `chore(<project>): automated iterate`
@@ -50,6 +61,11 @@ task_block_new! {
 pub(crate) struct CommitDryRunOutcome {
     cve: String,
     push_enabled: bool,
+    /// False when the trigger reported `"changes": false`: the block still runs
+    /// (to push stranded commits) but a dry run cannot know whether any exist,
+    /// so it simulates no events.
+    commit_expected: bool,
+    run_failed: bool,
 }
 
 impl CommitAndPush {
@@ -85,8 +101,11 @@ impl CommitAndPush {
         project: String,
         throttle: foundry_sdk::throttle::Throttle,
         event_type: EventType,
-        cve: String,
+        proceed: Proceed,
     ) -> anyhow::Result<TaskBlockResult> {
+        let Proceed {
+            cve, run_failed, ..
+        } = proceed;
         // Resolve the project path and push flag from the registry.
         // Extract synchronously before any .await point so the lock is not held across yields.
         let entry_data = super::read_registry(&registry)?
@@ -101,70 +120,227 @@ impl CommitAndPush {
         let path = std::path::Path::new(&path_str);
 
         tracing::info!(%project, "checking for changes to commit");
-
-        // Self-filter: nothing to do if the working tree is clean.
         let status = shell.run(path, "git", &["status", "--porcelain"], None, None).await?;
-        if status.stdout.trim().is_empty() {
-            tracing::info!(%project, "working tree clean, skipping commit");
-            return Ok(TaskBlockResult::success("No changes to commit", vec![]));
+        let commit_msg = if status.stdout.trim().is_empty() {
+            tracing::info!(%project, "working tree clean, nothing to commit");
+            None
+        } else {
+            commit_changes(&*shell, path, &project, &event_type).await?
+        };
+
+        let push = if !push_enabled {
+            tracing::info!(%project, "push disabled in registry, skipping");
+            PushOutcome::Disabled
+        } else if run_failed {
+            keep_failed_run_local(&*shell, path, &branch).await?
+        } else {
+            push_if_ahead(&*shell, path, &project, &branch, &cve).await?
+        };
+
+        if let PushOutcome::Refused { failure, detail } = &push {
+            tracing::warn!(%project, %failure, %detail, "push refused; commits left on local branch");
         }
 
-        let Some(commit_msg) = commit_changes(&*shell, path, &project, &event_type).await? else {
-            return Ok(TaskBlockResult::success("No changes to commit", vec![]));
+        let push_failure = match &push {
+            PushOutcome::Refused { failure, .. } => Some(*failure),
+            _ => None,
         };
-
-        let push = if push_enabled {
-            push_changes(&*shell, path, &project, &branch, &cve).await?
-        } else {
-            tracing::info!(%project, "push disabled in registry, skipping");
-            PushOutcome::NotPushed
-        };
-
-        let (push_payload, push_failure) = match push {
-            PushOutcome::Pushed(payload) => (Some(payload), None),
-            PushOutcome::NotPushed => (None, None),
-            PushOutcome::Refused(failure) => (None, Some(failure)),
-        };
-
-        let events = build_commit_push_events(
-            &project,
-            throttle,
-            &ProjectChangesCommittedPayload {
+        let push_payload = match &push {
+            PushOutcome::Pushed { commits } => Some(ProjectChangesPushedPayload {
                 project: project.clone(),
                 cve: cve.clone(),
-                message: commit_msg.clone(),
+                message: Some(format!("pushed {commits} commit(s) to origin/{branch}")),
                 dry_run: None,
-                push_failure,
-            },
-            push_payload.as_ref(),
-        )?;
-
-        // Record, not fail: the refusal travels as a typed `push_failure` on the
-        // emitted payload. Returning a failed result would be retried by the
-        // engine, and the retry — now on a clean tree — would report "No changes
-        // to commit" and erase the refusal entirely.
-        let summary = match push_failure {
-            Some(failure) => {
-                format!("Committed locally; push refused ({failure}) — commit left on local branch")
-            }
-            None => "Committed and pushed changes".to_string(),
+            }),
+            _ => None,
         };
-        Ok(TaskBlockResult::success(summary, events))
+
+        let mut events = Vec::new();
+        if let Some(message) = &commit_msg {
+            events.push(super::event_from_payload(
+                EventType::ProjectChangesCommitted,
+                &project,
+                throttle,
+                &ProjectChangesCommittedPayload {
+                    project: project.clone(),
+                    cve: cve.clone(),
+                    message: message.clone(),
+                    dry_run: None,
+                    push_failure,
+                },
+            )?);
+        }
+        if let Some(payload) = &push_payload {
+            events.push(super::event_from_payload(
+                EventType::ProjectChangesPushed,
+                &project,
+                throttle,
+                payload,
+            )?);
+        }
+
+        // Record, not fail: a refusal travels in the summary (and as a typed
+        // `push_failure` when this block committed). Returning a failed result
+        // would be retried by the engine, and a retry after a rebase would push
+        // without re-running the gates.
+        Ok(TaskBlockResult::success(
+            push_summary(commit_msg.is_some(), &push, &branch),
+            events,
+        ))
     }
+}
+
+/// What the push step did.
+#[derive(Debug, PartialEq)]
+enum PushOutcome {
+    /// Push disabled for this project in the registry.
+    Disabled,
+    /// The branch has no commits the remote lacks.
+    NothingToPush,
+    /// This many commits were pushed.
+    Pushed { commits: u32 },
+    /// Commits exist that were not pushed, and why.
+    Refused {
+        failure: GitSyncFailure,
+        detail: String,
+    },
+}
+
+/// One-line, human-readable result of the block.
+fn push_summary(committed: bool, push: &PushOutcome, branch: &str) -> String {
+    let commit = if committed {
+        "Committed changes"
+    } else {
+        "No changes to commit"
+    };
+    match push {
+        PushOutcome::Disabled => format!("{commit}; push disabled"),
+        PushOutcome::NothingToPush => format!("{commit}; nothing ahead of origin/{branch}"),
+        PushOutcome::Pushed { commits } => {
+            format!("{commit}; pushed {commits} commit(s) to origin/{branch}")
+        }
+        PushOutcome::Refused { failure, detail } => {
+            format!("{commit}; push refused ({failure}): {detail} — commits left on local branch")
+        }
+    }
+}
+
+/// The run failed: never push. Report how many commits are being kept local
+/// (against the last-fetched remote ref, without touching the network).
+async fn keep_failed_run_local(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    branch: &str,
+) -> anyhow::Result<PushOutcome> {
+    Ok(match commits_ahead(shell, path, branch).await? {
+        Some(0) => PushOutcome::NothingToPush,
+        Some(n) => PushOutcome::Refused {
+            failure: GitSyncFailure::RunFailed,
+            detail: format!(
+                "run reported failure; {n} commit(s) ahead of origin/{branch} kept local"
+            ),
+        },
+        None => PushOutcome::Refused {
+            failure: GitSyncFailure::RunFailed,
+            detail: format!("run reported failure; could not resolve origin/{branch}"),
+        },
+    })
+}
+
+/// Integrate remote movement, then push every commit the branch has ahead of
+/// `origin/<branch>`. Rebased commits are re-verified by the required gates
+/// before they are pushed. Never forces.
+async fn push_if_ahead(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    project: &str,
+    branch: &str,
+    cve: &str,
+) -> anyhow::Result<PushOutcome> {
+    let rebased = match integrate_remote_before_push(shell, path, project, branch).await? {
+        PrePushSync::Refused { failure, detail } => {
+            return Ok(PushOutcome::Refused { failure, detail });
+        }
+        PrePushSync::Ready { rebased } => rebased,
+    };
+
+    let commits = match commits_ahead(shell, path, branch).await? {
+        Some(0) => return Ok(PushOutcome::NothingToPush),
+        Some(n) => n,
+        None => {
+            return Ok(PushOutcome::Refused {
+                failure: GitSyncFailure::RemoteUnavailable,
+                detail: format!("could not resolve origin/{branch}"),
+            });
+        }
+    };
+
+    if rebased && let Err(detail) = verify_rebased_commits(shell, path).await {
+        return Ok(PushOutcome::Refused {
+            failure: GitSyncFailure::GatesFailedAfterRebase,
+            detail,
+        });
+    }
+
+    tracing::info!(%project, commits, %cve, "pushing commits ahead of origin");
+    let push = shell.run(path, "git", &["push", "origin", branch], None, None).await?;
+    if push.success {
+        Ok(PushOutcome::Pushed { commits })
+    } else {
+        Ok(PushOutcome::Refused {
+            failure: GitSyncFailure::PushFailed,
+            detail: format!("git push origin {branch} failed: {}", push.stderr.trim()),
+        })
+    }
+}
+
+/// Re-run the project's required gates on commits that were just rebased.
+/// A project with no gates cannot verify them, so that is a refusal too.
+async fn verify_rebased_commits(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let gates = crate::gate_file::read_gates(path)
+        .map_err(|e| format!("could not read gates to verify rebased commits: {e}"))?;
+    if gates.is_empty() {
+        return Err("no gates to verify the rebased commits".to_string());
+    }
+    let run = crate::gate_runner::run_gates(&gates, path, shell)
+        .await
+        .map_err(|e| format!("gate run errored on rebased commits: {e}"))?;
+    if run.required_passed {
+        return Ok(());
+    }
+    let failed: Vec<&str> = run
+        .results
+        .iter()
+        .filter(|r| r.required && !r.passed)
+        .map(|r| r.name.as_str())
+        .collect();
+    Err(format!("required gates failed on rebased commits: {}", failed.join(", ")))
 }
 
 /// Decision outcome for a commit-and-push trigger.
 ///
-/// Centralises the three-way guard logic shared between `dry_run_events` and
-/// `execute`, eliminating drift risk between the two paths.
+/// Centralises the guard logic shared between `dry_run_events` and `execute`,
+/// eliminating drift risk between the two paths.
 #[derive(Debug, PartialEq)]
 enum CommitDecision {
     /// Intermediate completion inside a nested loop — skip.
     SkipNestedLoop,
-    /// Payload explicitly signals no changes were made — skip.
-    SkipNoChanges,
-    /// Proceed with the commit; CVE identifier extracted from payload (or "unknown").
-    Proceed { cve: String },
+    /// Commit anything left uncommitted, then push whatever is ahead.
+    Proceed(Proceed),
+}
+
+/// What the trigger tells the commit-and-push step.
+#[derive(Debug, PartialEq)]
+struct Proceed {
+    /// CVE identifier from the payload, or `"unknown"`.
+    cve: String,
+    /// False when the payload says `"changes": false`.
+    commit_expected: bool,
+    /// True when the payload says `"success": false`.
+    run_failed: bool,
 }
 
 /// Evaluate the trigger and decide what `CommitAndPush` should do.
@@ -194,9 +370,11 @@ fn decide_commit(trigger: &Event) -> CommitDecision {
             None
         }
     };
-    if changes_flag == Some(false) {
-        return CommitDecision::SkipNoChanges;
-    }
+    // A run that reports no changes is still accepted: commits stranded by an
+    // earlier run must be pushed. It only tells the dry run not to expect a commit.
+    let commit_expected = changes_flag != Some(false);
+    let run_failed =
+        trigger.payload.get("success").and_then(serde_json::Value::as_bool) == Some(false);
 
     // 3. extract CVE (defaults to "unknown" when absent).
     let cve = match trigger.parse_payload::<RemediationCompletedPayload>() {
@@ -212,7 +390,11 @@ fn decide_commit(trigger: &Event) -> CommitDecision {
     }
     .unwrap_or_else(|| "unknown".to_string());
 
-    CommitDecision::Proceed { cve }
+    CommitDecision::Proceed(Proceed {
+        cve,
+        commit_expected,
+        run_failed,
+    })
 }
 
 impl SimulatedSuccess for CommitAndPush {
@@ -220,10 +402,19 @@ impl SimulatedSuccess for CommitAndPush {
 
     fn simulate(&self, trigger: &Event) -> Option<CommitDryRunOutcome> {
         match decide_commit(trigger) {
-            CommitDecision::SkipNestedLoop | CommitDecision::SkipNoChanges => None,
-            CommitDecision::Proceed { cve } => {
+            CommitDecision::SkipNestedLoop => None,
+            CommitDecision::Proceed(Proceed {
+                cve,
+                commit_expected,
+                run_failed,
+            }) => {
                 let push_enabled = self.push_enabled_for(&trigger.project);
-                Some(CommitDryRunOutcome { cve, push_enabled })
+                Some(CommitDryRunOutcome {
+                    cve,
+                    push_enabled,
+                    commit_expected,
+                    run_failed,
+                })
             }
         }
     }
@@ -232,12 +423,16 @@ impl SimulatedSuccess for CommitAndPush {
         let Some(ref data) = *outcome else {
             return vec![];
         };
-        let push_payload = data.push_enabled.then(|| ProjectChangesPushedPayload {
-            project: trigger.project.clone(),
-            cve: data.cve.clone(),
-            message: None,
-            dry_run: Some(true),
-        });
+        if !data.commit_expected {
+            return vec![];
+        }
+        let push_payload =
+            (data.push_enabled && !data.run_failed).then(|| ProjectChangesPushedPayload {
+                project: trigger.project.clone(),
+                cve: data.cve.clone(),
+                message: None,
+                dry_run: Some(true),
+            });
         #[allow(
             clippy::expect_used,
             reason = "commit and push event payloads are infallibly serializable (Payload Conventions, AGENTS.md)"
@@ -266,7 +461,7 @@ impl TaskBlock for CommitAndPush {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        matches!(decide_commit(trigger), CommitDecision::Proceed { .. })
+        matches!(decide_commit(trigger), CommitDecision::Proceed(_))
     }
 
     fn retry_policy(&self) -> RetryPolicy {
@@ -279,8 +474,8 @@ impl TaskBlock for CommitAndPush {
     dry_run_via_simulation!();
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let CommitDecision::Proceed { cve } = decide_commit(trigger) else {
-            // Defensive: accepts() filters SkipNestedLoop and SkipNoChanges before dispatch.
+        let CommitDecision::Proceed(proceed) = decide_commit(trigger) else {
+            // Defensive: accepts() filters SkipNestedLoop before dispatch.
             return skip!("Skipped: no commit needed");
         };
         let project = trigger.project.clone();
@@ -288,7 +483,7 @@ impl TaskBlock for CommitAndPush {
         let event_type = trigger.event_type.clone();
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
-        Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, cve))
+        Box::pin(Self::commit_and_push(registry, shell, project, throttle, event_type, proceed))
     }
 }
 
@@ -342,45 +537,6 @@ async fn commit_changes(
         CommitOutcome::Failed => {
             Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()))
         }
-    }
-}
-
-/// Result of the push step.
-enum PushOutcome {
-    Pushed(ProjectChangesPushedPayload),
-    /// Push disabled, or `git push` itself failed (logged).
-    NotPushed,
-    /// The pre-push sync refused; nothing was pushed.
-    Refused(GitSyncFailure),
-}
-
-/// Integrate any remote movement, then push. Never forces.
-async fn push_changes(
-    shell: &dyn ShellGateway,
-    path: &std::path::Path,
-    project: &str,
-    branch: &str,
-    cve: &str,
-) -> anyhow::Result<PushOutcome> {
-    if let PrePushSync::Refused { failure, detail } =
-        integrate_remote_before_push(shell, path, project, branch).await?
-    {
-        tracing::warn!(%project, %failure, %detail, "push refused; commit left on local branch");
-        return Ok(PushOutcome::Refused(failure));
-    }
-
-    tracing::info!(%project, "pushing changes");
-    let push = shell.run(path, "git", &["push"], None, None).await?;
-    if push.success {
-        Ok(PushOutcome::Pushed(ProjectChangesPushedPayload {
-            project: project.to_string(),
-            cve: cve.to_string(),
-            message: None,
-            dry_run: None,
-        }))
-    } else {
-        tracing::warn!(%project, stderr = %push.stderr.trim(), "git push failed");
-        Ok(PushOutcome::NotPushed)
     }
 }
 
@@ -439,8 +595,8 @@ mod tests {
 
     use super::super::test_helpers;
     use super::{
-        CommitAndPush, CommitDecision, CommitOutcome, classify_commit_outcome, commit_message,
-        decide_commit,
+        CommitAndPush, CommitDecision, CommitOutcome, Proceed, classify_commit_outcome,
+        commit_message, decide_commit,
     };
 
     fn make_trigger(project: &str, cve: &str) -> Event {
@@ -508,7 +664,14 @@ mod tests {
                 exit_code: 0,
                 success: true,
             },
-            // git push
+            // git rev-list --left-right --count HEAD...origin/main (1 ahead)
+            CommandResult {
+                stdout: "1\t0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            // git push origin main
             CommandResult {
                 stdout: String::new(),
                 stderr: String::new(),
@@ -518,14 +681,14 @@ mod tests {
         ])
     }
 
-    /// Fake sequence that simulates: status=clean (empty output).
+    /// Fake sequence: clean tree, remote unmoved, nothing ahead.
     fn clean_sequence() -> Arc<FakeShellGateway> {
-        FakeShellGateway::always(CommandResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
+        FakeShellGateway::sequence(vec![
+            ok(""),                    // status: clean
+            ok(""),                    // fetch origin main
+            ok("Already up to date."), // merge --ff-only
+            ok("0\t0\n"),              // rev-list: level with origin
+        ])
     }
 
     // -- classify_commit_outcome pure function tests --
@@ -616,7 +779,7 @@ mod tests {
 
         assert!(result.success);
         assert!(result.events.is_empty());
-        assert_eq!(result.summary, "No changes to commit");
+        assert_eq!(result.summary, "No changes to commit; nothing ahead of origin/main");
     }
 
     #[tokio::test]
@@ -656,9 +819,20 @@ mod tests {
         shell.invocations().into_iter().map(|i| i.args.join(" ")).collect()
     }
 
+    /// A project dir with one required gate, so rebased commits can be verified.
+    fn dir_with_gate() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".hone-gates.json"),
+            r#"{"gates":[{"name":"test","command":"cargo test","required":true}]}"#,
+        )
+        .unwrap();
+        dir
+    }
+
     #[tokio::test]
     async fn remote_moved_and_clean_rebase_pushes() {
-        let dir = TempDir::new().unwrap();
+        let dir = dir_with_gate();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
         let shell = FakeShellGateway::sequence(vec![
             ok(" M file.txt\n"),                                     // status
@@ -667,6 +841,8 @@ mod tests {
             ok(""),                                                  // fetch origin main
             fail("fatal: Not possible to fast-forward, aborting."),  // merge --ff-only
             ok("Successfully rebased and updated refs/heads/main."), // rebase
+            ok("1\t0\n"),                                            // rev-list
+            ok("test result: ok"),                                   // gate: cargo test
             ok(""),                                                  // push
         ]);
         let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
@@ -684,8 +860,11 @@ mod tests {
                 "fetch origin main",
                 "merge --ff-only origin/main",
                 "rebase origin/main",
-                "push"
-            ]
+                "rev-list --left-right --count HEAD...origin/main",
+                "-c cargo test",
+                "push origin main"
+            ],
+            "the gates re-run on the rebased commits before the push"
         );
     }
 
@@ -772,6 +951,200 @@ mod tests {
         assert_eq!(types, ["project_changes_committed"]);
     }
 
+    // -- push is based on "ahead of origin", not on "this block committed" --
+
+    #[tokio::test]
+    async fn agent_committed_work_is_pushed_even_though_nothing_is_left_to_commit() {
+        // The bug: the maintain agent commits its own changes, the tree is
+        // clean, and the commits were never pushed.
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(""),                    // status: clean — the agent already committed
+            ok(""),                    // fetch origin main
+            ok("Already up to date."), // merge --ff-only
+            ok("2\t0\n"),              // rev-list: 2 ahead
+            ok(""),                    // push origin main
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_pushed"], "no commit of ours, but a push");
+        assert_eq!(result.summary, "No changes to commit; pushed 2 commit(s) to origin/main");
+        assert_eq!(git_calls(&shell).last().map(String::as_str), Some("push origin main"));
+    }
+
+    #[tokio::test]
+    async fn stranded_commits_are_pushed_on_a_run_that_reports_no_changes() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(""),
+            ok(""),
+            ok("Already up to date."),
+            ok("4\t0\n"),
+            ok(""),
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_no_changes(EventType::ProjectMaintenanceCompleted, "my-project");
+        assert!(block.accepts(&trigger));
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_pushed"]);
+        assert!(result.summary.contains("pushed 4 commit(s)"), "{}", result.summary);
+    }
+
+    #[tokio::test]
+    async fn rebased_commits_that_fail_the_gates_are_not_pushed() {
+        let dir = dir_with_gate();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(""),                                                 // status: clean
+            ok(""),                                                 // fetch
+            fail("fatal: Not possible to fast-forward, aborting."), // merge --ff-only
+            ok("Successfully rebased"),                             // rebase
+            ok("1\t0\n"),                                           // rev-list
+            fail("test failed"),                                    // gate: cargo test
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.events.is_empty(), "no push event");
+        assert!(result.summary.contains("gates_failed_after_rebase"), "{}", result.summary);
+        assert!(result.summary.contains("test"), "names the failed gate: {}", result.summary);
+        let calls = git_calls(&shell);
+        assert!(!calls.iter().any(|c| c.starts_with("push")), "must not push: {calls:?}");
+        assert!(!calls.iter().any(|c| c.contains("--force")), "must never force: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn rebased_commits_without_gates_are_not_pushed() {
+        let dir = TempDir::new().unwrap(); // no .hone-gates.json
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(" M file.txt\n"),
+            ok(""),
+            ok("[main abc1234] committed\n"),
+            ok(""),
+            fail("fatal: Not possible to fast-forward, aborting."),
+            ok("Successfully rebased"),
+            ok("1\t0\n"),
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].payload["push_failure"], "gates_failed_after_rebase");
+        assert!(result.summary.contains("no gates"), "{}", result.summary);
+        assert!(!git_calls(&shell).iter().any(|c| c.starts_with("push")));
+    }
+
+    #[tokio::test]
+    async fn rejected_push_is_recorded_and_never_forced() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(" M file.txt\n"),
+            ok(""),
+            ok("[main abc1234] committed\n"),
+            ok(""),
+            ok("Already up to date."),
+            ok("1\t0\n"),
+            fail(" ! [rejected]        main -> main (non-fast-forward)"),
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "recorded, not failed (a retry must not skip the gates)");
+        let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_committed"], "no push event");
+        assert_eq!(result.events[0].payload["push_failure"], "push_failed");
+        assert!(result.summary.contains("non-fast-forward"), "{}", result.summary);
+        let calls = git_calls(&shell);
+        assert_eq!(calls.iter().filter(|c| c.starts_with("push")).count(), 1, "{calls:?}");
+        assert!(!calls.iter().any(|c| c.contains("--force")), "must never force: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn failed_run_keeps_its_commits_local() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let shell = FakeShellGateway::sequence(vec![
+            ok(""),       // status: clean (the agent committed)
+            ok("3\t0\n"), // rev-list against the existing origin ref
+        ]);
+        let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+        let trigger = test_event!(EventType::ProjectMaintenanceCompleted, "my-project", {
+            "project": "my-project",
+            "success": false,
+            "summary": "gates failed after 3 retries"
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.events.is_empty());
+        assert!(result.summary.contains("run_failed"), "{}", result.summary);
+        assert!(result.summary.contains("3 commit(s)"), "{}", result.summary);
+        let calls = git_calls(&shell);
+        assert!(
+            !calls.iter().any(|c| c.starts_with("push") || c.starts_with("fetch")),
+            "a failed run touches neither the remote nor the push: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_git_pushes_commits_an_agent_already_made() {
+        // End to end against real git: a bare remote, a clone, an agent-style
+        // commit, and a clean tree when the block runs.
+        let tmp = TempDir::new().unwrap();
+        let remote = tmp.path().join("remote.git");
+        let work = tmp.path().join("work");
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            let out =
+                std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(tmp.path(), &["init", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(tmp.path(), &["clone", remote.to_str().unwrap(), work.to_str().unwrap()]);
+        run(&work, &["config", "user.email", "test@example.com"]);
+        run(&work, &["config", "user.name", "Test"]);
+        run(&work, &["checkout", "-b", "main"]);
+        std::fs::write(work.join("README.md"), "init").unwrap();
+        run(&work, &["add", "-A"]);
+        run(&work, &["commit", "-m", "init"]);
+        run(&work, &["push", "-u", "origin", "main"]);
+        // The agent's own commit:
+        std::fs::write(work.join("Cargo.lock"), "bumped").unwrap();
+        run(&work, &["add", "-A"]);
+        run(&work, &["commit", "-m", "Update thiserror"]);
+
+        let registry = registry_for("my-project", work.to_str().unwrap(), true);
+        let block = CommitAndPush::new(registry);
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.summary.contains("pushed 1 commit(s)"), "{}", result.summary);
+        assert_eq!(
+            run(&work, &["rev-parse", "HEAD"]),
+            run(&remote, &["rev-parse", "main"]),
+            "the agent's commit reached the remote"
+        );
+    }
+
     #[test]
     fn sinks_on_includes_all_event_types() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
@@ -794,10 +1167,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_returns_false_when_no_changes() {
+    fn accepts_returns_true_when_no_changes() {
+        // The block must still run: commits stranded by an earlier run get pushed.
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
-        assert!(!block.accepts(&trigger));
+        assert!(block.accepts(&trigger));
     }
 
     #[test]
@@ -974,7 +1348,7 @@ mod tests {
     #[tokio::test]
     async fn commit_nothing_to_commit_is_success_not_error() {
         let dir = TempDir::new().unwrap();
-        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
         // status=dirty (something shows up), add=ok, commit fails with "nothing to commit"
         let shell = FakeShellGateway::sequence(vec![
             CommandResult {
@@ -1003,7 +1377,7 @@ mod tests {
 
         assert!(result.success, "should be success, not error");
         assert!(result.events.is_empty());
-        assert_eq!(result.summary, "No changes to commit");
+        assert_eq!(result.summary, "No changes to commit; push disabled");
     }
 
     #[test]
@@ -1072,9 +1446,33 @@ mod tests {
     }
 
     #[test]
-    fn decide_commit_skips_no_changes() {
+    fn decide_commit_proceeds_without_expecting_a_commit_when_no_changes() {
+        // Stranded commits from an earlier run must still be pushed.
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
-        assert_eq!(decide_commit(&trigger), CommitDecision::SkipNoChanges);
+        assert!(matches!(
+            decide_commit(&trigger),
+            CommitDecision::Proceed(Proceed {
+                commit_expected: false,
+                run_failed: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn decide_commit_marks_failed_run() {
+        let trigger = test_event!(EventType::ProjectMaintenanceCompleted, "proj", {
+            "project": "proj",
+            "success": false,
+            "summary": "gates failed after 3 retries"
+        });
+        assert!(matches!(
+            decide_commit(&trigger),
+            CommitDecision::Proceed(Proceed {
+                run_failed: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1087,7 +1485,7 @@ mod tests {
             serde_json::json!({ "cve": "CVE-2026-5555", "success": true }),
         );
         assert!(
-            matches!(decide_commit(&trigger), CommitDecision::Proceed { cve } if cve == "CVE-2026-5555")
+            matches!(decide_commit(&trigger), CommitDecision::Proceed(Proceed { cve, .. }) if cve == "CVE-2026-5555")
         );
     }
 
@@ -1097,7 +1495,7 @@ mod tests {
         // required `success` field), CVE defaults to "unknown".
         let trigger = make_trigger_for(EventType::ProjectIterationCompleted, "proj");
         assert!(
-            matches!(decide_commit(&trigger), CommitDecision::Proceed { cve } if cve == "unknown")
+            matches!(decide_commit(&trigger), CommitDecision::Proceed(Proceed { cve, .. }) if cve == "unknown")
         );
     }
 
@@ -1133,11 +1531,27 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_accepts_agree_on_skip_for_no_changes() {
+    fn dry_run_simulates_no_events_for_no_changes_trigger_it_accepts() {
+        // accepts() runs the block (it may have stranded commits to push), but a
+        // dry run cannot know whether any exist, so it simulates nothing.
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
-        assert!(!block.accepts(&trigger), "accepts() must reject no-changes trigger");
-        assert!(block.dry_run_events(&trigger).is_empty(), "dry_run must skip when no changes");
+        assert!(block.accepts(&trigger));
+        assert!(block.dry_run_events(&trigger).is_empty());
+    }
+
+    #[test]
+    fn dry_run_omits_push_for_failed_run() {
+        let dir = TempDir::new().unwrap();
+        let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
+        let block = CommitAndPush::new(registry);
+        let trigger = test_event!(EventType::ProjectMaintenanceCompleted, "my-project", {
+            "project": "my-project",
+            "success": false
+        });
+        let types: Vec<String> =
+            block.dry_run_events(&trigger).iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(types, ["project_changes_committed"]);
     }
 
     #[test]

@@ -44,6 +44,20 @@ pub(crate) struct LocalInstallEntry {
     pub(crate) success: bool,
 }
 
+/// A push-enabled project whose branch holds commits its remote does not.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UnpushedEntry {
+    pub(crate) name: String,
+    pub(crate) status: UnpushedStatus,
+}
+
+/// How far a project is ahead of its remote, or why that is unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum UnpushedStatus {
+    Ahead { commits: u32, branch: String },
+    Unknown(String),
+}
+
 /// Aggregate results for a full maintenance run.
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceRunSummary {
@@ -53,6 +67,8 @@ pub(crate) struct MaintenanceRunSummary {
     pub(crate) release_audits: Vec<ReleaseAuditEntry>,
     pub(crate) auto_releases: Vec<AutoReleaseEntry>,
     pub(crate) local_installs: Vec<LocalInstallEntry>,
+    /// Push-enabled projects left with unpushed commits after the run.
+    pub(crate) unpushed: Vec<UnpushedEntry>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -120,6 +136,34 @@ fn render_local_installs(summary: &MaintenanceRunSummary, out: &mut String) {
     }
 }
 
+/// Loud, top-of-report warning for commits the run left unpushed. Placed
+/// before the status table so it cannot be missed.
+fn render_unpushed(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.unpushed.is_empty() {
+        return;
+    }
+    wln!(out, "## \u{26a0}\u{fe0f} Unpushed commits");
+    wln!(out);
+    wln!(
+        out,
+        "These push-enabled projects hold commits that are not on their remote. \
+         Nothing published them; see each project's Commit and Push result."
+    );
+    wln!(out);
+    wln!(out, "| Project | Unpushed |");
+    wln!(out, "|---------|----------|");
+    for entry in &summary.unpushed {
+        let detail = match &entry.status {
+            UnpushedStatus::Ahead { commits, branch } => {
+                format!("**{commits} commit(s) ahead of origin/{branch}**")
+            }
+            UnpushedStatus::Unknown(reason) => format!("could not check: {reason}"),
+        };
+        wln!(out, "| {} | {detail} |", entry.name);
+    }
+    wln!(out);
+}
+
 /// Render a maintenance run summary as markdown.
 pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     let mut out = String::new();
@@ -128,6 +172,8 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     let run_at = summary.run_at.format("%Y-%m-%d %H:%M:%S UTC");
     wln!(out, "# Foundry Maintenance Run \u{2014} {run_at}");
     wln!(out);
+
+    render_unpushed(summary, &mut out);
 
     // Project status table
     wln!(out, "## Project Status");
@@ -196,6 +242,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     wln!(out, "- Succeeded: {succeeded}");
     wln!(out, "- Failed: {failed}");
     wln!(out, "- Skipped: {skipped}");
+    wln!(out, "- Projects with unpushed commits: {}", summary.unpushed.len());
     wln!(out, "- Total duration: {}", format_duration(summary.total_duration_secs));
     wln!(out, "- Average duration: {}", format_duration(average_duration));
 
@@ -209,6 +256,53 @@ mod tests {
 
     fn fixed_time() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 3, 21, 2, 0, 0).unwrap()
+    }
+
+    fn summary_with_unpushed(unpushed: Vec<UnpushedEntry>) -> MaintenanceRunSummary {
+        MaintenanceRunSummary {
+            run_at: fixed_time(),
+            total_duration_secs: Some(10),
+            projects: vec![ProjectResult {
+                name: "foundry".to_string(),
+                status: ProjectStatus::Success,
+                duration_secs: Some(10),
+            }],
+            release_audits: vec![],
+            auto_releases: vec![],
+            local_installs: vec![],
+            unpushed,
+        }
+    }
+
+    #[test]
+    fn render_puts_unpushed_commits_first_and_loud() {
+        let md = render(&summary_with_unpushed(vec![
+            UnpushedEntry {
+                name: "foundry".to_string(),
+                status: UnpushedStatus::Ahead {
+                    commits: 4,
+                    branch: "main".to_string(),
+                },
+            },
+            UnpushedEntry {
+                name: "gilt-cli".to_string(),
+                status: UnpushedStatus::Unknown("could not resolve origin/main".to_string()),
+            },
+        ]));
+
+        let warning = md.find("Unpushed commits").expect("warning section present");
+        let table = md.find("## Project Status").unwrap();
+        assert!(warning < table, "the warning comes before the status table");
+        assert!(md.contains("| foundry | **4 commit(s) ahead of origin/main** |"), "{md}");
+        assert!(md.contains("| gilt-cli | could not check: could not resolve origin/main |"));
+        assert!(md.contains("- Projects with unpushed commits: 2"));
+    }
+
+    #[test]
+    fn render_omits_unpushed_section_when_everything_is_pushed() {
+        let md = render(&summary_with_unpushed(vec![]));
+        assert!(!md.contains("## \u{26a0}\u{fe0f} Unpushed commits"));
+        assert!(md.contains("- Projects with unpushed commits: 0"));
     }
 
     #[test]
@@ -231,6 +325,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -267,6 +362,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -303,6 +399,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -326,6 +423,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -350,6 +448,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -365,6 +464,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -385,6 +485,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -405,6 +506,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -432,6 +534,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
 
         let md = render(&summary);
@@ -462,6 +565,7 @@ mod tests {
             ],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -491,6 +595,7 @@ mod tests {
                 },
             ],
             local_installs: vec![],
+            unpushed: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -518,6 +623,7 @@ mod tests {
                     success: false,
                 },
             ],
+            unpushed: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
@@ -534,6 +640,7 @@ mod tests {
             release_audits: vec![],
             auto_releases: vec![],
             local_installs: vec![],
+            unpushed: vec![],
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));

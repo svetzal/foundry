@@ -54,7 +54,9 @@ pub(super) enum SyncOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PrePushSync {
     /// The local branch now contains the remote tip; pushing is a fast-forward.
-    Ready,
+    /// `rebased` is true when the remote had moved and the local commits were
+    /// replayed onto it, so they are no longer the commits the gates verified.
+    Ready { rebased: bool },
     /// Pushing must not happen; the local commit stays on the local branch.
     Refused {
         failure: GitSyncFailure,
@@ -191,6 +193,18 @@ pub(super) async fn sync_checkout(
     }
 }
 
+/// How many commits local `HEAD` has that `origin/<branch>` does not, measured
+/// against the last-fetched remote-tracking ref (no network). `None` when the
+/// ref cannot be resolved.
+pub(super) async fn commits_ahead(
+    shell: &dyn ShellGateway,
+    path: &Path,
+    branch: &str,
+) -> anyhow::Result<Option<u32>> {
+    let remote_ref = format!("origin/{branch}");
+    Ok(measure_divergence(shell, path, &remote_ref).await?.map(|d| d.ahead))
+}
+
 /// Make the local branch contain the current remote tip before pushing.
 ///
 /// Runs `git fetch origin <branch>` then `git merge --ff-only origin/<branch>`
@@ -217,13 +231,13 @@ pub(super) async fn integrate_remote_before_push(
     let remote_ref = format!("origin/{branch}");
     let ff = shell.run(path, "git", &["merge", "--ff-only", &remote_ref], None, None).await?;
     if ff.success {
-        return Ok(PrePushSync::Ready);
+        return Ok(PrePushSync::Ready { rebased: false });
     }
 
     tracing::info!(%project, %remote_ref, "remote moved during run; rebasing local commit");
     let rebase = shell.run(path, "git", &["rebase", &remote_ref], None, None).await?;
     if rebase.success {
-        return Ok(PrePushSync::Ready);
+        return Ok(PrePushSync::Ready { rebased: true });
     }
 
     let abort = shell.run(path, "git", &["rebase", "--abort"], None, None).await?;
@@ -489,7 +503,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(outcome, PrePushSync::Ready);
+        assert_eq!(outcome, PrePushSync::Ready { rebased: false });
         assert_eq!(git_calls(&shell), ["fetch origin main", "merge --ff-only origin/main"]);
     }
 
@@ -504,7 +518,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(outcome, PrePushSync::Ready);
+        assert_eq!(outcome, PrePushSync::Ready { rebased: true });
         assert_eq!(
             git_calls(&shell),
             [

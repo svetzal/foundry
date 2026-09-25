@@ -625,8 +625,12 @@ fn register_pipeline_blocks(
         agent.clone(),
         registry.clone(),
     )));
-    engine
-        .register(Box::new(foundry_blocks::blocks::GenerateSummary::new(trace_writer, audits_dir)));
+    engine.register(Box::new(foundry_blocks::blocks::GenerateSummary::new(
+        trace_writer,
+        audits_dir,
+        registry.clone(),
+        Arc::new(foundry_blocks::gateway::ProcessShellGateway),
+    )));
 }
 
 /// Digest formation: commit, ops, triage, and supply-chain writers.

@@ -7,6 +7,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Nightly maintenance commits were stranded on the build host. When the
+  maintain agent committed its own work, `Commit and Push` found nothing left
+  to commit, reported "No changes to commit", and never pushed. On
+  mojility-ops-01 ten repositories held up to four nights of unpushed commits.
+  The push now depends on whether the branch is ahead of `origin/<branch>`, not
+  on whether the step made a commit, and a run reporting `changes: false`
+  still pushes commits stranded by an earlier run.
+- After rebasing onto a remote that moved during the run, the required gates
+  are re-run on the rebased commits before the push
+  (`push_failure: "gates_failed_after_rebase"` when they fail or the project
+  has no gates). A rejected `git push` is now recorded as `push_failed` instead
+  of being reported as "Committed and pushed changes". A run that reports
+  `success: false` keeps its commits local (`run_failed`). Never force-pushes.
+
+### Added
+
+- The maintenance summary checks every push-enabled project after the run and
+  lists any with unpushed commits ("N commit(s) ahead of origin/main") in an
+  **Unpushed commits** section at the top of the report, with a warning in the
+  block result.
+
 ## [0.38.0] - 2026-09-24
 
 ### Added

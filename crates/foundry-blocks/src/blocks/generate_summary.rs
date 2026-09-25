@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 
@@ -8,12 +8,14 @@ use foundry_sdk::payload::{
     LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload, ProjectCompletedPayload,
     ReleaseCompletedPayload, ReleaseTagAuditedPayload,
 };
+use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::trace::ProcessResult;
 
+use crate::gateway::ShellGateway;
 use crate::summary::{
     AutoReleaseEntry, LocalInstallEntry, MaintenanceRunSummary, ProjectResult, ProjectStatus,
-    ReleaseAuditEntry,
+    ReleaseAuditEntry, UnpushedEntry, UnpushedStatus,
 };
 use crate::trace_writer::TraceWriter;
 
@@ -26,6 +28,11 @@ use crate::trace_writer::TraceWriter;
 /// via the `TraceWriter`, builds a `MaintenanceRunSummary`, renders it as
 /// markdown, and writes it to the audits directory.
 ///
+/// Post-run check: for every push-enabled project in the run it counts the
+/// commits the branch holds that `origin/<branch>` does not, and reports any
+/// non-zero count (or a failed check) at the top of the summary. Commits
+/// silently stranded on the build host were the failure this exists to catch.
+///
 /// Expected trigger payload:
 /// ```json
 /// {
@@ -37,15 +44,66 @@ use crate::trace_writer::TraceWriter;
 pub struct GenerateSummary {
     trace_writer: Arc<TraceWriter>,
     audits_dir: PathBuf,
+    registry: Arc<RwLock<Registry>>,
+    shell: Arc<dyn ShellGateway>,
 }
 
 impl GenerateSummary {
-    pub fn new(trace_writer: Arc<TraceWriter>, audits_dir: String) -> Self {
+    pub fn new(
+        trace_writer: Arc<TraceWriter>,
+        audits_dir: String,
+        registry: Arc<RwLock<Registry>>,
+        shell: Arc<dyn ShellGateway>,
+    ) -> Self {
         Self {
             trace_writer,
             audits_dir: PathBuf::from(audits_dir),
+            registry,
+            shell,
         }
     }
+}
+
+/// Count unpushed commits for each push-enabled project named in the run.
+/// Uses the remote-tracking ref as the commit step left it (no fetch).
+async fn find_unpushed(
+    names: &[String],
+    registry: &Arc<RwLock<Registry>>,
+    shell: &dyn ShellGateway,
+) -> Vec<UnpushedEntry> {
+    // Extract before any .await so the lock is not held across yields.
+    let targets: Vec<(String, String, String)> = match super::read_registry(registry) {
+        Ok(guard) => names
+            .iter()
+            .filter_map(|name| guard.find_project(name))
+            .filter(|e| e.actions.push)
+            .map(|e| (e.name.clone(), e.path.clone(), e.branch.clone()))
+            .collect(),
+        Err(e) => {
+            // Record: the check did not run, which the summary must say.
+            tracing::error!(error = %e, "registry unreadable; unpushed-commit check skipped");
+            return vec![UnpushedEntry {
+                name: "(all projects)".to_string(),
+                status: UnpushedStatus::Unknown(format!("registry unreadable: {e}")),
+            }];
+        }
+    };
+
+    let mut unpushed = Vec::new();
+    for (name, path, branch) in targets {
+        let status =
+            match super::checkout_sync::commits_ahead(shell, std::path::Path::new(&path), &branch)
+                .await
+            {
+                Ok(Some(0)) => continue,
+                Ok(Some(commits)) => UnpushedStatus::Ahead { commits, branch },
+                Ok(None) => UnpushedStatus::Unknown(format!("could not resolve origin/{branch}")),
+                Err(e) => UnpushedStatus::Unknown(e.to_string()),
+            };
+        tracing::warn!(project = %name, ?status, "project has unpushed commits after the run");
+        unpushed.push(UnpushedEntry { name, status });
+    }
+    unpushed
 }
 
 /// Terminal event types whose `success` payload field determines overall outcome.
@@ -231,6 +289,8 @@ impl TaskBlock for GenerateSummary {
         let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();
+        let registry = Arc::clone(&self.registry);
+        let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
             let project_trace_ids = p.project_trace_ids;
@@ -250,6 +310,9 @@ impl TaskBlock for GenerateSummary {
 
             projects.sort_by(|a, b| a.name.cmp(&b.name));
 
+            let names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+            let unpushed = find_unpushed(&names, &registry, &*shell).await;
+
             let summary = MaintenanceRunSummary {
                 run_at: Utc::now(),
                 total_duration_secs: Some(total_duration_ms / 1000),
@@ -257,7 +320,9 @@ impl TaskBlock for GenerateSummary {
                 release_audits,
                 auto_releases,
                 local_installs,
+                unpushed,
             };
+            let unpushed_count = summary.unpushed.len();
 
             let markdown = crate::summary::render(&summary);
 
@@ -266,7 +331,14 @@ impl TaskBlock for GenerateSummary {
                 Err(e) => return Ok(TaskBlockResult::failure(e.to_string())),
             };
 
-            Ok(TaskBlockResult::success(format!("Summary written to {path_str}"), vec![])
+            let headline = if unpushed_count == 0 {
+                format!("Summary written to {path_str}")
+            } else {
+                format!(
+                    "Summary written to {path_str}; WARNING: {unpushed_count} project(s) have unpushed commits"
+                )
+            };
+            Ok(TaskBlockResult::success(headline, vec![])
                 .with_output(Some(markdown), None)
                 .with_audit_artifacts(vec![path_str]))
         })
@@ -284,6 +356,17 @@ mod tests {
 
     fn make_trace_writer(dir: &std::path::Path) -> Arc<TraceWriter> {
         Arc::new(TraceWriter::new(dir.to_str().unwrap()))
+    }
+
+    /// A summary block whose projects are not in the registry, so the
+    /// unpushed-commit check has nothing to inspect.
+    fn summary_block(tw: Arc<TraceWriter>, audits_dir: &std::path::Path) -> GenerateSummary {
+        GenerateSummary::new(
+            tw,
+            audits_dir.to_str().unwrap().to_string(),
+            test_helpers::empty_registry(),
+            crate::gateway::fakes::FakeShellGateway::success(),
+        )
     }
 
     fn successful_trace(project: &str) -> ProcessResult {
@@ -393,20 +476,14 @@ mod tests {
     #[test]
     fn sinks_on_expected() {
         let dir = tempfile::tempdir().unwrap();
-        let block = GenerateSummary::new(
-            make_trace_writer(dir.path()),
-            dir.path().to_str().unwrap().to_string(),
-        );
+        let block = summary_block(make_trace_writer(dir.path()), dir.path());
         assert_eq!(block.sinks_on(), &[EventType::MaintenanceSummaryRequested]);
     }
 
     #[test]
     fn kind_is() {
         let dir = tempfile::tempdir().unwrap();
-        let block = GenerateSummary::new(
-            make_trace_writer(dir.path()),
-            dir.path().to_str().unwrap().to_string(),
-        );
+        let block = summary_block(make_trace_writer(dir.path()), dir.path());
         assert_eq!(block.kind(), BlockKind::Observer);
     }
 
@@ -422,7 +499,7 @@ mod tests {
         tw.write("evt_alpha", &successful_trace("alpha")).unwrap();
         tw.write("evt_beta", &successful_trace("beta")).unwrap();
 
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,
@@ -448,6 +525,123 @@ mod tests {
         assert!(content.contains("success"));
     }
 
+    fn push_registry(entries: &[(&str, bool)]) -> Arc<RwLock<Registry>> {
+        Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: entries
+                .iter()
+                .map(|(name, push)| foundry_sdk::registry::ProjectEntry {
+                    actions: foundry_sdk::registry::ActionFlags {
+                        push: *push,
+                        ..Default::default()
+                    },
+                    ..test_helpers::project_entry(name, &format!("/p/{name}"))
+                })
+                .collect(),
+        }))
+    }
+
+    fn summary_request(names: &[&str]) -> Event {
+        let ids: serde_json::Map<String, serde_json::Value> =
+            names.iter().map(|n| ((*n).to_string(), format!("evt_{n}").into())).collect();
+        test_helpers::make_trigger(
+            EventType::MaintenanceSummaryRequested,
+            "_system",
+            serde_json::json!({
+                "project_trace_ids": ids,
+                "skipped_projects": [],
+                "total_duration_ms": 1000
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn summary_reports_unpushed_commits_loudly() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write("evt_foundry", &successful_trace("foundry")).unwrap();
+        tw.write("evt_local", &successful_trace("local")).unwrap();
+        let shell =
+            crate::gateway::fakes::FakeShellGateway::sequence(vec![crate::shell::CommandResult {
+                stdout: "4\t0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }]);
+        let block = GenerateSummary::new(
+            tw,
+            audits_dir.path().to_str().unwrap().to_string(),
+            // `local` has push disabled: commits ahead are by design, not reported.
+            push_registry(&[("foundry", true), ("local", false)]),
+            Arc::clone(&shell) as _,
+        );
+
+        let result = block.execute(&summary_request(&["foundry", "local"])).await.unwrap();
+
+        assert!(
+            result.summary.contains("WARNING: 1 project(s) have unpushed commits"),
+            "{}",
+            result.summary
+        );
+        let md = std::fs::read_to_string(&result.audit_artifacts[0]).unwrap();
+        assert!(md.contains("| foundry | **4 commit(s) ahead of origin/main** |"), "{md}");
+        assert!(!md.contains("| local | **"), "push-disabled project not reported: {md}");
+        assert_eq!(shell.invocations().len(), 1, "only the push-enabled project is checked");
+        assert_eq!(
+            shell.invocations()[0].args,
+            ["rev-list", "--left-right", "--count", "HEAD...origin/main"]
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_stays_quiet_when_everything_is_pushed() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write("evt_foundry", &successful_trace("foundry")).unwrap();
+        let shell =
+            crate::gateway::fakes::FakeShellGateway::sequence(vec![crate::shell::CommandResult {
+                stdout: "0\t0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            }]);
+        let block = GenerateSummary::new(
+            tw,
+            audits_dir.path().to_str().unwrap().to_string(),
+            push_registry(&[("foundry", true)]),
+            shell,
+        );
+
+        let result = block.execute(&summary_request(&["foundry"])).await.unwrap();
+
+        assert!(!result.summary.contains("WARNING"), "{}", result.summary);
+    }
+
+    #[tokio::test]
+    async fn summary_reports_a_check_that_could_not_run() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write("evt_foundry", &successful_trace("foundry")).unwrap();
+        let shell = crate::gateway::fakes::FakeShellGateway::failure("fatal: bad revision");
+        let block = GenerateSummary::new(
+            tw,
+            audits_dir.path().to_str().unwrap().to_string(),
+            push_registry(&[("foundry", true)]),
+            shell,
+        );
+
+        let result = block.execute(&summary_request(&["foundry"])).await.unwrap();
+
+        let md = std::fs::read_to_string(&result.audit_artifacts[0]).unwrap();
+        assert!(
+            md.contains("| foundry | could not check: could not resolve origin/main |"),
+            "{md}"
+        );
+    }
+
     #[tokio::test]
     async fn includes_failed_projects_in_summary() {
         let traces_dir = tempfile::tempdir().unwrap();
@@ -457,7 +651,7 @@ mod tests {
         tw.write("evt_good", &successful_trace("good-project")).unwrap();
         tw.write("evt_bad", &failed_trace("bad-project")).unwrap();
 
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,
@@ -486,7 +680,7 @@ mod tests {
 
         tw.write("evt_alpha", &successful_trace("alpha")).unwrap();
 
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,
@@ -513,7 +707,7 @@ mod tests {
         let tw = make_trace_writer(traces_dir.path());
 
         // Don't write any trace — evt_missing won't be found.
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,
@@ -541,7 +735,7 @@ mod tests {
 
         tw.write("evt_proj", &trace_with_release_audit("my-project")).unwrap();
 
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,
@@ -570,7 +764,7 @@ mod tests {
         let audits_dir = tempfile::tempdir().unwrap();
         let tw = make_trace_writer(traces_dir.path());
 
-        let block = GenerateSummary::new(tw, audits_dir.path().to_str().unwrap().to_string());
+        let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
             EventType::MaintenanceSummaryRequested,

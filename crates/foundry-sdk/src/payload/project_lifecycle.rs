@@ -48,6 +48,17 @@ pub enum GitSyncFailure {
     /// did not apply cleanly. The rebase was aborted and the commit was left on
     /// the local branch for a human; nothing was pushed.
     PushRejectedDiverged,
+    /// The local branch was rebased onto a remote that moved during the run,
+    /// and the project's required gates failed on the rebased commits (or the
+    /// project has no gates to verify them with). Nothing was pushed; the
+    /// rebased commits stay on the local branch.
+    GatesFailedAfterRebase,
+    /// `git push` itself was rejected (for example a non-fast-forward race or
+    /// an authentication failure). Nothing was pushed. Never retried with force.
+    PushFailed,
+    /// The run reported failure, so commits ahead of the remote were kept on
+    /// the local branch instead of being pushed.
+    RunFailed,
 }
 
 impl GitSyncFailure {
@@ -59,6 +70,9 @@ impl GitSyncFailure {
             Self::Diverged => "diverged",
             Self::RemoteUnavailable => "remote_unavailable",
             Self::PushRejectedDiverged => "push_rejected_diverged",
+            Self::GatesFailedAfterRebase => "gates_failed_after_rebase",
+            Self::PushFailed => "push_failed",
+            Self::RunFailed => "run_failed",
         }
     }
 }
@@ -77,8 +91,8 @@ pub struct ProjectChangesCommittedPayload {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
-    /// Set when the commit landed locally but could not be pushed because the
-    /// remote diverged from it (see [`GitSyncFailure::PushRejectedDiverged`]).
+    /// Set when the commit landed locally but could not be pushed (see
+    /// [`GitSyncFailure`] for the reasons).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_failure: Option<GitSyncFailure>,
 }
@@ -120,4 +134,25 @@ pub struct ProjectValidationCompletedPayload {
     /// `true` when the checkout sync was simulated (no fetch, no merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitSyncFailure;
+
+    #[test]
+    fn git_sync_failure_wire_form_matches_as_str() {
+        for failure in [
+            GitSyncFailure::DirtyTree,
+            GitSyncFailure::Diverged,
+            GitSyncFailure::RemoteUnavailable,
+            GitSyncFailure::PushRejectedDiverged,
+            GitSyncFailure::GatesFailedAfterRebase,
+            GitSyncFailure::PushFailed,
+            GitSyncFailure::RunFailed,
+        ] {
+            let json = serde_json::to_string(&failure).unwrap();
+            assert_eq!(json, format!("\"{}\"", failure.as_str()));
+        }
+    }
 }

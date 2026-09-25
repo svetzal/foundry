@@ -62,7 +62,7 @@ post-push re-audit, confirming the fix is clean before anything downstream acts.
 | Audit Release Tag | Observer | `vulnerability_detected`, `project_changes_pushed` | `release_tag_audited` | Skips post-push when project not in registry |
 | Audit Main Branch | Observer | `release_tag_audited` | `main_branch_audited` | Skips when `vulnerable=false` |
 | Remediate Vulnerability | Mutator | `main_branch_audited` | `remediation_completed` | Only when `dirty=true` |
-| Commit and Push | Mutator | `remediation_completed`, `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean or `changes=false` |
+| Commit and Push | Mutator | `remediation_completed`, `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Pushes whenever the branch is ahead of `origin/<branch>`, even when the tree is clean or `changes=false` |
 | Cut Release | Mutator | `main_branch_audited` | `release_completed` | Only when `dirty=false` |
 | Watch Pipeline | Mutator | `release_completed` | `release_pipeline_completed` | — |
 | Install Locally | Mutator | `project_changes_pushed`, `release_pipeline_completed` | `local_install_completed` | — |
@@ -77,7 +77,7 @@ block focused on a single responsibility.
 |-------|------|----------|-------|--------------|
 | Validate Project | Observer | `maintenance_run_started` | `project_validation_completed` | Skips projects not in active registry |
 | Route Project Workflow | Observer | `project_validation_completed` | `iteration_requested` or `maintenance_requested` | Stops when `status != "ok"` or no actions enabled |
-| Commit and Push | Mutator | `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Skips when tree is clean |
+| Commit and Push | Mutator | `project_iteration_completed`, `project_maintenance_completed` | `project_changes_committed`, `project_changes_pushed` | Pushes whenever the branch is ahead of `origin/<branch>` |
 | Audit Release Tag | Observer | `project_changes_pushed` | `release_tag_audited` | Skips when project not in registry |
 
 The `actions.maintain` flag is forwarded inside the `iteration_requested`

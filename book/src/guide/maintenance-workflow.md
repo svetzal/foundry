@@ -67,13 +67,36 @@ it, on the registered branch:
 A failed sync sets `status: "error"`, so `Route Project Workflow` stops the
 chain (and, inside a maintenance cycle, reports the project run as failed).
 
+`Commit and Push` commits anything the run left uncommitted, then pushes
+**every commit the branch has ahead of `origin/<branch>`**. The push does not
+depend on whether this step made a commit: agents usually commit their own
+work, and those commits must reach the remote too. A run that reports
+`changes: false` still runs the step, so commits stranded by an earlier run are
+pushed on the next one. A run that reports `success: false` never pushes; its
+commits stay local (`run_failed`).
+
 Before pushing, `Commit and Push` repeats the fetch and fast-forward in case
-the remote moved *during* the run. If it did, the maintenance commit is
-replayed with `git rebase origin/<branch>` and pushed only if the rebase
-applied cleanly. A conflicting rebase is aborted and nothing is pushed: the
-commit stays on the local branch for a human, and `project_changes_committed`
-records `push_failure: "push_rejected_diverged"`. A failed pre-push fetch
-records `push_failure: "remote_unavailable"`. Foundry never force-pushes.
+the remote moved *during* the run. If it did, the local commits are replayed
+with `git rebase origin/<branch>` and the project's required gates are run
+again on the rebased commits. The push happens only when they pass. The
+refusals, all recorded as `push_failure` on `project_changes_committed` (when
+the step committed) and in the step's summary:
+
+| `push_failure` | Meaning |
+| --- | --- |
+| `push_rejected_diverged` | The rebase conflicted. It was aborted; the commits stay on the local branch for a human. |
+| `gates_failed_after_rebase` | The rebased commits failed a required gate, or the project has no gates to verify them. Nothing was pushed. |
+| `remote_unavailable` | The pre-push fetch failed, or `origin/<branch>` could not be resolved. |
+| `push_failed` | `git push` itself was rejected (for example a non-fast-forward race). |
+| `run_failed` | The run reported failure, so its commits were kept local. |
+
+Foundry never force-pushes.
+
+After the whole run, the maintenance summary checks every push-enabled project
+again and lists any that still hold unpushed commits in an **Unpushed
+commits** section at the top of `audits/runs/<date>/summary.md` ("N commit(s)
+ahead of origin/main"). The block's result line says `WARNING: N project(s)
+have unpushed commits`.
 
 The one-shot `foundry task` / campaign path is unaffected — it already builds
 its isolated worktree from the fetched remote tip.

@@ -98,7 +98,7 @@ with `FOUNDRYD_LISTEN_ADDR`) and runs the workflow engine.
 - `execute_maintain.rs` — `ExecuteMaintain`: runs maintenance tasks
 - `retry_execution.rs` — `RetryExecution`: retries failed executions with context
 - `summarize_result.rs` — `SummarizeResult`: generates workflow summary and traces
-- `git_ops.rs` — `CommitAndPush`: stages, commits, and optionally pushes changes
+- `git_ops.rs` — `CommitAndPush`: commits what the run left uncommitted, then pushes every commit ahead of `origin/<branch>` (re-running gates after a rebase)
 - `audit.rs` — `AuditReleaseTag`, `AuditMainBranch`: vulnerability scanning
 - `release.rs` — `CutRelease`, `WatchPipeline`: tagging and CI monitoring
 - `install.rs` — `InstallLocally`: reinstalls the project locally after a fix
