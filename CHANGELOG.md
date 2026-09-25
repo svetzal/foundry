@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-25
+
 ### Added
 
 - Registry field `update_policy` (`patch`, `minor` or `major`), set with
