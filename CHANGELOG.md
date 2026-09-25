@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.3] - 2026-09-25
+
+### Fixed
+
+- The audit covers every ecosystem in a repository, not only the registered
+  stack, and finds lockfiles in subdirectories (skipping build output,
+  installed dependencies, fixtures and vendored trees). epilogue-tracker's
+  `apps/cli/Cargo.lock` was reported as "Couldn't load Cargo.lock". Results
+  are merged, and a part that could not be audited is named in the error.
+- A text `bun.lock` (and `yarn.lock` or `pnpm-lock.yaml`) is audited with
+  `osv-scanner`. Before, Bun projects were sent to `npm audit`, which refuses
+  a project without `package-lock.json`, and the refusal read as clean. A
+  binary `bun.lockb` is reported as not scanned.
+- Mix projects run `mix deps.get` before `mix deps.audit`, so a lockfile that
+  moved ahead of `deps/` no longer stops the audit. A failed fetch is
+  reported with the project's path.
+- The dependency classifier also finds manifests with lockfiles in
+  subdirectories, so a monorepo's every ecosystem is classified.
+
 ## [0.39.2] - 2026-09-25
 
 ### Fixed
