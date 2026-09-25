@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.2] - 2026-09-25
+
+### Fixed
+
+- Vendored code is no longer classified or put in the maintain brief. A scope
+  under `vendor/` or `third_party/`, or a path `.gitattributes` marks
+  `linguist-vendored`, is listed as "vendored, updated upstream" instead. The
+  security audit still scans it. Bedrock's `vendor/roost` was being briefed.
+- A hold whose cap is below the locked version is reported as "stale hold:
+  locked X is above cap Y, re-decide" and never produces a downgrade. The brief
+  also refuses any move that is not newer than the locked version.
+- `foundry deps` no longer says "Everything classified is up to date" while a
+  hold suppresses an update or is stale, and it lists stale holds and vendored
+  scopes.
+- A review names the commit it classified and fetches the remote first; when
+  the checkout is behind `origin/<branch>` it says so. A stale ops-01 checkout
+  made the 0.39.1 review of bedrock describe lockfiles origin had already
+  moved past.
+
 ## [0.39.1] - 2026-09-25
 
 ### Fixed
