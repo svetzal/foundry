@@ -151,9 +151,17 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             }
             AuditPlan::ReportFile {
                 command: wrapper.to_string_lossy().into_owned(),
-                args: ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]
-                    .map(str::to_string)
-                    .to_vec(),
+                // `--rerun` (Gradle 7.6+) runs the task even when Gradle
+                // considers it UP-TO-DATE, so every audit checks the current
+                // vulnerability data and writes a fresh report.
+                args: [
+                    "dependencyCheckAggregate",
+                    "--rerun",
+                    "--no-parallel",
+                    "--no-daemon",
+                ]
+                .map(str::to_string)
+                .to_vec(),
                 reports: DEPENDENCY_CHECK_REPORTS.iter().map(|r| path.join(r)).collect(),
                 timeout: KOTLIN_AUDIT_TIMEOUT,
                 min_cvss: fail_build_on_cvss(path),
@@ -1475,7 +1483,18 @@ mod tests {
             panic!("Kotlin reads a report file: {plan:?}");
         };
         assert_eq!(command, dir.path().join("gradlew").to_string_lossy());
-        assert_eq!(args, ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]);
+        // `--rerun` forces the task to execute: Gradle otherwise reports it
+        // UP-TO-DATE, leaves the previous report in place, and the scan
+        // never checks the current vulnerability data.
+        assert_eq!(
+            args,
+            [
+                "dependencyCheckAggregate",
+                "--rerun",
+                "--no-parallel",
+                "--no-daemon"
+            ]
+        );
         assert_eq!(
             reports,
             [
