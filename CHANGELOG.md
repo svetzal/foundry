@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.5] - 2026-09-25
+
+### Added
+
+- The maintain prompt, the maintain retry prompt and the task/iterate
+  execution prompt carry advisory rules: never suppress, ignore or allowlist
+  an advisory that has a fixed release (upgrade instead); never edit
+  `.supply-chain-allow.json`, `ignore_advisories`, Dependency-Check
+  suppressions or equivalent files; never claim no fix exists without citing
+  the registry or OSV entry. Maintain agents had explained away fixable
+  advisories twice on 2026-09-25.
+- A maintain run that adds a suppression fails with "needs review: …" and is
+  not pushed. Foundry diffs the checkout against `origin/<branch>` after the
+  agent and flags new `.supply-chain-allow.json` entries, `ignore_advisories`
+  in `mix.exs` or `mix_audit` skips, Dependency-Check `<suppress>` entries,
+  `pip-audit --ignore-vuln`, `cargo audit --ignore` and `deny.toml` /
+  `audit.toml` advisory ignores, and npm overrides pinned to a version the
+  latest supply-chain scan marks vulnerable.
+
 ## [0.39.4] - 2026-09-25
 
 ### Fixed
