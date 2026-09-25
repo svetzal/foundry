@@ -87,3 +87,9 @@ semver = "1"
 
 # Testing
 tempfile = "3"
+
+# Dependencies build without debug info; our own crates keep it. Backtraces
+# and debuggers still work in our code, but dependency frames lose line
+# numbers. This cuts target/debug by about 40% on macOS.
+[profile.dev.package."*"]
+debug = false
