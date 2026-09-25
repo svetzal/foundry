@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-09-25
+
+### Fixed
+
+- Major-upgrade task objectives read "The npm dependency is declared in the
+  repository root." instead of "It is a npm dependency declared in ..".
+- Builds clean under clippy 1.96 (the ops host's toolchain).
+
 ## [0.39.0] - 2026-09-25
 
 ### Added
