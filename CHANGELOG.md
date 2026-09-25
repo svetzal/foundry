@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-09-24
+
 ### Fixed
 
 - Nightly maintenance commits were stranded on the build host. When the
