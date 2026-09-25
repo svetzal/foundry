@@ -122,6 +122,14 @@ fn build_retry_prompt(
              Analyze what was tried and avoid repeating the same approach if it failed."
         )
     };
+    let dependency_rule = if workflow == WorkflowType::Maintain {
+        "\n\nThis is dependency maintenance. Do not move any dependency version or \
+         constraint beyond what the previous attempt applied. If one of those updates \
+         causes a failure you cannot fix, revert that update and say which in your \
+         final message."
+    } else {
+        ""
+    };
     format!(
         "You are retrying a {workflow} operation on project '{project}' \
          (attempt {retry_count} of 3).\n\n\
@@ -129,7 +137,7 @@ fn build_retry_prompt(
          {failure_context}{prior_work_section}\n\n\
          Please fix the issues that caused these gate failures. \
          Focus specifically on the failures listed above. \
-         Make only the changes necessary to resolve these issues."
+         Make only the changes necessary to resolve these issues.{dependency_rule}"
     )
 }
 
@@ -419,5 +427,21 @@ mod tests {
             }),
         );
         test_helpers::assert_forwards_actions(&block, &trigger).await;
+    }
+
+    #[tokio::test]
+    async fn a_maintain_retry_forbids_further_dependency_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RetryExecution::new(agent.clone(), registry);
+
+        block.execute(&retry_event("my-project", 1, "maintain")).await.unwrap();
+        block.execute(&retry_event("my-project", 1, "iterate")).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert!(invocations[0].prompt.contains("Do not move any dependency version"));
+        assert!(!invocations[1].prompt.contains("Do not move any dependency version"));
     }
 }

@@ -474,6 +474,18 @@ pub enum EventType {
     /// Lifecycle end: the supply-chain advisory digest has been written (or skipped).
     SupplyChainScanCompleted,
 
+    // Dependency update policy (classification, maintain brief, majors lane)
+    /// Command: classify one project's dependency updates on demand and plan
+    /// its majors, without applying anything.
+    DependencyReviewRequested,
+    /// Domain fact: a project's direct dependencies have been classified
+    /// (patch / minor / major) and the maintain brief decided. Emitted before
+    /// the maintain agent runs, after maintenance completes, and on review.
+    DependencyUpdatesClassified,
+    /// Domain fact: the majors lane decided, per major upgrade, whether it is
+    /// dispatched as its own task, deduped, over a cap, deferred or proposed.
+    MajorUpgradesPlanned,
+
     // Hello-world workflow (validates engine mechanics)
     GreetingRequested,
     GreetingComposed,
@@ -544,7 +556,8 @@ impl EventType {
             | EventType::MaintenanceSummaryRequested
             | EventType::CommitDigestStarted
             | EventType::OpsDigestStarted
-            | EventType::SupplyChainScanStarted => true,
+            | EventType::SupplyChainScanStarted
+            | EventType::DependencyReviewRequested => true,
 
             // Non-openers — domain facts, lifecycle ends, and intermediate
             // steps that belong to an already-open span.
@@ -598,6 +611,8 @@ impl EventType {
             | EventType::SupplyChainScanned
             | EventType::SupplyChainRemediated
             | EventType::SupplyChainScanCompleted
+            | EventType::DependencyUpdatesClassified
+            | EventType::MajorUpgradesPlanned
             | EventType::GreetingComposed
             | EventType::GreetingDelivered
             | EventType::AgentSessionStarted
@@ -734,6 +749,9 @@ mod tests {
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
             (EventType::SupplyChainRemediated, "supply_chain_remediated"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
+            (EventType::DependencyReviewRequested, "dependency_review_requested"),
+            (EventType::DependencyUpdatesClassified, "dependency_updates_classified"),
+            (EventType::MajorUpgradesPlanned, "major_upgrades_planned"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),
@@ -820,6 +838,9 @@ mod tests {
             (EventType::SupplyChainScanned, "supply_chain_scanned"),
             (EventType::SupplyChainRemediated, "supply_chain_remediated"),
             (EventType::SupplyChainScanCompleted, "supply_chain_scan_completed"),
+            (EventType::DependencyReviewRequested, "dependency_review_requested"),
+            (EventType::DependencyUpdatesClassified, "dependency_updates_classified"),
+            (EventType::MajorUpgradesPlanned, "major_upgrades_planned"),
             (EventType::GreetingRequested, "greeting_requested"),
             (EventType::GreetingComposed, "greeting_composed"),
             (EventType::GreetingDelivered, "greeting_delivered"),

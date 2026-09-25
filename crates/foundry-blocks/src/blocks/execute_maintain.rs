@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::GateResolutionCompletedPayload;
+use foundry_sdk::payload::{ClassificationPhase, DependencyUpdatesClassifiedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 use foundry_sdk::workflow::WorkflowType;
@@ -11,10 +11,12 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
 agent_execution_block! {
-    /// Executes the maintain workflow: updates dependencies, fixes vulnerabilities,
-    /// and resolves quality gate failures.
+    /// Executes the maintain workflow: applies the dependency brief, fixes
+    /// vulnerabilities, and resolves quality gate failures.
     ///
-    /// Mutator — sinks on `GateResolutionCompleted` (workflow = "maintain" only).
+    /// Mutator — sinks on `DependencyUpdatesClassified` (phase `before`,
+    /// workflow = "maintain" only). The prompt lists exactly which dependency
+    /// moves to apply; the agent decides none of them.
     /// Uses `AgentGateway` with `Coding` capability and `Full` access.
     /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
     pub struct ExecuteMaintain
@@ -32,8 +34,12 @@ enum MaintainDecision {
 }
 
 /// Evaluate the trigger and decide what `ExecuteMaintain` should do.
+///
+/// Only the `before` classification of a maintain run starts the agent; the
+/// `after` and `review` classifications are records, not requests.
 fn decide_maintain(trigger: &Event) -> MaintainDecision {
-    if WorkflowType::from_payload(&trigger.payload) == WorkflowType::Maintain {
+    let before = trigger.payload.get("phase").and_then(serde_json::Value::as_str) == Some("before");
+    if before && WorkflowType::from_payload(&trigger.payload) == WorkflowType::Maintain {
         MaintainDecision::Proceed
     } else {
         MaintainDecision::SkipNonMaintain
@@ -62,7 +68,7 @@ impl TaskBlock for ExecuteMaintain {
     task_block_meta! {
         name: "Execute Maintain",
         kind: Mutator,
-        sinks_on: [GateResolutionCompleted],
+        sinks_on: [DependencyUpdatesClassified],
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
@@ -79,15 +85,22 @@ impl TaskBlock for ExecuteMaintain {
             trace_id,
         } = TriggerContext::from_trigger(trigger);
 
-        let p = parse_payload!(trigger, GateResolutionCompletedPayload);
-        let gates = p.gates;
+        let p = parse_payload!(trigger, DependencyUpdatesClassifiedPayload);
+        debug_assert_eq!(p.phase, ClassificationPhase::Before);
+        let gates = p.chain.gates.clone().unwrap_or(serde_json::Value::Null);
+        let dependency_brief =
+            crate::dependency_updates::brief::render(&p.brief, &p.classification);
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
         let shell = Arc::clone(&self.shell);
 
         Box::pin(async move {
-            let prompt = build_maintain_prompt(&project, Some(&gates).filter(|v| !v.is_null()));
+            let prompt = build_maintain_prompt(
+                &project,
+                &dependency_brief,
+                Some(&gates).filter(|v| !v.is_null()),
+            );
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),
                 project: &project,
@@ -106,14 +119,24 @@ impl TaskBlock for ExecuteMaintain {
     }
 }
 
-fn build_maintain_prompt(project: &str, gates: Option<&serde_json::Value>) -> String {
+/// The maintain prompt: the dependency brief, decided in code, plus the gates.
+///
+/// The agent is told what to apply rather than asked what is compatible, so
+/// the same policy holds on every project and every night.
+fn build_maintain_prompt(
+    project: &str,
+    dependency_brief: &str,
+    gates: Option<&serde_json::Value>,
+) -> String {
     let gates_context = super::format_gates_context(gates);
     format!(
-        "You are maintaining the project '{project}'. \
-         Update dependencies to their latest compatible versions, \
-         fix any known vulnerabilities, and resolve any quality gate failures. \
-         Make only the changes necessary to bring the project up to date \
-         and ensure all gates pass.{gates_context}"
+        "You are maintaining the project '{project}'. Apply the dependency updates \
+         listed below and resolve any quality gate failures. Make only the changes \
+         needed for that.\n\n\
+         {dependency_brief}\n\
+         Vulnerabilities: a security fix appears in the list above with its advisory. \
+         If a vulnerability needs a dependency change that is not listed, report it \
+         in your final message instead of making the change.{gates_context}"
     )
 }
 
@@ -138,7 +161,7 @@ mod tests {
             Arc::new(RwLock::new(Registry { version: 2, projects: vec![] })),
         ),
         kind: Mutator,
-        sinks_on: [GateResolutionCompleted],
+        sinks_on: [DependencyUpdatesClassified],
     );
 
     #[test]
@@ -150,9 +173,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "iterate",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "iterate",
             "gates": [],
         });
 
@@ -168,9 +191,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [],
         });
 
@@ -187,9 +210,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -221,9 +244,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -252,9 +275,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent.clone(), registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -277,9 +300,9 @@ mod tests {
                 projects: vec![],
             })),
         );
-        let trigger = test_event!(EventType::GateResolutionCompleted, "unknown-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "unknown-project", {
             "project": "unknown-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -302,9 +325,9 @@ mod tests {
             "rust-craftsperson",
         ));
         let block = ExecuteMaintain::new(agent, registry);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
         test_helpers::assert_agent_failure_emits_failure(&block, &trigger).await;
@@ -321,12 +344,12 @@ mod tests {
         ));
         let block = ExecuteMaintain::new(agent, registry);
         let trigger = Event::new(
-            EventType::GateResolutionCompleted,
+            EventType::DependencyUpdatesClassified,
             "my-project".to_string(),
             Throttle::Full,
             serde_json::json!({
                 "project": "my-project",
-                "workflow": "maintain",
+                "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
                 "gates": [],
                 "actions": {"maintain": true},
             }),
@@ -344,9 +367,9 @@ mod tests {
                 projects: vec![],
             })),
         );
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -369,9 +392,9 @@ mod tests {
                 projects: vec![],
             })),
         );
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "iterate",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "iterate",
             "gates": [],
         });
 
@@ -415,9 +438,9 @@ mod tests {
             },
         ]);
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [
                 {"name": "fmt", "command": "cargo fmt --check", "required": true}
             ],
@@ -443,9 +466,9 @@ mod tests {
         ));
         let shell = FakeShellGateway::success(); // empty stdout
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
         test_helpers::assert_reports_no_changes_when_clean(&block, &trigger, true).await;
@@ -465,9 +488,9 @@ mod tests {
         ));
         let shell = FakeShellGateway::success(); // empty stdout → no changes
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
 
@@ -490,9 +513,9 @@ mod tests {
         ));
         let shell = FakeShellGateway::failure("fatal: not a git repository");
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
-        let trigger = test_event!(EventType::GateResolutionCompleted, "my-project", {
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
         test_helpers::assert_tolerates_git_failure(&block, &trigger, true).await;
@@ -533,9 +556,9 @@ mod tests {
     }
 
     fn maintain_trigger() -> Event {
-        test_event!(EventType::GateResolutionCompleted, "my-project", {
+        test_event!(EventType::DependencyUpdatesClassified, "my-project", {
             "project": "my-project",
-            "workflow": "maintain",
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [{"name": "fmt", "command": "true", "required": true}],
         })
     }
@@ -583,8 +606,8 @@ mod tests {
 
     #[test]
     fn decide_maintain_skips_iterate_workflow() {
-        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
-            "workflow": "iterate",
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "proj", {
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "iterate",
             "gates": [],
         });
         assert_eq!(decide_maintain(&trigger), MaintainDecision::SkipNonMaintain);
@@ -592,8 +615,8 @@ mod tests {
 
     #[test]
     fn decide_maintain_proceeds_for_maintain_workflow() {
-        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
-            "workflow": "maintain",
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "proj", {
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "maintain",
             "gates": [],
         });
         assert_eq!(decide_maintain(&trigger), MaintainDecision::Proceed);
@@ -601,8 +624,8 @@ mod tests {
 
     #[test]
     fn decide_maintain_skips_unknown_workflow() {
-        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
-            "workflow": "unknown",
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "proj", {
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "unknown",
             "gates": [],
         });
         assert_eq!(decide_maintain(&trigger), MaintainDecision::SkipNonMaintain);
@@ -618,8 +641,8 @@ mod tests {
                 projects: vec![],
             })),
         );
-        let trigger = test_event!(EventType::GateResolutionCompleted, "proj", {
-            "workflow": "iterate",
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "proj", {
+            "phase": "before", "classification": {}, "brief": {"policy": "minor", "policy_set": false}, "workflow": "iterate",
             "gates": [],
         });
         assert!(
@@ -627,5 +650,79 @@ mod tests {
             "dry_run must skip non-maintain workflows"
         );
         assert!(!block.accepts(&trigger), "accepts() must reject non-maintain workflows");
+    }
+
+    // --- the dependency brief ---
+
+    #[test]
+    fn accepts_returns_false_for_the_after_and_review_phases() {
+        let block =
+            ExecuteMaintain::new(FakeAgentGateway::success(), test_helpers::empty_registry());
+        for phase in ["after", "review"] {
+            let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
+                "project": "my-project",
+                "phase": phase,
+                "workflow": "maintain",
+                "classification": {},
+                "brief": {"policy": "minor", "policy_set": false},
+            });
+            assert!(!block.accepts(&trigger), "{phase}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_prompt_lists_exactly_the_briefed_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "elixir-craftsperson",
+        ));
+        let block = ExecuteMaintain::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
+            "project": "my-project",
+            "phase": "before",
+            "workflow": "maintain",
+            "gates": [{"name": "test", "command": "mix test", "required": true}],
+            "classification": {},
+            "brief": {
+                "policy": "patch",
+                "policy_set": true,
+                "apply": [{
+                    "ecosystem": "hex", "manifest": "apps/bedrock", "package": "phoenix",
+                    "from": "1.8.1", "to": "1.8.3", "class": "patch", "change": "lockfile"
+                }],
+                "held_by_policy": [{
+                    "ecosystem": "hex", "manifest": "apps/bedrock", "package": "phoenix",
+                    "from": "1.8.1", "to": "1.9.0", "class": "minor",
+                    "reason": "policy is patch: this needs a constraint change"
+                }],
+                "majors": [{
+                    "ecosystem": "hex", "manifest": "apps/bedrock", "package": "req",
+                    "from": "0.7.4", "to": "0.8.0", "class": "major", "change": "manifest"
+                }]
+            },
+        });
+
+        block.execute(&trigger).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(
+            prompt.contains("Dependency update policy: patch (set for this project)."),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- [hex apps/bedrock] phoenix 1.8.1 -> 1.8.3 (patch, lockfile only)")
+        );
+        assert!(prompt.contains("and no others"));
+        assert!(prompt.contains("Held back (do not apply)"));
+        assert!(prompt.contains("req 0.7.4 -> 0.8.0"));
+        assert!(prompt.contains("Never take a major upgrade"));
+        assert!(
+            !prompt.contains("latest compatible versions"),
+            "the agent no longer decides compatibility"
+        );
+        assert!(prompt.contains("mix test"), "gates still reach the agent");
     }
 }

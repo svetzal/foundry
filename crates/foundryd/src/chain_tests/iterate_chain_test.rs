@@ -787,6 +787,11 @@ async fn iterate_with_maintain_chaining() {
     let mut engine = Engine::new();
     test_helpers::register_iterate_chain(&mut engine, shell, agent.clone(), registry.clone());
     // Also register maintain blocks so the chained ProjectMaintenanceRequested is handled
+    engine.register(Box::new(foundry_blocks::blocks::ClassifyDependencyUpdates::with_source(
+        Arc::new(foundry_blocks::dependency_updates::fakes::FakeVersionSource::with(&[])),
+        registry.clone(),
+        std::env::temp_dir().join("foundry-chain-test-no-events"),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
         agent.clone(),
         registry.clone(),

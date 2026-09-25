@@ -1,7 +1,8 @@
 //! Integration tests for the full native maintain workflow chain.
 //!
 //! Wires up the complete event chain with fake gateways and verifies:
-//! - Happy path: `ProjectMaintenanceRequested` -> `GateResolutionCompleted` -> `ExecutionCompleted`
+//! - Happy path: `ProjectMaintenanceRequested` -> `GateResolutionCompleted`
+//!   -> `DependencyUpdatesClassified` (before) -> `ExecutionCompleted`
 //!   -> `GateVerificationCompleted` -> `ProjectMaintenanceCompleted` -> `SummarizeCompleted`
 //! - Retry path: gate failure triggers `RetryRequested` -> `RetryExecution` -> loop
 
@@ -12,6 +13,7 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
 
 use super::test_helpers;
+use foundry_blocks::dependency_updates::fakes::FakeVersionSource;
 use foundry_blocks::gateway::{AgentGateway, ShellGateway};
 use foundry_blocks::shell::CommandResult;
 use foundry_engine::engine::Engine;
@@ -38,6 +40,11 @@ fn maintain_engine(
     test_helpers::register_gate_scaffold(&mut engine, shell, registry.clone());
 
     // Native maintain workflow blocks
+    engine.register(Box::new(foundry_blocks::blocks::ClassifyDependencyUpdates::with_source(
+        Arc::new(FakeVersionSource::with(&[])),
+        registry.clone(),
+        std::env::temp_dir().join("foundry-chain-test-no-events"),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
         agent.clone(),
         registry.clone(),
@@ -79,6 +86,17 @@ async fn happy_path_maintain_chain() {
     assert!(
         event_types.iter().any(|t| t == "gate_resolution_completed"),
         "should resolve gates"
+    );
+    let classified: Vec<&str> = result
+        .events
+        .iter()
+        .filter(|e| e.event_type == EventType::DependencyUpdatesClassified)
+        .filter_map(|e| e.payload["phase"].as_str())
+        .collect();
+    assert_eq!(
+        classified,
+        ["before", "after"],
+        "dependencies are classified before the agent runs and after maintenance completes"
     );
     assert!(
         event_types.iter().any(|t| t == "execution_completed"),

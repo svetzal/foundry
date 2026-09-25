@@ -462,7 +462,7 @@ fn register_blocks(
     register_core_blocks(&mut engine, registry);
     register_release_blocks(&mut engine, &agent, registry);
     register_gate_blocks(&mut engine, &shell, registry);
-    register_maintain_blocks(&mut engine, &agent, registry);
+    register_maintain_blocks(&mut engine, &agent, &shell, registry);
     register_iterate_blocks(&mut engine, &agent, registry);
     register_campaign_blocks(&mut engine, &agent, &shell, registry);
     register_pipeline_blocks(&mut engine, &agent, registry, trace_writer, paths.audits_dir);
@@ -549,12 +549,17 @@ fn register_gate_blocks(
     engine.register(Box::new(foundry_blocks::blocks::RouteValidationResult));
 }
 
-/// Native maintain workflow (Phase 2): execute, retry, summarise.
+/// Native maintain workflow (Phase 2): classify dependencies, execute, retry, summarise.
 fn register_maintain_blocks(
     engine: &mut foundry_engine::engine::Engine,
     agent: &Arc<dyn foundry_blocks::gateway::AgentGateway>,
+    shell: &Arc<dyn foundry_blocks::gateway::ShellGateway>,
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
 ) {
+    engine.register(Box::new(foundry_blocks::blocks::ClassifyDependencyUpdates::new(
+        shell.clone(),
+        registry.clone(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::ExecuteMaintain::new(
         agent.clone(),
         registry.clone(),

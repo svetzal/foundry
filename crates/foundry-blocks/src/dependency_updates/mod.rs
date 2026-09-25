@@ -585,15 +585,17 @@ impl VersionSource for RegistryVersionSource {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod fakes {
-    use super::*;
+/// In-memory release sources for tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fakes {
+    use super::{Declared, Ecosystem, Future, HashMap, Pin, VersionSource};
 
     /// Versions by package name; a missing package is a lookup failure.
-    pub(crate) struct FakeVersionSource(pub HashMap<String, Vec<String>>);
+    pub struct FakeVersionSource(pub HashMap<String, Vec<String>>);
 
     impl FakeVersionSource {
-        pub(crate) fn with(entries: &[(&str, &[&str])]) -> Self {
+        /// A source that knows these packages and versions.
+        pub fn with(entries: &[(&str, &[&str])]) -> Self {
             Self(
                 entries
                     .iter()
