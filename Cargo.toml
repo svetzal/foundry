@@ -85,6 +85,9 @@ pastey = "0.2"
 # Semver parsing
 semver = "1"
 
+# TOML parsing (Cargo.toml, pyproject.toml, uv.lock, Gradle version catalogs)
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
+
 # Testing
 tempfile = "3"
 

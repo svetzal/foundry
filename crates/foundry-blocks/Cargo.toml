@@ -18,6 +18,7 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+toml = { workspace = true }
 
 [features]
 # Exposes the blocks' test-only constructors (with_gateways, stub, …) so the

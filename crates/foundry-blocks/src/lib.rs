@@ -16,6 +16,7 @@
 pub mod agent_stream;
 pub mod blocks;
 pub mod charter;
+pub mod dependency_updates;
 pub mod gate_file;
 pub mod gate_runner;
 pub mod gateway;

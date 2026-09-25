@@ -646,6 +646,12 @@ const MIX_SEARCH_DEPTH: usize = 4;
 /// gates do; a Mix project without it (fixtures, prototypes, apps that do not
 /// ship the tool) cannot run `mix deps.audit` and is not audited. Dependency,
 /// build and hidden directories are never searched.
+/// The Mix projects in a repository, found the way the audit finds them. The
+/// dependency classifier uses this so it covers exactly what the audit covers.
+pub(crate) fn mix_projects(root: &Path) -> Vec<PathBuf> {
+    mix_audit_projects(root)
+}
+
 fn mix_audit_projects(root: &Path) -> Vec<PathBuf> {
     fn visit(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         if declares_mix_audit(&dir.join("mix.exs")) {
