@@ -7,6 +7,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.5] - 2026-09-25
+
+### Fixed
+
+- A Python audit that printed no report read as clean. On ops-01, pip-audit
+  exited 1 with no stdout after PyPI answered 503 for the project's own
+  (unpublished) package, and researcher-cli and zk-chat were reported as "no
+  vulnerabilities found". cargo audit, npm audit and pip-audit output with no
+  JSON report is now a scan failure that quotes stderr, and pip-audit runs
+  with `--skip-editable` so it no longer queries PyPI for the project itself.
+  A repeated pip-audit advisory is reported once.
+
 ## [0.38.4] - 2026-09-25
 
 ### Fixed
