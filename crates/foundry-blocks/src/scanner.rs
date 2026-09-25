@@ -11,8 +11,12 @@ use serde_json::Value;
 pub use foundry_sdk::gateway::{AuditResult, Vulnerability};
 
 /// Where a Kotlin project's `OWASP` Dependency-Check aggregate report lands,
-/// relative to the project root (the plugin's default output directory).
-const DEPENDENCY_CHECK_REPORT: &str = "build/reports/dependency-check-report.json";
+/// relative to the project root: the plugin's default output directory before
+/// Dependency-Check 13, and the `dependency-check/` subdirectory from 13 on.
+const DEPENDENCY_CHECK_REPORTS: [&str; 2] = [
+    "build/reports/dependency-check-report.json",
+    "build/reports/dependency-check/dependency-check-report.json",
+];
 
 /// Dependency-Check downloads and refreshes the NVD database before it scans,
 /// which routinely takes several minutes and far longer on a cold cache. The
@@ -20,7 +24,7 @@ const DEPENDENCY_CHECK_REPORT: &str = "build/reports/dependency-check-report.jso
 const KOTLIN_AUDIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// How a stack's audit runs and where its findings are read from.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum AuditPlan {
     /// The stack has no audit tool wired (C++).
     NotAudited,
@@ -30,13 +34,17 @@ enum AuditPlan {
     Unavailable(String),
     /// Run the tool and parse the JSON it prints on stdout.
     Stdout { command: String, args: Vec<String> },
-    /// Run the tool and parse the JSON report file it writes. The report must
-    /// be written by *this* run; a stale report from an earlier run is an error.
+    /// Run the tool and parse the JSON report file it writes, from whichever
+    /// of `reports` this run wrote most recently. A report must be written by
+    /// *this* run; a stale report from an earlier run is an error.
     ReportFile {
         command: String,
         args: Vec<String>,
-        report: PathBuf,
+        reports: Vec<PathBuf>,
         timeout: Duration,
+        /// The project's own failure threshold: findings scored below it do
+        /// not count. `None` counts every live finding.
+        min_cvss: Option<f32>,
     },
 }
 
@@ -75,8 +83,9 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
         AuditPlan::ReportFile {
             command,
             args,
-            report,
+            reports,
             timeout,
+            min_cvss,
         } => {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let started = SystemTime::now();
@@ -92,12 +101,12 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
             // The exit code alone cannot tell a finding from a broken build
             // (Gradle exits 1 for both), so a fresh report is the proof the
             // scan ran. Without one the run is a failure, whatever it exited.
-            match read_fresh_report(&report, started) {
-                Some(contents) => Ok(parse_audit_output(stack, &contents)),
+            match read_newest_fresh_report(&reports, started) {
+                Some(contents) => Ok(parse_dependency_check(&contents, min_cvss)),
                 None => Ok(exit_failure_without_report(
                     stack,
                     result.exit_code,
-                    &report,
+                    &reports,
                     &result.stderr,
                 )),
             }
@@ -145,8 +154,9 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
                 args: ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]
                     .map(str::to_string)
                     .to_vec(),
-                report: path.join(DEPENDENCY_CHECK_REPORT),
+                reports: DEPENDENCY_CHECK_REPORTS.iter().map(|r| path.join(r)).collect(),
                 timeout: KOTLIN_AUDIT_TIMEOUT,
+                min_cvss: fail_build_on_cvss(path),
             }
         }
         Stack::Rust | Stack::TypeScript | Stack::Elixir | Stack::Swift => {
@@ -211,22 +221,26 @@ fn parse_audit_output(stack: &Stack, output: &str) -> AuditResult {
         Stack::Python => parse_pip_audit(output),
         Stack::Elixir => parse_generic_audit(output),
         Stack::Swift => parse_osv_scanner(output),
-        Stack::Kotlin => parse_dependency_check(output),
+        Stack::Kotlin => unreachable!("Kotlin parses its report file in run_audit"),
         Stack::Cpp => unreachable!("C++ has no audit output to parse"),
     }
 }
 
-/// Read `report` only if it was written at or after `started`. A missing,
-/// unreadable, or older report yields `None`.
-fn read_fresh_report(report: &Path, started: SystemTime) -> Option<String> {
-    let modified = std::fs::metadata(report).and_then(|m| m.modified()).ok()?;
+/// Read the most recently written of `reports` that was written at or after
+/// `started`. Missing, unreadable, and older reports are ignored; `None` when
+/// no candidate is fresh.
+fn read_newest_fresh_report(reports: &[PathBuf], started: SystemTime) -> Option<String> {
     // Allow for filesystems that store modification times at one-second
     // resolution: a report written in the same second as the run started
     // must still count as fresh.
     let threshold = started.checked_sub(Duration::from_secs(1)).unwrap_or(started);
-    if modified < threshold {
-        return None;
-    }
+    let (_, report) = reports
+        .iter()
+        .filter_map(|r| {
+            let modified = std::fs::metadata(r).and_then(|m| m.modified()).ok()?;
+            (modified >= threshold).then_some((modified, r))
+        })
+        .max_by_key(|(modified, _)| *modified)?;
     match std::fs::read_to_string(report) {
         Ok(contents) => Some(contents),
         Err(e) => {
@@ -259,12 +273,13 @@ fn exit_failure(stack: &Stack, exit_code: i32, stderr: &str) -> AuditResult {
 fn exit_failure_without_report(
     stack: &Stack,
     exit_code: i32,
-    report: &Path,
+    reports: &[PathBuf],
     stderr: &str,
 ) -> AuditResult {
+    let locations: Vec<String> = reports.iter().map(|r| r.display().to_string()).collect();
     let msg = format!(
         "Audit tool exited {exit_code} without writing a fresh report at {}: {}",
-        report.display(),
+        locations.join(" or "),
         tail(stderr, 2000)
     );
     tracing::warn!(stack = %stack, %msg, "audit report missing or stale");
@@ -752,7 +767,13 @@ fn osv_fixed_version(vuln: &Value, package: &str) -> Option<String> {
 /// here, because the project has already made that call. Dependency-Check
 /// names no fix version, so every finding is a policy call. The same advisory
 /// on the same package is reported once.
-fn parse_dependency_check(output: &str) -> AuditResult {
+///
+/// `min_cvss` is the project's `failBuildOnCVSS`. A finding whose highest CVSS
+/// score (v2, v3 or v4, the same rule Dependency-Check applies when it fails
+/// the build) is below it does not count; the project's build treats it as
+/// triage, not a failure. A finding with no score is kept. The number of
+/// findings below the threshold is logged so the filter is never silent.
+fn parse_dependency_check(output: &str, min_cvss: Option<f32>) -> AuditResult {
     let root: Value = match serde_json::from_str(output) {
         Ok(v) => v,
         Err(e) => return tool_error(format!("Dependency-Check report JSON parse error: {e}")),
@@ -766,6 +787,7 @@ fn parse_dependency_check(output: &str) -> AuditResult {
 
     let mut seen = HashSet::new();
     let mut vulnerabilities = Vec::new();
+    let mut below_threshold = 0usize;
     for dep in dependencies {
         let Some(vulns) = dep["vulnerabilities"].as_array() else {
             continue;
@@ -774,6 +796,12 @@ fn parse_dependency_check(output: &str) -> AuditResult {
         for vuln in vulns {
             let cve = vuln["name"].as_str().map(str::to_owned);
             if !seen.insert((package.clone(), version.clone(), cve.clone())) {
+                continue;
+            }
+            if let (Some(threshold), Some(score)) = (min_cvss, highest_cvss(vuln))
+                && score < threshold
+            {
+                below_threshold += 1;
                 continue;
             }
             vulnerabilities.push(Vulnerability {
@@ -787,10 +815,68 @@ fn parse_dependency_check(output: &str) -> AuditResult {
         }
     }
 
+    if below_threshold > 0 {
+        tracing::info!(
+            below_threshold,
+            min_cvss = ?min_cvss,
+            counted = vulnerabilities.len(),
+            "Dependency-Check findings below the project's failBuildOnCVSS not counted"
+        );
+    }
+
     AuditResult {
         vulnerabilities,
         error: None,
     }
+}
+
+/// The highest CVSS score Dependency-Check recorded for a finding, across v2,
+/// v3 and v4. `None` when the finding carries no score.
+fn highest_cvss(vuln: &Value) -> Option<f32> {
+    [
+        &vuln["cvssv2"]["score"],
+        &vuln["cvssv3"]["baseScore"],
+        &vuln["cvssv4"]["baseScore"],
+    ]
+    .into_iter()
+    .filter_map(Value::as_f64)
+    .map(|score| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "CVSS scores are 0.0 to 10.0"
+        )]
+        let score = score as f32;
+        score
+    })
+    .reduce(f32::max)
+}
+
+/// Read the project's own `failBuildOnCVSS` from `build.gradle.kts` or
+/// `build.gradle`. Only a numeric literal counts (`failBuildOnCVSS = 7.0f`,
+/// `failBuildOnCVSS 7`); anything computed yields `None`, and every live
+/// finding then counts.
+fn fail_build_on_cvss(path: &Path) -> Option<f32> {
+    ["build.gradle.kts", "build.gradle"].into_iter().find_map(|file| {
+        let text = std::fs::read_to_string(path.join(file)).ok()?;
+        text.lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .find_map(|line| line.split_once("failBuildOnCVSS").map(|(_, rest)| rest))
+            .and_then(|rest| {
+                let value = rest.trim_start().trim_start_matches('=').trim_start();
+                let end =
+                    value.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(value.len());
+                let (number, tail) = value.split_at(end);
+                let tail = tail.trim_start_matches(['f', 'F']);
+                let literal_ends =
+                    tail.is_empty() || tail.starts_with(|c: char| c.is_whitespace() || c == ')');
+                if literal_ends {
+                    number.parse::<f32>().ok()
+                } else {
+                    None
+                }
+            })
+    })
 }
 
 /// Name a Dependency-Check dependency as `group:artifact` plus version, from
@@ -1381,16 +1467,25 @@ mod tests {
         let AuditPlan::ReportFile {
             command,
             args,
-            report,
+            reports,
             timeout,
+            min_cvss,
         } = plan
         else {
             panic!("Kotlin reads a report file: {plan:?}");
         };
         assert_eq!(command, dir.path().join("gradlew").to_string_lossy());
         assert_eq!(args, ["dependencyCheckAggregate", "--no-parallel", "--no-daemon"]);
-        assert_eq!(report, dir.path().join("build/reports/dependency-check-report.json"));
+        assert_eq!(
+            reports,
+            [
+                dir.path().join("build/reports/dependency-check-report.json"),
+                dir.path().join("build/reports/dependency-check/dependency-check-report.json"),
+            ],
+            "Dependency-Check 12 and 13 report locations"
+        );
         assert!(timeout > Duration::from_secs(300), "longer than the shell default");
+        assert_eq!(min_cvss, None, "no build file, so no project threshold");
     }
 
     #[tokio::test]
@@ -1514,9 +1609,189 @@ mod tests {
         assert!(result.error.as_deref().is_some_and(|e| e.contains("exit 2")));
     }
 
+    /// Write `contents` at `rel` under `dir` with the given modification time.
+    fn report_at(dir: &Path, rel: &str, contents: &str, modified: SystemTime) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    const LEGACY_REPORT: &str = "build/reports/dependency-check-report.json";
+    const DC13_REPORT: &str = "build/reports/dependency-check/dependency-check-report.json";
+
+    #[test]
+    fn fresh_report_found_in_the_dependency_check_13_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = SystemTime::now() - Duration::from_secs(60);
+        report_at(dir.path(), DC13_REPORT, "dc13", SystemTime::now());
+        let reports = [dir.path().join(LEGACY_REPORT), dir.path().join(DC13_REPORT)];
+
+        assert_eq!(read_newest_fresh_report(&reports, started).as_deref(), Some("dc13"));
+    }
+
+    #[test]
+    fn fresh_report_found_in_the_legacy_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = SystemTime::now() - Duration::from_secs(60);
+        report_at(dir.path(), LEGACY_REPORT, "legacy", SystemTime::now());
+        let reports = [dir.path().join(LEGACY_REPORT), dir.path().join(DC13_REPORT)];
+
+        assert_eq!(read_newest_fresh_report(&reports, started).as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn newest_fresh_report_wins_when_both_layouts_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let started = now - Duration::from_secs(60);
+        report_at(dir.path(), LEGACY_REPORT, "older", now - Duration::from_secs(30));
+        report_at(dir.path(), DC13_REPORT, "newer", now);
+        let reports = [dir.path().join(LEGACY_REPORT), dir.path().join(DC13_REPORT)];
+
+        assert_eq!(read_newest_fresh_report(&reports, started).as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn a_stale_report_never_beats_a_fresh_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let started = now - Duration::from_secs(60);
+        report_at(dir.path(), LEGACY_REPORT, "stale", now - Duration::from_secs(3600));
+        report_at(dir.path(), DC13_REPORT, "fresh", now);
+        let reports = [dir.path().join(LEGACY_REPORT), dir.path().join(DC13_REPORT)];
+
+        assert_eq!(read_newest_fresh_report(&reports, started).as_deref(), Some("fresh"));
+    }
+
+    #[test]
+    fn no_report_when_neither_location_is_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let started = now - Duration::from_secs(60);
+        report_at(dir.path(), LEGACY_REPORT, "stale", now - Duration::from_secs(3600));
+        report_at(dir.path(), DC13_REPORT, "stale", now - Duration::from_secs(7200));
+        let reports = [dir.path().join(LEGACY_REPORT), dir.path().join(DC13_REPORT)];
+
+        assert_eq!(read_newest_fresh_report(&reports, started), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_clean_exit_with_a_dependency_check_13_report_is_parsed() {
+        // The mojentic-kt case: Dependency-Check 13 exits 0 and writes into
+        // build/reports/dependency-check/.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.json"), DEPENDENCY_CHECK_ONE_FINDING).unwrap();
+        fake_gradlew(
+            dir.path(),
+            "mkdir -p build/reports/dependency-check\ncp report.json build/reports/dependency-check/dependency-check-report.json\nexit 0",
+        );
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.vulnerabilities.len(), 1);
+    }
+
+    // --- Kotlin: the project's failBuildOnCVSS threshold decides what counts ---
+
+    #[test]
+    fn fail_build_threshold_read_from_kotlin_dsl() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("build.gradle.kts"),
+            "dependencyCheck {\n    failBuildOnCVSS = 7.0f\n    formats = listOf(\"JSON\")\n}\n",
+        )
+        .unwrap();
+        assert_eq!(fail_build_on_cvss(dir.path()), Some(7.0));
+    }
+
+    #[test]
+    fn fail_build_threshold_read_from_groovy_dsl() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("build.gradle"),
+            "dependencyCheck {\n  failBuildOnCVSS 8\n}\n",
+        )
+        .unwrap();
+        assert_eq!(fail_build_on_cvss(dir.path()), Some(8.0));
+    }
+
+    #[test]
+    fn fail_build_threshold_absent_or_not_a_literal_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(fail_build_on_cvss(dir.path()), None, "no build file");
+        std::fs::write(dir.path().join("build.gradle.kts"), "dependencyCheck { }\n").unwrap();
+        assert_eq!(fail_build_on_cvss(dir.path()), None, "no setting");
+        std::fs::write(
+            dir.path().join("build.gradle.kts"),
+            "dependencyCheck { failBuildOnCVSS = threshold.toFloat() }\n",
+        )
+        .unwrap();
+        assert_eq!(fail_build_on_cvss(dir.path()), None, "not a literal");
+    }
+
+    const DEPENDENCY_CHECK_MIXED_SCORES: &str = r#"{"dependencies": [
+      {"fileName": "a.jar", "packages": [{"id": "pkg:maven/g/a@1"}], "vulnerabilities": [
+        {"name": "CVE-MEDIUM", "severity": "MEDIUM", "cvssv3": {"baseScore": 5.5}},
+        {"name": "CVE-AT", "severity": "HIGH", "cvssv3": {"baseScore": 7.0}},
+        {"name": "CVE-V2-HIGH", "severity": "HIGH", "cvssv2": {"score": 7.5}, "cvssv3": {"baseScore": 6.1}},
+        {"name": "CVE-UNSCORED", "severity": "MEDIUM"}
+      ]}
+    ]}"#;
+
+    #[test]
+    fn findings_below_the_project_threshold_do_not_count() {
+        let result = parse_dependency_check(DEPENDENCY_CHECK_MIXED_SCORES, Some(7.0));
+        let cves: Vec<&str> =
+            result.vulnerabilities.iter().filter_map(|v| v.cve.as_deref()).collect();
+        // Dependency-Check fails the build on the highest CVSS score it has for
+        // a finding, so the same rule decides here. Unscored findings cannot be
+        // judged and are kept.
+        assert_eq!(cves, ["CVE-AT", "CVE-V2-HIGH", "CVE-UNSCORED"]);
+    }
+
+    #[test]
+    fn without_a_threshold_every_live_finding_counts() {
+        let result = parse_dependency_check(DEPENDENCY_CHECK_MIXED_SCORES, None);
+        assert_eq!(result.vulnerabilities.len(), 4);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kotlin_scan_with_only_sub_threshold_findings_is_clean() {
+        // mojentic-kt on 2026-09-24: exit 0, 22 MEDIUM findings, failBuildOnCVSS = 7.0.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("build.gradle.kts"),
+            "dependencyCheck {\n    failBuildOnCVSS = 7.0f\n}\n",
+        )
+        .unwrap();
+        let report = r#"{"dependencies": [{"fileName": "kotlin-stdlib-2.0.21.jar",
+            "packages": [{"id": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@2.0.21"}],
+            "vulnerabilities": [{"name": "CVE-2020-29582", "severity": "MEDIUM", "cvssv3": {"baseScore": 5.3}}],
+            "suppressedVulnerabilities": [{"name": "CVE-2026-53914", "severity": "CRITICAL", "cvssv3": {"baseScore": 9.8}}]}]}"#;
+        std::fs::write(dir.path().join("report.json"), report).unwrap();
+        fake_gradlew(
+            dir.path(),
+            "mkdir -p build/reports/dependency-check\ncp report.json build/reports/dependency-check/dependency-check-report.json\nexit 0",
+        );
+
+        let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
+
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.vulnerabilities.is_empty(), "{:?}", result.vulnerabilities);
+    }
+
     #[test]
     fn parse_dependency_check_reports_live_findings_only() {
-        let result = parse_dependency_check(DEPENDENCY_CHECK_ONE_FINDING);
+        let result = parse_dependency_check(DEPENDENCY_CHECK_ONE_FINDING, None);
         assert!(result.error.is_none());
         assert_eq!(result.vulnerabilities.len(), 1, "suppressed findings are the project's call");
 
@@ -1536,7 +1811,7 @@ mod tests {
           {"fileName": "a.jar", "packages": [{"id": "pkg:maven/g/a@1"}],
            "vulnerabilities": [{"name": "CVE-1", "severity": "HIGH"}]}
         ]}"#;
-        let result = parse_dependency_check(json);
+        let result = parse_dependency_check(json, None);
         assert_eq!(result.vulnerabilities.len(), 1);
         assert_eq!(result.vulnerabilities[0].package, "g:a");
         assert_eq!(result.vulnerabilities[0].version.as_deref(), Some("1"));
@@ -1547,16 +1822,16 @@ mod tests {
         let json = r#"{"dependencies": [
           {"fileName": "vendored.jar", "vulnerabilities": [{"name": "CVE-2", "severity": "LOW"}]}
         ]}"#;
-        let result = parse_dependency_check(json);
+        let result = parse_dependency_check(json, None);
         assert_eq!(result.vulnerabilities[0].package, "vendored.jar");
         assert!(result.vulnerabilities[0].version.is_none());
     }
 
     #[test]
     fn parse_dependency_check_records_unexpected_shape_and_bad_json() {
-        assert!(parse_dependency_check(r#"{"scanInfo": {}}"#).error.is_some());
-        assert!(parse_dependency_check("").error.is_some());
-        assert!(parse_dependency_check("{nope").error.is_some());
+        assert!(parse_dependency_check(r#"{"scanInfo": {}}"#, None).error.is_some());
+        assert!(parse_dependency_check("", None).error.is_some());
+        assert!(parse_dependency_check("{nope", None).error.is_some());
     }
 
     #[test]
