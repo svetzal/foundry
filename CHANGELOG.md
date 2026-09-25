@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.4] - 2026-09-25
+
 ### Fixed
 
 - Elixir audits failed for every Elixir project. The parser expected a JSON
