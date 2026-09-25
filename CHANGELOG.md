@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-24
+
 ### Added
 
 - `swift` and `kotlin` registry stacks, so SwiftPM and Gradle projects can be
