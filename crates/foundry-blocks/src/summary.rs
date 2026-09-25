@@ -1,6 +1,11 @@
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
+use foundry_sdk::payload::{
+    Ecosystem, HeldUpdate, LapsedHold, MajorUpgrade, MajorUpgradeStatus, PlannedUpdate,
+    UnclassifiedScope, UpdateClass,
+};
+use foundry_sdk::registry::UpdatePolicy;
 
 use crate::wln;
 
@@ -72,6 +77,60 @@ pub(crate) struct WrongBranchEntry {
     pub(crate) reason: String,
 }
 
+/// A dependency move maintenance made, found by comparing the classification
+/// before the maintain agent ran with the one after maintenance completed.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AppliedUpdate {
+    pub(crate) ecosystem: Ecosystem,
+    pub(crate) manifest: String,
+    pub(crate) package: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) class: UpdateClass,
+    /// `false` when the brief did not list this move: the agent went beyond it.
+    pub(crate) in_brief: bool,
+}
+
+/// One project's dependency outcome for the night.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectDependencyReport {
+    pub(crate) name: String,
+    pub(crate) policy: UpdatePolicy,
+    pub(crate) policy_set: bool,
+    /// `None` when there was no after-maintenance classification to compare.
+    pub(crate) applied: Option<Vec<AppliedUpdate>>,
+    /// Moves the brief listed that did not happen.
+    pub(crate) not_applied: Vec<PlannedUpdate>,
+    pub(crate) held_by_policy: Vec<HeldUpdate>,
+    pub(crate) held_by_hold: Vec<HeldUpdate>,
+    pub(crate) lapsed_holds: Vec<LapsedHold>,
+    pub(crate) unclassified: Vec<UnclassifiedScope>,
+    pub(crate) holds_warning: Option<String>,
+}
+
+impl ProjectDependencyReport {
+    fn applied_count(&self, class: UpdateClass) -> usize {
+        self.applied.iter().flatten().filter(|a| a.class == class).count()
+    }
+
+    fn beyond_brief(&self) -> impl Iterator<Item = &AppliedUpdate> {
+        self.applied
+            .iter()
+            .flatten()
+            .filter(|a| !a.in_brief || a.class == UpdateClass::Major)
+    }
+}
+
+/// What the majors lane decided for the night.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct MajorsSummary {
+    pub(crate) upgrades: Vec<MajorUpgrade>,
+    pub(crate) dispatch_enabled: bool,
+    pub(crate) per_project_cap: u32,
+    pub(crate) per_night_cap: u32,
+    pub(crate) history_warning: Option<String>,
+}
+
 /// Aggregate results for a full maintenance run.
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceRunSummary {
@@ -87,6 +146,9 @@ pub(crate) struct MaintenanceRunSummary {
     pub(crate) scanner_failures: Vec<ScannerFailureEntry>,
     /// Projects skipped because the checkout was on the wrong branch.
     pub(crate) wrong_branch: Vec<WrongBranchEntry>,
+    /// Per-project dependency outcomes, for projects that ran maintenance.
+    pub(crate) dependencies: Vec<ProjectDependencyReport>,
+    pub(crate) majors: MajorsSummary,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -229,6 +291,278 @@ fn render_wrong_branch(summary: &MaintenanceRunSummary, out: &mut String) {
     wln!(out);
 }
 
+fn policy_label(policy: UpdatePolicy, set: bool) -> String {
+    if set {
+        policy.to_string()
+    } else {
+        format!("{policy} (not set)")
+    }
+}
+
+fn major_status_label(status: MajorUpgradeStatus, dispatch_enabled: bool) -> &'static str {
+    match (status, dispatch_enabled) {
+        (MajorUpgradeStatus::Dispatch, true) => "dispatched",
+        (MajorUpgradeStatus::Dispatch, false) => "would dispatch (dry run)",
+        (MajorUpgradeStatus::Deduped, _) => "deduped",
+        (MajorUpgradeStatus::Overflow, _) => "overflow",
+        (MajorUpgradeStatus::Deferred, _) => "deferred",
+        (MajorUpgradeStatus::Proposed, _) => "proposed",
+    }
+}
+
+fn majors_cell(summary: &MaintenanceRunSummary, project: &str) -> String {
+    let mut counts: Vec<(&'static str, usize)> = Vec::new();
+    for m in summary.majors.upgrades.iter().filter(|m| m.project == project) {
+        let label = major_status_label(m.status, summary.majors.dispatch_enabled);
+        match counts.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((label, 1)),
+        }
+    }
+    if counts.is_empty() {
+        "\u{2014}".to_string()
+    } else {
+        counts.iter().map(|(l, n)| format!("{n} {l}")).collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// The cross-project dependency picture, near the top with the other
+/// warnings: one row per project, then the things that need a person.
+fn render_dependency_drift(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.dependencies.is_empty() {
+        return;
+    }
+    wln!(out, "## Dependency drift");
+    wln!(out);
+    wln!(
+        out,
+        "| Project | Policy | Applied (patch/minor/major) | Held by policy | Held by holds | Majors | Not classified |"
+    );
+    wln!(
+        out,
+        "|---------|--------|-----------------------------|----------------|---------------|--------|----------------|"
+    );
+    for d in &summary.dependencies {
+        let applied = if d.applied.is_some() {
+            format!(
+                "{}/{}/{}",
+                d.applied_count(UpdateClass::Patch),
+                d.applied_count(UpdateClass::Minor),
+                d.applied_count(UpdateClass::Major)
+            )
+        } else {
+            "unknown".to_string()
+        };
+        wln!(
+            out,
+            "| {} | {} | {applied} | {} | {} | {} | {} |",
+            d.name,
+            policy_label(d.policy, d.policy_set),
+            d.held_by_policy.len(),
+            d.held_by_hold.len(),
+            majors_cell(summary, &d.name),
+            d.unclassified.len()
+        );
+    }
+    wln!(out);
+
+    let beyond: Vec<String> = summary
+        .dependencies
+        .iter()
+        .flat_map(|d| {
+            d.beyond_brief().map(move |a| {
+                format!("{}: {} {} -> {} ({})", d.name, a.package, a.from, a.to, a.class)
+            })
+        })
+        .collect();
+    if !beyond.is_empty() {
+        wln!(
+            out,
+            "**\u{26a0}\u{fe0f} Applied beyond the brief:** {}",
+            cell(&beyond.join("; "))
+        );
+        wln!(out);
+    }
+    let unset: Vec<&str> = summary
+        .dependencies
+        .iter()
+        .filter(|d| !d.policy_set)
+        .map(|d| d.name.as_str())
+        .collect();
+    if !unset.is_empty() {
+        wln!(
+            out,
+            "**No update policy set** (behaving as {}): {}",
+            UpdatePolicy::DEFAULT,
+            unset.join(", ")
+        );
+        wln!(out);
+    }
+    let lapsed: Vec<String> = summary
+        .dependencies
+        .iter()
+        .flat_map(|d| {
+            d.lapsed_holds.iter().map(move |l| {
+                format!(
+                    "{}: {} (max {}, expired {}; {})",
+                    d.name, l.package, l.max, l.expired_on, l.reason
+                )
+            })
+        })
+        .collect();
+    if !lapsed.is_empty() {
+        wln!(out, "**Lapsed holds \u{2014} re-decide:** {}", cell(&lapsed.join("; ")));
+        wln!(out);
+    }
+    if let Some(w) = &summary.majors.history_warning {
+        wln!(out, "**Majors lane:** {}", cell(w));
+        wln!(out);
+    }
+}
+
+fn render_update_list(out: &mut String, title: &str, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    wln!(out, "{title} ({}):", lines.len());
+    for line in lines {
+        wln!(out, "- {line}");
+    }
+    wln!(out);
+}
+
+/// One major upgrade's line in a project's detail.
+fn major_line(m: &MajorUpgrade, dispatch_enabled: bool) -> String {
+    let mut line = format!(
+        "{}: {} {} -> {}",
+        major_status_label(m.status, dispatch_enabled),
+        m.package,
+        m.from,
+        m.to
+    );
+    if let Some(id) = &m.security {
+        let _ = write!(line, " (security {id})");
+    }
+    if let Some(reason) = &m.reason {
+        let _ = write!(line, " \u{2014} {reason}");
+    }
+    if m.status != MajorUpgradeStatus::Dispatch || !dispatch_enabled {
+        let _ = write!(line, "; run: `{}`", m.command);
+    }
+    line
+}
+
+fn applied_line(a: &AppliedUpdate) -> String {
+    let note = if a.in_brief && a.class != UpdateClass::Major {
+        ""
+    } else {
+        " \u{2014} **beyond the brief**"
+    };
+    format!(
+        "[{} {}] {} {} -> {} ({}){note}",
+        a.ecosystem, a.manifest, a.package, a.from, a.to, a.class
+    )
+}
+
+fn planned_line(u: &PlannedUpdate) -> String {
+    format!(
+        "[{} {}] {} {} -> {} ({})",
+        u.ecosystem, u.manifest, u.package, u.from, u.to, u.class
+    )
+}
+
+fn held_line(h: &HeldUpdate) -> String {
+    format!(
+        "[{} {}] {} {} -> {} ({}): {}",
+        h.ecosystem, h.manifest, h.package, h.from, h.to, h.class, h.reason
+    )
+}
+
+/// One project's dependency detail.
+fn render_project_dependencies(
+    summary: &MaintenanceRunSummary,
+    d: &ProjectDependencyReport,
+    out: &mut String,
+) {
+    wln!(out);
+    wln!(out, "### {} \u{2014} policy {}", d.name, policy_label(d.policy, d.policy_set));
+    wln!(out);
+    match &d.applied {
+        None => {
+            wln!(out, "Applied: unknown (no after-maintenance classification).");
+            wln!(out);
+        }
+        Some(applied) if applied.is_empty() => {
+            wln!(out, "Applied: none.");
+            wln!(out);
+        }
+        Some(applied) => {
+            render_update_list(
+                out,
+                "Applied",
+                &applied.iter().map(applied_line).collect::<Vec<_>>(),
+            );
+        }
+    }
+    render_update_list(
+        out,
+        "In the brief but not applied",
+        &d.not_applied.iter().map(planned_line).collect::<Vec<_>>(),
+    );
+    render_update_list(
+        out,
+        "Held back by policy",
+        &d.held_by_policy.iter().map(held_line).collect::<Vec<_>>(),
+    );
+    render_update_list(
+        out,
+        "Held by holds",
+        &d.held_by_hold.iter().map(held_line).collect::<Vec<_>>(),
+    );
+    let majors: Vec<String> = summary
+        .majors
+        .upgrades
+        .iter()
+        .filter(|m| m.project == d.name)
+        .map(|m| major_line(m, summary.majors.dispatch_enabled))
+        .collect();
+    render_update_list(out, "Major upgrades", &majors);
+    render_update_list(
+        out,
+        "Lapsed holds \u{2014} re-decide",
+        &d.lapsed_holds
+            .iter()
+            .map(|l| {
+                format!("{} (max {}, expired {}): {}", l.package, l.max, l.expired_on, l.reason)
+            })
+            .collect::<Vec<_>>(),
+    );
+    render_update_list(
+        out,
+        "Not classified",
+        &d.unclassified
+            .iter()
+            .map(|u| format!("{}: {}", u.scope, u.reason))
+            .collect::<Vec<_>>(),
+    );
+    if let Some(w) = &d.holds_warning {
+        wln!(out, "Warning: {w}");
+        wln!(out);
+    }
+}
+
+/// Per-project dependency detail, after the status table.
+fn render_dependency_details(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.dependencies.is_empty() {
+        return;
+    }
+    wln!(out);
+    wln!(out, "## Dependencies");
+    for d in &summary.dependencies {
+        render_project_dependencies(summary, d, out);
+    }
+}
+
 /// Render a maintenance run summary as markdown.
 pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     let mut out = String::new();
@@ -241,6 +575,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     render_unpushed(summary, &mut out);
     render_scanner_failures(summary, &mut out);
     render_wrong_branch(summary, &mut out);
+    render_dependency_drift(summary, &mut out);
 
     // Project status table
     wln!(out, "## Project Status");
@@ -277,6 +612,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
         }
     }
 
+    render_dependency_details(summary, &mut out);
     render_release_audits(summary, &mut out);
     render_auto_releases(summary, &mut out);
     render_local_installs(summary, &mut out);
@@ -342,6 +678,8 @@ mod tests {
             unpushed,
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         }
     }
 
@@ -439,6 +777,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -478,6 +818,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -517,6 +859,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -543,6 +887,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -570,6 +916,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -588,6 +936,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -611,6 +961,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -634,6 +986,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -664,6 +1018,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
 
         let md = render(&summary);
@@ -697,6 +1053,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -729,6 +1087,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -759,6 +1119,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
@@ -778,6 +1140,8 @@ mod tests {
             unpushed: vec![],
             scanner_failures: vec![],
             wrong_branch: vec![],
+            dependencies: vec![],
+            majors: MajorsSummary::default(),
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));

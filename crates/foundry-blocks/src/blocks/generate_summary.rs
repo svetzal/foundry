@@ -15,10 +15,14 @@ use foundry_sdk::trace::ProcessResult;
 
 use crate::gateway::ShellGateway;
 use crate::summary::{
-    AutoReleaseEntry, LocalInstallEntry, MaintenanceRunSummary, ProjectResult, ProjectStatus,
-    ReleaseAuditEntry, ScannerFailureEntry, UnpushedEntry, UnpushedStatus, WrongBranchEntry,
+    AppliedUpdate, AutoReleaseEntry, LocalInstallEntry, MaintenanceRunSummary, MajorsSummary,
+    ProjectDependencyReport, ProjectResult, ProjectStatus, ReleaseAuditEntry, ScannerFailureEntry,
+    UnpushedEntry, UnpushedStatus, WrongBranchEntry,
 };
 use crate::trace_writer::TraceWriter;
+use foundry_sdk::payload::{
+    ClassificationPhase, DependencyUpdatesClassifiedPayload, OutdatedDependency,
+};
 
 /// Generates a markdown summary report after a full maintenance run completes.
 ///
@@ -250,6 +254,120 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .collect()
 }
 
+/// The key a dependency is compared by across the before and after phases.
+fn dependency_key(d: &OutdatedDependency) -> (foundry_sdk::payload::Ecosystem, &str, &str) {
+    (d.ecosystem, d.manifest.as_str(), d.package.as_str())
+}
+
+/// What maintenance did to a project's dependencies, from the classification
+/// before the agent ran and the one after maintenance completed.
+///
+/// A dependency counts as moved when its locked version changed, or when it is
+/// no longer outdated (it reached the newest release). A scope the after
+/// classification could not read is not counted either way.
+pub(crate) fn dependency_report(
+    project: &str,
+    before: &DependencyUpdatesClassifiedPayload,
+    after: Option<&DependencyUpdatesClassifiedPayload>,
+) -> ProjectDependencyReport {
+    let brief = &before.brief;
+    let applied = after.map(|after| {
+        let unreadable = |d: &OutdatedDependency| {
+            let label = format!("{} ({})", d.ecosystem, d.manifest);
+            after
+                .classification
+                .unclassified
+                .iter()
+                .any(|u| u.scope == label || u.scope == format!("{label} {}", d.package))
+        };
+        before
+            .classification
+            .outdated
+            .iter()
+            .filter(|d| !unreadable(d))
+            .filter_map(|d| {
+                let to = match after
+                    .classification
+                    .outdated
+                    .iter()
+                    .find(|a| dependency_key(a) == dependency_key(d))
+                {
+                    Some(a) if a.current != d.current => a.current.clone(),
+                    Some(_) => return None,
+                    None => d
+                        .major
+                        .clone()
+                        .or_else(|| d.non_major.clone())
+                        .or_else(|| d.in_range.clone())?,
+                };
+                let class =
+                    crate::dependency_updates::version::Version::parse(d.ecosystem, &d.current)
+                        .zip(crate::dependency_updates::version::Version::parse(d.ecosystem, &to))
+                        .and_then(|(f, t)| f.class_to(&t))
+                        .unwrap_or(foundry_sdk::payload::UpdateClass::Patch);
+                let in_brief = brief.apply.iter().any(|u| {
+                    u.ecosystem == d.ecosystem && u.manifest == d.manifest && u.package == d.package
+                });
+                Some(AppliedUpdate {
+                    ecosystem: d.ecosystem,
+                    manifest: d.manifest.clone(),
+                    package: d.package.clone(),
+                    from: d.current.clone(),
+                    to,
+                    class,
+                    in_brief,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let not_applied = match &applied {
+        Some(applied) => brief
+            .apply
+            .iter()
+            .filter(|u| {
+                // Transitive security moves are not in the outdated list; only
+                // direct dependencies can be checked.
+                before
+                    .classification
+                    .outdated
+                    .iter()
+                    .any(|d| d.package == u.package && d.manifest == u.manifest)
+                    && !applied.iter().any(|a| a.package == u.package && a.manifest == u.manifest)
+            })
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
+    let source = after.unwrap_or(before);
+    ProjectDependencyReport {
+        name: project.to_string(),
+        policy: brief.policy,
+        policy_set: brief.policy_set,
+        applied,
+        not_applied,
+        held_by_policy: brief.held_by_policy.clone(),
+        held_by_hold: brief.held_by_hold.clone(),
+        lapsed_holds: source.classification.lapsed_holds.clone(),
+        unclassified: source.classification.unclassified.clone(),
+        holds_warning: source.classification.holds_warning.clone(),
+    }
+}
+
+/// A project's dependency report from its trace, when maintenance classified it.
+fn extract_dependency_report(
+    project: &str,
+    result: &ProcessResult,
+) -> Option<ProjectDependencyReport> {
+    let all: Vec<DependencyUpdatesClassifiedPayload> = result
+        .parsed_events_of::<DependencyUpdatesClassifiedPayload>(
+            EventType::DependencyUpdatesClassified,
+        )
+        .collect();
+    let before = all.iter().find(|p| p.phase == ClassificationPhase::Before)?;
+    let after = all.iter().find(|p| p.phase == ClassificationPhase::After);
+    Some(dependency_report(project, before, after))
+}
+
 /// Everything the summary reads out of the per-project traces.
 #[derive(Default)]
 struct LoadedResults {
@@ -259,6 +377,7 @@ struct LoadedResults {
     local_installs: Vec<LocalInstallEntry>,
     scanner_failures: Vec<ScannerFailureEntry>,
     wrong_branch: Vec<WrongBranchEntry>,
+    dependencies: Vec<ProjectDependencyReport>,
 }
 
 fn load_project_results(
@@ -275,6 +394,7 @@ fn load_project_results(
             loaded.local_installs.extend(extract_local_installs(project_name, &result));
             loaded.scanner_failures.extend(extract_scanner_failures(project_name, &result));
             loaded.wrong_branch.extend(extract_wrong_branch(project_name, &result));
+            loaded.dependencies.extend(extract_dependency_report(project_name, &result));
         } else {
             tracing::warn!(
                 project = %project_name,
@@ -291,6 +411,7 @@ fn load_project_results(
 
     loaded.scanner_failures.sort_by(|a, b| a.name.cmp(&b.name));
     loaded.wrong_branch.sort_by(|a, b| a.name.cmp(&b.name));
+    loaded.dependencies.sort_by(|a, b| a.name.cmp(&b.name));
     loaded
 }
 
@@ -307,6 +428,23 @@ fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     }
     if !summary.wrong_branch.is_empty() {
         warnings.push(format!("{} project(s) skipped: wrong branch", summary.wrong_branch.len()));
+    }
+    let beyond = summary
+        .dependencies
+        .iter()
+        .filter(|d| {
+            d.applied
+                .iter()
+                .flatten()
+                .any(|a| !a.in_brief || a.class == foundry_sdk::payload::UpdateClass::Major)
+        })
+        .count();
+    if beyond > 0 {
+        warnings.push(format!("{beyond} project(s) applied dependency updates beyond the brief"));
+    }
+    let lapsed: usize = summary.dependencies.iter().map(|d| d.lapsed_holds.len()).sum();
+    if lapsed > 0 {
+        warnings.push(format!("{lapsed} lapsed dependency hold(s) to re-decide"));
     }
     warnings
 }
@@ -368,7 +506,15 @@ impl TaskBlock for GenerateSummary {
                 local_installs,
                 scanner_failures,
                 wrong_branch,
+                dependencies,
             } = load_project_results(&trace_writer, &project_trace_ids);
+            let majors = MajorsSummary {
+                upgrades: p.upgrades,
+                dispatch_enabled: p.dispatch_enabled,
+                per_project_cap: p.per_project_cap,
+                per_night_cap: p.per_night_cap,
+                history_warning: p.history_warning,
+            };
 
             for name in &skipped_projects {
                 projects.push(ProjectResult {
@@ -393,6 +539,8 @@ impl TaskBlock for GenerateSummary {
                 unpushed,
                 scanner_failures,
                 wrong_branch,
+                dependencies,
+                majors,
             };
             let warnings = summary_warnings(&summary);
 
@@ -1095,5 +1243,269 @@ mod tests {
         assert_eq!(installs.len(), 1);
         assert_eq!(installs[0].method, "brew");
         assert!(installs[0].success);
+    }
+
+    // -- dependency reporting --
+
+    mod dependencies {
+        use foundry_sdk::event::{Event, EventType};
+        use foundry_sdk::payload::{
+            ChainContext, ChangeKind, ClassificationPhase, DependencyBrief,
+            DependencyClassification, DependencyUpdatesClassifiedPayload, Ecosystem, LapsedHold,
+            OutdatedDependency, PlannedUpdate, UnclassifiedScope, UpdateClass,
+        };
+        use foundry_sdk::registry::UpdatePolicy;
+        use foundry_sdk::task_block::TaskBlock;
+        use foundry_sdk::throttle::Throttle;
+        use foundry_sdk::trace::ProcessResult;
+
+        use super::super::dependency_report;
+        use super::{make_trace_writer, summary_block};
+
+        fn outdated(
+            package: &str,
+            current: &str,
+            non_major: Option<&str>,
+            major: Option<&str>,
+        ) -> OutdatedDependency {
+            OutdatedDependency {
+                ecosystem: Ecosystem::Hex,
+                manifest: ".".to_string(),
+                package: package.to_string(),
+                current: current.to_string(),
+                requirement: None,
+                in_range: non_major.map(str::to_string),
+                non_major: non_major.map(str::to_string),
+                major: major.map(str::to_string),
+                constraint_admits_major: false,
+                hold: None,
+                advisories: vec![],
+            }
+        }
+
+        fn planned(package: &str, from: &str, to: &str) -> PlannedUpdate {
+            PlannedUpdate {
+                ecosystem: Ecosystem::Hex,
+                manifest: ".".to_string(),
+                package: package.to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+                class: UpdateClass::Patch,
+                change: ChangeKind::Lockfile,
+                security: None,
+                beyond_policy: false,
+                beyond_hold: false,
+            }
+        }
+
+        fn classified(
+            phase: ClassificationPhase,
+            outdated: Vec<OutdatedDependency>,
+            apply: Vec<PlannedUpdate>,
+            policy_set: bool,
+        ) -> DependencyUpdatesClassifiedPayload {
+            DependencyUpdatesClassifiedPayload {
+                project: "bedrock".to_string(),
+                phase,
+                workflow: Some("maintain".to_string()),
+                success: None,
+                classification: DependencyClassification {
+                    outdated,
+                    ..DependencyClassification::default()
+                },
+                brief: DependencyBrief {
+                    policy: UpdatePolicy::Minor,
+                    policy_set,
+                    apply,
+                    held_by_policy: vec![],
+                    held_by_hold: vec![],
+                    majors: vec![],
+                },
+                chain: ChainContext::default(),
+            }
+        }
+
+        #[test]
+        fn applied_moves_come_from_comparing_before_and_after() {
+            let before = classified(
+                ClassificationPhase::Before,
+                vec![
+                    outdated("jason", "1.4.4", Some("1.4.5"), None),
+                    outdated("phoenix", "1.8.1", Some("1.8.3"), Some("2.0.0")),
+                    outdated("plug", "1.15.0", Some("1.16.0"), None),
+                    outdated("req", "0.7.4", None, Some("0.8.0")),
+                ],
+                vec![
+                    planned("jason", "1.4.4", "1.4.5"),
+                    planned("plug", "1.15.0", "1.16.0"),
+                ],
+                true,
+            );
+            let after = classified(
+                ClassificationPhase::After,
+                vec![
+                    // phoenix moved within its line; req jumped a major (not briefed).
+                    outdated("phoenix", "1.8.3", None, Some("2.0.0")),
+                    outdated("plug", "1.15.0", Some("1.16.0"), None),
+                ],
+                vec![],
+                true,
+            );
+
+            let r = dependency_report("bedrock", &before, Some(&after));
+
+            let applied: Vec<(&str, &str, &str, UpdateClass, bool)> = r
+                .applied
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|a| (a.package.as_str(), a.from.as_str(), a.to.as_str(), a.class, a.in_brief))
+                .collect();
+            assert_eq!(
+                applied,
+                [
+                    ("jason", "1.4.4", "1.4.5", UpdateClass::Patch, true),
+                    ("phoenix", "1.8.1", "1.8.3", UpdateClass::Patch, false),
+                    ("req", "0.7.4", "0.8.0", UpdateClass::Major, false),
+                ]
+            );
+            assert_eq!(r.not_applied.len(), 1);
+            assert_eq!(r.not_applied[0].package, "plug");
+        }
+
+        #[test]
+        fn without_an_after_classification_applied_is_unknown() {
+            let before = classified(
+                ClassificationPhase::Before,
+                vec![outdated("jason", "1.4.4", Some("1.4.5"), None)],
+                vec![],
+                false,
+            );
+            let r = dependency_report("bedrock", &before, None);
+            assert_eq!(r.applied, None);
+            assert!(!r.policy_set);
+        }
+
+        #[test]
+        fn a_scope_the_after_run_could_not_read_is_not_counted() {
+            let before = classified(
+                ClassificationPhase::Before,
+                vec![outdated("jason", "1.4.4", Some("1.4.5"), None)],
+                vec![],
+                true,
+            );
+            let mut after = classified(ClassificationPhase::After, vec![], vec![], true);
+            after.classification.unclassified = vec![UnclassifiedScope {
+                scope: "hex (.)".to_string(),
+                reason: "mix.lock not found".to_string(),
+            }];
+            let r = dependency_report("bedrock", &before, Some(&after));
+            assert_eq!(r.applied, Some(vec![]));
+            assert_eq!(r.unclassified.len(), 1);
+        }
+
+        fn event(p: &DependencyUpdatesClassifiedPayload) -> Event {
+            Event::new(
+                EventType::DependencyUpdatesClassified,
+                "bedrock".to_string(),
+                Throttle::Full,
+                serde_json::to_value(p).unwrap(),
+            )
+        }
+
+        #[tokio::test]
+        async fn the_summary_reports_drift_up_top_and_details_per_project() {
+            let traces_dir = tempfile::tempdir().unwrap();
+            let audits_dir = tempfile::tempdir().unwrap();
+            let tw = make_trace_writer(traces_dir.path());
+            let before = classified(
+                ClassificationPhase::Before,
+                vec![
+                    outdated("jason", "1.4.4", Some("1.4.5"), None),
+                    outdated("req", "0.7.4", None, Some("0.8.0")),
+                ],
+                vec![planned("jason", "1.4.4", "1.4.5")],
+                false,
+            );
+            let mut after = classified(
+                ClassificationPhase::After,
+                vec![outdated("req", "0.7.4", None, Some("0.8.0"))],
+                vec![],
+                false,
+            );
+            after.classification.lapsed_holds = vec![LapsedHold {
+                package: "phoenix_live_view".to_string(),
+                max: "1.1".to_string(),
+                reason: "vendored Roost".to_string(),
+                expired_on: "2026-09-01".to_string(),
+            }];
+            let trace = ProcessResult {
+                events: vec![event(&before), event(&after)],
+                block_executions: vec![],
+                total_duration_ms: 1000,
+            };
+            tw.write("evt_bedrock", &trace).unwrap();
+            let block = summary_block(tw, audits_dir.path());
+            let trigger = Event::new(
+                EventType::MajorUpgradesPlanned,
+                "system".to_string(),
+                Throttle::Full,
+                serde_json::json!({
+                    "project_trace_ids": {"bedrock": "evt_bedrock"},
+                    "skipped_projects": [],
+                    "total_duration_ms": 1000,
+                    "per_project_cap": 2, "per_night_cap": 6, "dispatch_enabled": true,
+                    "upgrades": [{
+                        "project": "bedrock", "ecosystem": "hex", "manifest": ".", "package": "req",
+                        "from": "0.7.4", "to": "0.8.0",
+                        "objective": "Upgrade req from 0.7.4 to 0.8.0 in bedrock: adapt call sites, keep all gates green.",
+                        "command": "foundry task bedrock 'Upgrade req ...'",
+                        "status": "proposed", "reason": "policy is minor; majors are proposed, not dispatched"
+                    }],
+                }),
+            );
+
+            let result = block.execute(&trigger).await.unwrap();
+            let md = result.raw_output.clone().unwrap();
+
+            let drift = md.find("## Dependency drift").expect("drift section");
+            let status = md.find("## Project Status").unwrap();
+            assert!(drift < status, "drift sits near the top");
+            assert!(
+                md.contains("| bedrock | minor (not set) | 1/0/0 | 0 | 0 | 1 proposed | 0 |"),
+                "{md}"
+            );
+            assert!(md.contains("**No update policy set** (behaving as minor): bedrock"));
+            assert!(md.contains("**Lapsed holds \u{2014} re-decide:** bedrock: phoenix_live_view"));
+            assert!(md.contains("### bedrock \u{2014} policy minor (not set)"));
+            assert!(md.contains("- [hex .] jason 1.4.4 -> 1.4.5 (patch)"));
+            assert!(md.contains("proposed: req 0.7.4 -> 0.8.0"));
+            assert!(md.contains("run: `foundry task bedrock 'Upgrade req ...'`"));
+            assert!(
+                result.summary.contains("1 lapsed dependency hold(s) to re-decide"),
+                "{}",
+                result.summary
+            );
+        }
+
+        #[test]
+        fn a_review_plan_is_not_a_summary_trigger() {
+            let dir = tempfile::tempdir().unwrap();
+            let block = summary_block(make_trace_writer(dir.path()), dir.path());
+            let review = Event::new(
+                EventType::MajorUpgradesPlanned,
+                "p".to_string(),
+                Throttle::Full,
+                serde_json::json!({"review": true}),
+            );
+            assert!(!block.accepts(&review));
+            let nightly = Event::new(
+                EventType::MajorUpgradesPlanned,
+                "system".to_string(),
+                Throttle::Full,
+                serde_json::json!({}),
+            );
+            assert!(block.accepts(&nightly));
+        }
     }
 }
