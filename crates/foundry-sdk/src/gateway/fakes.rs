@@ -29,6 +29,8 @@ pub struct ShellInvocation {
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: String,
+    /// Environment-variable overrides passed with the call (empty when `None`).
+    pub env: Vec<(String, String)>,
 }
 
 /// Behaviour specification for a single `FakeShellGateway` response.
@@ -111,13 +113,14 @@ impl ShellGateway for FakeShellGateway {
         working_dir: &'a Path,
         command: &'a str,
         args: &'a [&'a str],
-        _env: Option<&'a [(String, String)]>,
+        env: Option<&'a [(String, String)]>,
         _timeout: Option<Duration>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
         let inv = ShellInvocation {
             command: command.to_string(),
             args: args.iter().map(ToString::to_string).collect(),
             working_dir: working_dir.display().to_string(),
+            env: env.map(<[_]>::to_vec).unwrap_or_default(),
         };
         self.invocations.lock().unwrap().push(inv);
         let result = self.next_result();

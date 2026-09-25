@@ -8,6 +8,11 @@ use crate::gateway::ShellGateway;
 /// Maximum number of output lines to keep per gate.
 const MAX_OUTPUT_LINES: usize = 200;
 
+/// Environment override applied to every gate command (and its `fix_command`).
+/// A gate run builds once and exits, so Cargo's incremental cache is only disk
+/// cost. Scoped to gates: agents that edit and rebuild keep incremental builds.
+const DISABLE_CARGO_INCREMENTAL: (&str, &str) = ("CARGO_INCREMENTAL", "0");
+
 /// Run all gates sequentially and return an aggregated result.
 ///
 /// Self-healing: when a gate fails and declares a `fix_command`, the runner runs
@@ -90,7 +95,9 @@ async fn run_command(
     timeout: Option<std::time::Duration>,
     shell: &dyn ShellGateway,
 ) -> (bool, String, i32) {
-    match shell.run(working_dir, "sh", &["-c", command], None, timeout).await {
+    let (key, value) = DISABLE_CARGO_INCREMENTAL;
+    let env = [(key.to_string(), value.to_string())];
+    match shell.run(working_dir, "sh", &["-c", command], Some(&env), timeout).await {
         Ok(r) => {
             let combined = format!("{}\n{}", r.stdout, r.stderr);
             (r.success, tail_lines(&combined, MAX_OUTPUT_LINES), r.exit_code)
@@ -375,5 +382,39 @@ mod tests {
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].command, "sh");
         assert_eq!(invocations[0].args, vec!["-c", "cargo fmt --check"]);
+    }
+
+    #[tokio::test]
+    async fn gate_and_fix_commands_run_without_incremental_builds() {
+        let shell = FakeShellGateway::sequence(vec![
+            CommandResult {
+                stdout: String::new(),
+                stderr: "files need formatting".to_string(),
+                exit_code: 1,
+                success: false,
+            },
+            CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let gates = vec![gate_with_fix(
+            "format",
+            "cargo fmt --check",
+            "cargo fmt",
+            true,
+        )];
+        let dir = std::env::temp_dir();
+
+        run_gates(&gates, &dir, shell.as_ref()).await.unwrap();
+
+        let invocations = shell.invocations();
+        assert_eq!(invocations.len(), 3, "gate, fix, and re-check must all run");
+        let expected = vec![("CARGO_INCREMENTAL".to_string(), "0".to_string())];
+        for inv in &invocations {
+            assert_eq!(inv.env, expected, "{:?} must run with CARGO_INCREMENTAL=0", inv.args);
+        }
     }
 }

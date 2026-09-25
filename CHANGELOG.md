@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Gate commands and their `fix_command` now run with `CARGO_INCREMENTAL=0`.
+  A gate run builds once and exits, so Cargo's incremental cache was only disk
+  cost: on one Mac, `target/debug/incremental` held about half of 176 GiB of
+  Rust build output. Agents that edit and rebuild during `foundry iterate`
+  still get incremental builds.
+
 ## [0.38.5] - 2026-09-25
 
 ### Fixed
