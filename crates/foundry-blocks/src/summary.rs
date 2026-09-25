@@ -151,6 +151,8 @@ pub(crate) struct MaintenanceRunSummary {
     /// Per-project dependency outcomes, for projects that ran maintenance.
     pub(crate) dependencies: Vec<ProjectDependencyReport>,
     pub(crate) majors: MajorsSummary,
+    /// Filesystems the run writes to that are low on space, described.
+    pub(crate) low_disk: Vec<String>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -326,6 +328,26 @@ fn majors_cell(summary: &MaintenanceRunSummary, project: &str) -> String {
     } else {
         counts.iter().map(|(l, n)| format!("{n} {l}")).collect::<Vec<_>>().join(", ")
     }
+}
+
+/// Filesystems low on space: the next run's tasks and builds will fail on
+/// them, so this sits with the other warnings at the top.
+fn render_low_disk(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.low_disk.is_empty() {
+        return;
+    }
+    wln!(out, "## \u{26a0}\u{fe0f} Low disk");
+    wln!(out);
+    wln!(
+        out,
+        "Tasks and maintenance refuse to start below the limit (\
+         `FOUNDRY_MIN_FREE_DISK_GB`, `FOUNDRY_MIN_FREE_DISK_PERCENT`)."
+    );
+    wln!(out);
+    for entry in &summary.low_disk {
+        wln!(out, "- {}", cell(entry));
+    }
+    wln!(out);
 }
 
 /// The cross-project dependency picture, near the top with the other
@@ -608,6 +630,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     render_unpushed(summary, &mut out);
     render_scanner_failures(summary, &mut out);
     render_wrong_branch(summary, &mut out);
+    render_low_disk(summary, &mut out);
     render_dependency_drift(summary, &mut out);
 
     // Project status table
@@ -713,6 +736,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         }
     }
 
@@ -812,6 +836,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -853,6 +878,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -894,6 +920,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -922,6 +949,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -951,6 +979,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -971,6 +1000,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -996,6 +1026,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -1021,6 +1052,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -1053,6 +1085,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
 
         let md = render(&summary);
@@ -1088,6 +1121,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -1122,6 +1156,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -1154,6 +1189,7 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
@@ -1175,10 +1211,22 @@ mod tests {
             wrong_branch: vec![],
             dependencies: vec![],
             majors: MajorsSummary::default(),
+            low_disk: vec![],
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));
         assert!(!md.contains("## Auto-Releases"));
         assert!(!md.contains("## Local Installs"));
+    }
+
+    #[test]
+    fn render_puts_low_disk_up_top() {
+        let mut summary = summary_with_unpushed(vec![]);
+        summary.low_disk =
+            vec!["4.0 GB free (2%) on the filesystem holding /home/svetzal/.foundry".to_string()];
+        let md = render(&summary);
+        let low = md.find("Low disk").expect("low disk section");
+        assert!(low < md.find("## Project Status").unwrap());
+        assert!(md.contains("- 4.0 GB free (2%) on the filesystem holding /home/svetzal/.foundry"));
     }
 }

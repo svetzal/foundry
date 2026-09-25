@@ -377,6 +377,28 @@ launchctl unload ~/Library/LaunchAgents/com.mojility.foundryd.plist
 launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 ```
 
+#### On the Linux ops host (`mojility-ops-01.local`)
+
+Build the Linux release on the host itself, from the tag, and install the
+binaries it produced:
+
+```bash
+cd ~/Work/Projects/Mojility/foundry && git pull --ff-only
+scripts/build-linux-release.sh v0.X.Y   # gates, release build, tarball; prints the SHA-256
+foundry status                          # must say "No active workflows"; never restart during the 02:00 nightly
+tar -C /tmp/f -xzf ~/.cache/foundry-release/foundry-0.X.Y-linux-x64.tar.gz
+sudo install -m 0755 /tmp/f/foundry /tmp/f/foundryd /usr/local/bin/
+systemctl --user restart foundryd
+which foundry && foundry --version && foundry status && foundry sentinel list
+```
+
+The script builds in a detached worktree with one target directory
+(`~/.cache/foundry-release/target`) and deletes both when it exits, pass or
+fail; only the tarball stays. Do not build releases anywhere else on the host:
+release build output is tens of gigabytes, and leftover target directories
+filled the root filesystem on 2026-09-25. Log the install in
+`Automation/infrastructure/servers/mojility-ops-01.md` in the Operations repo.
+
 Steps 5–6 are required — without them the daemon keeps serving the old binary even after the GitHub release publishes, so the fix doesn't take effect. The reload must come *after* `install.sh`, so the live process inherits the stable signature rather than the one it launched with. See `launchd/README.md` for the canonical load/unload commands.
 
 The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
@@ -469,6 +491,8 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |
 | `FOUNDRY_TRIAGE_DIR` | `~/.foundry/triage` | Post-maintenance triage digest output directory |
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Nightly supply-chain advisory digest output directory |
+| `FOUNDRY_MIN_FREE_DISK_GB` | `15` | A filesystem is low when its free space is under this many GB **and** under `FOUNDRY_MIN_FREE_DISK_PERCENT`. Tasks and maintenance refuse to start on a low filesystem ("insufficient disk"); the summary and the ops digest report it. `0` turns the check off. |
+| `FOUNDRY_MIN_FREE_DISK_PERCENT` | `10` | The percentage half of the low-disk test above. |
 | `FOUNDRY_MAJOR_TASKS_PER_PROJECT` | `2` | Most major-upgrade tasks the nightly majors lane dispatches for one project. Overflow is reported in the summary with its `foundry task` command. |
 | `FOUNDRY_MAJOR_TASKS_PER_NIGHT` | `6` | Most major-upgrade tasks the nightly majors lane dispatches across every project. |
 | `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | *(unset → off)* | Truthy (`1`/`true`/`yes`/`on`) enables the supply-chain auto-fix engine (verified, commit-only Rust in-range bumps). Off by default — the formation only classifies until this is set. |

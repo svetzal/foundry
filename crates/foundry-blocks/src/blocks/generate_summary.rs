@@ -113,6 +113,28 @@ async fn find_unpushed(
     unpushed
 }
 
+/// Filesystems the run writes to (`~/.foundry` and each project's checkout)
+/// that are under the free-space limits.
+fn find_low_disk(names: &[String], registry: &Arc<RwLock<Registry>>) -> Vec<String> {
+    let mut paths = vec![foundry_sdk::paths::foundry_home()];
+    match super::read_registry(registry) {
+        Ok(guard) => paths.extend(
+            names
+                .iter()
+                .filter_map(|n| guard.find_project(n))
+                .map(|e| PathBuf::from(&e.path)),
+        ),
+        Err(e) => {
+            // Best-effort: ~/.foundry is still checked; project paths need the registry.
+            tracing::warn!(error = %e, "registry unreadable; low-disk check covers ~/.foundry only");
+        }
+    }
+    foundry_sdk::disk::low_filesystems(&paths, foundry_sdk::disk::DiskThreshold::from_env())
+        .iter()
+        .map(foundry_sdk::disk::DiskSpace::describe)
+        .collect()
+}
+
 /// Terminal event types whose `success` payload field determines overall outcome.
 ///
 /// Must stay in sync with `foundry_sdk::trace::TERMINAL_EVENT_TYPES`.
@@ -444,6 +466,9 @@ fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     if beyond > 0 {
         warnings.push(format!("{beyond} project(s) applied dependency updates beyond the brief"));
     }
+    if !summary.low_disk.is_empty() {
+        warnings.push(format!("{} filesystem(s) low on disk", summary.low_disk.len()));
+    }
     let stale: usize = summary.dependencies.iter().map(|d| d.stale_holds.len()).sum();
     if stale > 0 {
         warnings.push(format!("{stale} stale dependency hold(s) to re-decide"));
@@ -534,6 +559,7 @@ impl TaskBlock for GenerateSummary {
 
             let names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
             let unpushed = find_unpushed(&names, &registry, &*shell).await;
+            let low_disk = find_low_disk(&names, &registry);
 
             let summary = MaintenanceRunSummary {
                 run_at: Utc::now(),
@@ -547,6 +573,7 @@ impl TaskBlock for GenerateSummary {
                 wrong_branch,
                 dependencies,
                 majors,
+                low_disk,
             };
             let warnings = summary_warnings(&summary);
 

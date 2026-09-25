@@ -13,7 +13,7 @@ pub const DEFAULT_DAEMON_LISTEN_ADDR: &str = "127.0.0.1:50051";
 pub const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:50051";
 
 /// Returns the Foundry home directory (`~/.foundry` by default).
-fn foundry_home() -> PathBuf {
+pub fn foundry_home() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|e| {
         // Best-effort: HOME is expected to be set in every real environment; falling
         // back to "." keeps foundry_home() infallible, but the resulting path would be

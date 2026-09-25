@@ -3,6 +3,7 @@
 pub mod agent_config;
 pub mod campaign;
 pub mod dependency_holds;
+pub mod disk;
 pub mod error;
 pub mod event;
 pub mod gates;

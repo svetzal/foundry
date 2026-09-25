@@ -68,6 +68,36 @@ pub(crate) async fn prepare_task_workspace(
     workspace_id: &str,
     base_ref: Option<&str>,
 ) -> Result<TaskWorkspace> {
+    let (path, _) = task_workspace_paths(&entry.name, workspace_id);
+    ensure_disk_room(entry, &path, foundry_sdk::disk::DiskThreshold::from_env())?;
+    prepare_task_workspace_unchecked(shell, entry, workspace_id, base_ref).await
+}
+
+/// Refuse to create a worktree on a filesystem that is low on space: a task
+/// that runs out part-way leaves a half-written worktree and fails at
+/// finalize ("Out of diskspace").
+fn ensure_disk_room(
+    entry: &ProjectEntry,
+    worktree: &Path,
+    threshold: foundry_sdk::disk::DiskThreshold,
+) -> Result<()> {
+    foundry_sdk::disk::ensure_room(
+        &[
+            PathBuf::from(&entry.path),
+            worktree.to_path_buf(),
+            foundry_sdk::paths::foundry_home(),
+        ],
+        threshold,
+    )
+    .map_err(|reason| anyhow::anyhow!(reason))
+}
+
+async fn prepare_task_workspace_unchecked(
+    shell: &dyn ShellGateway,
+    entry: &ProjectEntry,
+    workspace_id: &str,
+    base_ref: Option<&str>,
+) -> Result<TaskWorkspace> {
     let repo = Path::new(&entry.path);
     let (path, branch) = task_workspace_paths(&entry.name, workspace_id);
 
@@ -480,5 +510,25 @@ mod tests {
         git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
         git(&checkout, &["branch", "-D", &next.branch]);
         let _ = std::fs::remove_dir(next.path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_low_disk_refuses_the_worktree_before_anything_is_written() {
+        use foundry_sdk::disk::DiskThreshold;
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::blocks::test_helpers::project_entry("p", dir.path().to_str().unwrap());
+        let worktree = dir.path().join("worktrees/p/abc");
+        let off = DiskThreshold {
+            min_free_bytes: 0,
+            min_free_percent: 0,
+        };
+        assert!(super::ensure_disk_room(&entry, &worktree, off).is_ok());
+        let impossible = DiskThreshold {
+            min_free_bytes: u64::MAX,
+            min_free_percent: 101,
+        };
+        let err = super::ensure_disk_room(&entry, &worktree, impossible).unwrap_err();
+        assert!(err.to_string().starts_with("insufficient disk: "), "{err}");
+        assert!(!worktree.exists());
     }
 }

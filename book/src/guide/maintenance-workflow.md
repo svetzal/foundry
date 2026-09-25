@@ -133,6 +133,19 @@ empty.
 The one-shot `foundry task` / campaign path is unaffected — it already builds
 its isolated worktree from the fetched remote tip.
 
+### Refusing to Start on a Full Disk
+
+`Validate Project` checks free space on the filesystems holding the project
+and `~/.foundry` before anything else runs, and a task checks the same (plus
+its worktree location) before it creates a worktree. A filesystem is low when
+its free space is under `FOUNDRY_MIN_FREE_DISK_GB` (default 15) **and** under
+`FOUNDRY_MIN_FREE_DISK_PERCENT` (default 10). A low filesystem fails the run at
+once with "insufficient disk: 4.0 GB free (2%) on the filesystem holding …",
+instead of leaving a half-written worktree or a build that dies part-way. The
+maintenance summary lists low filesystems in a **Low disk** section at the
+top, and the ops digest treats low disk as a P0 anomaly (`host_disk_low`).
+Set either limit to `0` to turn the check off.
+
 ### Routing Logic
 
 `Route Project Workflow` reads the `actions` flags forwarded in the

@@ -33,6 +33,9 @@ const FIRST_RUN_LOOKBACK_HOURS: i64 = 24;
 pub struct ObserveEvents {
     intake_dir: PathBuf,
     watermark_path: PathBuf,
+    /// Filesystems whose free space is checked; a low one is an anomaly.
+    disk_paths: Vec<PathBuf>,
+    disk: foundry_sdk::disk::DiskThreshold,
 }
 
 impl ObserveEvents {
@@ -40,8 +43,48 @@ impl ObserveEvents {
         Self {
             intake_dir: intake_dir.into(),
             watermark_path: watermark_path.into(),
+            disk_paths: vec![foundry_sdk::paths::foundry_home()],
+            disk: foundry_sdk::disk::DiskThreshold::from_env(),
         }
     }
+
+    /// Check these filesystems against this threshold instead.
+    #[must_use]
+    pub fn with_disk(
+        mut self,
+        paths: Vec<PathBuf>,
+        threshold: foundry_sdk::disk::DiskThreshold,
+    ) -> Self {
+        self.disk_paths = paths;
+        self.disk = threshold;
+        self
+    }
+}
+
+/// A synthetic ops event for filesystems low on space, so the digest runs and
+/// says so even when no MBOS event mentions it.
+fn low_disk_event(
+    paths: &[PathBuf],
+    threshold: foundry_sdk::disk::DiskThreshold,
+) -> Option<OpsEventDigest> {
+    let low = foundry_sdk::disk::low_filesystems(paths, threshold);
+    if low.is_empty() {
+        return None;
+    }
+    let now = chrono::Utc::now();
+    let places: Vec<String> = low.iter().map(foundry_sdk::disk::DiskSpace::describe).collect();
+    Some(OpsEventDigest {
+        id: format!("host-disk-low-{}", now.format("%Y%m%dT%H")),
+        event_type: "host_disk_low".to_string(),
+        occurred_at: now.to_rfc3339(),
+        domain: "infrastructure".to_string(),
+        urgency: Some("P0".to_string()),
+        summary: Some(format!(
+            "Low disk: {}. Foundry tasks and maintenance refuse to start until space is freed.",
+            places.join("; ")
+        )),
+        client: None,
+    })
 }
 
 impl TaskBlock for ObserveEvents {
@@ -57,6 +100,8 @@ impl TaskBlock for ObserveEvents {
         } = TriggerContext::from_trigger(trigger);
         let intake_dir = self.intake_dir.clone();
         let watermark_path = self.watermark_path.clone();
+        let disk_paths = self.disk_paths.clone();
+        let disk = self.disk;
         // Propagate: a malformed OpsDigestStarted payload must fail loudly
         // rather than silently proceeding as if `forced_event` were unset —
         // that would re-evaluate the pressure gate as unforced and could
@@ -72,7 +117,8 @@ impl TaskBlock for ObserveEvents {
                     )));
                 }
             };
-            observe(&project, throttle, &intake_dir, &watermark_path, forced_event)
+            let disk_event = low_disk_event(&disk_paths, disk);
+            observe(&project, throttle, &intake_dir, &watermark_path, forced_event, disk_event)
         })
     }
 }
@@ -83,12 +129,15 @@ fn observe(
     intake_dir: &Path,
     watermark_path: &Path,
     forced_event: Option<OpsEventDigest>,
+    disk_event: Option<OpsEventDigest>,
 ) -> anyhow::Result<TaskBlockResult> {
     let cutoff = read_cutoff(watermark_path);
     let events = read_events_since(intake_dir, cutoff);
 
-    let new_event_count = events.len() as u64 + u64::from(forced_event.is_some());
-    let anomaly_present = forced_event.is_some() || events.iter().any(is_anomaly);
+    let new_event_count =
+        events.len() as u64 + u64::from(forced_event.is_some()) + u64::from(disk_event.is_some());
+    let anomaly_present =
+        forced_event.is_some() || disk_event.is_some() || events.iter().any(is_anomaly);
 
     if !should_proceed(new_event_count, anomaly_present) {
         tracing::info!(
@@ -132,9 +181,8 @@ fn observe(
             }
         })
         .collect();
-    if let Some(event) = forced_event {
-        digests.push(event);
-    }
+    digests.extend(forced_event);
+    digests.extend(disk_event);
 
     tracing::info!(
         new_event_count,
@@ -636,6 +684,41 @@ mod tests {
         assert_eq!(payload.new_event_count, 25);
         assert!(!payload.anomaly_present);
         assert_eq!(payload.events.len(), 25);
+    }
+
+    #[test]
+    fn a_low_disk_forces_the_digest_with_a_p0_anomaly() {
+        let intake = TempDir::new().unwrap();
+        let wm_dir = TempDir::new().unwrap();
+        let wm_path = wm_dir.path().join("ops-digest.watermark");
+        std::fs::write(&wm_path, "2026-05-01T00:00:00Z").unwrap();
+        let impossible = foundry_sdk::disk::DiskThreshold {
+            min_free_bytes: u64::MAX,
+            min_free_percent: 101,
+        };
+        let block = ObserveEvents::new(intake.path(), &wm_path)
+            .with_disk(vec![wm_dir.path().to_path_buf()], impossible);
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(block.execute(&trigger()))
+            .unwrap();
+
+        let payload: OpsObservedPayload = result.events[0].parse_payload().unwrap();
+        assert!(payload.proceed && payload.anomaly_present);
+        let disk = payload.events.iter().find(|e| e.event_type == "host_disk_low").unwrap();
+        assert_eq!(disk.urgency.as_deref(), Some("P0"));
+        assert!(disk.summary.as_deref().unwrap().starts_with("Low disk: "));
+    }
+
+    #[test]
+    fn enough_disk_adds_no_event() {
+        let off = foundry_sdk::disk::DiskThreshold {
+            min_free_bytes: 0,
+            min_free_percent: 0,
+        };
+        let dir = TempDir::new().unwrap();
+        assert!(super::low_disk_event(&[dir.path().to_path_buf()], off).is_none());
     }
 
     #[test]

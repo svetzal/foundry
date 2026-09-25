@@ -89,6 +89,16 @@ async fn check_git_branch(
     Ok(BranchCheckOutcome::Ok)
 }
 
+/// Why a run must not start here, when the filesystem holding the project or
+/// `~/.foundry` is low on space.
+fn insufficient_disk(path: &Path, threshold: foundry_sdk::disk::DiskThreshold) -> Option<String> {
+    foundry_sdk::disk::ensure_room(
+        &[path.to_path_buf(), foundry_sdk::paths::foundry_home()],
+        threshold,
+    )
+    .err()
+}
+
 fn error_result(
     project: &str,
     throttle: foundry_sdk::throttle::Throttle,
@@ -170,6 +180,15 @@ impl TaskBlock for ValidateProject {
             if !path.exists() {
                 tracing::warn!(%project, path = %path.display(), "project directory not found");
                 return Ok(error_result(&project, throttle, "directory not found"));
+            }
+
+            // 1b. Refuse to start work on a full disk: it fails late and
+            // leaves half-written state behind.
+            if let Some(reason) =
+                insufficient_disk(path, foundry_sdk::disk::DiskThreshold::from_env())
+            {
+                tracing::warn!(%project, %reason, "refusing to start: insufficient disk");
+                return Ok(error_result(&project, throttle, &reason));
             }
 
             // 2. Check git branch (recovers from detached HEAD).
@@ -828,5 +847,22 @@ mod tests {
             .output()
             .expect("git log");
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "two");
+    }
+
+    #[test]
+    fn a_low_disk_refuses_the_run_with_a_clear_reason() {
+        use foundry_sdk::disk::DiskThreshold;
+        let dir = tempfile::tempdir().unwrap();
+        let off = DiskThreshold {
+            min_free_bytes: 0,
+            min_free_percent: 0,
+        };
+        assert_eq!(super::insufficient_disk(dir.path(), off), None);
+        let impossible = DiskThreshold {
+            min_free_bytes: u64::MAX,
+            min_free_percent: 101,
+        };
+        let reason = super::insufficient_disk(dir.path(), impossible).unwrap();
+        assert!(reason.starts_with("insufficient disk: "), "{reason}");
     }
 }
