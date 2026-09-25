@@ -168,8 +168,46 @@ pub fn discover(root: &Path, stack: &Stack) -> Vec<Scope> {
     scopes
 }
 
+/// The locked version of every direct dependency, keyed
+/// `"<ecosystem> <manifest> <package>"`.
+///
+/// Used to check what a blanket lockfile refresh actually moved.
+pub fn locked_direct_versions(
+    root: &Path,
+    stack: &Stack,
+) -> std::collections::BTreeMap<String, (Ecosystem, String)> {
+    discover(root, stack)
+        .into_iter()
+        .flat_map(|scope| {
+            let ecosystem = scope.ecosystem;
+            let manifest = scope.manifest;
+            scope.deps.into_iter().filter_map(move |d| {
+                let current = d.current?;
+                Some((format!("{ecosystem} {manifest} {}", d.package), (ecosystem, current)))
+            })
+        })
+        .collect()
+}
+
+/// The direct dependencies that moved by a major between two
+/// [`locked_direct_versions`] snapshots, as `"<key> <from> -> <to>"`.
+pub fn major_moves(
+    before: &std::collections::BTreeMap<String, (Ecosystem, String)>,
+    after: &std::collections::BTreeMap<String, (Ecosystem, String)>,
+) -> Vec<String> {
+    after
+        .iter()
+        .filter_map(|(key, (ecosystem, to))| {
+            let (_, from) = before.get(key)?;
+            let class =
+                Version::parse(*ecosystem, from)?.class_to(&Version::parse(*ecosystem, to)?)?;
+            (class == UpdateClass::Major).then(|| format!("{key} {from} -> {to}"))
+        })
+        .collect()
+}
+
 /// The stack's own ecosystem, used for advisories on transitive packages.
-fn stack_ecosystem(stack: &Stack) -> Option<Ecosystem> {
+pub fn stack_ecosystem(stack: &Stack) -> Option<Ecosystem> {
     match stack {
         Stack::Rust => Some(Ecosystem::Cargo),
         Stack::Elixir => Some(Ecosystem::Hex),
@@ -922,6 +960,18 @@ mod tests {
         assert_eq!(c.lapsed_holds[0].expired_on, "2026-09-01");
         let rand = c.outdated.iter().find(|d| d.package == "rand").unwrap();
         assert!(rand.hold.is_none());
+    }
+
+    #[test]
+    fn major_moves_compare_locked_snapshots() {
+        let repo = cargo_repo();
+        let before = locked_direct_versions(repo.path(), &Stack::Rust);
+        assert_eq!(before["cargo . rand"], (Ecosystem::Cargo, "0.8.5".to_string()));
+        let mut after = before.clone();
+        after.insert("cargo . rand".to_string(), (Ecosystem::Cargo, "0.9.2".to_string()));
+        after.insert("cargo . serde".to_string(), (Ecosystem::Cargo, "1.0.228".to_string()));
+        assert_eq!(major_moves(&before, &after), ["cargo . rand 0.8.5 -> 0.9.2"]);
+        assert!(major_moves(&before, &before).is_empty());
     }
 
     #[tokio::test]

@@ -198,6 +198,8 @@ fn render_remediation(out: &mut String, outcomes: &[RemediationOutcome]) {
         .iter()
         .filter(|o| matches!(o.status.as_str(), "apply_failed" | "no_fixer" | "skipped"))
         .collect();
+    let task_lane: Vec<&RemediationOutcome> =
+        outcomes.iter().filter(|o| o.status == "task_lane").collect();
 
     wln!(out, "## Remediation\n");
 
@@ -226,6 +228,21 @@ fn render_remediation(out: &mut String, outcomes: &[RemediationOutcome]) {
                 cve = o.cve,
                 package = o.package,
                 detail = o.detail.as_deref().unwrap_or("reverted"),
+            );
+        }
+        out.push('\n');
+    }
+
+    if !task_lane.is_empty() {
+        wln!(out, "**Major upgrades (run each as its own task):**\n");
+        for o in &task_lane {
+            wln!(
+                out,
+                "- **{project}** · `{cve}` — `{package}`: {detail}",
+                project = o.project,
+                cve = o.cve,
+                package = o.package,
+                detail = o.detail.as_deref().unwrap_or("major upgrade"),
             );
         }
         out.push('\n');
@@ -397,6 +414,25 @@ mod tests {
         let doc = render_document("2026-06-15", &p);
 
         assert!(doc.contains("direct-parent@3.2.1"));
+    }
+
+    #[test]
+    fn render_remediation_lists_task_lane_majors_with_their_command() {
+        let mut p = payload(vec![project_with_findings("alpha", vec![finding("CVE-1")])]);
+        p.outcomes = vec![RemediationOutcome {
+            project: "alpha".to_string(),
+            cve: "CVE-1".to_string(),
+            package: "jose".to_string(),
+            fix_version: Some("2.0.1".to_string()),
+            status: "task_lane".to_string(),
+            detail: Some("1.0.0 -> 2.0.1 is a major upgrade; majors go to the task lane: foundry task alpha 'Upgrade jose ...'".to_string()),
+        }];
+
+        let doc = render_document("2026-09-25", &p);
+
+        assert!(doc.contains("**Major upgrades (run each as its own task):**"), "{doc}");
+        assert!(doc.contains("foundry task alpha 'Upgrade jose ...'"));
+        assert!(!doc.contains("**Not auto-fixed"), "a task-lane major is not an apply failure");
     }
 
     #[test]

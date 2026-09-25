@@ -290,11 +290,16 @@ async fn remediate_project(
         return;
     }
 
+    let holds = foundry_sdk::dependency_holds::read_holds(&path).unwrap_or_else(|e| {
+        tracing::warn!(project = %proj.project, error = %e, "dependency holds unreadable; no holds applied");
+        foundry_sdk::dependency_holds::DependencyHolds::default()
+    });
     let rail = Rail {
         shell,
         path: &path,
         stack: &stack,
         gates: &gates,
+        holds: &holds,
     };
 
     // Policy: the full compatible update is tried first; only what it leaves
@@ -316,8 +321,71 @@ async fn remediate_project(
     };
 
     for f in fallback {
-        outcomes.push(apply_targeted_pin(&rail, proj, f, &fallback_reason).await);
+        let outcome = match major_fix(&stack, &proj.project, f) {
+            Some(task) => outcome(proj, f, "task_lane", Some(&task)),
+            None => apply_targeted_pin(&rail, proj, f, &fallback_reason).await,
+        };
+        outcomes.push(outcome);
     }
+}
+
+/// When a finding's fix is a major upgrade of the vulnerable package, the
+/// task-lane note for it: majors never happen inside an automated fix, only
+/// as their own `foundry task`, whatever the project's policy.
+///
+/// `None` when the move is a patch or minor (applied, even past the policy
+/// ceiling), when the versions are unknown, or when the fix moves a parent
+/// package (`fix_package`) whose installed version the scan does not give.
+fn major_fix(stack: &Stack, project: &str, f: &SupplyChainFinding) -> Option<String> {
+    use crate::dependency_updates::{majors, stack_ecosystem, version::Version};
+    use foundry_sdk::payload::{ChangeKind, PlannedUpdate, UpdateClass};
+
+    if f.fix_package.as_deref().is_some_and(|p| p != f.package) {
+        return None;
+    }
+    let ecosystem = stack_ecosystem(stack)?;
+    let from = f.version.as_deref()?;
+    let to = f.fix_version.as_deref()?;
+    let class = Version::parse(ecosystem, from)?.class_to(&Version::parse(ecosystem, to)?)?;
+    if class != UpdateClass::Major {
+        return None;
+    }
+    let update = PlannedUpdate {
+        ecosystem,
+        manifest: ".".to_string(),
+        package: f.package.clone(),
+        from: from.to_string(),
+        to: to.to_string(),
+        class,
+        change: ChangeKind::Manifest,
+        security: Some(f.cve.clone()),
+        beyond_policy: false,
+        beyond_hold: false,
+    };
+    let objective = majors::objective(project, &update);
+    Some(format!(
+        "{from} -> {to} is a major upgrade; majors go to the task lane: {}",
+        majors::command(project, &objective)
+    ))
+}
+
+/// A note when applying `f` overrides an active hold: its earliest fix is
+/// above the hold's `max`, so no fixed release exists inside the hold.
+fn hold_override_note(rail: &Rail<'_>, f: &SupplyChainFinding) -> Option<String> {
+    use crate::dependency_updates::{stack_ecosystem, version::Version};
+    use foundry_sdk::dependency_holds::HoldDecision;
+
+    let ecosystem = stack_ecosystem(rail.stack)?;
+    let target = f.fix_package.as_deref().unwrap_or(&f.package);
+    let HoldDecision::Active { max, reason, .. } =
+        rail.holds.decide(ecosystem.as_str(), target, chrono::Utc::now().date_naive())
+    else {
+        return None;
+    };
+    let fix = Version::parse(ecosystem, f.fix_version.as_deref()?)?;
+    (fix.within_prefix(&max) == Some(false)).then(|| {
+        format!("overrides the hold at {max} ({reason}): no fixed release exists inside it")
+    })
 }
 
 /// The per-project context every fix attempt verifies and rolls back against.
@@ -326,6 +394,7 @@ struct Rail<'a> {
     path: &'a Path,
     stack: &'a Stack,
     gates: &'a [foundry_sdk::gates::GateDefinition],
+    holds: &'a foundry_sdk::dependency_holds::DependencyHolds,
 }
 
 /// Result of the project-level full compatible update.
@@ -352,6 +421,7 @@ async fn attempt_full_update<'a>(
     scanner: &dyn ScannerGateway,
     fixable: &[&'a SupplyChainFinding],
 ) -> FullUpdateAttempt<'a> {
+    let locked_before = crate::dependency_updates::locked_direct_versions(rail.path, rail.stack);
     let applied =
         match supply_chain_fixers::apply_full_update(rail.shell, rail.path, rail.stack).await {
             Ok(applied) => applied,
@@ -367,6 +437,18 @@ async fn attempt_full_update<'a>(
         git_restore_files(rail.shell, rail.path, &applied.files).await;
         FullUpdateAttempt::Reverted { reason }
     };
+
+    // A lockfile refresh inside an open constraint (`>=` in Python, `*` in
+    // npm) can take a major. Majors only ever run as their own task.
+    let locked_after = crate::dependency_updates::locked_direct_versions(rail.path, rail.stack);
+    let majors = crate::dependency_updates::major_moves(&locked_before, &locked_after);
+    if !majors.is_empty() {
+        return reverted(format!(
+            "full update would take a major upgrade ({}); majors go to the task lane",
+            majors.join(", ")
+        ))
+        .await;
+    }
 
     let (cleared, unresolved) =
         match crate::scanner::audit_outcome(scanner.run_audit(rail.path, rail.stack).await) {
@@ -454,12 +536,14 @@ async fn apply_targeted_pin(
             );
             match git_commit_files(rail.shell, rail.path, &applied.files, &msg).await {
                 Ok(true) => {
+                    let hold =
+                        hold_override_note(rail, f).map(|n| format!("; {n}")).unwrap_or_default();
                     return outcome(
                         proj,
                         f,
                         "applied",
                         Some(&format!(
-                            "{label}: {}; verified by gates and committed",
+                            "{label}: {}; verified by gates and committed{hold}",
                             applied.detail
                         )),
                     );
@@ -620,7 +704,9 @@ mod tests {
             cve: cve.to_string(),
             package: "vulnerable-crate".to_string(),
             severity: Some("high".to_string()),
-            version: Some("0.1.0".to_string()),
+            // The fixes these tests use (1.2.3, 1.6.1, 1.19.2) are all minor or
+            // patch moves from here; a major fix goes to the task lane instead.
+            version: Some("1.0.0".to_string()),
             fix_version: fix.map(str::to_string),
             fix_package: None,
         }
@@ -1052,7 +1138,7 @@ mod tests {
     async fn full_update_commits_what_it_cleared_and_pins_the_rest() {
         let dir = project_dir_with_gate();
         let cleared = finding("CVE-1", Some("1.2.3"));
-        let mut stubborn = finding("CVE-2", Some("4.5.6"));
+        let mut stubborn = finding("CVE-2", Some("1.4.6"));
         stubborn.package = "stubborn-crate".to_string();
         let shell = ScriptedGateShell::new(&[true]);
         let block = RemediateSupplyChain::with_scanner(
@@ -1077,7 +1163,7 @@ mod tests {
             vec![
                 "chore: update dependency lockfile to latest compatible versions (fixes CVE-1)"
                     .to_string(),
-                "chore(deps): bump stubborn-crate to 4.5.6 for CVE-2 (supply-chain auto-fix)"
+                "chore(deps): bump stubborn-crate to 1.4.6 for CVE-2 (supply-chain auto-fix)"
                     .to_string(),
             ]
         );
@@ -1376,7 +1462,7 @@ mod tests {
         let p = scanned(vec![project(
             "alpha",
             "rust",
-            vec![finding("CVE-1", Some("9.9.9"))],
+            vec![finding("CVE-1", Some("1.9.9"))],
         )]);
 
         let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
@@ -1565,5 +1651,145 @@ mod tests {
                 }
             );
         }
+    }
+
+    // --- the update-policy rule: majors go to the task lane ----------------
+
+    #[tokio::test]
+    async fn a_major_fix_goes_to_the_task_lane_and_is_not_pinned() {
+        let dir = project_dir_with_gate();
+        let shell = ScriptedGateShell::new(&[true]);
+        let major = finding("CVE-9", Some("2.0.1"));
+        let block = RemediateSupplyChain::with_scanner(
+            shell.clone(),
+            still_vulnerable(&[&major]),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project("alpha", "rust", vec![major.clone()])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "task_lane");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.contains("1.0.0 -> 2.0.1 is a major upgrade"), "{detail}");
+        assert!(
+            detail.contains(
+                "foundry task alpha 'Upgrade vulnerable-crate from 1.0.0 to 2.0.1 in alpha:"
+            ),
+            "{detail}"
+        );
+        assert!(!shell.calls().iter().any(|c| c.contains("--precise")), "no pin for a major");
+    }
+
+    #[test]
+    fn a_parent_package_fix_is_not_classified_as_a_major() {
+        let mut f = finding("CVE-1", Some("5.0.0"));
+        f.fix_package = Some("parent".to_string());
+        assert_eq!(major_fix(&Stack::Rust, "alpha", &f), None);
+        let minor = finding("CVE-2", Some("1.9.0"));
+        assert_eq!(major_fix(&Stack::Rust, "alpha", &minor), None);
+    }
+
+    /// A shell whose `cargo update` rewrites `Cargo.lock` to `lock`, as a real
+    /// refresh would, and that otherwise behaves like `ScriptedGateShell`.
+    struct RewritingShell {
+        inner: Arc<ScriptedGateShell>,
+        lock: String,
+    }
+
+    impl ShellGateway for RewritingShell {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<std::time::Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            if command == "cargo" && args == ["update"] {
+                std::fs::write(working_dir.join("Cargo.lock"), &self.lock).unwrap();
+            }
+            self.inner.run(working_dir, command, args, env, timeout)
+        }
+    }
+
+    fn lock_with(rand: &str) -> String {
+        format!(
+            "version=4\n[[package]]\nname='rand'\nversion='{rand}'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn a_full_update_that_takes_a_major_is_reverted() {
+        let dir = project_dir_with_gate();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname='app'\n[dependencies]\nrand='>=0.8'\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("Cargo.lock"), lock_with("0.8.5")).unwrap();
+        let inner = ScriptedGateShell::new(&[true]);
+        let shell = Arc::new(RewritingShell {
+            inner: Arc::clone(&inner),
+            lock: lock_with("0.9.2"),
+        });
+        let block = RemediateSupplyChain::with_scanner(
+            shell,
+            FakeScannerGateway::clean(),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project(
+            "alpha",
+            "rust",
+            vec![finding("CVE-1", Some("1.2.3"))],
+        )]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("full update would take a major upgrade (cargo . rand 0.8.5 -> 0.9.2)"),
+            "{detail}"
+        );
+        let calls = inner.calls();
+        assert!(calls.contains(&"git checkout -- Cargo.lock".to_string()), "{calls:?}");
+        assert!(
+            !commit_messages(&calls)
+                .iter()
+                .any(|m| m.starts_with("chore: update dependency lockfile")),
+            "the major-taking refresh is never committed"
+        );
+    }
+
+    #[tokio::test]
+    async fn applying_a_fix_past_a_hold_says_it_overrides_the_hold() {
+        let dir = project_dir_with_gate();
+        std::fs::write(
+            dir.path().join(".dependency-holds.json"),
+            r#"{"version":1,"holds":[{"package":"vulnerable-crate","max":"1.1","reason":"pinned by vendor"}]}"#,
+        )
+        .unwrap();
+        let shell = ScriptedGateShell::new(&[true]);
+        let f = finding("CVE-1", Some("1.2.3"));
+        let block = RemediateSupplyChain::with_scanner(
+            shell,
+            still_vulnerable(&[&f]),
+            registry_with(vec![rust_entry("alpha", dir.path().to_str().unwrap())]),
+            true,
+        );
+        let p = scanned(vec![project("alpha", "rust", vec![f.clone()])]);
+
+        let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
+
+        let out = remediated(&result);
+        assert_eq!(out.outcomes[0].status, "applied");
+        let detail = out.outcomes[0].detail.as_deref().unwrap();
+        assert!(detail.contains("overrides the hold at 1.1 (pinned by vendor)"), "{detail}");
     }
 }
