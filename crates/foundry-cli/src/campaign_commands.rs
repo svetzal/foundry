@@ -595,6 +595,7 @@ mod tests {
                 notes: None,
                 timeout_secs: None,
                 audit_exceptions: vec![],
+                update_policy: None,
             }],
         }
         .save(&registry_path)

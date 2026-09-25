@@ -639,6 +639,7 @@ mod tests {
             install_brew: String::new(),
             notes: String::new(),
             timeout_secs: 0,
+            update_policy: String::new(),
         });
 
         let resp = service.registry_add(req).await.expect("add should succeed");
@@ -674,6 +675,7 @@ mod tests {
                 install_brew: String::new(),
                 notes: String::new(),
                 timeout_secs: 0,
+                update_policy: String::new(),
             })
         };
 
@@ -704,6 +706,7 @@ mod tests {
                 install_brew: String::new(),
                 notes: String::new(),
                 timeout_secs: 0,
+                update_policy: String::new(),
             }))
             .await
             .expect("add should succeed");
@@ -754,6 +757,7 @@ mod tests {
                 install_brew: String::new(),
                 notes: String::new(),
                 timeout_secs: 0,
+                update_policy: String::new(),
             }))
             .await
             .expect("add should succeed");
@@ -785,6 +789,7 @@ mod tests {
                 clear_notes: false,
                 timeout_secs: 0,
                 clear_timeout: false,
+                update_policy: String::new(),
             }))
             .await
             .expect("edit should succeed");
@@ -825,6 +830,7 @@ mod tests {
                 clear_notes: false,
                 timeout_secs: 0,
                 clear_timeout: false,
+                update_policy: String::new(),
             }))
             .await
             .unwrap_err();

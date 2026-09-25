@@ -201,6 +201,7 @@ mod tests {
             installs_skill: None,
             timeout_secs: None,
             audit_exceptions: vec![],
+            update_policy: None,
         }
     }
 

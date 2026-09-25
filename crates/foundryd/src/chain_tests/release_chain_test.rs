@@ -42,6 +42,7 @@ fn test_registry(project_path: &str) -> Arc<RwLock<Registry>> {
             installs_skill: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         }],
     }))
 }
@@ -147,6 +148,7 @@ async fn action_flag_guard_stops_chain() {
             installs_skill: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         }],
     }));
 
@@ -194,6 +196,7 @@ async fn missing_agents_md_fails_gracefully() {
             installs_skill: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         }],
     }));
 

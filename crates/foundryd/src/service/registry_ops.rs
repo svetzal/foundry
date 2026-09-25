@@ -5,7 +5,7 @@ use tonic::{Request, Response, Status};
 
 use foundry_sdk::registry::{
     InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry, RegistryMutationError,
-    parse_stack,
+    UpdatePolicy, parse_stack,
 };
 
 use crate::proto::{
@@ -27,6 +27,9 @@ fn mutation_error_to_status(err: RegistryMutationError) -> Status {
         }
         RegistryMutationError::ConflictingInstall => {
             Status::invalid_argument("provide at most one of install_command or install_brew")
+        }
+        err @ RegistryMutationError::InvalidUpdatePolicy(_) => {
+            Status::invalid_argument(err.to_string())
         }
     }
 }
@@ -68,7 +71,16 @@ pub(super) fn project_to_proto(entry: &foundry_sdk::registry::ProjectEntry) -> P
             _ => String::new(),
         },
         audit_exceptions: entry.audit_exceptions.clone(),
+        update_policy: entry.update_policy.map(|p| p.to_string()).unwrap_or_default(),
     }
+}
+
+/// Parse an optional wire policy: empty means "not set" (add) or "unchanged" (edit).
+fn policy_from_wire(value: &str) -> Result<Option<UpdatePolicy>, Status> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse::<UpdatePolicy>().map(Some).map_err(mutation_error_to_status)
 }
 
 pub(super) fn list(
@@ -164,6 +176,7 @@ pub(super) fn add(
         } else {
             Some(req.timeout_secs)
         },
+        update_policy: policy_from_wire(&req.update_policy)?,
     };
 
     let entry_proto = {
@@ -320,6 +333,7 @@ fn edits_from_request(req: &RegistryEditRequest) -> Result<ProjectEdits, Status>
             Some(req.timeout_secs)
         },
         clear_timeout: req.clear_timeout,
+        update_policy: policy_from_wire(&req.update_policy)?,
     })
 }
 
@@ -400,6 +414,7 @@ mod tests {
             install_brew: String::new(),
             notes: String::new(),
             timeout_secs: 0,
+            update_policy: String::new(),
         })
     }
 
@@ -450,6 +465,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "");
@@ -479,6 +495,7 @@ mod tests {
             notes: Some("a note".to_string()),
             timeout_secs: Some(120),
             audit_exceptions: Vec::new(),
+            update_policy: None,
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "./install.sh");
@@ -503,6 +520,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         };
         let proto = project_to_proto(&entry);
         assert_eq!(proto.install_command, "");
@@ -527,6 +545,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             audit_exceptions: vec!["RUSTSEC-2026-0001".to_string()],
+            update_policy: None,
         };
 
         let proto = project_to_proto(&entry);
@@ -556,6 +575,7 @@ mod tests {
                     notes: Some("daemon-owned".to_string()),
                     timeout_secs: None,
                     audit_exceptions: vec![],
+                    update_policy: None,
                 },
                 ProjectEntry {
                     name: "beta".to_string(),
@@ -571,6 +591,7 @@ mod tests {
                     notes: None,
                     timeout_secs: None,
                     audit_exceptions: vec![],
+                    update_policy: None,
                 },
             ],
         }));
@@ -603,6 +624,7 @@ mod tests {
                 notes: Some("server only".to_string()),
                 timeout_secs: None,
                 audit_exceptions: vec!["RUSTSEC-2026-0002".to_string()],
+                update_policy: None,
             }],
         }));
 
@@ -673,6 +695,7 @@ mod tests {
             install_brew: "brew".to_string(),
             notes: String::new(),
             timeout_secs: 0,
+            update_policy: String::new(),
         });
         let err = add(&reg, &path, req).unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -744,6 +767,7 @@ mod tests {
                 clear_notes: false,
                 timeout_secs: 0,
                 clear_timeout: false,
+                update_policy: String::new(),
             }),
         )
         .unwrap();
@@ -785,6 +809,7 @@ mod tests {
                 clear_notes: false,
                 timeout_secs: 0,
                 clear_timeout: false,
+                update_policy: String::new(),
             }),
         )
         .unwrap_err();
@@ -819,6 +844,7 @@ mod tests {
             clear_notes: false,
             timeout_secs: 0,
             clear_timeout: false,
+            update_policy: String::new(),
         };
         let err = edits_from_request(&req).unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -853,6 +879,7 @@ mod tests {
             clear_notes: false,
             timeout_secs: 0,
             clear_timeout: false,
+            update_policy: String::new(),
         };
         let edits = edits_from_request(&req).unwrap();
         assert_eq!(edits.iterate, Some(true));
@@ -867,5 +894,101 @@ mod tests {
         req.clear_iterate = false;
         let edits = edits_from_request(&req).unwrap();
         assert_eq!(edits.iterate, None);
+    }
+
+    // --- update policy ---
+
+    fn policy_edit_request(name: &str, policy: &str) -> Request<RegistryEditRequest> {
+        Request::new(RegistryEditRequest {
+            name: name.to_string(),
+            update_policy: policy.to_string(),
+            ..RegistryEditRequest::default()
+        })
+    }
+
+    #[test]
+    fn add_records_update_policy_and_reports_it() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let mut req = add_request("proj-p").into_inner();
+        req.update_policy = "patch".to_string();
+
+        let proto = add(&reg, &path, Request::new(req)).unwrap().into_inner().project.unwrap();
+
+        assert_eq!(proto.update_policy, "patch");
+        assert_eq!(
+            reg.read().unwrap().projects[0].update_policy,
+            Some(foundry_sdk::registry::UpdatePolicy::Patch)
+        );
+    }
+
+    #[test]
+    fn add_without_policy_leaves_it_unset() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let proto = add(&reg, &path, add_request("proj-u")).unwrap().into_inner().project.unwrap();
+        assert_eq!(proto.update_policy, "");
+        assert_eq!(reg.read().unwrap().projects[0].update_policy, None);
+    }
+
+    #[test]
+    fn add_with_unknown_policy_is_invalid_argument_and_changes_nothing() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let mut req = add_request("proj-x").into_inner();
+        req.update_policy = "latest".to_string();
+
+        let err = add(&reg, &path, Request::new(req)).unwrap_err();
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("latest"), "{}", err.message());
+        assert!(reg.read().unwrap().projects.is_empty());
+    }
+
+    #[test]
+    fn edit_sets_update_policy_and_empty_leaves_it_unchanged() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        add(&reg, &path, add_request("proj-e")).unwrap();
+
+        let proto = edit(&reg, &path, policy_edit_request("proj-e", "major"))
+            .unwrap()
+            .into_inner()
+            .project
+            .unwrap();
+        assert_eq!(proto.update_policy, "major");
+
+        let proto = edit(&reg, &path, policy_edit_request("proj-e", ""))
+            .unwrap()
+            .into_inner()
+            .project
+            .unwrap();
+        assert_eq!(proto.update_policy, "major");
+    }
+
+    #[test]
+    fn edit_clear_install_removes_the_install_config() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let mut req = add_request("proj-i").into_inner();
+        req.install_command = "./install.sh".to_string();
+        add(&reg, &path, Request::new(req)).unwrap();
+
+        let proto = edit(
+            &reg,
+            &path,
+            Request::new(RegistryEditRequest {
+                name: "proj-i".to_string(),
+                clear_install: true,
+                ..RegistryEditRequest::default()
+            }),
+        )
+        .unwrap()
+        .into_inner()
+        .project
+        .unwrap();
+
+        assert_eq!(proto.install_command, "");
+        assert!(reg.read().unwrap().projects[0].install.is_none());
     }
 }

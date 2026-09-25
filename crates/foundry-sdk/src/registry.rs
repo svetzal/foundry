@@ -138,6 +138,67 @@ pub struct ProjectEntry {
     /// suppression (default, fully backwards compatible).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audit_exceptions: Vec<String>,
+    /// How far nightly maintenance may move this project's dependencies.
+    /// Absent means "not set": maintenance behaves as [`UpdatePolicy::Minor`]
+    /// and the maintenance summary flags the project so a policy gets chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_policy: Option<UpdatePolicy>,
+}
+
+/// How far automated maintenance may move a project's dependencies.
+///
+/// The policy is a *ceiling*. Each level includes the ones below it:
+///
+/// - [`Patch`](Self::Patch): the lockfile moves inside the existing manifest
+///   constraints only. No manifest constraint is edited.
+/// - [`Minor`](Self::Minor): constraints may also be widened to the newest
+///   non-breaking release.
+/// - [`Major`](Self::Major): breaking (major) releases are taken too, but never
+///   inside the nightly maintain session. Each one becomes its own
+///   `foundry task`, dispatched after maintenance.
+///
+/// Security fixes override the ceiling; see the dependency update policy guide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdatePolicy {
+    Patch,
+    Minor,
+    Major,
+}
+
+impl UpdatePolicy {
+    /// The policy maintenance applies when a project has none set.
+    pub const DEFAULT: Self = Self::Minor;
+
+    /// Every policy, lowest ceiling first.
+    pub const ALL: [Self; 3] = [Self::Patch, Self::Minor, Self::Major];
+
+    /// The policy's wire and CLI name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Patch => "patch",
+            Self::Minor => "minor",
+            Self::Major => "major",
+        }
+    }
+}
+
+impl std::fmt::Display for UpdatePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for UpdatePolicy {
+    type Err = RegistryMutationError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| RegistryMutationError::InvalidUpdatePolicy(s.to_string()))
+    }
 }
 
 /// Default timeout for long-running commands: 60 minutes.
@@ -288,6 +349,9 @@ pub enum RegistryMutationError {
     /// Both `install_command` and `install_brew` were provided; only one is allowed.
     #[error("provide at most one of install_command or install_brew")]
     ConflictingInstall,
+    /// The given update policy name is not recognised.
+    #[error("invalid update policy '{0}'; use: patch, minor, major")]
+    InvalidUpdatePolicy(String),
 }
 
 /// All fields required when adding a new project.
@@ -309,6 +373,7 @@ pub struct ProjectSpec {
     pub install_brew: Option<String>,
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
+    pub update_policy: Option<UpdatePolicy>,
 }
 
 /// Optional overrides when editing an existing project.
@@ -341,6 +406,8 @@ pub struct ProjectEdits {
     pub timeout_secs: Option<u64>,
     /// When `true`, clear the timeout (revert to daemon default).
     pub clear_timeout: bool,
+    /// `Some(p)` sets the dependency update policy; `None` leaves it unchanged.
+    pub update_policy: Option<UpdatePolicy>,
 }
 
 impl Registry {
@@ -385,6 +452,7 @@ impl Registry {
             installs_skill: None,
             timeout_secs: spec.timeout_secs,
             audit_exceptions: Vec::new(),
+            update_policy: spec.update_policy,
         });
         #[allow(
             clippy::expect_used,
@@ -474,6 +542,9 @@ impl Registry {
             project.timeout_secs = None;
         } else if let Some(v) = edits.timeout_secs {
             project.timeout_secs = Some(v);
+        }
+        if let Some(policy) = edits.update_policy {
+            project.update_policy = Some(policy);
         }
 
         Ok(project)
@@ -963,6 +1034,7 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
         }
     }
 
@@ -1227,5 +1299,99 @@ mod tests {
     fn mutation_error_display_conflicting_install() {
         let e = RegistryMutationError::ConflictingInstall;
         assert!(!e.to_string().is_empty());
+    }
+
+    // --- update policy ---
+
+    #[test]
+    fn update_policy_is_absent_when_not_in_json() {
+        let registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        assert_eq!(registry.projects[0].update_policy, None);
+    }
+
+    #[test]
+    fn update_policy_round_trips_lowercase_and_is_omitted_when_unset() {
+        let mut registry: Registry = serde_json::from_str(FULL_REGISTRY_JSON).unwrap();
+        let unset = serde_json::to_string(&registry).unwrap();
+        assert!(!unset.contains("update_policy"), "{unset}");
+
+        registry.projects[0].update_policy = Some(UpdatePolicy::Major);
+        let json = serde_json::to_string(&registry).unwrap();
+        assert!(json.contains(r#""update_policy":"major""#), "{json}");
+        let restored: Registry = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.projects[0].update_policy, Some(UpdatePolicy::Major));
+    }
+
+    #[test]
+    fn update_policy_parses_every_name_and_rejects_others() {
+        for policy in UpdatePolicy::ALL {
+            assert_eq!(policy.as_str().parse::<UpdatePolicy>().unwrap(), policy);
+        }
+        let err = "latest".parse::<UpdatePolicy>().unwrap_err();
+        assert_eq!(err, RegistryMutationError::InvalidUpdatePolicy("latest".to_string()));
+        assert!(err.to_string().contains("patch, minor, major"));
+    }
+
+    #[test]
+    fn update_policy_orders_by_ceiling() {
+        assert!(UpdatePolicy::Patch < UpdatePolicy::Minor);
+        assert!(UpdatePolicy::Minor < UpdatePolicy::Major);
+        assert_eq!(UpdatePolicy::DEFAULT, UpdatePolicy::Minor);
+    }
+
+    #[test]
+    fn add_project_records_the_update_policy() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            update_policy: Some(UpdatePolicy::Patch),
+            ..minimal_spec("alpha")
+        };
+        let entry = registry.add_project(spec).unwrap();
+        assert_eq!(entry.update_policy, Some(UpdatePolicy::Patch));
+    }
+
+    #[test]
+    fn edit_project_sets_update_policy_and_leaves_it_when_absent() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    update_policy: Some(UpdatePolicy::Major),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let entry = registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    agent: Some("other".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(entry.update_policy, Some(UpdatePolicy::Major));
+    }
+
+    #[test]
+    fn edit_project_clears_install_when_asked() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            install_command: Some("./install.sh".to_string()),
+            ..minimal_spec("alpha")
+        };
+        registry.add_project(spec).unwrap();
+        let entry = registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    clear_install: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(entry.install.is_none());
     }
 }

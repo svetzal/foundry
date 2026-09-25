@@ -413,6 +413,12 @@ foundry registry show my-project
 # Edit project flags (use true/false)
 foundry registry edit my-project --iterate true --maintain true
 
+# Set how far maintenance may move dependencies (patch | minor | major)
+foundry registry edit my-project --update-policy major
+
+# Remove the install configuration
+foundry registry edit my-project --clear-install
+
 # Remove a project
 foundry registry remove my-project
 ```
@@ -423,6 +429,7 @@ foundry registry remove my-project
 - `--push` — allow git push after changes
 - `--audit` — enable vulnerability auditing
 - `--release` — enable automatic releases
+- `--update-policy` — dependency ceiling for maintenance: `patch` (lockfile only), `minor` (may widen constraints), `major` (majors become separate tasks). Unset behaves as `minor` and is flagged in the maintenance summary
 - `--skip` — temporarily disable without removing
 
 ## Examining Results

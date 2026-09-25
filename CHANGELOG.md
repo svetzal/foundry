@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Registry field `update_policy` (`patch`, `minor` or `major`), set with
+  `foundry registry add/edit --update-policy`. It is the ceiling for how far
+  maintenance may move a project's dependencies. `foundry registry show`
+  prints it on an `Updates:` line; a project without one behaves as `minor`.
+- `foundry registry edit --clear-install` removes a project's install
+  configuration. Passing `--install-command ""` never cleared it.
+
 ### Changed
 
 - Gate commands and their `fix_command` now run with `CARGO_INCREMENTAL=0`.

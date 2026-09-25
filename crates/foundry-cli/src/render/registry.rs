@@ -4,7 +4,8 @@ use std::fmt::Write as _;
 
 use comfy_table::{ContentArrangement, Table};
 use foundry_sdk::registry::{
-    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, derive_default_skill_install_command,
+    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, UpdatePolicy,
+    derive_default_skill_install_command,
 };
 
 /// Render a project's full detail view as a multi-line string.
@@ -22,6 +23,7 @@ pub fn project_detail(project: &ProjectEntry) -> String {
         let _ = writeln!(out, "Skip:      no");
     }
     let _ = writeln!(out, "Actions:   {}", format_actions(&project.actions));
+    let _ = writeln!(out, "Updates:   {}", format_update_policy(project.update_policy));
 
     if let Some(ref notes) = project.notes {
         let _ = writeln!(out, "Notes:     {notes}");
@@ -101,6 +103,14 @@ fn format_installs_skill_cell(installs_skill: Option<&InstallsSkill>) -> &'stati
     }
 }
 
+/// Format the dependency update policy, naming the fallback when none is set.
+fn format_update_policy(policy: Option<UpdatePolicy>) -> String {
+    match policy {
+        Some(policy) => policy.to_string(),
+        None => format!("not set (behaves as {})", UpdatePolicy::DEFAULT),
+    }
+}
+
 fn format_actions(actions: &ActionFlags) -> String {
     let mut flags = vec![];
     if actions.iterate {
@@ -149,6 +159,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             audit_exceptions: vec![],
+            update_policy: None,
         }
     }
 
@@ -300,5 +311,13 @@ mod tests {
         p.skip = Some("reason".to_string());
         let out = project_table(&[p]);
         assert!(out.contains("yes"), "got: {out}");
+    }
+
+    #[test]
+    fn project_detail_shows_update_policy_or_the_fallback() {
+        let mut project = make_project("p");
+        assert!(project_detail(&project).contains("Updates:   not set (behaves as minor)"));
+        project.update_policy = Some(foundry_sdk::registry::UpdatePolicy::Major);
+        assert!(project_detail(&project).contains("Updates:   major"));
     }
 }

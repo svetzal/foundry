@@ -190,6 +190,7 @@ message Project {
     bool installs_skill_explicitly_disabled = 18; // true => explicit "off".
     string installs_skill_command = 19;        // Empty means not set.
     repeated string audit_exceptions = 20;     // Empty means none configured.
+    string update_policy = 21;                 // patch | minor | major; empty means not set (maintenance behaves as minor).
 }
 
 // List every project from the daemon-owned registry.
@@ -236,6 +237,7 @@ message RegistryAddRequest {
     string install_brew = 13;
     string notes = 14;
     uint64 timeout_secs = 15;
+    string update_policy = 16;   // patch | minor | major; empty means not set.
 }
 
 message RegistryAddResponse {
@@ -289,6 +291,7 @@ message RegistryEditRequest {
     bool clear_notes = 23;
     uint64 timeout_secs = 24;
     bool clear_timeout = 25;
+    string update_policy = 26;   // patch | minor | major; empty leaves it unchanged.
 }
 
 message RegistryEditResponse {

@@ -108,6 +108,7 @@ fn daemon_registry(repo_root: &std::path::Path) -> Registry {
             notes: None,
             timeout_secs: None,
             audit_exceptions: vec![],
+            update_policy: None,
         }],
     }
 }

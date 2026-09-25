@@ -566,7 +566,8 @@ foundry registry add \
   [--install-command "cargo install --path ."] \
   [--install-brew my-formula] \
   [--notes "Human-readable notes about the project"] \
-  [--timeout-secs 3600]
+  [--timeout-secs 3600] \
+  [--update-policy minor]
 ```
 
 | Option              | Required | Description                                                       |
@@ -586,6 +587,7 @@ foundry registry add \
 | `--install-brew`    | No       | Homebrew formula name                                             |
 | `--notes`           | No       | Human-readable notes                                              |
 | `--timeout-secs`    | No       | Command timeout in seconds (default: 3600)                        |
+| `--update-policy`   | No       | `patch`, `minor` or `major`: how far maintenance may move dependencies. Unset behaves as `minor` and is flagged in the maintenance summary. See [Dependency update policy](../guide/dependency-update-policy.md) |
 
 ### `foundry registry remove <name>`
 
@@ -635,5 +637,7 @@ foundry registry edit my-tool \
 | `--release`         | Set release action                                           |
 | `--install-command` | Set install command                                          |
 | `--install-brew`    | Set Homebrew formula                                         |
+| `--clear-install`   | Remove the install configuration (cannot be combined with `--install-command` or `--install-brew`) |
 | `--notes`           | Set notes (pass empty string `""` to clear)                  |
 | `--timeout-secs`    | Set command timeout in seconds                               |
+| `--update-policy`   | Set the dependency update policy: `patch`, `minor` or `major` |

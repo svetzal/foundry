@@ -56,6 +56,7 @@ fn daemon_project(name: &str) -> ProjectEntry {
         notes: Some(format!("notes from daemon for {name}")),
         timeout_secs: Some(42),
         audit_exceptions: vec![],
+        update_policy: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn fully_populated_project(name: &str) -> ProjectEntry {
         notes: Some(format!("daemon note for {name}")),
         timeout_secs: Some(75),
         audit_exceptions: vec![],
+        update_policy: None,
     }
 }
 
@@ -117,6 +119,7 @@ fn online_added_project() -> ProjectEntry {
         notes: Some("daemon-owned add".to_string()),
         timeout_secs: Some(75),
         audit_exceptions: vec![],
+        update_policy: None,
     }
 }
 
@@ -156,6 +159,7 @@ fn simple_spec(name: &str, path: &str, stack: Stack) -> ProjectSpec {
         install_brew: None,
         notes: None,
         timeout_secs: None,
+        update_policy: None,
     }
 }
 
@@ -301,6 +305,7 @@ fn seed_offline_registry(home: &std::path::Path) -> std::path::PathBuf {
             notes: Some("seeded directly".to_string()),
             timeout_secs: Some(90),
             audit_exceptions: vec![],
+            update_policy: None,
         }],
     }
     .save(&registry_path)
@@ -743,6 +748,7 @@ async fn add_offline_writes_project_to_file() {
         install_brew: None,
         notes: None,
         timeout_secs: None,
+        update_policy: None,
     };
 
     registry_commands::add(tmp.path(), DUMMY_ADDR, true, spec)
@@ -1303,6 +1309,7 @@ fn offline_add_writes_exact_registry_fields_via_cli() {
             notes: Some("added via offline cli".to_string()),
             timeout_secs: None,
             audit_exceptions: vec![],
+            update_policy: None,
         },
     );
 }
@@ -1363,6 +1370,7 @@ fn offline_edit_updates_exact_registry_fields_via_cli() {
             notes: Some("edited via offline cli".to_string()),
             timeout_secs: Some(90),
             audit_exceptions: vec![],
+            update_policy: None,
         },
     );
 }

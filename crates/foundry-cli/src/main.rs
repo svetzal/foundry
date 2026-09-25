@@ -376,6 +376,11 @@ enum RegistryCommands {
         /// Command timeout in seconds
         #[arg(long)]
         timeout_secs: Option<u64>,
+
+        /// How far maintenance may move dependencies: patch, minor, or major
+        /// (unset behaves as minor and is flagged in the maintenance summary)
+        #[arg(long, value_parser = ["patch", "minor", "major"])]
+        update_policy: Option<String>,
     },
 
     /// Remove a project from the daemon-owned registry
@@ -441,6 +446,10 @@ enum RegistryCommands {
         #[arg(long)]
         install_brew: Option<String>,
 
+        /// Remove the install configuration (command or brew)
+        #[arg(long, conflicts_with_all = ["install_command", "install_brew"])]
+        clear_install: bool,
+
         /// Set notes
         #[arg(long)]
         notes: Option<String>,
@@ -448,6 +457,10 @@ enum RegistryCommands {
         /// Set timeout in seconds
         #[arg(long)]
         timeout_secs: Option<u64>,
+
+        /// Set how far maintenance may move dependencies: patch, minor, or major
+        #[arg(long, value_parser = ["patch", "minor", "major"])]
+        update_policy: Option<String>,
     },
 }
 
@@ -479,6 +492,7 @@ async fn handle_registry_command(
             install_brew,
             notes,
             timeout_secs,
+            update_policy,
         } => {
             let spec = registry_commands::SpecArgs {
                 name,
@@ -496,6 +510,7 @@ async fn handle_registry_command(
                 install_brew,
                 notes,
                 timeout_secs,
+                update_policy,
             };
             registry_commands::add_from_args(path, addr, offline, spec).await
         }
@@ -517,8 +532,10 @@ async fn handle_registry_command(
             release,
             install_command,
             install_brew,
+            clear_install,
             notes,
             timeout_secs,
+            update_policy,
         } => {
             let edits = registry_commands::EditArgs {
                 path: project_path,
@@ -534,8 +551,10 @@ async fn handle_registry_command(
                 release,
                 install_command,
                 install_brew,
+                clear_install,
                 notes,
                 timeout_secs,
+                update_policy,
             };
             registry_commands::edit_from_args(path, addr, offline, &name, edits).await
         }

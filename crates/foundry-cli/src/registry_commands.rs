@@ -2,7 +2,8 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use foundry_sdk::registry::{
-    InstallConfig, InstallsSkill, ProjectEdits, ProjectEntry, ProjectSpec, Registry, parse_stack,
+    InstallConfig, InstallsSkill, ProjectEdits, ProjectEntry, ProjectSpec, Registry, UpdatePolicy,
+    parse_stack,
 };
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
@@ -31,6 +32,7 @@ pub struct SpecArgs {
     pub install_brew: Option<String>,
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
+    pub update_policy: Option<String>,
 }
 
 /// Parameters for constructing `ProjectEdits` from CLI arguments.
@@ -48,8 +50,11 @@ pub struct EditArgs {
     pub release: Option<bool>,
     pub install_command: Option<String>,
     pub install_brew: Option<String>,
+    /// Remove the install configuration entirely.
+    pub clear_install: bool,
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
+    pub update_policy: Option<String>,
 }
 
 pub fn init(registry_path: &Path, offline: bool) -> Result<()> {
@@ -142,6 +147,7 @@ pub async fn add_from_args(
         return add(registry_path, addr, true, spec_from_args(args)?).await;
     }
 
+    let update_policy = parse_update_policy(args.update_policy.as_deref())?;
     let name = args.name.clone();
     let mut client =
         connect_daemon_required(addr, &registry_offline_hint(&format!("add --name {name}")))
@@ -163,6 +169,7 @@ pub async fn add_from_args(
             install_brew: args.install_brew.unwrap_or_default(),
             notes: args.notes.unwrap_or_default(),
             timeout_secs: args.timeout_secs.unwrap_or(0),
+            update_policy: policy_wire(update_policy),
         })
         .await
         .map_err(status_to_anyhow)?;
@@ -197,6 +204,7 @@ pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectS
         install_brew: spec.install_brew.unwrap_or_default(),
         notes: spec.notes.unwrap_or_default(),
         timeout_secs: spec.timeout_secs.unwrap_or(0),
+        update_policy: policy_wire(spec.update_policy),
     };
     client.registry_add(req).await.map_err(status_to_anyhow)?;
     println!("Added project '{name}' to registry.");
@@ -249,7 +257,7 @@ pub async fn edit_from_args(
         return edit(registry_path, addr, true, name, edits_from_args(args)?).await;
     }
 
-    let req = edit_request_from_args(name, &args);
+    let req = edit_request_from_args(name, &args)?;
     let mut client =
         connect_daemon_required(addr, &registry_offline_hint(&format!("edit {name}"))).await?;
     client.registry_edit(req).await.map_err(status_to_anyhow)?;
@@ -313,10 +321,12 @@ fn edit_request(name: &str, edits: &ProjectEdits) -> RegistryEditRequest {
         clear_notes,
         timeout_secs: edits.timeout_secs.unwrap_or(0),
         clear_timeout: edits.clear_timeout,
+        update_policy: policy_wire(edits.update_policy),
     }
 }
 
-fn edit_request_from_args(name: &str, args: &EditArgs) -> RegistryEditRequest {
+fn edit_request_from_args(name: &str, args: &EditArgs) -> Result<RegistryEditRequest> {
+    let update_policy = parse_update_policy(args.update_policy.as_deref())?;
     let (skip_str, clear_skip) = match &args.skip {
         None => (String::new(), false),
         Some(skip) if skip.is_empty() => (String::new(), true),
@@ -324,7 +334,7 @@ fn edit_request_from_args(name: &str, args: &EditArgs) -> RegistryEditRequest {
     };
     let notes_str = args.notes.as_deref().unwrap_or("").to_string();
     let clear_notes = args.notes.as_deref().is_some_and(str::is_empty);
-    RegistryEditRequest {
+    Ok(RegistryEditRequest {
         name: name.to_string(),
         path: args.path.clone().unwrap_or_default(),
         stack: args.stack.clone().unwrap_or_default(),
@@ -345,12 +355,27 @@ fn edit_request_from_args(name: &str, args: &EditArgs) -> RegistryEditRequest {
         clear_release: args.release.is_some_and(|value| !value),
         install_command: args.install_command.clone().unwrap_or_default(),
         install_brew: args.install_brew.clone().unwrap_or_default(),
-        clear_install: false,
+        clear_install: args.clear_install,
         notes: notes_str,
         clear_notes,
         timeout_secs: args.timeout_secs.unwrap_or(0),
         clear_timeout: false,
-    }
+        update_policy: policy_wire(update_policy),
+    })
+}
+
+/// Parse an optional `--update-policy` value, rejecting unknown names before
+/// anything is sent to the daemon or written to disk.
+fn parse_update_policy(value: Option<&str>) -> Result<Option<UpdatePolicy>> {
+    value
+        .map(str::parse::<UpdatePolicy>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// The wire form of an optional policy: empty means "not set" / "unchanged".
+fn policy_wire(policy: Option<UpdatePolicy>) -> String {
+    policy.map(|p| p.to_string()).unwrap_or_default()
 }
 
 fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result<()> {
@@ -379,6 +404,7 @@ pub fn spec_from_args(args: SpecArgs) -> Result<ProjectSpec> {
         install_brew: args.install_brew,
         notes: args.notes,
         timeout_secs: args.timeout_secs,
+        update_policy: parse_update_policy(args.update_policy.as_deref())?,
     })
 }
 
@@ -405,8 +431,10 @@ pub fn edits_from_args(args: EditArgs) -> Result<ProjectEdits> {
         release: args.release,
         install_command: args.install_command,
         install_brew: args.install_brew,
+        clear_install: args.clear_install,
         notes: args.notes,
         timeout_secs: args.timeout_secs,
+        update_policy: parse_update_policy(args.update_policy.as_deref())?,
         ..Default::default()
     })
 }
@@ -491,6 +519,9 @@ fn project_from_proto(project: &Project) -> Result<ProjectEntry> {
             Some(project.timeout_secs)
         },
         audit_exceptions: project.audit_exceptions.clone(),
+        update_policy: parse_update_policy(
+            Some(project.update_policy.as_str()).filter(|p| !p.is_empty()),
+        )?,
     })
 }
 
@@ -519,6 +550,7 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
         })
         .expect("valid stack");
         assert_eq!(spec.stack.to_string(), "rust");
@@ -543,6 +575,7 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
         });
         assert!(result.is_err());
     }
@@ -567,6 +600,8 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
+            clear_install: false,
         })
         .expect("ok");
         assert!(edits.skip.is_none());
@@ -590,6 +625,8 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
+            clear_install: false,
         })
         .expect("ok");
         assert_eq!(edits.skip, Some(None));
@@ -613,6 +650,8 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
+            clear_install: false,
         })
         .expect("ok");
         assert_eq!(edits.skip, Some(Some("reason".to_string())));
@@ -636,6 +675,8 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
+            clear_install: false,
         });
         assert!(result.is_err());
     }
@@ -658,6 +699,8 @@ mod tests {
             install_brew: None,
             notes: None,
             timeout_secs: None,
+            update_policy: None,
+            clear_install: false,
         })
         .expect("valid stack");
         assert!(edits.stack.is_some());
@@ -718,5 +761,98 @@ mod tests {
         let req = edit_request("p", &edits);
         assert!(req.iterate);
         assert!(!req.clear_iterate);
+    }
+
+    // --- update policy and clear-install ---
+
+    fn bare_edit_args() -> EditArgs {
+        EditArgs {
+            path: None,
+            stack: None,
+            agent: None,
+            repo: None,
+            branch: None,
+            skip: None,
+            iterate: None,
+            maintain: None,
+            push: None,
+            audit: None,
+            release: None,
+            install_command: None,
+            install_brew: None,
+            clear_install: false,
+            notes: None,
+            timeout_secs: None,
+            update_policy: None,
+        }
+    }
+
+    #[test]
+    fn edit_request_from_args_carries_clear_install() {
+        let req = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                clear_install: true,
+                ..bare_edit_args()
+            },
+        )
+        .unwrap();
+        assert!(req.clear_install);
+        assert_eq!(req.install_command, "");
+    }
+
+    #[test]
+    fn edit_request_from_args_carries_update_policy() {
+        let req = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                update_policy: Some("major".to_string()),
+                ..bare_edit_args()
+            },
+        )
+        .unwrap();
+        assert_eq!(req.update_policy, "major");
+        let unchanged = super::edit_request_from_args("proj", &bare_edit_args()).unwrap();
+        assert_eq!(unchanged.update_policy, "");
+    }
+
+    #[test]
+    fn edit_request_from_args_rejects_unknown_policy() {
+        let err = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                update_policy: Some("latest".to_string()),
+                ..bare_edit_args()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("latest"), "{err}");
+    }
+
+    #[test]
+    fn edits_from_args_offline_carries_clear_install_and_policy() {
+        let edits = edits_from_args(EditArgs {
+            clear_install: true,
+            update_policy: Some("patch".to_string()),
+            ..bare_edit_args()
+        })
+        .unwrap();
+        assert!(edits.clear_install);
+        assert_eq!(edits.update_policy, Some(foundry_sdk::registry::UpdatePolicy::Patch));
+    }
+
+    #[test]
+    fn project_from_proto_reads_policy_and_treats_empty_as_unset() {
+        let mut proto = crate::proto::Project {
+            name: "p".to_string(),
+            stack: "rust".to_string(),
+            update_policy: "minor".to_string(),
+            ..crate::proto::Project::default()
+        };
+        let entry = super::project_from_proto(&proto).unwrap();
+        assert_eq!(entry.update_policy, Some(foundry_sdk::registry::UpdatePolicy::Minor));
+
+        proto.update_policy = String::new();
+        assert_eq!(super::project_from_proto(&proto).unwrap().update_policy, None);
     }
 }

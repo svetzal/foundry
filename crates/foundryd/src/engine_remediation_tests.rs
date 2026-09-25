@@ -117,6 +117,7 @@ fn vuln_engine() -> Engine {
             installs_skill: None,
             timeout_secs: None,
             audit_exceptions: Vec::new(),
+            update_policy: None,
         }],
     }));
     let mut engine = Engine::new();

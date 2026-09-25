@@ -170,6 +170,7 @@ fn add_request(name: &str) -> RegistryAddRequest {
         install_brew: String::new(),
         notes: String::new(),
         timeout_secs: 0,
+        update_policy: String::new(),
     }
 }
 
@@ -201,6 +202,7 @@ fn read_registry_entry(name: &str) -> foundry_sdk::registry::ProjectEntry {
         notes: Some("seed note".to_string()),
         timeout_secs: Some(60),
         audit_exceptions: vec![],
+        update_policy: None,
     }
 }
 
@@ -225,6 +227,7 @@ fn fully_populated_registry_entry(name: &str) -> foundry_sdk::registry::ProjectE
         notes: Some(format!("daemon note for {name}")),
         timeout_secs: Some(75),
         audit_exceptions: vec![],
+        update_policy: None,
     }
 }
 
@@ -318,6 +321,7 @@ fn edit_branch_request(name: &str, branch: &str) -> RegistryEditRequest {
         clear_notes: false,
         timeout_secs: 0,
         clear_timeout: false,
+        update_policy: String::new(),
     }
 }
 
@@ -494,6 +498,7 @@ async fn list_returns_full_daemon_owned_project_fields() {
             install_brew: String::new(),
             notes: "server note".to_string(),
             timeout_secs: 45,
+            update_policy: String::new(),
         }))
         .await
         .expect("seed daemon registry");
@@ -538,6 +543,7 @@ async fn show_returns_full_daemon_owned_project_fields() {
             install_brew: String::new(),
             notes: "server note".to_string(),
             timeout_secs: 90,
+            update_policy: String::new(),
         }))
         .await
         .expect("seed daemon registry");

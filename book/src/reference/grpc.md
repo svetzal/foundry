@@ -86,6 +86,7 @@ Add a project to the daemon's in-memory registry and persist the change to
 | `install_brew`    | string | Homebrew formula for local install (mutually exclusive with `install_command`) |
 | `notes`           | string | Human-readable notes (empty → none)                                            |
 | `timeout_secs`    | uint64 | Per-project timeout (0 → use default 3600 s)                                   |
+| `update_policy`   | string | `patch`, `minor` or `major` (empty → not set; maintenance behaves as `minor`)  |
 
 **Response:**
 
@@ -94,7 +95,8 @@ Add a project to the daemon's in-memory registry and persist the change to
 | `project` | Project | The newly created project entry |
 
 **Errors:** `ALREADY_EXISTS` if the name is already in the registry;
-`INVALID_ARGUMENT` for an unknown stack or conflicting install fields;
+`INVALID_ARGUMENT` for an unknown stack, an unknown update policy, or
+conflicting install fields;
 `INTERNAL` with the stable message `failed to persist registry state` when
 saving fails.
 
@@ -125,7 +127,8 @@ This message has no fields.
 
 Each `Project` carries the full registry data required by online clients:
 `name`, `path`, `stack`, `agent`, `repo`, `branch`, `skip`, action flags,
-install config, notes, timeout, installs-skill state, and audit exceptions.
+install config, notes, timeout, installs-skill state, audit exceptions, and
+`update_policy` (empty when not set).
 
 **Errors:** None at the RPC layer; the daemon answers from already-loaded
 registry state.
@@ -221,6 +224,7 @@ non-zero are applied. Use `clear_*` booleans to explicitly clear optional fields
 | `clear_notes`     | bool   | Remove notes                                                              |
 | `timeout_secs`    | uint64 | Set timeout (0 → no change unless `clear_timeout`)                        |
 | `clear_timeout`   | bool   | Revert timeout to the daemon default                                      |
+| `update_policy`   | string | Set `patch`, `minor` or `major` (empty → no change)                       |
 
 **Response:**
 

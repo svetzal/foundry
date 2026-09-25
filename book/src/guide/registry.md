@@ -85,6 +85,7 @@ foundry --offline registry add --name my-tool …   # direct registry.json recov
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
 | `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
+| `update_policy` | No | string | How far nightly maintenance may move dependencies: `"patch"`, `"minor"` or `"major"`. Absent means not set: maintenance behaves as `"minor"` and the maintenance summary flags the project. See [Dependency update policy](dependency-update-policy.md) |
 | `audit_exceptions` | No | string[] (default `[]`) | Legacy: advisory IDs accepted without an expiry. Kept for compatibility. Prefer the repository's `.supply-chain-allow.json`, which records a reason and an expiry in git. |
 
 #### Accepted-risk advisories
@@ -253,6 +254,12 @@ foundry --offline registry add \
 
 # Edit an existing project
 foundry registry edit my-tool --timeout-secs 3600
+
+# Let maintenance take major upgrades (each one becomes its own task)
+foundry registry edit my-tool --update-policy major
+
+# Remove the install configuration
+foundry registry edit my-tool --clear-install
 
 # Skip a project temporarily
 foundry registry edit my-tool --skip "Waiting for CI to stabilise"
