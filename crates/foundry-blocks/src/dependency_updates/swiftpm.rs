@@ -8,10 +8,10 @@ use foundry_sdk::payload::Ecosystem;
 
 use super::{Declared, Scope, read_text, unclassified};
 
-pub(super) fn scopes(root: &Path) -> Vec<Scope> {
+pub(super) fn scopes(root: &Path, rel: &str) -> Vec<Scope> {
     let manifest = match read_text(&root.join("Package.swift")) {
         Ok(t) => t,
-        Err(reason) => return vec![unclassified(Ecosystem::Swiftpm, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Swiftpm, rel, reason)],
     };
     let resolved = match read_text(&root.join("Package.resolved")).and_then(|t| parse_resolved(&t))
     {
@@ -19,7 +19,7 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
         Err(reason) => {
             return vec![unclassified(
                 Ecosystem::Swiftpm,
-                ".",
+                rel,
                 format!("{reason} (commit Package.resolved to classify)"),
             )];
         }
@@ -35,7 +35,7 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
         .collect();
     vec![Scope {
         ecosystem: Ecosystem::Swiftpm,
-        manifest: ".".to_string(),
+        manifest: rel.to_string(),
         deps,
         unclassified: Vec::new(),
     }]

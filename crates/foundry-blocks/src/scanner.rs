@@ -35,6 +35,9 @@ enum AuditPlan {
     Unavailable(String),
     /// Run the tool and parse the JSON it prints on stdout.
     Stdout { command: String, args: Vec<String> },
+    /// Run `osv-scanner` on a lockfile the stack's own tool cannot read (a
+    /// Bun, Yarn or pnpm lockfile) and parse its report.
+    Osv { lockfile: String },
     /// Run `mix deps.audit --format=json` in each Mix project that opts into
     /// `mix_audit`, and merge the findings.
     MixProjects { dirs: Vec<PathBuf> },
@@ -52,12 +55,199 @@ enum AuditPlan {
     },
 }
 
-/// Run the appropriate audit tool for the given stack and return parsed results.
+/// Audit every dependency ecosystem in the repository at `path` and merge the
+/// results.
+///
+/// A repository can hold several ecosystems and lockfiles in subdirectories
+/// (a Rust CLI in `apps/cli`, a Phoenix app in `apps/web`, a Bun workspace at
+/// the root). `audit_targets` finds each one; each is audited with its own
+/// tool, and a target that could not be audited makes the whole result an
+/// error naming it, because a partial scan must never read as clean.
 ///
 /// Returns `Err` only for unrecoverable I/O failures (e.g. disk read error).
-/// When the audit tool is not installed or returns a non-vulnerability failure,
+/// When an audit tool is not installed or returns a non-vulnerability failure,
 /// the error is captured in [`AuditResult::error`] and `Ok` is returned.
 pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
+    let targets = audit_targets(path, stack);
+    let single = targets.len() == 1;
+    let mut results = Vec::with_capacity(targets.len());
+    for target in &targets {
+        let result = run_stack_audit(&target.dir, &target.stack).await?;
+        results.push((target.label(path), result));
+    }
+    Ok(merge_target_results(results, single))
+}
+
+/// One place in a repository to audit, with the stack whose tool audits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuditTarget {
+    pub(crate) stack: Stack,
+    pub(crate) dir: PathBuf,
+}
+
+impl AuditTarget {
+    fn label(&self, root: &Path) -> String {
+        let rel = self
+            .dir
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.display().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        format!("{rel} ({})", self.stack)
+    }
+}
+
+/// Directories that never hold a project's own lockfile: build output,
+/// installed dependencies, vendored code and test fixtures.
+const AUDIT_SKIP_DIRS: [&str; 11] = [
+    "target",
+    "deps",
+    "_build",
+    "node_modules",
+    "build",
+    "vendor",
+    "third_party",
+    "fixtures",
+    "fixture",
+    "testdata",
+    "dist",
+];
+const AUDIT_SEARCH_DEPTH: usize = 4;
+const JS_LOCKFILES: [&str; 5] = [
+    "package-lock.json",
+    "bun.lock",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+];
+
+/// Every ecosystem to audit in the repository at `root`.
+///
+/// Lockfiles are found in subdirectories as well as the root, skipping build
+/// output, installed dependencies, vendored trees (`vendor/`, `third_party/`,
+/// and paths `.gitattributes` marks `linguist-vendored`) and fixtures. Mix
+/// projects are found the way they always were ([`mix_projects`]), so a
+/// vendored Mix project that declares `mix_audit` is still audited. The
+/// registered stack is always audited, so a missing lockfile is reported for
+/// it rather than skipped.
+pub(crate) fn audit_targets(root: &Path, stack: &Stack) -> Vec<AuditTarget> {
+    let mut targets: Vec<AuditTarget> = Vec::new();
+    let mut elixir = false;
+    let push = |stack: Stack, dir: &Path, targets: &mut Vec<AuditTarget>| {
+        let target = AuditTarget {
+            stack,
+            dir: dir.to_path_buf(),
+        };
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    };
+
+    let dirs = project_dirs(root);
+
+    for dir in &dirs {
+        let has = |f: &str| dir.join(f).is_file();
+        if has("Cargo.lock") {
+            push(Stack::Rust, dir, &mut targets);
+        }
+        if JS_LOCKFILES.iter().any(|f| has(f)) {
+            push(Stack::TypeScript, dir, &mut targets);
+        }
+        if has("uv.lock") {
+            push(Stack::Python, dir, &mut targets);
+        }
+        if has("Package.resolved") {
+            push(Stack::Swift, dir, &mut targets);
+        }
+        if has("gradlew") {
+            push(Stack::Kotlin, dir, &mut targets);
+        }
+        if has("mix.lock") {
+            elixir = true;
+        }
+    }
+    if elixir || !mix_audit_projects(root).is_empty() {
+        push(Stack::Elixir, root, &mut targets);
+    }
+    let covered = targets.iter().any(|t| t.stack == *stack);
+    if !covered && (*stack != Stack::Cpp || targets.is_empty()) {
+        push(stack.clone(), root, &mut targets);
+    }
+    targets
+}
+
+/// The repository's own project directories, root first: every directory to
+/// a depth of four, skipping hidden directories, build output, installed
+/// dependencies, fixtures and vendored trees (`vendor/`, `third_party/`, and
+/// paths `.gitattributes` marks `linguist-vendored`). Lockfile discovery for
+/// the audit and the dependency classifier both walk these.
+pub(crate) fn project_dirs(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, root: &Path, marked: &[String], depth: usize, out: &mut Vec<PathBuf>) {
+        out.push(dir.to_path_buf());
+        if depth == AUDIT_SEARCH_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut children: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                !name.starts_with('.') && !AUDIT_SKIP_DIRS.contains(&name.as_ref())
+            })
+            .map(|e| e.path())
+            .filter(|p| {
+                let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+                !crate::dependency_updates::is_vendored(&rel, marked)
+            })
+            .collect();
+        children.sort();
+        for child in children {
+            walk(&child, root, marked, depth + 1, out);
+        }
+    }
+    let marked = std::fs::read_to_string(root.join(".gitattributes"))
+        .map(|t| crate::dependency_updates::gitattributes_vendored(&t))
+        .unwrap_or_default();
+    let mut dirs = Vec::new();
+    walk(root, root, &marked, 0, &mut dirs);
+    dirs
+}
+
+/// Merge per-target results. With one target its result stands as is; with
+/// several, every finding is kept and every failure is named by its target.
+fn merge_target_results(results: Vec<(String, AuditResult)>, single: bool) -> AuditResult {
+    if single && let Some((_, only)) = results.first() {
+        return only.clone();
+    }
+    let mut seen = HashSet::new();
+    let mut merged = AuditResult {
+        vulnerabilities: Vec::new(),
+        error: None,
+        below_threshold: 0,
+    };
+    let mut errors = Vec::new();
+    for (label, result) in results {
+        merged.below_threshold += result.below_threshold;
+        for v in result.vulnerabilities {
+            if seen.insert((v.package.clone(), v.version.clone(), v.cve.clone())) {
+                merged.vulnerabilities.push(v);
+            }
+        }
+        if let Some(e) = result.error {
+            errors.push(format!("{label}: {e}"));
+        }
+    }
+    merged.error = (!errors.is_empty()).then(|| errors.join("; "));
+    merged
+}
+
+/// Audit one ecosystem in one directory with the stack's own tool.
+async fn run_stack_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
     match audit_plan(path, stack) {
         AuditPlan::NotAudited => {
             tracing::info!("no standard audit tool for C++ projects");
@@ -73,31 +263,28 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
         }
         AuditPlan::Stdout { command, args } => {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let result = match crate::shell::run(path, &command, &args, None, None).await {
-                Ok(output) => output,
-                Err(e) => return Ok(spawn_failure(stack, &e)),
-            };
-
-            // Some tools exit non-zero when vulnerabilities are found; that is not a failure.
-            if !result.success && !is_audit_vuln_exit_code(stack, result.exit_code) {
-                return Ok(exit_failure(stack, result.exit_code, &result.stderr));
-            }
-
-            let mut parsed = parse_audit_output(stack, &result.stdout);
-            if let Some(err) = parsed.error.take() {
-                // The report is missing or unreadable: say why, from stderr.
-                let detail = tail(result.stderr.trim(), 500);
-                parsed.error = Some(if detail.is_empty() {
-                    format!("{err} (exit {})", result.exit_code)
-                } else {
-                    format!("{err} (exit {}): {detail}", result.exit_code)
-                });
-            }
-            Ok(parsed)
+            Ok(
+                run_stdout_audit(path, stack, &command, &args, |out| {
+                    parse_audit_output(stack, out)
+                })
+                .await,
+            )
+        }
+        AuditPlan::Osv { lockfile } => {
+            let args = [
+                "scan",
+                "source",
+                "--format",
+                "json",
+                "--lockfile",
+                lockfile.as_str(),
+            ];
+            Ok(run_stdout_audit(path, stack, "osv-scanner", &args, parse_osv_scanner).await)
         }
         AuditPlan::MixProjects { dirs } => {
             let (command, args) = audit_command(stack);
             let mut runs = Vec::with_capacity(dirs.len());
+            let mut fetch_errors = Vec::new();
             for dir in &dirs {
                 let rel = dir
                     .strip_prefix(path)
@@ -105,9 +292,20 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
                     .map(|r| r.display().to_string())
                     .filter(|r| !r.is_empty())
                     .unwrap_or_else(|| ".".to_string());
+                // A lockfile that moved ahead of deps/ makes `mix deps.audit`
+                // refuse to run ("lock mismatch"). Fetch the locked versions
+                // first, in the same environment the audit runs in.
+                if let Some(error) = mix_deps_get(dir, &rel).await {
+                    fetch_errors.push(error);
+                    continue;
+                }
                 runs.push((rel, crate::shell::run(dir, command, &args, None, None).await));
             }
-            let result = merge_mix_runs(runs);
+            let mut result = merge_mix_runs(runs);
+            if !fetch_errors.is_empty() {
+                fetch_errors.extend(result.error.take());
+                result.error = Some(fetch_errors.join("; "));
+            }
             if let Some(err) = &result.error {
                 tracing::warn!(stack = %stack, %err, "mix deps.audit did not produce a complete report");
             }
@@ -214,7 +412,8 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             }
             AuditPlan::MixProjects { dirs }
         }
-        Stack::Rust | Stack::TypeScript | Stack::Swift => {
+        Stack::TypeScript => javascript_plan(path),
+        Stack::Rust | Stack::Swift => {
             let (command, args) = audit_command(stack);
             AuditPlan::Stdout {
                 command: command.to_string(),
@@ -222,6 +421,94 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             }
         }
     }
+}
+
+/// How long `mix deps.get` may take before the audit gives up on a project.
+const MIX_DEPS_GET_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Run `mix deps.get` in a Mix project. `None` on success; otherwise the
+/// reason, naming the project, for the scan's error.
+async fn mix_deps_get(dir: &Path, rel: &str) -> Option<String> {
+    mix_deps_get_with(dir, rel, "mix").await
+}
+
+async fn mix_deps_get_with(dir: &Path, rel: &str, mix: &str) -> Option<String> {
+    match crate::shell::run(dir, mix, &["deps.get"], None, Some(MIX_DEPS_GET_TIMEOUT)).await {
+        Ok(r) if r.success => None,
+        Ok(r) => {
+            let detail = format!("{}\n{}", r.stdout.trim(), r.stderr.trim());
+            Some(format!(
+                "mix deps.get in {rel} failed (exit {}): {}",
+                r.exit_code,
+                tail(detail.trim(), 500)
+            ))
+        }
+        Err(e) => Some(format!("mix deps.get in {rel} could not run: {e:#}")),
+    }
+}
+
+/// Run an audit tool that prints its JSON report on stdout, and parse it.
+async fn run_stdout_audit(
+    path: &Path,
+    stack: &Stack,
+    command: &str,
+    args: &[&str],
+    parse: impl Fn(&str) -> AuditResult,
+) -> AuditResult {
+    let result = match crate::shell::run(path, command, args, None, None).await {
+        Ok(output) => output,
+        Err(e) => return spawn_failure(stack, &e),
+    };
+
+    // Some tools exit non-zero when vulnerabilities are found; that is not a failure.
+    if !result.success && !is_audit_vuln_exit_code(stack, result.exit_code) {
+        return exit_failure(stack, result.exit_code, &result.stderr);
+    }
+
+    let mut parsed = parse(&result.stdout);
+    if let Some(err) = parsed.error.take() {
+        // The report is missing or unreadable: say why, from stderr.
+        let detail = tail(result.stderr.trim(), 500);
+        parsed.error = Some(if detail.is_empty() {
+            format!("{err} (exit {})", result.exit_code)
+        } else {
+            format!("{err} (exit {}): {detail}", result.exit_code)
+        });
+    }
+    parsed
+}
+
+/// A JavaScript project is audited through its lockfile: `npm audit` reads
+/// `package-lock.json`; `osv-scanner` reads a text `bun.lock`, `yarn.lock` or
+/// `pnpm-lock.yaml`. `npm audit` refuses a project without its own lockfile,
+/// so a Bun project must not be sent to it.
+fn javascript_plan(path: &Path) -> AuditPlan {
+    if path.join("package-lock.json").is_file() {
+        let (command, args) = audit_command(&Stack::TypeScript);
+        return AuditPlan::Stdout {
+            command: command.to_string(),
+            args: args.into_iter().map(str::to_string).collect(),
+        };
+    }
+    if let Some(lockfile) = ["bun.lock", "yarn.lock", "pnpm-lock.yaml"]
+        .into_iter()
+        .find(|f| path.join(f).is_file())
+    {
+        return AuditPlan::Osv {
+            lockfile: lockfile.to_string(),
+        };
+    }
+    if path.join("bun.lockb").is_file() {
+        return AuditPlan::Unavailable(
+            "bun.lockb is binary and cannot be scanned; switch to the text lockfile \
+             (bun install --save-text-lockfile)"
+                .to_string(),
+        );
+    }
+    AuditPlan::Unavailable(
+        "no JavaScript lockfile (package-lock.json, bun.lock, yarn.lock or pnpm-lock.yaml)"
+            .to_string(),
+    )
 }
 
 /// Map each global-tool stack to its audit command and arguments.
@@ -2541,5 +2828,143 @@ mod tests {
         let result = super::audit_outcome(audit);
         assert!(result.is_ok());
         assert!(result.unwrap().vulnerabilities.is_empty());
+    }
+
+    // --- repository-wide audit targets ------------------------------------
+
+    fn touch(root: &Path, rel: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    fn target_labels(root: &Path, stack: &Stack) -> Vec<String> {
+        audit_targets(root, stack).iter().map(|t| t.label(root)).collect()
+    }
+
+    #[test]
+    fn a_monorepo_audits_every_ecosystem_and_lockfile_it_holds() {
+        // The epilogue-tracker layout.
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "apps/cli/Cargo.lock");
+        touch(dir.path(), "apps/web/mix.lock");
+        touch(dir.path(), "apps/web/assets/package-lock.json");
+        touch(dir.path(), "apps/e2e/bun.lock");
+        touch(dir.path(), "bun.lock");
+        // Never audited: installed deps, build output, vendored code, fixtures.
+        touch(dir.path(), "node_modules/x/package-lock.json");
+        touch(dir.path(), "apps/cli/target/debug/Cargo.lock");
+        touch(dir.path(), "vendor/lib/Cargo.lock");
+        touch(dir.path(), "tests/fixtures/app/Cargo.lock");
+
+        assert_eq!(
+            target_labels(dir.path(), &Stack::Rust),
+            [
+                ". (typescript)",
+                "apps/cli (rust)",
+                "apps/e2e (typescript)",
+                "apps/web/assets (typescript)",
+                ". (elixir)",
+            ]
+        );
+    }
+
+    #[test]
+    fn linguist_vendored_paths_are_not_walked() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.lock");
+        touch(dir.path(), "libs/forked/Cargo.lock");
+        std::fs::write(dir.path().join(".gitattributes"), "libs/forked/** linguist-vendored\n")
+            .unwrap();
+        assert_eq!(target_labels(dir.path(), &Stack::Rust), [". (rust)"]);
+    }
+
+    #[test]
+    fn the_registered_stack_is_audited_even_without_a_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(target_labels(dir.path(), &Stack::Rust), [". (rust)"]);
+        touch(dir.path(), "bun.lock");
+        assert_eq!(target_labels(dir.path(), &Stack::Rust), [". (typescript)", ". (rust)"]);
+        assert_eq!(target_labels(dir.path(), &Stack::Cpp), [". (typescript)"], "C++ adds nothing");
+    }
+
+    #[test]
+    fn javascript_lockfiles_choose_the_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            matches!(javascript_plan(dir.path()), AuditPlan::Unavailable(m) if m.contains("no JavaScript lockfile"))
+        );
+        touch(dir.path(), "bun.lockb");
+        assert!(
+            matches!(javascript_plan(dir.path()), AuditPlan::Unavailable(m) if m.contains("bun.lockb is binary"))
+        );
+        touch(dir.path(), "bun.lock");
+        assert_eq!(
+            javascript_plan(dir.path()),
+            AuditPlan::Osv {
+                lockfile: "bun.lock".to_string()
+            }
+        );
+        touch(dir.path(), "package-lock.json");
+        assert!(
+            matches!(javascript_plan(dir.path()), AuditPlan::Stdout { command, .. } if command == "npm")
+        );
+    }
+
+    #[test]
+    fn merged_results_keep_findings_and_name_each_failure() {
+        let vuln = Vulnerability {
+            cve: Some("GHSA-1".to_string()),
+            severity: None,
+            package: "dompurify".to_string(),
+            version: Some("3.3.1".to_string()),
+            fix_version: Some("3.4.6".to_string()),
+            fix_package: None,
+            aliases: Vec::new(),
+        };
+        let ok = AuditResult {
+            vulnerabilities: vec![vuln.clone()],
+            error: None,
+            below_threshold: 0,
+        };
+        let failed = tool_error("no Mix project declares mix_audit".to_string());
+        let merged = merge_target_results(
+            vec![
+                (". (typescript)".to_string(), ok.clone()),
+                ("apps/e2e (typescript)".to_string(), ok),
+                (". (elixir)".to_string(), failed),
+            ],
+            false,
+        );
+        assert_eq!(merged.vulnerabilities.len(), 1, "the same finding twice is reported once");
+        assert_eq!(merged.error.as_deref(), Some(". (elixir): no Mix project declares mix_audit"));
+    }
+
+    #[test]
+    fn a_single_target_result_is_unchanged() {
+        let failed = tool_error("Couldn't load Cargo.lock".to_string());
+        let merged = merge_target_results(vec![(". (rust)".to_string(), failed)], true);
+        assert_eq!(merged.error.as_deref(), Some("Couldn't load Cargo.lock"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_mix_deps_get_is_reported_and_names_the_project() {
+        // A `mix` on PATH that fails `deps.get` the way a lock mismatch would.
+        let bin = tempfile::tempdir().unwrap();
+        let script = bin.path().join("mix");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"lock mismatch: run mix deps.get\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let error = mix_deps_get_with(dir.path(), "apps/bedrock", script.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(error.starts_with("mix deps.get in apps/bedrock failed (exit 1)"), "{error}");
+        assert!(error.contains("lock mismatch"), "{error}");
     }
 }

@@ -51,6 +51,22 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
   it writes, so the project's suppression file decides what counts.
   Dependency-Check names no fix version, so every Kotlin finding is a policy
   call.
+- **Every ecosystem in the repository is audited**, not only the registered
+  stack. Foundry walks the repository (to a depth of four, skipping
+  `target/`, `deps/`, `_build/`, `node_modules/`, `build/`, `dist/`,
+  fixtures and vendored trees) and audits each lockfile it finds with that
+  ecosystem's tool: `Cargo.lock` with `cargo audit`, `package-lock.json`
+  with `npm audit`, a text `bun.lock`, `yarn.lock` or `pnpm-lock.yaml` with
+  `osv-scanner`, `uv.lock` with the project's `pip-audit`,
+  `Package.resolved` with `osv-scanner`, and `gradlew` with Dependency-Check.
+  Mix projects are found as before. A binary `bun.lockb` is reported as not
+  scanned. The results are merged: every finding is kept, and any part that
+  could not be audited makes the project "not scanned", with the failing
+  part named (for example `apps/cli (rust): …`).
+- **Mix projects fetch before they audit.** Foundry runs `mix deps.get` in
+  each audited Mix project before `mix deps.audit`, because a lockfile that
+  moved ahead of `deps/` makes the audit refuse to run. A failed fetch is
+  reported with the project's path.
 - **`RemediateSupplyChain`** triages every live finding by fix availability and
   emits `SupplyChainRemediated`, carrying the scan through. A *populated* fix
   version means the advisory is mechanically **auto-fixable**; an *empty* one

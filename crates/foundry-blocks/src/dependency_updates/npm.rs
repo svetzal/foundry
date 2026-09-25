@@ -11,10 +11,10 @@ use super::{Declared, Scope, read_text, unclassified};
 /// The `package.json` tables that declare what the project installs.
 const TABLES: [&str; 3] = ["dependencies", "devDependencies", "optionalDependencies"];
 
-pub(super) fn scopes(root: &Path) -> Vec<Scope> {
+pub(super) fn scopes(root: &Path, rel: &str) -> Vec<Scope> {
     let manifest = match read_text(&root.join("package.json")) {
         Ok(t) => t,
-        Err(reason) => return vec![unclassified(Ecosystem::Npm, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Npm, rel, reason)],
     };
     let locked = if root.join("package-lock.json").is_file() {
         read_text(&root.join("package-lock.json")).and_then(|t| parse_package_lock(&t))
@@ -32,12 +32,12 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
     };
     let locked = match locked {
         Ok(l) => l,
-        Err(reason) => return vec![unclassified(Ecosystem::Npm, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Npm, rel, reason)],
     };
     match parse_manifest(&manifest) {
         Ok(declared) => vec![Scope {
             ecosystem: Ecosystem::Npm,
-            manifest: ".".to_string(),
+            manifest: rel.to_string(),
             deps: declared
                 .into_iter()
                 // git, path and alias dependencies are not from the registry.
@@ -49,7 +49,7 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
                 .collect(),
             unclassified: Vec::new(),
         }],
-        Err(reason) => vec![unclassified(Ecosystem::Npm, ".", reason)],
+        Err(reason) => vec![unclassified(Ecosystem::Npm, rel, reason)],
     }
 }
 

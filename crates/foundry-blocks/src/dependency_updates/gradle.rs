@@ -28,19 +28,24 @@ const PLUGIN_REPOSITORIES: [&str; 3] = [
     "https://repo1.maven.org/maven2",
 ];
 
-pub(super) fn scopes(root: &Path) -> Vec<Scope> {
+pub(super) fn scopes(root: &Path, rel: &str) -> Vec<Scope> {
+    let manifest = if rel == "." {
+        CATALOG.to_string()
+    } else {
+        format!("{rel}/{CATALOG}")
+    };
     let text = match read_text(&root.join(CATALOG)) {
         Ok(t) => t,
-        Err(reason) => return vec![unclassified(Ecosystem::Maven, CATALOG, reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Maven, &manifest, reason)],
     };
     match parse_catalog(&text) {
         Ok(deps) => vec![Scope {
             ecosystem: Ecosystem::Maven,
-            manifest: CATALOG.to_string(),
+            manifest: manifest.clone(),
             deps,
             unclassified: Vec::new(),
         }],
-        Err(reason) => vec![unclassified(Ecosystem::Maven, CATALOG, reason)],
+        Err(reason) => vec![unclassified(Ecosystem::Maven, &manifest, reason)],
     }
 }
 

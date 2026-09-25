@@ -17,17 +17,17 @@ const TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependenci
 
 /// Every crates.io dependency declared by the root manifest and its workspace
 /// members, with its locked version.
-pub(super) fn scopes(root: &Path) -> Vec<Scope> {
+pub(super) fn scopes(root: &Path, rel: &str) -> Vec<Scope> {
     let manifest = match read_text(&root.join("Cargo.toml")) {
         Ok(text) => text,
-        Err(reason) => return vec![unclassified(Ecosystem::Cargo, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Cargo, rel, reason)],
     };
     let lock = match read_text(&root.join("Cargo.lock")) {
         Ok(text) => text,
         Err(reason) => {
             return vec![unclassified(
                 Ecosystem::Cargo,
-                ".",
+                rel,
                 format!("{reason} (commit Cargo.lock to classify)"),
             )];
         }
@@ -37,7 +37,7 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
         Err(e) => {
             return vec![unclassified(
                 Ecosystem::Cargo,
-                ".",
+                rel,
                 format!("Cargo.toml: {e}"),
             )];
         }
@@ -48,17 +48,17 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
             toml::from_str::<Value>(&t).map_err(|e| format!("{}: {e}", member.display()))
         }) {
             Ok(v) => manifests.push(v),
-            Err(reason) => return vec![unclassified(Ecosystem::Cargo, ".", reason)],
+            Err(reason) => return vec![unclassified(Ecosystem::Cargo, rel, reason)],
         }
     }
     match parse_lock(&lock) {
         Ok(locked) => vec![Scope {
             ecosystem: Ecosystem::Cargo,
-            manifest: ".".to_string(),
+            manifest: rel.to_string(),
             deps: declared(&root_manifest, &manifests, &locked),
             unclassified: Vec::new(),
         }],
-        Err(reason) => vec![unclassified(Ecosystem::Cargo, ".", reason)],
+        Err(reason) => vec![unclassified(Ecosystem::Cargo, rel, reason)],
     }
 }
 

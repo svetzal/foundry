@@ -131,39 +131,66 @@ pub(crate) fn read_text(path: &Path) -> Result<String, String> {
     })
 }
 
-/// Every scope in the repository, by ecosystem manifest present at the root
-/// (and every Mix project, found the way the audit finds them).
+/// Every scope in the repository.
+///
+/// The root is classified as before: any manifest there is a scope, and a
+/// missing lockfile is reported. Subdirectories (found by
+/// `scanner::project_dirs`, which skips build output, installed
+/// dependencies, fixtures and vendored trees) are scopes only where a manifest
+/// sits beside its lockfile, so a Cargo workspace member or a stray
+/// `package.json` is not reported as unclassified. Mix projects are found the
+/// way the audit finds them.
 pub fn discover(root: &Path, stack: &Stack) -> Vec<Scope> {
     let mut scopes = Vec::new();
-    if root.join("Cargo.toml").is_file() {
-        scopes.extend(cargo::scopes(root));
+    for dir in crate::scanner::project_dirs(root) {
+        let rel = dir
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.display().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        let at_root = rel == ".";
+        let has = |f: &str| dir.join(f).is_file();
+        if has("Cargo.toml") && (at_root || has("Cargo.lock")) {
+            scopes.extend(cargo::scopes(&dir, &rel));
+        }
+        let js_lock = [
+            "package-lock.json",
+            "bun.lock",
+            "bun.lockb",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+        ]
+        .iter()
+        .any(|f| has(f));
+        if has("package.json") && (at_root || js_lock) {
+            scopes.extend(npm::scopes(&dir, &rel));
+        }
+        if has("pyproject.toml") && (at_root || has("uv.lock")) {
+            scopes.extend(python::scopes(&dir, &rel));
+        } else if at_root && has("requirements.txt") {
+            scopes.push(unclassified(
+                Ecosystem::Pypi,
+                ".",
+                "requirements.txt without pyproject.toml and uv.lock is not supported".to_string(),
+            ));
+        }
+        if has(gradle::CATALOG) {
+            scopes.extend(gradle::scopes(&dir, &rel));
+        }
+        if has("Package.swift") && (at_root || has("Package.resolved")) {
+            scopes.extend(swiftpm::scopes(&dir, &rel));
+        }
     }
     if root.join("mix.exs").is_file() || !crate::scanner::mix_projects(root).is_empty() {
         scopes.extend(hex::scopes(root));
     }
-    if root.join("package.json").is_file() {
-        scopes.extend(npm::scopes(root));
-    }
-    if root.join("pyproject.toml").is_file() {
-        scopes.extend(python::scopes(root));
-    } else if root.join("requirements.txt").is_file() {
-        scopes.push(unclassified(
-            Ecosystem::Pypi,
-            ".",
-            "requirements.txt without pyproject.toml and uv.lock is not supported".to_string(),
-        ));
-    }
-    if root.join(gradle::CATALOG).is_file() {
-        scopes.extend(gradle::scopes(root));
-    } else if *stack == Stack::Kotlin {
+    if *stack == Stack::Kotlin && !scopes.iter().any(|s| s.ecosystem == Ecosystem::Maven) {
         scopes.push(unclassified(
             Ecosystem::Maven,
             gradle::CATALOG,
             "no Gradle version catalog; only gradle/libs.versions.toml is classified".to_string(),
         ));
-    }
-    if root.join("Package.swift").is_file() {
-        scopes.extend(swiftpm::scopes(root));
     }
     scopes
 }
@@ -1187,5 +1214,30 @@ mod tests {
         assert_eq!(c.transitive_advisories[0].package, "idna");
         assert_eq!(c.transitive_advisories[0].ecosystem, Ecosystem::Cargo);
         assert_eq!(c.advisory_source.as_deref(), Some("supply-chain scan 2026-09-25"));
+    }
+
+    #[test]
+    fn subdirectory_lockfiles_are_scopes_and_vendored_or_build_trees_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "apps/cli/Cargo.toml",
+            "[package]\nname='cli'\n[dependencies]\nserde='1'\n",
+        );
+        write(
+            dir.path(),
+            "apps/cli/Cargo.lock",
+            "version=4\n[[package]]\nname='serde'\nversion='1.0.100'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n",
+        );
+        write(dir.path(), "package.json", r#"{"devDependencies":{"zod":"^3.0.0"}}"#);
+        write(dir.path(), "bun.lock", r#"{"packages":{"zod":["zod@3.0.0","",{},""]}}"#);
+        write(dir.path(), "apps/cli/crates/member/Cargo.toml", "[package]\nname='m'\n");
+        write(dir.path(), "node_modules/x/package.json", "{}");
+        write(dir.path(), "node_modules/x/package-lock.json", "{}");
+        write(dir.path(), "vendor/lib/Cargo.toml", "[package]\nname='v'\n");
+        write(dir.path(), "vendor/lib/Cargo.lock", "version=4\n");
+        let labels: Vec<String> =
+            discover(dir.path(), &Stack::Rust).iter().map(Scope::label).collect();
+        assert_eq!(labels, ["npm (.)", "cargo (apps/cli)"]);
     }
 }

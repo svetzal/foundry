@@ -52,6 +52,12 @@ candidate versions:
 | `non_major` | The newest release that is not a major from the current version. |
 | `major` | The newest release, when it is a major. |
 
+Foundry classifies every ecosystem in the repository, not only the
+registered stack. Manifests at the root are always classified. In
+subdirectories, a manifest is classified where its lockfile sits beside it
+(for example `apps/cli/Cargo.lock`); build output, installed dependencies,
+fixtures and vendored trees are skipped.
+
 Foundry reads each ecosystem's own files and asks each ecosystem's own
 registry. It does not need the project's toolchain to be installed.
 

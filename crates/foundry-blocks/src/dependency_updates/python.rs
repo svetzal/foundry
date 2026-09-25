@@ -9,10 +9,10 @@ use toml::Value;
 
 use super::{Declared, Scope, read_text, unclassified};
 
-pub(super) fn scopes(root: &Path) -> Vec<Scope> {
+pub(super) fn scopes(root: &Path, rel: &str) -> Vec<Scope> {
     let manifest = match read_text(&root.join("pyproject.toml")) {
         Ok(t) => t,
-        Err(reason) => return vec![unclassified(Ecosystem::Pypi, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Pypi, rel, reason)],
     };
     if !root.join("uv.lock").is_file() {
         let reason = if root.join("poetry.lock").is_file() {
@@ -20,16 +20,16 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
         } else {
             "no uv.lock"
         };
-        return vec![unclassified(Ecosystem::Pypi, ".", reason.to_string())];
+        return vec![unclassified(Ecosystem::Pypi, rel, reason.to_string())];
     }
     let lock = match read_text(&root.join("uv.lock")).and_then(|t| parse_uv_lock(&t)) {
         Ok(l) => l,
-        Err(reason) => return vec![unclassified(Ecosystem::Pypi, ".", reason)],
+        Err(reason) => return vec![unclassified(Ecosystem::Pypi, rel, reason)],
     };
     match parse_pyproject(&manifest) {
         Ok(declared) => vec![Scope {
             ecosystem: Ecosystem::Pypi,
-            manifest: ".".to_string(),
+            manifest: rel.to_string(),
             deps: declared
                 .into_iter()
                 .map(|(name, req)| {
@@ -39,7 +39,7 @@ pub(super) fn scopes(root: &Path) -> Vec<Scope> {
                 .collect(),
             unclassified: Vec::new(),
         }],
-        Err(reason) => vec![unclassified(Ecosystem::Pypi, ".", reason)],
+        Err(reason) => vec![unclassified(Ecosystem::Pypi, rel, reason)],
     }
 }
 
