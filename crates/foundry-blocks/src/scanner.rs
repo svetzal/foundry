@@ -68,6 +68,13 @@ enum AuditPlan {
 /// When an audit tool is not installed or returns a non-vulnerability failure,
 /// the error is captured in [`AuditResult::error`] and `Ok` is returned.
 pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
+    if !has_dependency_manifest(path) {
+        tracing::info!(path = %path.display(), "no dependency manifests; nothing to audit");
+        return Ok(AuditResult {
+            nothing_to_audit: true,
+            ..AuditResult::default()
+        });
+    }
     let targets = audit_targets(path, stack);
     let single = targets.len() == 1;
     let mut results = Vec::with_capacity(targets.len());
@@ -218,6 +225,55 @@ pub(crate) fn project_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Files that declare a project's dependencies, in any ecosystem. A lockfile
+/// counts too: it is a declaration of what is installed.
+const DEPENDENCY_MANIFESTS: [&str; 28] = [
+    "package.json",
+    "package-lock.json",
+    "bun.lock",
+    "bun.lockb",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.toml",
+    "Cargo.lock",
+    "pyproject.toml",
+    "uv.lock",
+    "poetry.lock",
+    "Pipfile",
+    "setup.py",
+    "setup.cfg",
+    "mix.exs",
+    "mix.lock",
+    "Package.swift",
+    "Package.resolved",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle.kts",
+    "settings.gradle",
+    "gradlew",
+    "pom.xml",
+    "go.mod",
+    "Gemfile",
+    "composer.json",
+    "conanfile.txt",
+];
+
+/// Whether the repository declares dependencies anywhere Foundry walks
+/// (`project_dirs`), in any ecosystem. `requirements*.txt` counts as well.
+/// A repository with none has nothing to audit, which is not a scan failure.
+pub(crate) fn has_dependency_manifest(root: &Path) -> bool {
+    project_dirs(root).iter().any(|dir| {
+        DEPENDENCY_MANIFESTS.iter().any(|f| dir.join(f).is_file())
+            || std::fs::read_dir(dir).is_ok_and(|entries| {
+                entries.flatten().any(|e| {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with("requirements") && name.ends_with(".txt")
+                })
+            })
+    })
+}
+
 /// Merge per-target results. With one target its result stands as is; with
 /// several, every finding is kept and every failure is named by its target.
 fn merge_target_results(results: Vec<(String, AuditResult)>, single: bool) -> AuditResult {
@@ -229,6 +285,7 @@ fn merge_target_results(results: Vec<(String, AuditResult)>, single: bool) -> Au
         vulnerabilities: Vec::new(),
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     };
     let mut errors = Vec::new();
     for (label, result) in results {
@@ -255,6 +312,7 @@ async fn run_stack_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
                 vulnerabilities: vec![],
                 error: None,
                 below_threshold: 0,
+                nothing_to_audit: false,
             })
         }
         AuditPlan::Unavailable(msg) => {
@@ -602,6 +660,7 @@ fn tool_error(msg: String) -> AuditResult {
         vulnerabilities: vec![],
         error: Some(msg),
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -680,6 +739,7 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("cargo audit JSON parse error: {e}")),
                 below_threshold: 0,
+                nothing_to_audit: false,
             };
         }
     };
@@ -726,6 +786,9 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
                 fix_version,
                 fix_package: None,
                 aliases: string_array(&advisory["aliases"]),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             }
         })
         .collect();
@@ -734,6 +797,7 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -798,6 +862,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("npm audit JSON parse error: {e}")),
                 below_threshold: 0,
+                nothing_to_audit: false,
             };
         }
     };
@@ -806,40 +871,98 @@ fn parse_npm_audit(output: &str) -> AuditResult {
         return AuditResult::default();
     };
 
-    let vulnerabilities = vulns_map
-        .values()
-        .map(|entry| {
-            let package = entry["name"].as_str().unwrap_or("unknown").to_owned();
-            let severity = entry["severity"].as_str().map(str::to_owned);
+    let mut seen = HashSet::new();
+    let mut vulnerabilities = Vec::new();
+    for entry in vulns_map.values() {
+        let entry_name = entry["name"].as_str().unwrap_or("unknown");
+        // `fixAvailable` is `false` (no fix), `true` (a fix exists; npm names
+        // no version at this node), or `{name, version, isSemVerMajor}`.
+        let fix = &entry["fixAvailable"];
+        let fix_available = fix.as_bool().unwrap_or(false) || fix.is_object();
+        let fix_version = fix["version"].as_str().and_then(bare_version);
+        let fix_package = fix["name"].as_str().map(str::to_owned);
+        let fix_is_major = fix["isSemVerMajor"].as_bool().unwrap_or(false);
 
-            // `via` can be a mix of strings (CVE IDs) and objects (nested vulns).
-            let cve = entry["via"]
+        // `via` mixes advisory objects (this package is itself vulnerable)
+        // and package names (it is vulnerable through that dependency). The
+        // advisories are reported on the package they name; a name-only entry
+        // adds nothing the named package's entry does not already carry.
+        let advisories: Vec<&Value> = entry["via"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|v| v.is_object())
+            .collect();
+        if advisories.is_empty() {
+            // Only via other packages. Legacy reports (npm 6) put bare
+            // advisory IDs here; keep those.
+            let legacy = entry["via"]
                 .as_array()
-                .and_then(|arr| arr.iter().find_map(|v| v.as_str()))
-                .map(str::to_owned);
-
-            // `fixAvailable` is `false` (no fix), `true` (a fix exists but npm
-            // gives no version at this node), or an object `{name, version, …}`.
-            // Only the object form yields a precise fix version.
-            let fix_version = entry["fixAvailable"]["version"].as_str().and_then(bare_version);
-            let fix_package = entry["fixAvailable"]["name"].as_str().map(str::to_owned);
-
-            Vulnerability {
-                cve,
-                severity,
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .find(|id| id.starts_with("GHSA-") || id.starts_with("CVE-"));
+            if let Some(id) = legacy
+                && seen.insert((id.to_owned(), entry_name.to_owned()))
+            {
+                vulnerabilities.push(Vulnerability {
+                    cve: Some(id.to_owned()),
+                    severity: entry["severity"].as_str().map(str::to_owned),
+                    package: entry_name.to_owned(),
+                    version: None,
+                    fix_version,
+                    fix_package,
+                    aliases: Vec::new(),
+                    fix_available,
+                    fix_is_major,
+                    vulnerable_range: entry["range"].as_str().map(str::to_owned),
+                });
+            }
+            continue;
+        }
+        for advisory in advisories {
+            let url = advisory["url"].as_str().unwrap_or("");
+            let ghsa = url.rsplit('/').next().filter(|id| id.starts_with("GHSA-"));
+            let id = ghsa
+                .map(str::to_owned)
+                .or_else(|| advisory["source"].as_u64().map(|n| format!("npm-{n}")));
+            let Some(id) = id else { continue };
+            let package = advisory["dependency"]
+                .as_str()
+                .or_else(|| advisory["name"].as_str())
+                .unwrap_or(entry_name)
+                .to_owned();
+            if !seen.insert((id.clone(), package.clone())) {
+                continue;
+            }
+            let mut aliases = Vec::new();
+            if let Some(n) = advisory["source"].as_u64() {
+                aliases.push(format!("npm-{n}"));
+            }
+            aliases.retain(|a| a != &id);
+            vulnerabilities.push(Vulnerability {
+                cve: Some(id),
+                severity: advisory["severity"]
+                    .as_str()
+                    .or_else(|| entry["severity"].as_str())
+                    .map(str::to_owned),
                 package,
                 version: None,
-                fix_version,
-                fix_package,
-                aliases: Vec::new(),
-            }
-        })
-        .collect();
+                fix_version: fix_version.clone(),
+                fix_package: fix_package.clone(),
+                aliases,
+                fix_available,
+                fix_is_major,
+                vulnerable_range: advisory["range"].as_str().map(str::to_owned),
+            });
+        }
+    }
 
     AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -872,6 +995,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("pip-audit JSON parse error: {e}")),
                 below_threshold: 0,
+                nothing_to_audit: false,
             };
         }
     };
@@ -906,6 +1030,9 @@ fn parse_pip_audit(output: &str) -> AuditResult {
                 fix_version,
                 fix_package: None,
                 aliases: string_array(&vuln["aliases"]),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             });
         }
     }
@@ -914,6 +1041,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -1021,6 +1149,7 @@ fn merge_mix_runs(runs: Vec<(String, Result<crate::shell::CommandResult>)>) -> A
         vulnerabilities,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -1075,6 +1204,9 @@ fn parse_mix_audit(output: &str) -> AuditResult {
                     .and_then(bare_version),
                 fix_package: None,
                 aliases: Vec::new(),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             }
         })
         .collect();
@@ -1083,6 +1215,7 @@ fn parse_mix_audit(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -1162,6 +1295,9 @@ fn parse_osv_scanner(output: &str) -> AuditResult {
                 fix_version,
                 fix_package: None,
                 aliases,
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             });
         }
     }
@@ -1170,6 +1306,7 @@ fn parse_osv_scanner(output: &str) -> AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: 0,
+        nothing_to_audit: false,
     }
 }
 
@@ -1289,6 +1426,9 @@ fn parse_dependency_check(output: &str, min_cvss: Option<f32>) -> AuditResult {
                 fix_version: None,
                 fix_package: None,
                 aliases: Vec::new(),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             });
         }
     }
@@ -1306,6 +1446,7 @@ fn parse_dependency_check(output: &str, min_cvss: Option<f32>) -> AuditResult {
         vulnerabilities,
         error: None,
         below_threshold: u32::try_from(below_threshold).unwrap_or(u32::MAX),
+        nothing_to_audit: false,
     }
 }
 
@@ -1395,6 +1536,7 @@ pub(crate) fn audit_outcome(audit: anyhow::Result<AuditResult>) -> Result<AuditR
                     vulnerabilities: result.vulnerabilities,
                     error: None,
                     below_threshold: 0,
+                    nothing_to_audit: false,
                 })
             }
         }
@@ -1563,6 +1705,7 @@ mod tests {
         // (not a spawn failure, and never an `Err`). Project tooling lives in
         // the project's own environment.
         let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "pyproject.toml");
         let result = run_audit(dir.path(), &Stack::Python).await.unwrap();
         assert!(result.vulnerabilities.is_empty());
         assert_eq!(
@@ -1867,6 +2010,7 @@ mod tests {
     #[tokio::test]
     async fn pip_audit_exit_1_without_a_report_is_a_failure_that_says_why() {
         let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "pyproject.toml");
         std::fs::create_dir_all(dir.path().join(".venv/bin")).unwrap();
         let script = "#!/bin/sh\necho 'pip_audit._service.interface.ServiceError: 503 Server Error' >&2\nexit 1\n";
         let status = std::process::Command::new("sh")
@@ -1917,6 +2061,97 @@ mod tests {
     }
 
     // --- npm audit JSON parsing ---
+
+    /// npm 7+ output for a project whose direct dependency pulls a vulnerable
+    /// package through a chain (the e2e-uat and `coach_phoenix` shape).
+    const NPM_CHAIN: &str = r#"{
+      "auditReportVersion": 2,
+      "vulnerabilities": {
+        "axios": {
+          "name": "axios", "severity": "moderate", "isDirect": false,
+          "via": [{
+            "source": 1110000, "name": "axios", "dependency": "axios",
+            "title": "Axios is vulnerable to SSRF",
+            "url": "https://github.com/advisories/GHSA-xj6q-8x83-jv6g",
+            "severity": "moderate", "cwe": ["CWE-918"], "cvss": {"score": 5.3},
+            "range": "<1.18.0"
+          }],
+          "effects": ["@serenity-js/rest"], "range": "<1.18.0",
+          "nodes": ["node_modules/axios"], "fixAvailable": true
+        },
+        "@serenity-js/rest": {
+          "name": "@serenity-js/rest", "severity": "moderate", "isDirect": false,
+          "via": ["axios"], "effects": ["@serenity-js/playwright-test"], "range": "*",
+          "nodes": ["node_modules/@serenity-js/rest"], "fixAvailable": true
+        },
+        "@serenity-js/playwright-test": {
+          "name": "@serenity-js/playwright-test", "severity": "moderate", "isDirect": true,
+          "via": ["@serenity-js/rest"], "effects": [], "range": "<=3.31.0",
+          "nodes": ["node_modules/@serenity-js/playwright-test"],
+          "fixAvailable": {"name": "@serenity-js/playwright-test", "version": "3.40.0", "isSemVerMajor": true}
+        },
+        "diff": {
+          "name": "diff", "severity": "low", "isDirect": false,
+          "via": [{
+            "source": 1120000, "name": "diff", "dependency": "diff",
+            "title": "jsdiff denial of service",
+            "url": "https://github.com/advisories/GHSA-73rr-hh4g-fpgx",
+            "severity": "low", "range": ">=4.0.0 <4.0.4"
+          }],
+          "effects": ["@serenity-js/core"], "range": ">=4.0.0 <4.0.4",
+          "nodes": ["node_modules/diff"], "fixAvailable": false
+        },
+        "@serenity-js/core": {
+          "name": "@serenity-js/core", "severity": "low", "isDirect": false,
+          "via": ["diff"], "effects": [], "range": "*",
+          "nodes": ["node_modules/@serenity-js/core"], "fixAvailable": false
+        }
+      }
+    }"#;
+
+    #[test]
+    fn npm_via_chains_report_real_advisories_on_the_vulnerable_package() {
+        let result = parse_npm_audit(NPM_CHAIN);
+        assert!(result.error.is_none());
+        let mut ids: Vec<(&str, &str)> = result
+            .vulnerabilities
+            .iter()
+            .map(|v| (v.cve.as_deref().unwrap(), v.package.as_str()))
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                ("GHSA-73rr-hh4g-fpgx", "diff"),
+                ("GHSA-xj6q-8x83-jv6g", "axios")
+            ],
+            "package names in via chains are never advisory IDs"
+        );
+        let axios = result.vulnerabilities.iter().find(|v| v.package == "axios").unwrap();
+        assert!(axios.fix_available, "fixAvailable: true is a fix");
+        assert_eq!(axios.vulnerable_range.as_deref(), Some("<1.18.0"));
+        assert_eq!(axios.severity.as_deref(), Some("moderate"));
+        assert_eq!(axios.aliases, ["npm-1110000"]);
+        let diff = result.vulnerabilities.iter().find(|v| v.package == "diff").unwrap();
+        assert!(
+            !diff.fix_available && diff.fix_version.is_none(),
+            "fixAvailable: false is a policy call"
+        );
+    }
+
+    #[test]
+    fn npm_fix_objects_carry_version_package_and_major() {
+        let json = r#"{"vulnerabilities": {"ws": {
+          "name": "ws", "severity": "high",
+          "via": [{"source": 1, "name": "ws", "dependency": "ws", "title": "t",
+                   "url": "https://github.com/advisories/GHSA-3h5v-q93c-6h6q", "severity": "high", "range": "<8.17.1"}],
+          "fixAvailable": {"name": "parent", "version": "9.0.0", "isSemVerMajor": true}
+        }}}"#;
+        let v = &parse_npm_audit(json).vulnerabilities[0];
+        assert!(v.fix_available && v.fix_is_major);
+        assert_eq!(v.fix_version.as_deref(), Some("9.0.0"));
+        assert_eq!(v.fix_package.as_deref(), Some("parent"));
+    }
 
     #[test]
     fn parse_npm_audit_with_one_vulnerability() {
@@ -2136,6 +2371,7 @@ mod tests {
     #[tokio::test]
     async fn swift_without_package_resolved_is_not_scanned() {
         let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Package.swift");
         let result = run_audit(dir.path(), &Stack::Swift).await.unwrap();
         assert!(result.vulnerabilities.is_empty());
         assert!(
@@ -2319,6 +2555,7 @@ mod tests {
     #[tokio::test]
     async fn kotlin_without_gradle_wrapper_is_not_scanned() {
         let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "build.gradle.kts");
         let result = run_audit(dir.path(), &Stack::Kotlin).await.unwrap();
         assert!(result.vulnerabilities.is_empty());
         assert!(
@@ -2694,6 +2931,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }
     }
 
@@ -2702,6 +2942,7 @@ mod tests {
             vulnerabilities: vulns,
             error: None,
             below_threshold: 0,
+            nothing_to_audit: false,
         }
     }
 
@@ -2816,6 +3057,7 @@ mod tests {
             vulnerabilities: vec![],
             error: Some("tool not installed".to_string()),
             below_threshold: 0,
+            nothing_to_audit: false,
         });
         let result = super::audit_outcome(audit);
         assert!(result.is_err());
@@ -2921,11 +3163,15 @@ mod tests {
             fix_version: Some("3.4.6".to_string()),
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         };
         let ok = AuditResult {
             vulnerabilities: vec![vuln.clone()],
             error: None,
             below_threshold: 0,
+            nothing_to_audit: false,
         };
         let failed = tool_error("no Mix project declares mix_audit".to_string());
         let merged = merge_target_results(
@@ -2966,5 +3212,35 @@ mod tests {
             .unwrap();
         assert!(error.starts_with("mix deps.get in apps/bedrock failed (exit 1)"), "{error}");
         assert!(error.contains("lock mismatch"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_repository_with_no_manifests_has_nothing_to_audit() {
+        // The cloudformation-ort shape: templates and Python tests, no manifest.
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "main.yaml");
+        touch(dir.path(), "tests/test_templates.py");
+        touch(dir.path(), "node_modules/x/package.json");
+        let result = run_audit(dir.path(), &Stack::TypeScript).await.unwrap();
+        assert!(result.nothing_to_audit);
+        assert!(result.error.is_none(), "nothing to audit is not a failure");
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_manifest_without_a_lockfile_is_still_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "package.json");
+        let result = run_audit(dir.path(), &Stack::TypeScript).await.unwrap();
+        assert!(!result.nothing_to_audit);
+        assert!(result.error.unwrap().contains("no JavaScript lockfile"));
+    }
+
+    #[test]
+    fn requirements_files_count_as_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_dependency_manifest(dir.path()));
+        touch(dir.path(), "tests/requirements-dev.txt");
+        assert!(has_dependency_manifest(dir.path()));
     }
 }

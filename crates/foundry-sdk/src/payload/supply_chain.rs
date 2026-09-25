@@ -27,6 +27,25 @@ pub struct SupplyChainFinding {
     /// transitive package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_package: Option<String>,
+    /// A fix exists though the scanner names no version (npm's
+    /// `fixAvailable: true`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fix_available: bool,
+    /// The fix is a semver-major upgrade.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fix_is_major: bool,
+    /// The vulnerable version range, when the scanner reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulnerable_range: Option<String>,
+}
+
+impl SupplyChainFinding {
+    /// Whether a fix exists: a fix version, or the scanner saying one is
+    /// available. Only a finding with neither is a policy call.
+    #[must_use]
+    pub fn is_fixable(&self) -> bool {
+        self.fix_version.is_some() || self.fix_available
+    }
 }
 
 /// An advisory that the repo's `.supply-chain-allow.json` spoke to — either an
@@ -63,6 +82,9 @@ pub struct ProjectSupplyChainScan {
     /// A scan error is reported, not failed — the project run stays green.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_error: Option<String>,
+    /// The repository has no dependency manifest for any ecosystem.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nothing_to_audit: bool,
 }
 
 /// Payload for `SupplyChainScanned` — the formation's mid-chain evidence event,
@@ -193,5 +215,15 @@ mod tests {
 
         let json = serde_json::to_value(finding).unwrap();
         assert_eq!(json["fix_package"], "direct-parent");
+    }
+
+    #[test]
+    fn a_finding_with_an_available_fix_is_fixable_even_without_a_version() {
+        let available = SupplyChainFinding {
+            fix_available: true,
+            ..SupplyChainFinding::default()
+        };
+        assert!(available.is_fixable());
+        assert!(!SupplyChainFinding::default().is_fixable());
     }
 }

@@ -60,6 +60,61 @@ impl TaskBlock for ScanSupplyChain {
 }
 
 /// Scan every entry, classify findings, and emit the `SupplyChainScanned` event.
+/// A live finding from a scanner vulnerability, under its advisory ID.
+fn finding_from(vuln: crate::scanner::Vulnerability, cve: String) -> SupplyChainFinding {
+    SupplyChainFinding {
+        cve,
+        package: vuln.package,
+        severity: vuln.severity,
+        version: vuln.version,
+        fix_version: vuln.fix_version,
+        fix_package: vuln.fix_package,
+        fix_available: vuln.fix_available,
+        fix_is_major: vuln.fix_is_major,
+        vulnerable_range: vuln.vulnerable_range,
+    }
+}
+
+/// Split scanner vulnerabilities into live findings and the ones the
+/// repository's allowlist spoke to (accepted, or lapsed and resurfaced).
+fn classify_vulnerabilities(
+    vulnerabilities: Vec<crate::scanner::Vulnerability>,
+    allowlist: &supply_chain::SupplyChainAllowlist,
+    today: chrono::NaiveDate,
+) -> (Vec<SupplyChainFinding>, Vec<SuppressedFinding>) {
+    let mut findings = Vec::new();
+    let mut suppressed = Vec::new();
+    for vuln in vulnerabilities {
+        // Advisories the scanner cannot name cannot be allowlisted or acted
+        // on; skip them rather than emit anonymous noise.
+        let decision = allowlist.decide_any(&vuln.ids().collect::<Vec<_>>(), today);
+        let Some(cve) = vuln.cve.clone() else {
+            continue;
+        };
+        match decision {
+            AllowDecision::NotListed => findings.push(finding_from(vuln, cve)),
+            AllowDecision::Active { reason } => suppressed.push(SuppressedFinding {
+                cve,
+                reason,
+                status: "allowlisted".to_string(),
+                expired_on: None,
+            }),
+            AllowDecision::Expired { reason, expired_on } => {
+                // A lapsed acceptance resurfaces as a live finding, and is
+                // also recorded as a lapse so the digest can flag it.
+                findings.push(finding_from(vuln, cve.clone()));
+                suppressed.push(SuppressedFinding {
+                    cve,
+                    reason,
+                    status: "expired".to_string(),
+                    expired_on: Some(expired_on),
+                });
+            }
+        }
+    }
+    (findings, suppressed)
+}
+
 async fn scan_all(
     project: &str,
     throttle: Throttle,
@@ -99,53 +154,15 @@ async fn scan_all(
                     findings: Vec::new(),
                     suppressed: Vec::new(),
                     scan_error: Some(msg),
+                    nothing_to_audit: false,
                 });
                 continue;
             }
         };
 
-        let mut findings = Vec::new();
-        let mut suppressed = Vec::new();
-        for vuln in audit.vulnerabilities {
-            // Advisories the scanner cannot name cannot be allowlisted or acted
-            // on; skip them rather than emit anonymous noise.
-            let decision = allowlist.decide_any(&vuln.ids().collect::<Vec<_>>(), today);
-            let Some(cve) = vuln.cve else { continue };
-            match decision {
-                AllowDecision::NotListed => findings.push(SupplyChainFinding {
-                    cve,
-                    package: vuln.package,
-                    severity: vuln.severity,
-                    version: vuln.version,
-                    fix_version: vuln.fix_version,
-                    fix_package: vuln.fix_package,
-                }),
-                AllowDecision::Active { reason } => suppressed.push(SuppressedFinding {
-                    cve,
-                    reason,
-                    status: "allowlisted".to_string(),
-                    expired_on: None,
-                }),
-                AllowDecision::Expired { reason, expired_on } => {
-                    // A lapsed acceptance resurfaces as a live finding, and is
-                    // also recorded as a lapse so the digest can flag it.
-                    findings.push(SupplyChainFinding {
-                        cve: cve.clone(),
-                        package: vuln.package,
-                        severity: vuln.severity,
-                        version: vuln.version,
-                        fix_version: vuln.fix_version,
-                        fix_package: vuln.fix_package,
-                    });
-                    suppressed.push(SuppressedFinding {
-                        cve,
-                        reason,
-                        status: "expired".to_string(),
-                        expired_on: Some(expired_on),
-                    });
-                }
-            }
-        }
+        let nothing_to_audit = audit.nothing_to_audit;
+        let (findings, suppressed) =
+            classify_vulnerabilities(audit.vulnerabilities, &allowlist, today);
 
         scans.push(ProjectSupplyChainScan {
             project: entry.name.clone(),
@@ -153,6 +170,7 @@ async fn scan_all(
             findings,
             suppressed,
             scan_error: None,
+            nothing_to_audit,
         });
     }
 
@@ -213,6 +231,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }
     }
 
@@ -421,6 +442,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = ScanSupplyChain::with_gateways(registry, scanner);
 

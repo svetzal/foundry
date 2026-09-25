@@ -157,6 +157,7 @@ mod tests {
             vulnerabilities: vec![],
             error: None,
             below_threshold: 22,
+            nothing_to_audit: false,
         });
         let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = test_event!(EventType::ScanRequested, "mojentic-kt", {});
@@ -190,6 +191,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: vec!["CVE-2026-45829".to_string()],
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = ScanDependencies::with_gateways(registry, scanner);
         let trigger = test_event!(EventType::ScanRequested, "zk-chat", {});
@@ -219,6 +223,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
         let block = ScanDependencies::with_gateways(registry, scanner);
@@ -251,6 +258,9 @@ mod tests {
                 fix_version: None,
                 fix_package: None,
                 aliases: Vec::new(),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             },
             Vulnerability {
                 cve: Some("CVE-2026-0002".to_string()),
@@ -260,6 +270,9 @@ mod tests {
                 fix_version: None,
                 fix_package: None,
                 aliases: Vec::new(),
+                fix_available: false,
+                fix_is_major: false,
+                vulnerable_range: None,
             },
         ];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);

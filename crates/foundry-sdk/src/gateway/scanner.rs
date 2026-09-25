@@ -33,6 +33,16 @@ pub struct Vulnerability {
     /// names any of them matches the finding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// The tool says a fix exists even though it names no version (npm's
+    /// `fixAvailable: true`). A fixable finding is never a policy call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fix_available: bool,
+    /// The fix is a semver-major upgrade (npm's `isSemVerMajor`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fix_is_major: bool,
+    /// The vulnerable version range, when the tool reports one (`<1.18.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulnerable_range: Option<String>,
 }
 
 impl Vulnerability {
@@ -54,6 +64,10 @@ pub struct AuditResult {
     /// Carried so a result line can say how many were left out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub below_threshold: u32,
+    /// The repository has no dependency manifest for any ecosystem, so there
+    /// was nothing to audit. Not a failure, and not a clean scan of something.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nothing_to_audit: bool,
 }
 
 #[allow(

@@ -221,6 +221,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = AuditMainBranch::with_gateways(registry, scanner);
 

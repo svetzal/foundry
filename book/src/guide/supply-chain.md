@@ -63,6 +63,17 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
   scanned. The results are merged: every finding is kept, and any part that
   could not be audited makes the project "not scanned", with the failing
   part named (for example `apps/cli (rust): …`).
+- **npm findings name the real advisory.** `npm audit` reports a package
+  that is only vulnerable through a dependency with that dependency's *name*
+  in `via`. Foundry reads the chain: each finding carries the advisory's
+  GHSA ID (with npm's advisory number as an alias), the vulnerable package
+  and range, and npm's fix availability. `fixAvailable: true` is a fix even
+  without a version (the digest says `npm audit fix`), and a semver-major fix
+  says so (`npm audit fix --force`). Only `fixAvailable: false` is a policy
+  call.
+- **A repository with no dependency manifest has nothing to audit.** It is
+  listed under "No dependency manifests", not "Not scanned". A manifest
+  without its lockfile (a `package.json` alone) is still not scanned.
 - **Mix projects fetch before they audit.** Foundry runs `mix deps.get` in
   each audited Mix project before `mix deps.audit`, because a lockfile that
   moved ahead of `deps/` makes the audit refuse to run. A failed fetch is

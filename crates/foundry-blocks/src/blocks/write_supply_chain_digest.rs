@@ -159,6 +159,17 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         out.push('\n');
     }
 
+    render_unscanned(&mut out, scan);
+
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Projects that were not scanned (a failure, reported) and projects with
+/// nothing to scan (no dependency manifests; not a failure).
+fn render_unscanned(out: &mut String, scan: &SupplyChainRemediatedPayload) {
     // Scan errors — tools unavailable / no lockfile. Reported, never failed.
     let errored: Vec<&ProjectSupplyChainScan> =
         scan.projects.iter().filter(|p| p.scan_error.is_some()).collect();
@@ -176,10 +187,21 @@ fn render_document(date: &str, scan: &SupplyChainRemediatedPayload) -> String {
         out.push('\n');
     }
 
-    if !out.ends_with('\n') {
+    // Nothing to audit — not a failure, so not under "Not scanned".
+    let empty: Vec<&ProjectSupplyChainScan> =
+        scan.projects.iter().filter(|p| p.nothing_to_audit).collect();
+    if !empty.is_empty() {
+        wln!(out, "## No dependency manifests\n");
+        for proj in empty {
+            wln!(
+                out,
+                "- **{project}** ({stack}) — no dependency manifests: nothing to audit",
+                project = proj.project,
+                stack = proj.stack,
+            );
+        }
         out.push('\n');
     }
-    out
 }
 
 /// Render the remediation section — what the auto-fix engine did this run.
@@ -270,20 +292,32 @@ fn render_project_findings(out: &mut String, proj: &ProjectSupplyChainScan) {
     wln!(out, "| Advisory | Package | Severity | Version | Fix |");
     wln!(out, "|----------|---------|----------|---------|-----|");
     for f in &proj.findings {
-        let fix = match (&f.fix_package, &f.fix_version) {
+        let mut fix = match (&f.fix_package, &f.fix_version) {
             (Some(package), Some(version)) if package != &f.package => {
                 format!("{package}@{version}")
             }
             (_, Some(version)) => version.clone(),
+            (_, None) if f.fix_available && f.fix_is_major => {
+                "available, major (`npm audit fix --force`)".to_string()
+            }
+            (_, None) if f.fix_available => "available (`npm audit fix`)".to_string(),
             (_, None) => "policy call".to_string(),
         };
+        if f.fix_version.is_some() && f.fix_is_major {
+            fix.push_str(" (major)");
+        }
+        let version = f
+            .version
+            .clone()
+            .or_else(|| f.vulnerable_range.as_ref().map(|r| format!("`{r}`")))
+            .unwrap_or_else(|| "—".to_string());
         wln!(
             out,
             "| `{cve}` | {package} | {severity} | {version} | {fix} |",
             cve = f.cve,
             package = f.package,
             severity = f.severity.as_deref().unwrap_or("—"),
-            version = f.version.as_deref().unwrap_or("—"),
+            version = version,
             fix = fix,
         );
     }
@@ -304,6 +338,9 @@ mod tests {
             version: Some("0.1.0".to_string()),
             fix_version: Some("0.2.0".to_string()),
             fix_package: None,
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }
     }
 
@@ -324,17 +361,15 @@ mod tests {
             findings,
             suppressed: vec![],
             scan_error: None,
+            nothing_to_audit: false,
         }
     }
 
     fn payload(projects: Vec<ProjectSupplyChainScan>) -> SupplyChainRemediatedPayload {
         let finding_count: u64 = projects.iter().map(|p| p.findings.len() as u64).sum();
         let affected = projects.iter().filter(|p| !p.findings.is_empty()).count() as u64;
-        let fixable_count: u64 = projects
-            .iter()
-            .flat_map(|p| &p.findings)
-            .filter(|f| f.fix_version.is_some())
-            .count() as u64;
+        let fixable_count: u64 =
+            projects.iter().flat_map(|p| &p.findings).filter(|f| f.is_fixable()).count() as u64;
         SupplyChainRemediatedPayload {
             project_count: projects.len() as u64,
             finding_count,
@@ -402,6 +437,44 @@ mod tests {
         assert!(doc.contains("| policy call |"), "no-fix finding marked as a policy call");
         assert!(!doc.contains("auto-fixed this run"), "nothing applied by the classifier");
         assert!(!doc.contains("## Remediation"), "no remediation section without outcomes");
+    }
+
+    #[test]
+    fn render_fix_available_without_a_version_is_not_a_policy_call() {
+        let mut available = finding("GHSA-xj6q-8x83-jv6g");
+        available.package = "axios".to_string();
+        available.fix_available = true;
+        available.fix_version = None;
+        available.version = None;
+        available.vulnerable_range = Some("<1.18.0".to_string());
+        let mut major = finding("GHSA-major");
+        major.fix_version = None;
+        major.fix_available = true;
+        major.fix_is_major = true;
+        let p = payload(vec![project_with_findings("e2e-uat", vec![available, major])]);
+
+        let doc = render_document("2026-09-26", &p);
+
+        assert!(doc.contains("| `GHSA-xj6q-8x83-jv6g` | axios |"), "{doc}");
+        assert!(doc.contains("`<1.18.0` | available (`npm audit fix`) |"), "{doc}");
+        assert!(doc.contains("available, major (`npm audit fix --force`)"), "{doc}");
+        assert!(!doc.contains("| policy call |"), "{doc}");
+        assert_eq!(p.fixable_count, 2);
+    }
+
+    #[test]
+    fn a_repository_without_manifests_is_its_own_section_not_a_failure() {
+        let mut empty = project_with_findings("cloudformation-ort", vec![]);
+        empty.nothing_to_audit = true;
+        let p = payload(vec![empty]);
+
+        let doc = render_document("2026-09-26", &p);
+
+        assert!(doc.contains("## No dependency manifests"), "{doc}");
+        assert!(doc.contains(
+            "- **cloudformation-ort** (typescript) — no dependency manifests: nothing to audit"
+        ));
+        assert!(!doc.contains("## Not scanned"), "{doc}");
     }
 
     #[test]
@@ -494,6 +567,7 @@ mod tests {
                 expired_on: None,
             }],
             scan_error: None,
+            nothing_to_audit: false,
         };
         let errored = ProjectSupplyChainScan {
             project: "gamma".to_string(),
@@ -501,6 +575,7 @@ mod tests {
             findings: vec![],
             suppressed: vec![],
             scan_error: Some("cargo audit not installed".to_string()),
+            nothing_to_audit: false,
         };
         let p = payload(vec![accepted, errored]);
         let doc = render_document("2026-06-15", &p);
@@ -521,6 +596,7 @@ mod tests {
             findings: vec![],
             suppressed: vec![],
             scan_error: Some("failed to spawn audit tool".to_string()),
+            nothing_to_audit: false,
         };
         let p = payload(vec![gateway_failed]);
         let doc = render_document("2026-06-15", &p);

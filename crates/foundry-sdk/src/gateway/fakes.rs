@@ -150,6 +150,7 @@ impl FakeScannerGateway {
                 vulnerabilities: vulns,
                 error: None,
                 below_threshold: 0,
+                nothing_to_audit: false,
             }),
         })
     }
@@ -166,6 +167,7 @@ impl FakeScannerGateway {
                 vulnerabilities: vec![],
                 error: Some(msg.into()),
                 below_threshold: 0,
+                nothing_to_audit: false,
             }),
         })
     }

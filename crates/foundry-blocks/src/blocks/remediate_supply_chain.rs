@@ -203,7 +203,7 @@ fn plan_project_remediation(
     proj: &foundry_sdk::payload::ProjectSupplyChainScan,
     entries: &[ProjectEntry],
 ) -> ProjectRemediationPlan {
-    let has_fixable = proj.findings.iter().any(|f| f.fix_version.is_some());
+    let has_fixable = proj.findings.iter().any(SupplyChainFinding::is_fixable);
     if !has_fixable {
         return ProjectRemediationPlan::NothingFixable;
     }
@@ -231,7 +231,7 @@ fn classify(scan: &SupplyChainScannedPayload) -> (u64, u64) {
     let mut no_fix = 0u64;
     for proj in &scan.projects {
         for finding in &proj.findings {
-            if finding.fix_version.is_some() {
+            if finding.is_fixable() {
                 fixable += 1;
             } else {
                 no_fix += 1;
@@ -251,7 +251,7 @@ async fn remediate_project(
     outcomes: &mut Vec<RemediationOutcome>,
 ) {
     let fixable: Vec<&SupplyChainFinding> =
-        proj.findings.iter().filter(|f| f.fix_version.is_some()).collect();
+        proj.findings.iter().filter(|f| f.is_fixable()).collect();
 
     // Consult the pure routing plan for all decisions that need no I/O.
     let (path, stack) = match plan_project_remediation(proj, entries) {
@@ -709,6 +709,9 @@ mod tests {
             version: Some("1.0.0".to_string()),
             fix_version: fix.map(str::to_string),
             fix_package: None,
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }
     }
 
@@ -723,6 +726,7 @@ mod tests {
             findings,
             suppressed: vec![],
             scan_error: None,
+            nothing_to_audit: false,
         }
     }
 
@@ -920,6 +924,9 @@ mod tests {
                     fix_version: f.fix_version.clone(),
                     fix_package: f.fix_package.clone(),
                     aliases: Vec::new(),
+                    fix_available: false,
+                    fix_is_major: false,
+                    vulnerable_range: None,
                 })
                 .collect(),
         )
@@ -1321,6 +1328,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }];
 
         let (cleared, unresolved) = partition_cleared(&[&gone, &stays, &other_pkg], &rescan);

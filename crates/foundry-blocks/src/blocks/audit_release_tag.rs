@@ -729,6 +729,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
 
@@ -1024,6 +1027,9 @@ mod tests {
                 "CVE-2026-45829".to_string(),
                 "GHSA-f4j7-r4q5-qw2c".to_string(),
             ],
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
         let trigger = test_helpers::make_trigger(
@@ -1065,6 +1071,9 @@ mod tests {
             fix_version: None,
             fix_package: None,
             aliases: Vec::new(),
+            fix_available: false,
+            fix_is_major: false,
+            vulnerable_range: None,
         }]);
         let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
         let trigger = test_helpers::make_trigger(
