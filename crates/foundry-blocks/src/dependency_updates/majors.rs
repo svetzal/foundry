@@ -81,11 +81,12 @@ pub fn objective(project: &str, update: &PlannedUpdate) -> String {
         "Upgrade {} from {} to {} in {project}: adapt call sites, keep all gates green.",
         update.package, update.from, update.to
     );
-    let _ = write!(
-        text,
-        " It is a {} dependency declared in {}.",
-        update.ecosystem, update.manifest
-    );
+    let location = if update.manifest == "." {
+        "the repository root".to_string()
+    } else {
+        update.manifest.clone()
+    };
+    let _ = write!(text, " The {} dependency is declared in {location}.", update.ecosystem);
     if let Some(id) = &update.security {
         let _ = write!(text, " The upgrade fixes {id}.");
     }
@@ -241,6 +242,13 @@ mod tests {
             Some(("phoenix".to_string(), "2.0.0".to_string(), "bedrock".to_string()))
         );
         assert_eq!(parse_objective("Fix the flaky test"), None);
+        assert!(
+            text.contains("The hex dependency is declared in the repository root."),
+            "{text}"
+        );
+        let mut nested = major("phoenix", "2.0.0");
+        nested.manifest = "apps/bedrock".to_string();
+        assert!(objective("bedrock", &nested).contains("declared in apps/bedrock."));
     }
 
     #[test]

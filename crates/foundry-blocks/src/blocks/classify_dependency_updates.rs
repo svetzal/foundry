@@ -162,12 +162,8 @@ impl TaskBlock for ClassifyDependencyUpdates {
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
         let chain = ChainContext::extract_from(&trigger.payload);
-        let success = (phase == ClassificationPhase::After).then(|| {
-            trigger
-                .parse_payload::<ProjectCompletedPayload>()
-                .map(|p| p.success)
-                .unwrap_or(false)
-        });
+        let success = (phase == ClassificationPhase::After)
+            .then(|| trigger.parse_payload::<ProjectCompletedPayload>().is_ok_and(|p| p.success));
         // A review may preview another policy; nothing else overrides the registry.
         let policy_preview = (phase == ClassificationPhase::Review)
             .then(|| trigger.parse_payload::<DependencyReviewRequestedPayload>().ok())
