@@ -7,6 +7,41 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Elixir audits failed for every Elixir project. The parser expected a JSON
+  array, but `mix deps.audit --format=json` (`mix_audit` 2.x) prints one
+  `{"pass": …, "vulnerabilities": […]}` object, sometimes after dependency
+  compilation lines. Foundry now reads that object (advisory ID, severity,
+  first patched version) and treats exit 1 as "findings", with output that has
+  no report counted as a failure.
+- Repositories without a root `mix.exs` (bedrock) are audited per Mix project:
+  every Mix project that declares `mix_audit` is audited and the findings are
+  merged. `deps`, `_build`, `node_modules` and hidden directories are skipped.
+- A scanner failure no longer reads as success. The post-push and release-tag
+  audits mark the block failed when the scan did not run, the release-audit
+  table shows "scanner failed" instead of "clean", and the maintenance summary
+  lists **Scanner failures** beside **Unpushed commits**.
+- The post-push auditor (and `scan_requested`) now apply the repository's
+  `.supply-chain-allow.json` with the supply-chain scan's semantics (active
+  entries accept, lapsed ones resurface). `audit_exceptions` still works and is
+  documented as legacy. Allowlist entries and exceptions match any alias the
+  scanner reports (pip-audit, osv-scanner and cargo-audit aliases), in both the
+  auditors and the nightly supply-chain scan, so a CVE entry accepts the
+  PYSEC finding for the same advisory. Accepted and lapsed findings are named
+  in the audit's result line.
+
+### Added
+
+- After the maintain agent, Foundry checks the checkout is on the configured
+  branch. An agent branch that fast-forwards it is merged back (the configured
+  branch moves forward, is checked out, and the agent branch is deleted with
+  `-d`); otherwise the run fails with a reason naming the branch. Validation
+  records a wrong branch as `sync_failure: "wrong_branch"`, and the maintenance
+  summary lists those projects under **Projects skipped: wrong branch**.
+- The Kotlin scan's result line says how many findings fell below the
+  project's `failBuildOnCVSS` and were not counted.
+
 ## [0.38.3] - 2026-09-24
 
 ### Fixed

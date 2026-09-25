@@ -392,10 +392,17 @@ mod tests {
             dir.path().to_str().unwrap(),
             "rust-craftsperson",
         ));
-        // Shell sequence: rev-parse HEAD → sha; git diff --name-only <sha> → files
+        // Shell sequence: rev-parse HEAD → sha; branch guard's
+        // rev-parse --abbrev-ref HEAD → main; git diff --name-only <sha> → files
         let shell = FakeShellGateway::sequence(vec![
             CommandResult {
                 stdout: "abc123\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            CommandResult {
+                stdout: "main\n".to_string(),
                 stderr: String::new(),
                 exit_code: 0,
                 success: true,
@@ -489,6 +496,87 @@ mod tests {
             "gates": [{"name": "fmt", "command": "cargo fmt --check", "required": true}],
         });
         test_helpers::assert_tolerates_git_failure(&block, &trigger, true).await;
+    }
+
+    // --- branch drift after the agent ---
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn commit(dir: &std::path::Path, file: &str, message: &str) {
+        std::fs::write(dir.join(file), message).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", message]);
+    }
+
+    /// A repo whose checkout the "agent" left on its own branch.
+    fn repo_left_on_agent_branch(main_moves: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        git(dir.path(), &["config", "user.email", "t@example.com"]);
+        git(dir.path(), &["config", "user.name", "T"]);
+        commit(dir.path(), "README.md", "init");
+        if main_moves {
+            git(dir.path(), &["checkout", "-q", "-b", "chore/dependency-update"]);
+            commit(dir.path(), "mix.lock", "agent");
+            git(dir.path(), &["checkout", "-q", "main"]);
+            commit(dir.path(), "other.txt", "main moved");
+            git(dir.path(), &["checkout", "-q", "chore/dependency-update"]);
+        } else {
+            git(dir.path(), &["checkout", "-q", "-b", "chore/dependency-update"]);
+            commit(dir.path(), "mix.lock", "agent");
+        }
+        dir
+    }
+
+    fn maintain_trigger() -> Event {
+        test_event!(EventType::GateResolutionCompleted, "my-project", {
+            "project": "my-project",
+            "workflow": "maintain",
+            "gates": [{"name": "fmt", "command": "true", "required": true}],
+        })
+    }
+
+    #[tokio::test]
+    async fn agent_branch_is_fast_forwarded_back_onto_the_configured_branch() {
+        let dir = repo_left_on_agent_branch(false);
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "elixir-craftsperson",
+        ));
+        let block = ExecuteMaintain::new(FakeAgentGateway::success(), registry);
+
+        let result = block.execute(&maintain_trigger()).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(git(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+        assert_eq!(git(dir.path(), &["branch", "--format=%(refname:short)"]), "main");
+    }
+
+    #[tokio::test]
+    async fn agent_branch_that_cannot_fast_forward_fails_the_run() {
+        let dir = repo_left_on_agent_branch(true);
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "elixir-craftsperson",
+        ));
+        let block = ExecuteMaintain::new(FakeAgentGateway::success(), registry);
+
+        let result = block.execute(&maintain_trigger()).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events[0].payload["success"], false);
+        assert!(
+            result.summary.contains("chore/dependency-update")
+                && result.summary.contains("does not fast-forward main"),
+            "{}",
+            result.summary
+        );
     }
 
     // --- decide_maintain pure function tests ---

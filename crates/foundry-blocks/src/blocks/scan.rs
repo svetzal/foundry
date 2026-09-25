@@ -47,16 +47,29 @@ impl TaskBlock for ScanDependencies {
                 return Ok(TaskBlockResult::success(format!("Scan skipped: {err}"), vec![]));
             }
 
-            if audit_result.vulnerabilities.is_empty() {
+            let allowlist = crate::scanner::read_allowlist_or_empty(&project, path);
+            let triage = crate::scanner::triage_findings(
+                &audit_result,
+                &entry.audit_exceptions,
+                &allowlist,
+                chrono::Local::now().date_naive(),
+            );
+            let notes = format!(
+                "{}{}",
+                crate::scanner::acceptance_note(&triage),
+                super::audit_release_tag::below_threshold_note(audit_result.below_threshold)
+            );
+            let live = triage.live;
+
+            if live.is_empty() {
                 tracing::info!(project = %project, "no vulnerabilities found");
                 return Ok(TaskBlockResult::success(
-                    format!("{project}: no vulnerabilities found"),
+                    format!("{project}: no vulnerabilities found{notes}"),
                     vec![],
                 ));
             }
 
-            let events: Vec<Event> = audit_result
-                .vulnerabilities
+            let events: Vec<Event> = live
                 .iter()
                 .map(|vuln| {
                     let cve = vuln.cve.as_deref().unwrap_or("unknown").to_string();
@@ -76,11 +89,10 @@ impl TaskBlock for ScanDependencies {
                 .collect();
 
             let count = events.len();
-            let cves: Vec<&str> =
-                audit_result.vulnerabilities.iter().filter_map(|v| v.cve.as_deref()).collect();
+            let cves: Vec<&str> = live.iter().filter_map(|v| v.cve.as_deref()).collect();
 
             Ok(TaskBlockResult::success(
-                format!("{project}: {count} vulnerabilities found ({})", cves.join(", ")),
+                format!("{project}: {count} vulnerabilities found ({}){notes}", cves.join(", ")),
                 events,
             ))
         })
@@ -135,6 +147,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn result_line_counts_findings_below_the_project_threshold() {
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "mojentic-kt",
+            "/tmp",
+            "",
+        ));
+        let scanner = FakeScannerGateway::with_result(crate::scanner::AuditResult {
+            vulnerabilities: vec![],
+            error: None,
+            below_threshold: 22,
+        });
+        let block = ScanDependencies::with_gateways(registry, scanner);
+        let trigger = test_event!(EventType::ScanRequested, "mojentic-kt", {});
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(
+            result.summary,
+            "mojentic-kt: no vulnerabilities found; 22 finding(s) below the project's CVSS threshold not counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowlisted_findings_are_accepted_not_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".supply-chain-allow.json"),
+            r#"{"version": 1, "allowed": [{"cve": "CVE-2026-45829", "reason": "not exposed", "expires": "2099-12-31"}]}"#,
+        )
+        .unwrap();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "zk-chat",
+            dir.path().to_str().unwrap(),
+            "",
+        ));
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
+            cve: Some("PYSEC-2026-311".to_string()),
+            severity: None,
+            package: "chromadb".to_string(),
+            version: Some("1.5.9".to_string()),
+            fix_version: None,
+            fix_package: None,
+            aliases: vec!["CVE-2026-45829".to_string()],
+        }]);
+        let block = ScanDependencies::with_gateways(registry, scanner);
+        let trigger = test_event!(EventType::ScanRequested, "zk-chat", {});
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.events.is_empty(), "no VulnerabilityDetected for an accepted advisory");
+        assert!(
+            result.summary.contains("accepted: PYSEC-2026-311 (allowlist)"),
+            "{}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
     async fn vulnerabilities_emitted_correctly() {
         let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
             "my-project",
@@ -148,6 +218,7 @@ mod tests {
             version: Some("0.1.0".to_string()),
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);
         let block = ScanDependencies::with_gateways(registry, scanner);
@@ -179,6 +250,7 @@ mod tests {
                 version: None,
                 fix_version: None,
                 fix_package: None,
+                aliases: Vec::new(),
             },
             Vulnerability {
                 cve: Some("CVE-2026-0002".to_string()),
@@ -187,6 +259,7 @@ mod tests {
                 version: None,
                 fix_version: None,
                 fix_package: None,
+                aliases: Vec::new(),
             },
         ];
         let scanner = FakeScannerGateway::with_vulnerabilities(vulns);

@@ -59,6 +59,9 @@ pub enum GitSyncFailure {
     /// The run reported failure, so commits ahead of the remote were kept on
     /// the local branch instead of being pushed.
     RunFailed,
+    /// The checkout is on a branch other than the registry's configured
+    /// branch, so the project was not worked on.
+    WrongBranch,
 }
 
 impl GitSyncFailure {
@@ -73,6 +76,7 @@ impl GitSyncFailure {
             Self::GatesFailedAfterRebase => "gates_failed_after_rebase",
             Self::PushFailed => "push_failed",
             Self::RunFailed => "run_failed",
+            Self::WrongBranch => "wrong_branch",
         }
     }
 }
@@ -150,6 +154,7 @@ mod tests {
             GitSyncFailure::GatesFailedAfterRebase,
             GitSyncFailure::PushFailed,
             GitSyncFailure::RunFailed,
+            GitSyncFailure::WrongBranch,
         ] {
             let json = serde_json::to_string(&failure).unwrap();
             assert_eq!(json, format!("\"{}\"", failure.as_str()));

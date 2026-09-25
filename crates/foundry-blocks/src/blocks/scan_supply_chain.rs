@@ -109,8 +109,9 @@ async fn scan_all(
         for vuln in audit.vulnerabilities {
             // Advisories the scanner cannot name cannot be allowlisted or acted
             // on; skip them rather than emit anonymous noise.
+            let decision = allowlist.decide_any(&vuln.ids().collect::<Vec<_>>(), today);
             let Some(cve) = vuln.cve else { continue };
-            match allowlist.decide(&cve, today) {
+            match decision {
                 AllowDecision::NotListed => findings.push(SupplyChainFinding {
                     cve,
                     package: vuln.package,
@@ -211,6 +212,7 @@ mod tests {
             version: Some("0.1.0".to_string()),
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }
     }
 
@@ -294,6 +296,38 @@ mod tests {
         assert_eq!(p.finding_count, 0, "active allowlist entry must suppress the finding");
         assert_eq!(p.affected_project_count, 0);
         assert_eq!(p.projects[0].suppressed.len(), 1);
+        assert_eq!(p.projects[0].suppressed[0].status, "allowlisted");
+    }
+
+    #[tokio::test]
+    async fn allowlist_entry_matches_a_scanner_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".supply-chain-allow.json"),
+            r#"{"version":1,"allowed":[{"cve":"CVE-2026-45829","reason":"not exposed","expires":"2099-01-01"}]}"#,
+        )
+        .unwrap();
+        let registry = registry_with(vec![test_helpers::project_entry(
+            "zk-chat",
+            dir.path().to_str().unwrap(),
+        )]);
+        let mut pysec = vuln("PYSEC-2026-311");
+        pysec.aliases = vec![
+            "CVE-2026-45829".to_string(),
+            "GHSA-f4j7-r4q5-qw2c".to_string(),
+        ];
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![pysec]);
+        let block = ScanSupplyChain::with_gateways(registry, scanner);
+
+        let trigger = test_helpers::make_trigger(
+            EventType::SupplyChainScanStarted,
+            "system",
+            serde_json::json!({}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+
+        let p = scanned(&result);
+        assert_eq!(p.finding_count, 0, "the CVE alias accepts the PYSEC finding");
         assert_eq!(p.projects[0].suppressed[0].status, "allowlisted");
     }
 
@@ -386,6 +420,7 @@ mod tests {
             version: None,
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }]);
         let block = ScanSupplyChain::with_gateways(registry, scanner);
 

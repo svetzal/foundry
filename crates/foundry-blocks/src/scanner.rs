@@ -9,6 +9,7 @@ use serde_json::Value;
 // `AuditResult` and `Vulnerability` are part of the SDK gateway contract.
 // Re-exported here so the existing `crate::scanner::…` paths keep resolving.
 pub use foundry_sdk::gateway::{AuditResult, Vulnerability};
+use foundry_sdk::supply_chain::{AllowDecision, SupplyChainAllowlist};
 
 /// Where a Kotlin project's `OWASP` Dependency-Check aggregate report lands,
 /// relative to the project root: the plugin's default output directory before
@@ -34,6 +35,9 @@ enum AuditPlan {
     Unavailable(String),
     /// Run the tool and parse the JSON it prints on stdout.
     Stdout { command: String, args: Vec<String> },
+    /// Run `mix deps.audit --format=json` in each Mix project that opts into
+    /// `mix_audit`, and merge the findings.
+    MixProjects { dirs: Vec<PathBuf> },
     /// Run the tool and parse the JSON report file it writes, from whichever
     /// of `reports` this run wrote most recently. A report must be written by
     /// *this* run; a stale report from an earlier run is an error.
@@ -60,6 +64,7 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
             Ok(AuditResult {
                 vulnerabilities: vec![],
                 error: None,
+                below_threshold: 0,
             })
         }
         AuditPlan::Unavailable(msg) => {
@@ -79,6 +84,24 @@ pub async fn run_audit(path: &Path, stack: &Stack) -> Result<AuditResult> {
             }
 
             Ok(parse_audit_output(stack, &result.stdout))
+        }
+        AuditPlan::MixProjects { dirs } => {
+            let (command, args) = audit_command(stack);
+            let mut runs = Vec::with_capacity(dirs.len());
+            for dir in &dirs {
+                let rel = dir
+                    .strip_prefix(path)
+                    .ok()
+                    .map(|r| r.display().to_string())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(|| ".".to_string());
+                runs.push((rel, crate::shell::run(dir, command, &args, None, None).await));
+            }
+            let result = merge_mix_runs(runs);
+            if let Some(err) = &result.error {
+                tracing::warn!(stack = %stack, %err, "mix deps.audit did not produce a complete report");
+            }
+            Ok(result)
         }
         AuditPlan::ReportFile {
             command,
@@ -167,7 +190,18 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
                 min_cvss: fail_build_on_cvss(path),
             }
         }
-        Stack::Rust | Stack::TypeScript | Stack::Elixir | Stack::Swift => {
+        Stack::Elixir => {
+            let dirs = mix_audit_projects(path);
+            if dirs.is_empty() {
+                return AuditPlan::Unavailable(
+                    "no Mix project in this repository declares mix_audit \
+                     (add {:mix_audit, \"~> 2.1\", only: [:dev, :test], runtime: false} to audit it)"
+                        .to_string(),
+                );
+            }
+            AuditPlan::MixProjects { dirs }
+        }
+        Stack::Rust | Stack::TypeScript | Stack::Swift => {
             let (command, args) = audit_command(stack);
             AuditPlan::Stdout {
                 command: command.to_string(),
@@ -217,7 +251,12 @@ fn is_audit_vuln_exit_code(stack: &Stack, exit_code: i32) -> bool {
     // freshness decides whether the scan actually ran.
     matches!(
         stack,
-        Stack::Rust | Stack::TypeScript | Stack::Python | Stack::Swift | Stack::Kotlin
+        Stack::Rust
+            | Stack::TypeScript
+            | Stack::Python
+            | Stack::Swift
+            | Stack::Kotlin
+            | Stack::Elixir
     ) && exit_code == 1
 }
 
@@ -227,7 +266,7 @@ fn parse_audit_output(stack: &Stack, output: &str) -> AuditResult {
         Stack::Rust => parse_cargo_audit(output),
         Stack::TypeScript => parse_npm_audit(output),
         Stack::Python => parse_pip_audit(output),
-        Stack::Elixir => parse_generic_audit(output),
+        Stack::Elixir => unreachable!("Elixir merges per-project mix_audit runs in run_audit"),
         Stack::Swift => parse_osv_scanner(output),
         Stack::Kotlin => unreachable!("Kotlin parses its report file in run_audit"),
         Stack::Cpp => unreachable!("C++ has no audit output to parse"),
@@ -262,6 +301,7 @@ fn tool_error(msg: String) -> AuditResult {
     AuditResult {
         vulnerabilities: vec![],
         error: Some(msg),
+        below_threshold: 0,
     }
 }
 
@@ -337,6 +377,7 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
             return AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("cargo audit JSON parse error: {e}")),
+                below_threshold: 0,
             };
         }
     };
@@ -382,6 +423,7 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
                 version,
                 fix_version,
                 fix_package: None,
+                aliases: string_array(&advisory["aliases"]),
             }
         })
         .collect();
@@ -389,7 +431,16 @@ fn parse_cargo_audit(output: &str) -> AuditResult {
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: 0,
     }
+}
+
+/// The strings in a JSON array; empty when the value is absent or not an array.
+fn string_array(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// Reduce a version requirement (`">= 0.2.5"`, `"^1.2.3"`, `"0.2.5, < 0.3"`) to
@@ -442,6 +493,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
             return AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("npm audit JSON parse error: {e}")),
+                below_threshold: 0,
             };
         }
     };
@@ -475,6 +527,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
                 version: None,
                 fix_version,
                 fix_package,
+                aliases: Vec::new(),
             }
         })
         .collect();
@@ -482,6 +535,7 @@ fn parse_npm_audit(output: &str) -> AuditResult {
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: 0,
     }
 }
 
@@ -511,6 +565,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
             return AuditResult {
                 vulnerabilities: vec![],
                 error: Some(format!("pip-audit JSON parse error: {e}")),
+                below_threshold: 0,
             };
         }
     };
@@ -539,6 +594,7 @@ fn parse_pip_audit(output: &str) -> AuditResult {
                 version: version.clone(),
                 fix_version,
                 fix_package: None,
+                aliases: string_array(&vuln["aliases"]),
             });
         }
     }
@@ -546,84 +602,170 @@ fn parse_pip_audit(output: &str) -> AuditResult {
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: 0,
     }
 }
 
-/// Parse generic JSON audit output (`mix deps.audit`).
+/// Directories never searched for Mix projects: dependency, build, and
+/// tool caches carry other packages' `mix.exs` files.
+const MIX_SKIP_DIRS: [&str; 3] = ["deps", "_build", "node_modules"];
+
+/// How deep below the repository root to look for Mix projects
+/// (`vendor/roost/fixtures/phoenix_app` is depth 4).
+const MIX_SEARCH_DEPTH: usize = 4;
+
+/// The Mix projects in a repository that opt into `mix_audit`, sorted.
 ///
-/// Tries to interpret the output as a JSON array of objects with fields
-/// that map loosely to [`Vulnerability`]. Falls back to an empty clean
-/// result rather than propagating a parse error.
-fn parse_generic_audit(output: &str) -> AuditResult {
-    if output.trim().is_empty() {
-        return AuditResult::default();
-    }
-
-    // pip-audit --format=json emits an array of vulnerability objects.
-    // Each object looks like: {"name": "pkg", "version": "1.0", "vulns": [{"id": "CVE-...", "fix_versions": [...]}]}
-    let root: Value = match serde_json::from_str(output) {
-        Ok(v) => v,
-        Err(e) => {
-            return AuditResult {
-                vulnerabilities: vec![],
-                error: Some(format!("generic audit JSON parse error: {e}")),
-            };
+/// A repository may have no root `mix.exs` (bedrock keeps its Mix projects
+/// under `apps/` and `vendor/`). The project decides which of its Mix projects
+/// are audited by declaring `mix_audit` as a dependency, exactly as its own
+/// gates do; a Mix project without it (fixtures, prototypes, apps that do not
+/// ship the tool) cannot run `mix deps.audit` and is not audited. Dependency,
+/// build and hidden directories are never searched.
+fn mix_audit_projects(root: &Path) -> Vec<PathBuf> {
+    fn visit(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+        if declares_mix_audit(&dir.join("mix.exs")) {
+            found.push(dir.to_path_buf());
         }
-    };
-
-    let Some(items) = root.as_array() else {
-        return AuditResult {
-            vulnerabilities: vec![],
-            error: Some("generic audit JSON: expected top-level array".to_owned()),
+        if depth == MIX_SEARCH_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
         };
-    };
-
-    let mut vulnerabilities = Vec::new();
-    for item in items {
-        let package = item["name"].as_str().unwrap_or("unknown").to_owned();
-        let version = item["version"].as_str().map(str::to_owned);
-
-        // pip-audit nests individual CVEs under a "vulns" array.
-        if let Some(vulns) = item["vulns"].as_array() {
-            for vuln in vulns {
-                let cve = vuln["id"].as_str().map(str::to_owned);
-                let severity = vuln["severity"].as_str().map(str::to_owned);
-                // pip-audit lists resolving versions under "fix_versions".
-                let fix_version = vuln["fix_versions"]
-                    .as_array()
-                    .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
-                    .and_then(bare_version);
-                vulnerabilities.push(Vulnerability {
-                    cve,
-                    severity,
-                    package: package.clone(),
-                    version: version.clone(),
-                    fix_version,
-                    fix_package: None,
-                });
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || MIX_SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
             }
-        } else {
-            // Flat object — treat the whole item as one vulnerability.
-            let cve = item["id"].as_str().or_else(|| item["cve"].as_str()).map(str::to_owned);
-            let severity = item["severity"].as_str().map(str::to_owned);
-            let fix_version = item["fix_versions"]
-                .as_array()
-                .and_then(|fvs| fvs.iter().find_map(|v| v.as_str()))
-                .and_then(bare_version);
-            vulnerabilities.push(Vulnerability {
-                cve,
-                severity,
-                package,
-                version,
-                fix_version,
-                fix_package: None,
-            });
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                visit(&entry.path(), depth + 1, found);
+            }
         }
     }
+    let mut found = Vec::new();
+    visit(root, 0, &mut found);
+    found.sort();
+    found
+}
+
+/// Whether a `mix.exs` lists `mix_audit` outside a comment.
+fn declares_mix_audit(mix_exs: &Path) -> bool {
+    std::fs::read_to_string(mix_exs).is_ok_and(|text| {
+        text.lines()
+            .map(|line| line.split('#').next().unwrap_or(""))
+            .any(|code| code.contains(":mix_audit"))
+    })
+}
+
+/// Merge `mix deps.audit` runs, one per Mix project (`rel` is its path
+/// relative to the repository root). Any project that did not produce a
+/// report makes the whole scan an error naming that project: a partial scan
+/// must never read as clean. The same advisory on the same package version is
+/// reported once.
+fn merge_mix_runs(runs: Vec<(String, Result<crate::shell::CommandResult>)>) -> AuditResult {
+    let mut errors = Vec::new();
+    let mut seen = HashSet::new();
+    let mut vulnerabilities = Vec::new();
+    for (rel, run) in runs {
+        let output = match run {
+            Err(e) => {
+                errors.push(format!("mix deps.audit in {rel} could not run: {e:#}"));
+                continue;
+            }
+            Ok(output) => output,
+        };
+        if !(output.exit_code == 0 || output.exit_code == 1) {
+            errors.push(format!(
+                "mix deps.audit in {rel} failed (exit {}): {}",
+                output.exit_code,
+                tail(output.stderr.trim(), 500)
+            ));
+            continue;
+        }
+        let report = parse_mix_audit(&output.stdout);
+        if let Some(err) = report.error {
+            let detail = format!("{}\n{}", output.stdout.trim(), output.stderr.trim());
+            errors.push(format!(
+                "mix deps.audit in {rel} (exit {}): {err}: {}",
+                output.exit_code,
+                tail(detail.trim(), 500)
+            ));
+            continue;
+        }
+        for v in report.vulnerabilities {
+            if seen.insert((v.package.clone(), v.version.clone(), v.cve.clone())) {
+                vulnerabilities.push(v);
+            }
+        }
+    }
+    AuditResult {
+        vulnerabilities,
+        error: (!errors.is_empty()).then(|| errors.join("; ")),
+        below_threshold: 0,
+    }
+}
+
+/// Parse `mix deps.audit --format=json` output (`mix_audit` 2.x).
+///
+/// `mix_audit` encodes its report struct as one JSON line:
+/// ```json
+/// {"pass": false, "vulnerabilities": [{
+///   "advisory": {"id": "GHSA-…", "package": "absinthe", "severity": "high",
+///                "first_patched_versions": ["1.10.2"], …},
+///   "dependency": {"package": "absinthe", "version": "1.7.8", "lockfile": "…"}
+/// }]}
+/// ```
+/// Mix may print dependency compilation lines to stdout first, so the report
+/// is the last line that parses as a `{"pass", "vulnerabilities"}` object.
+/// Output without one is an error, never a clean scan.
+fn parse_mix_audit(output: &str) -> AuditResult {
+    let report = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|l| l.starts_with('{'))
+        .find_map(|l| {
+            serde_json::from_str::<Value>(l)
+                .ok()
+                .filter(|v| v["pass"].is_boolean() && v["vulnerabilities"].is_array())
+        });
+    let Some(report) = report else {
+        return tool_error("mix deps.audit printed no JSON report".to_owned());
+    };
+
+    let vulnerabilities = report["vulnerabilities"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|item| {
+            let advisory = &item["advisory"];
+            let dependency = &item["dependency"];
+            Vulnerability {
+                cve: advisory["id"].as_str().map(str::to_owned),
+                severity: advisory["severity"].as_str().map(str::to_ascii_lowercase),
+                package: dependency["package"]
+                    .as_str()
+                    .or_else(|| advisory["package"].as_str())
+                    .unwrap_or("unknown")
+                    .to_owned(),
+                version: dependency["version"].as_str().map(str::to_owned),
+                fix_version: advisory["first_patched_versions"]
+                    .as_array()
+                    .and_then(|vs| vs.iter().find_map(Value::as_str))
+                    .and_then(bare_version),
+                fix_package: None,
+                aliases: Vec::new(),
+            }
+        })
+        .collect();
 
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: 0,
     }
 }
 
@@ -686,6 +828,14 @@ fn parse_osv_scanner(output: &str) -> AuditResult {
             let fix_version = primary_id
                 .and_then(|id| vulns.iter().find(|v| v["id"].as_str() == Some(id)))
                 .and_then(|v| osv_fixed_version(v, &package));
+            // Every other identifier osv-scanner knows for this advisory, so
+            // an allowlist naming any of them matches.
+            let mut aliases: Vec<String> = Vec::new();
+            for id in group.ids.iter().chain(group.aliases.iter()) {
+                if Some(*id) != cve.as_deref() && !aliases.iter().any(|a| a == id) {
+                    aliases.push((*id).to_owned());
+                }
+            }
 
             vulnerabilities.push(Vulnerability {
                 cve,
@@ -694,6 +844,7 @@ fn parse_osv_scanner(output: &str) -> AuditResult {
                 version: version.clone(),
                 fix_version,
                 fix_package: None,
+                aliases,
             });
         }
     }
@@ -701,6 +852,7 @@ fn parse_osv_scanner(output: &str) -> AuditResult {
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: 0,
     }
 }
 
@@ -819,6 +971,7 @@ fn parse_dependency_check(output: &str, min_cvss: Option<f32>) -> AuditResult {
                 version: version.clone(),
                 fix_version: None,
                 fix_package: None,
+                aliases: Vec::new(),
             });
         }
     }
@@ -835,6 +988,7 @@ fn parse_dependency_check(output: &str, min_cvss: Option<f32>) -> AuditResult {
     AuditResult {
         vulnerabilities,
         error: None,
+        below_threshold: u32::try_from(below_threshold).unwrap_or(u32::MAX),
     }
 }
 
@@ -923,32 +1077,147 @@ pub(crate) fn audit_outcome(audit: anyhow::Result<AuditResult>) -> Result<AuditR
                 Ok(AuditResult {
                     vulnerabilities: result.vulnerabilities,
                     error: None,
+                    below_threshold: 0,
                 })
             }
         }
     }
 }
 
-/// Return the vulnerabilities in `result` that are NOT covered by a
-/// project-declared audit exception. Match is case-insensitive against
-/// `Vulnerability.cve`; vulnerabilities with no CVE are always retained.
-/// Each suppressed CVE is logged at info level so suppression is never silent.
+/// A finding the project has accepted, and why.
+#[derive(Debug)]
+pub struct AcceptedFinding<'a> {
+    pub finding: &'a Vulnerability,
+    /// `"audit_exceptions"` or the allowlist entry's reason.
+    pub reason: String,
+}
+
+/// A finding whose allowlist acceptance has lapsed. It is also live.
+#[derive(Debug)]
+pub struct LapsedFinding<'a> {
+    pub finding: &'a Vulnerability,
+    pub expired_on: String,
+}
+
+/// An audit result split by the project's acceptance records.
+#[derive(Debug, Default)]
+pub struct FindingTriage<'a> {
+    /// Findings that count: not accepted, or accepted with a lapsed expiry.
+    pub live: Vec<&'a Vulnerability>,
+    /// Findings accepted by the registry's `audit_exceptions` or an active
+    /// `.supply-chain-allow.json` entry.
+    pub accepted: Vec<AcceptedFinding<'a>>,
+    /// Allowlist acceptances past their expiry (their findings are in `live`).
+    pub lapsed: Vec<LapsedFinding<'a>>,
+}
+
+/// Split `result` by the project's acceptance records.
+///
+/// A finding matches a record when any of its identifiers (its ID or an alias
+/// the scanner reported, e.g. PYSEC, CVE and GHSA for one advisory) names it,
+/// case-insensitively. Two records apply:
+/// - the repository's `.supply-chain-allow.json` (the preferred record: a
+///   reason and an expiry, committed to git), with the supply-chain scan's
+///   semantics: an active entry accepts, a lapsed one resurfaces the finding;
+/// - the registry's `audit_exceptions` (kept for compatibility; no expiry).
+///
+/// Findings with no identifier are always live. Each acceptance is logged at
+/// info level so suppression is never silent.
 #[must_use]
-pub fn filter_audit_exceptions<'a>(
+pub fn triage_findings<'a>(
     result: &'a AuditResult,
     exceptions: &[String],
-) -> Vec<&'a Vulnerability> {
-    result
-        .vulnerabilities
-        .iter()
-        .filter(|v| match v.cve.as_deref() {
-            Some(cve) if exceptions.iter().any(|e| e.eq_ignore_ascii_case(cve)) => {
-                tracing::info!(cve = %cve, "suppressing audit-excepted vulnerability");
-                false
+    allowlist: &SupplyChainAllowlist,
+    today: chrono::NaiveDate,
+) -> FindingTriage<'a> {
+    let mut triage = FindingTriage::default();
+    for finding in &result.vulnerabilities {
+        let ids: Vec<&str> = finding.ids().collect();
+        if ids.is_empty() {
+            triage.live.push(finding);
+            continue;
+        }
+        match allowlist.decide_any(&ids, today) {
+            AllowDecision::Active { reason } => {
+                tracing::info!(ids = ?ids, %reason, "finding accepted by .supply-chain-allow.json");
+                triage.accepted.push(AcceptedFinding { finding, reason });
+                continue;
             }
-            _ => true,
-        })
-        .collect()
+            AllowDecision::Expired { expired_on, .. } => {
+                tracing::warn!(ids = ?ids, %expired_on, "allowlist acceptance has lapsed");
+                triage.lapsed.push(LapsedFinding {
+                    finding,
+                    expired_on,
+                });
+                triage.live.push(finding);
+                continue;
+            }
+            AllowDecision::NotListed => {}
+        }
+        if ids.iter().any(|id| exceptions.iter().any(|e| e.eq_ignore_ascii_case(id))) {
+            tracing::info!(ids = ?ids, "finding accepted by registry audit_exceptions");
+            triage.accepted.push(AcceptedFinding {
+                finding,
+                reason: "audit_exceptions".to_string(),
+            });
+            continue;
+        }
+        triage.live.push(finding);
+    }
+    triage
+}
+
+/// Read the project's `.supply-chain-allow.json`. A missing file is an empty
+/// allowlist; a malformed one is treated as empty with a warning, so every
+/// advisory surfaces rather than none.
+#[must_use]
+pub fn read_allowlist_or_empty(project: &str, path: &Path) -> SupplyChainAllowlist {
+    match foundry_sdk::supply_chain::read_allowlist(path) {
+        Ok(allowlist) => allowlist,
+        Err(e) => {
+            tracing::warn!(
+                %project,
+                error = %e,
+                "unreadable .supply-chain-allow.json; treating as empty (all advisories surface)"
+            );
+            SupplyChainAllowlist::default()
+        }
+    }
+}
+
+/// A short, human-readable note on accepted and lapsed findings for a block's
+/// result line, e.g. `"; accepted: PYSEC-2026-311 (allowlist)"`. Empty when
+/// nothing was accepted or lapsed.
+#[must_use]
+pub fn acceptance_note(triage: &FindingTriage<'_>) -> String {
+    let name = |v: &Vulnerability| v.cve.clone().unwrap_or_else(|| v.package.clone());
+    let mut note = String::new();
+    if !triage.accepted.is_empty() {
+        let items: Vec<String> = triage
+            .accepted
+            .iter()
+            .map(|a| {
+                let source = if a.reason == "audit_exceptions" {
+                    "audit_exceptions"
+                } else {
+                    "allowlist"
+                };
+                format!("{} ({source})", name(a.finding))
+            })
+            .collect();
+        note.push_str("; accepted: ");
+        note.push_str(&items.join(", "));
+    }
+    if !triage.lapsed.is_empty() {
+        let items: Vec<String> = triage
+            .lapsed
+            .iter()
+            .map(|l| format!("{} (expired {})", name(l.finding), l.expired_on))
+            .collect();
+        note.push_str("; lapsed acceptance: ");
+        note.push_str(&items.join(", "));
+    }
+    note
 }
 
 #[cfg(test)]
@@ -985,11 +1254,186 @@ mod tests {
         );
     }
 
+    // --- Elixir (mix_audit) ---
+
     #[test]
     fn elixir_uses_mix_deps_audit() {
         let (cmd, args) = audit_command(&Stack::Elixir);
         assert_eq!(cmd, "mix");
         assert_eq!(args, ["deps.audit", "--format=json"]);
+    }
+
+    fn write(dir: &Path, rel: &str, contents: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    const MIX_WITH_AUDIT: &str =
+        "defp deps do\n  [{:mix_audit, \"~> 2.1\", only: [:dev, :test], runtime: false}]\nend\n";
+    const MIX_WITHOUT_AUDIT: &str = "defp deps do\n  [{:jason, \"~> 1.4\"}]\nend\n";
+
+    #[test]
+    fn mix_projects_at_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "mix.exs", MIX_WITH_AUDIT);
+        assert_eq!(mix_audit_projects(dir.path()), [dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn mix_projects_in_a_repo_without_a_root_mix_exs() {
+        // The bedrock layout: apps/bedrock and vendor/roost opt into mix_audit;
+        // apps/workshop_executive, a prototype and fixtures do not.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "apps/bedrock/mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), "apps/workshop_executive/mix.exs", MIX_WITHOUT_AUDIT);
+        write(dir.path(), "vendor/roost/mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), "vendor/roost/fixtures/phoenix_app/mix.exs", MIX_WITHOUT_AUDIT);
+        write(dir.path(), "prototypes/harness/mix.exs", MIX_WITHOUT_AUDIT);
+
+        assert_eq!(
+            mix_audit_projects(dir.path()),
+            [
+                dir.path().join("apps/bedrock"),
+                dir.path().join("vendor/roost")
+            ]
+        );
+    }
+
+    #[test]
+    fn mix_projects_never_come_from_dependency_or_build_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), "deps/some_lib/mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), "_build/dev/lib/x/mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), "assets/node_modules/y/mix.exs", MIX_WITH_AUDIT);
+        write(dir.path(), ".elixir_ls/z/mix.exs", MIX_WITH_AUDIT);
+
+        assert_eq!(mix_audit_projects(dir.path()), [dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn a_commented_out_mix_audit_does_not_count() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "mix.exs", "# {:mix_audit, \"~> 2.1\"}\n");
+        assert!(mix_audit_projects(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn elixir_without_any_mix_audit_project_is_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "mix.exs", MIX_WITHOUT_AUDIT);
+        let result = run_audit(dir.path(), &Stack::Elixir).await.unwrap();
+        assert!(
+            result.error.as_deref().is_some_and(|e| e.contains("mix_audit")),
+            "{:?}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn mix_audit_exit_1_means_read_the_report() {
+        assert!(is_audit_vuln_exit_code(&Stack::Elixir, 1));
+        assert!(!is_audit_vuln_exit_code(&Stack::Elixir, 2));
+    }
+
+    /// Real clean output from `mix_audit` 2.1 on ops-01 (`coach_phoenix`,
+    /// `roost`, `bedrock-system-template`, 2026-09-25).
+    const MIX_AUDIT_CLEAN: &str = r#"{"pass":true,"vulnerabilities":[]}"#;
+
+    /// `mix_audit`'s JSON encoding of its `Report`, `Vulnerability`, `Advisory`
+    /// and `Dependency` structs, with an advisory from its advisory mirror.
+    const MIX_AUDIT_ONE_FINDING: &str = r#"{"pass":false,"vulnerabilities":[{"advisory":{"id":"GHSA-9mhv-8h52-q7q2","package":"absinthe","disclosure_date":"2026-05-14","url":"https://github.com/advisories/GHSA-9mhv-8h52-q7q2","title":"Absinthe: Quadratic fragment-name uniqueness check","description":"...","vulnerable_version_ranges":[">= 1.2.0, < 1.10.2"],"first_patched_versions":["1.10.2"],"severity":"high"},"dependency":{"package":"absinthe","version":"1.7.8","lockfile":"/p/mix.lock"}}]}"#;
+
+    #[test]
+    fn parse_mix_audit_clean_report() {
+        let result = parse_mix_audit(MIX_AUDIT_CLEAN);
+        assert!(result.error.is_none());
+        assert!(result.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn parse_mix_audit_finding() {
+        let result = parse_mix_audit(MIX_AUDIT_ONE_FINDING);
+        assert!(result.error.is_none());
+        assert_eq!(result.vulnerabilities.len(), 1);
+        let v = &result.vulnerabilities[0];
+        assert_eq!(v.cve.as_deref(), Some("GHSA-9mhv-8h52-q7q2"));
+        assert_eq!(v.package, "absinthe");
+        assert_eq!(v.version.as_deref(), Some("1.7.8"));
+        assert_eq!(v.severity.as_deref(), Some("high"));
+        assert_eq!(v.fix_version.as_deref(), Some("1.10.2"));
+    }
+
+    #[test]
+    fn parse_mix_audit_skips_compile_preamble() {
+        // Mix prints dependency compilation to stdout before the task runs.
+        let output = format!(
+            "==> yaml_elixir\nCompiling 6 files (.ex)\nGenerated yaml_elixir app\n==> mix_audit\nCompiling 15 files (.ex)\nGenerated mix_audit app\n{MIX_AUDIT_CLEAN}\n"
+        );
+        let result = parse_mix_audit(&output);
+        assert!(result.error.is_none(), "{:?}", result.error);
+    }
+
+    #[test]
+    fn parse_mix_audit_without_a_report_is_an_error() {
+        for output in [
+            "",
+            "** (Mix) The task \"deps.audit\" could not be found",
+            "{\"status\": 1}",
+        ] {
+            let result = parse_mix_audit(output);
+            assert!(result.error.is_some(), "{output:?} must not read as clean");
+        }
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "matches the shell gateway's return type"
+    )]
+    fn ran(stdout: &str, exit_code: i32) -> anyhow::Result<crate::shell::CommandResult> {
+        Ok(crate::shell::CommandResult {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code,
+            success: exit_code == 0,
+        })
+    }
+
+    #[test]
+    fn mix_runs_merge_findings_across_projects() {
+        let result = merge_mix_runs(vec![
+            ("apps/bedrock".to_string(), ran(MIX_AUDIT_ONE_FINDING, 1)),
+            ("vendor/roost".to_string(), ran(MIX_AUDIT_ONE_FINDING, 1)),
+            ("apps/other".to_string(), ran(MIX_AUDIT_CLEAN, 0)),
+        ]);
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.vulnerabilities.len(), 1, "same advisory on the same version once");
+    }
+
+    #[test]
+    fn one_failed_mix_project_fails_the_whole_scan_and_names_it() {
+        let result = merge_mix_runs(vec![
+            ("apps/bedrock".to_string(), ran(MIX_AUDIT_CLEAN, 0)),
+            (
+                "vendor/roost".to_string(),
+                ran("** (Mix) The task \"deps.audit\" could not be found", 1),
+            ),
+        ]);
+        let err = result.error.expect("a partial scan is not a clean scan");
+        assert!(err.contains("vendor/roost"), "{err}");
+    }
+
+    #[test]
+    fn mix_run_with_unexpected_exit_code_is_an_error() {
+        let result = merge_mix_runs(vec![(".".to_string(), ran(MIX_AUDIT_CLEAN, 2))]);
+        assert!(result.error.as_deref().is_some_and(|e| e.contains("exit 2")));
+    }
+
+    #[test]
+    fn mix_run_that_could_not_spawn_is_an_error() {
+        let result = merge_mix_runs(vec![(".".to_string(), Err(anyhow::anyhow!("mix not found")))]);
+        assert!(result.error.as_deref().is_some_and(|e| e.contains("mix not found")));
     }
 
     // --- exit-code convention ---
@@ -1233,6 +1677,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_pip_audit_carries_aliases() {
+        let json = r#"{"dependencies": [{"name": "chromadb", "version": "1.5.9", "vulns": [
+            {"id": "PYSEC-2026-311", "fix_versions": [], "aliases": ["CVE-2026-45829", "GHSA-f4j7-r4q5-qw2c"]}
+        ]}], "fixes": []}"#;
+        let result = parse_pip_audit(json);
+        let v = &result.vulnerabilities[0];
+        assert_eq!(v.cve.as_deref(), Some("PYSEC-2026-311"));
+        assert_eq!(v.aliases, ["CVE-2026-45829", "GHSA-f4j7-r4q5-qw2c"]);
+    }
+
+    #[test]
     fn parse_pip_audit_empty_fix_versions_is_policy_call() {
         // The chromadb case observed in production: a real advisory with no fix.
         let json = r#"
@@ -1281,36 +1736,6 @@ mod tests {
         assert_eq!(bare_version("1.2.3-rc1").as_deref(), Some("1.2.3"), "prerelease dropped");
         assert_eq!(bare_version("not a version"), None);
         assert_eq!(bare_version(""), None);
-    }
-
-    #[test]
-    fn parse_generic_audit_empty_array() {
-        let result = parse_generic_audit("[]");
-        assert!(result.error.is_none());
-        assert!(result.vulnerabilities.is_empty());
-    }
-
-    #[test]
-    fn parse_generic_audit_empty_output() {
-        let result = parse_generic_audit("");
-        assert!(result.error.is_none());
-        assert!(result.vulnerabilities.is_empty());
-    }
-
-    #[test]
-    fn parse_generic_audit_non_array_records_error() {
-        // If the tool emits a non-array JSON (unexpected shape), record the
-        // mismatch as an error rather than silently reporting a clean scan.
-        let result = parse_generic_audit(r#"{"status": "ok"}"#);
-        assert!(result.error.is_some());
-        assert!(result.vulnerabilities.is_empty());
-    }
-
-    #[test]
-    fn parse_generic_audit_records_error_on_malformed_json() {
-        let result = parse_generic_audit("not json");
-        assert!(result.error.is_some());
-        assert!(result.vulnerabilities.is_empty());
     }
 
     // --- Swift (osv-scanner) ---
@@ -1428,6 +1853,24 @@ mod tests {
             "the Go entry's fixed version must not leak into the Swift finding"
         );
         assert_eq!(multi.severity.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn parse_osv_scanner_carries_the_other_ids_as_aliases() {
+        let result = parse_osv_scanner(OSV_SWIFT_NIO_HTTP2);
+        let first = &result.vulnerabilities[0];
+        assert_eq!(first.cve.as_deref(), Some("CVE-2022-24667"));
+        assert_eq!(first.aliases, ["GHSA-w3f6-pc54-gfw7"], "every other id, primary excluded");
+    }
+
+    #[test]
+    fn parse_cargo_audit_carries_advisory_aliases() {
+        let json = r#"{"vulnerabilities": {"list": [{
+            "advisory": {"id": "RUSTSEC-2026-0001", "package": "c", "aliases": ["CVE-2026-9", "GHSA-y"]},
+            "package": {"name": "c", "version": "1.0.0"}
+        }]}}"#;
+        let result = parse_cargo_audit(json);
+        assert_eq!(result.vulnerabilities[0].aliases, ["CVE-2026-9", "GHSA-y"]);
     }
 
     #[test]
@@ -1777,6 +2220,12 @@ mod tests {
     }
 
     #[test]
+    fn below_threshold_findings_are_counted_for_the_result_line() {
+        let result = parse_dependency_check(DEPENDENCY_CHECK_MIXED_SCORES, Some(7.0));
+        assert_eq!(result.below_threshold, 1, "CVE-MEDIUM left out");
+    }
+
+    #[test]
     fn without_a_threshold_every_live_finding_counts() {
         let result = parse_dependency_check(DEPENDENCY_CHECK_MIXED_SCORES, None);
         assert_eq!(result.vulnerabilities.len(), 4);
@@ -1878,6 +2327,7 @@ mod tests {
             version: None,
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }
     }
 
@@ -1885,49 +2335,104 @@ mod tests {
         AuditResult {
             vulnerabilities: vulns,
             error: None,
+            below_threshold: 0,
         }
     }
 
+    fn day(s: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn allow(entries: &[(&str, Option<&str>)]) -> SupplyChainAllowlist {
+        SupplyChainAllowlist {
+            version: 1,
+            allowed: entries
+                .iter()
+                .map(|(cve, expires)| foundry_sdk::supply_chain::AllowEntry {
+                    cve: (*cve).to_string(),
+                    reason: "chromadb path not exposed".to_string(),
+                    expires: expires.map(str::to_string),
+                })
+                .collect(),
+        }
+    }
+
+    fn triage_ids(
+        result: &AuditResult,
+        exceptions: &[String],
+        allowlist: &SupplyChainAllowlist,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let t = triage_findings(result, exceptions, allowlist, day("2026-09-25"));
+        let id = |v: &Vulnerability| v.cve.clone().unwrap_or_default();
+        (
+            t.live.iter().map(|v| id(v)).collect(),
+            t.accepted.iter().map(|a| id(a.finding)).collect(),
+            t.lapsed.iter().map(|a| id(a.finding)).collect(),
+        )
+    }
+
     #[test]
-    fn filter_audit_exceptions_suppresses_matching_cve() {
+    fn audit_exception_suppresses_matching_cve() {
         let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
-        let exceptions = vec!["CVE-2026-45829".to_string()];
-        let reported = super::filter_audit_exceptions(&result, &exceptions);
-        assert!(reported.is_empty(), "matching CVE should be suppressed");
+        let (live, accepted, _) =
+            triage_ids(&result, &["CVE-2026-45829".to_string()], &SupplyChainAllowlist::default());
+        assert!(live.is_empty());
+        assert_eq!(accepted, ["CVE-2026-45829"]);
     }
 
     #[test]
-    fn filter_audit_exceptions_retains_non_matching_cve() {
-        let result = result_with(vec![vuln(Some("CVE-2026-99999"))]);
-        let exceptions = vec!["CVE-2026-45829".to_string()];
-        let reported = super::filter_audit_exceptions(&result, &exceptions);
-        assert_eq!(reported.len(), 1, "non-matching CVE should be retained");
+    fn audit_exception_is_case_insensitive_and_keeps_non_matching() {
+        let result = result_with(vec![vuln(Some("CVE-2026-45829")), vuln(Some("CVE-2026-99999"))]);
+        let (live, _, _) =
+            triage_ids(&result, &["cve-2026-45829".to_string()], &SupplyChainAllowlist::default());
+        assert_eq!(live, ["CVE-2026-99999"]);
     }
 
     #[test]
-    fn filter_audit_exceptions_empty_exceptions_retains_all() {
-        let result = result_with(vec![vuln(Some("CVE-2026-12345")), vuln(Some("CVE-2026-67890"))]);
-        let reported = super::filter_audit_exceptions(&result, &[]);
-        assert_eq!(reported.len(), 2, "empty exceptions should retain all findings");
-    }
-
-    #[test]
-    fn filter_audit_exceptions_is_case_insensitive() {
-        let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
-        let exceptions = vec!["cve-2026-45829".to_string()];
-        let reported = super::filter_audit_exceptions(&result, &exceptions);
-        assert!(
-            reported.is_empty(),
-            "case-insensitive match: lowercase exception should suppress uppercase CVE"
-        );
-    }
-
-    #[test]
-    fn filter_audit_exceptions_retains_vulns_without_cve() {
+    fn unnamed_findings_are_always_live() {
         let result = result_with(vec![vuln(None)]);
-        let exceptions = vec!["CVE-2026-45829".to_string()];
-        let reported = super::filter_audit_exceptions(&result, &exceptions);
-        assert_eq!(reported.len(), 1, "vuln with no CVE should always be retained");
+        let (live, _, _) = triage_ids(
+            &result,
+            &["CVE-2026-45829".to_string()],
+            &allow(&[("CVE-2026-45829", None)]),
+        );
+        assert_eq!(live.len(), 1);
+    }
+
+    #[test]
+    fn allowlist_accepts_a_finding_by_alias() {
+        // zk-chat/researcher-cli on 2026-09-25: pip-audit reports the PYSEC id;
+        // the allowlist names the CVE.
+        let mut v = vuln(Some("PYSEC-2026-311"));
+        v.aliases = vec![
+            "CVE-2026-45829".to_string(),
+            "GHSA-f4j7-r4q5-qw2c".to_string(),
+        ];
+        let result = result_with(vec![v]);
+        let (live, accepted, _) =
+            triage_ids(&result, &[], &allow(&[("CVE-2026-45829", Some("2026-12-24"))]));
+        assert!(live.is_empty(), "accepted, not vulnerable");
+        assert_eq!(accepted, ["PYSEC-2026-311"]);
+    }
+
+    #[test]
+    fn audit_exception_matches_an_alias_too() {
+        let mut v = vuln(Some("PYSEC-2026-311"));
+        v.aliases = vec!["CVE-2026-45829".to_string()];
+        let result = result_with(vec![v]);
+        let (live, _, _) =
+            triage_ids(&result, &["CVE-2026-45829".to_string()], &SupplyChainAllowlist::default());
+        assert!(live.is_empty());
+    }
+
+    #[test]
+    fn a_lapsed_allowlist_entry_resurfaces_the_finding() {
+        let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
+        let (live, accepted, lapsed) =
+            triage_ids(&result, &[], &allow(&[("CVE-2026-45829", Some("2026-09-01"))]));
+        assert_eq!(live, ["CVE-2026-45829"], "lapsed acceptance is live again");
+        assert!(accepted.is_empty());
+        assert_eq!(lapsed, ["CVE-2026-45829"]);
     }
 
     // --- audit_outcome ---
@@ -1944,6 +2449,7 @@ mod tests {
         let audit = Ok(AuditResult {
             vulnerabilities: vec![],
             error: Some("tool not installed".to_string()),
+            below_threshold: 0,
         });
         let result = super::audit_outcome(audit);
         assert!(result.is_err());

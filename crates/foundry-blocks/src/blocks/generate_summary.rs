@@ -5,8 +5,9 @@ use chrono::Utc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload, ProjectCompletedPayload,
-    ReleaseCompletedPayload, ReleaseTagAuditedPayload,
+    GitSyncFailure, LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload,
+    ProjectCompletedPayload, ProjectValidationCompletedPayload, ReleaseCompletedPayload,
+    ReleaseTagAuditedPayload,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -15,7 +16,7 @@ use foundry_sdk::trace::ProcessResult;
 use crate::gateway::ShellGateway;
 use crate::summary::{
     AutoReleaseEntry, LocalInstallEntry, MaintenanceRunSummary, ProjectResult, ProjectStatus,
-    ReleaseAuditEntry, UnpushedEntry, UnpushedStatus,
+    ReleaseAuditEntry, ScannerFailureEntry, UnpushedEntry, UnpushedStatus, WrongBranchEntry,
 };
 use crate::trace_writer::TraceWriter;
 
@@ -185,7 +186,40 @@ fn extract_release_audits(project: &str, result: &ProcessResult) -> Vec<ReleaseA
         .map(|p| ReleaseAuditEntry {
             name: project.to_string(),
             tag: p.tag,
-            status: if p.vulnerable { "vulnerable" } else { "clean" }.to_string(),
+            status: if p.scan_error.is_some() {
+                "scanner failed"
+            } else if p.vulnerable {
+                "vulnerable"
+            } else {
+                "clean"
+            }
+            .to_string(),
+        })
+        .collect()
+}
+
+/// Audits in a trace that did not run.
+fn extract_scanner_failures(project: &str, result: &ProcessResult) -> Vec<ScannerFailureEntry> {
+    result
+        .parsed_events_of::<ReleaseTagAuditedPayload>(EventType::ReleaseTagAudited)
+        .filter_map(|p| p.scan_error)
+        .map(|error| ScannerFailureEntry {
+            name: project.to_string(),
+            error,
+        })
+        .collect()
+}
+
+/// Validation that stopped because the checkout was on another branch.
+fn extract_wrong_branch(project: &str, result: &ProcessResult) -> Vec<WrongBranchEntry> {
+    result
+        .parsed_events_of::<ProjectValidationCompletedPayload>(
+            EventType::ProjectValidationCompleted,
+        )
+        .filter(|p| p.sync_failure == Some(GitSyncFailure::WrongBranch))
+        .map(|p| WrongBranchEntry {
+            name: project.to_string(),
+            reason: p.reason.unwrap_or_else(|| "wrong branch".to_string()),
         })
         .collect()
 }
@@ -214,33 +248,38 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
         .collect()
 }
 
+/// Everything the summary reads out of the per-project traces.
+#[derive(Default)]
+struct LoadedResults {
+    projects: Vec<ProjectResult>,
+    release_audits: Vec<ReleaseAuditEntry>,
+    auto_releases: Vec<AutoReleaseEntry>,
+    local_installs: Vec<LocalInstallEntry>,
+    scanner_failures: Vec<ScannerFailureEntry>,
+    wrong_branch: Vec<WrongBranchEntry>,
+}
+
 fn load_project_results(
     trace_writer: &TraceWriter,
     project_trace_ids: &std::collections::HashMap<String, String>,
-) -> (
-    Vec<ProjectResult>,
-    Vec<ReleaseAuditEntry>,
-    Vec<AutoReleaseEntry>,
-    Vec<LocalInstallEntry>,
-) {
-    let mut projects = Vec::new();
-    let mut release_audits = Vec::new();
-    let mut auto_releases = Vec::new();
-    let mut local_installs = Vec::new();
+) -> LoadedResults {
+    let mut loaded = LoadedResults::default();
 
     for (project_name, event_id) in project_trace_ids {
         if let Some(result) = trace_writer.read(event_id) {
-            projects.push(extract_project_result(project_name, &result));
-            release_audits.extend(extract_release_audits(project_name, &result));
-            auto_releases.extend(extract_auto_releases(project_name, &result));
-            local_installs.extend(extract_local_installs(project_name, &result));
+            loaded.projects.push(extract_project_result(project_name, &result));
+            loaded.release_audits.extend(extract_release_audits(project_name, &result));
+            loaded.auto_releases.extend(extract_auto_releases(project_name, &result));
+            loaded.local_installs.extend(extract_local_installs(project_name, &result));
+            loaded.scanner_failures.extend(extract_scanner_failures(project_name, &result));
+            loaded.wrong_branch.extend(extract_wrong_branch(project_name, &result));
         } else {
             tracing::warn!(
                 project = %project_name,
                 event_id = %event_id,
                 "trace not found for project"
             );
-            projects.push(ProjectResult {
+            loaded.projects.push(ProjectResult {
                 name: project_name.clone(),
                 status: ProjectStatus::Failed("trace not found".to_string()),
                 duration_secs: None,
@@ -248,7 +287,26 @@ fn load_project_results(
         }
     }
 
-    (projects, release_audits, auto_releases, local_installs)
+    loaded.scanner_failures.sort_by(|a, b| a.name.cmp(&b.name));
+    loaded.wrong_branch.sort_by(|a, b| a.name.cmp(&b.name));
+    loaded
+}
+
+/// The loud problems in a run, for the block's result line.
+fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !summary.unpushed.is_empty() {
+        warnings.push(format!("{} project(s) have unpushed commits", summary.unpushed.len()));
+    }
+    if !summary.scanner_failures.is_empty() {
+        let names: std::collections::BTreeSet<&str> =
+            summary.scanner_failures.iter().map(|f| f.name.as_str()).collect();
+        warnings.push(format!("{} project(s) with scanner failures", names.len()));
+    }
+    if !summary.wrong_branch.is_empty() {
+        warnings.push(format!("{} project(s) skipped: wrong branch", summary.wrong_branch.len()));
+    }
+    warnings
 }
 
 fn write_summary(audits_dir: &std::path::Path, markdown: &str) -> anyhow::Result<String> {
@@ -297,8 +355,14 @@ impl TaskBlock for GenerateSummary {
             let skipped_projects = p.skipped_projects;
             let total_duration_ms = p.total_duration_ms;
 
-            let (mut projects, release_audits, auto_releases, local_installs) =
-                load_project_results(&trace_writer, &project_trace_ids);
+            let LoadedResults {
+                mut projects,
+                release_audits,
+                auto_releases,
+                local_installs,
+                scanner_failures,
+                wrong_branch,
+            } = load_project_results(&trace_writer, &project_trace_ids);
 
             for name in &skipped_projects {
                 projects.push(ProjectResult {
@@ -321,8 +385,10 @@ impl TaskBlock for GenerateSummary {
                 auto_releases,
                 local_installs,
                 unpushed,
+                scanner_failures,
+                wrong_branch,
             };
-            let unpushed_count = summary.unpushed.len();
+            let warnings = summary_warnings(&summary);
 
             let markdown = crate::summary::render(&summary);
 
@@ -331,12 +397,10 @@ impl TaskBlock for GenerateSummary {
                 Err(e) => return Ok(TaskBlockResult::failure(e.to_string())),
             };
 
-            let headline = if unpushed_count == 0 {
+            let headline = if warnings.is_empty() {
                 format!("Summary written to {path_str}")
             } else {
-                format!(
-                    "Summary written to {path_str}; WARNING: {unpushed_count} project(s) have unpushed commits"
-                )
+                format!("Summary written to {path_str}; WARNING: {}", warnings.join("; "))
             };
             Ok(TaskBlockResult::success(headline, vec![])
                 .with_output(Some(markdown), None)
@@ -639,6 +703,85 @@ mod tests {
         assert!(
             md.contains("| foundry | could not check: could not resolve origin/main |"),
             "{md}"
+        );
+    }
+
+    fn trace_with(project: &str, events: Vec<(EventType, serde_json::Value)>) -> ProcessResult {
+        let mut trace = successful_trace(project);
+        for (event_type, payload) in events {
+            trace
+                .events
+                .push(Event::new(event_type, project.to_string(), Throttle::Full, payload));
+        }
+        trace
+    }
+
+    #[tokio::test]
+    async fn summary_lists_scanner_failures_and_does_not_call_them_clean() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write(
+            "evt_bedrock",
+            &trace_with(
+                "bedrock",
+                vec![(
+                    EventType::ReleaseTagAudited,
+                    serde_json::json!({"project": "bedrock", "cve": "none", "tag": "", "vulnerable": false,
+                        "scan_error": "mix deps.audit could not be found"}),
+                )],
+            ),
+        )
+        .unwrap();
+        let block = summary_block(tw, audits_dir.path());
+
+        let result = block.execute(&summary_request(&["bedrock"])).await.unwrap();
+
+        let md = std::fs::read_to_string(&result.audit_artifacts[0]).unwrap();
+        assert!(md.contains("Scanner failures"), "{md}");
+        assert!(md.contains("| bedrock | mix deps.audit could not be found |"), "{md}");
+        assert!(
+            md.contains("| bedrock |  | \u{26a0}\u{fe0f} scanner failed |"),
+            "release audit row: {md}"
+        );
+        assert!(
+            result.summary.contains("1 project(s) with scanner failures"),
+            "{}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_lists_projects_skipped_for_wrong_branch() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write(
+            "evt_reaction_new",
+            &trace_with(
+                "reaction_new",
+                vec![(
+                    EventType::ProjectValidationCompleted,
+                    serde_json::json!({"project": "reaction_new", "status": "error",
+                        "reason": "wrong branch: chore/dependency-update-2026-09-24, expected main",
+                        "sync_failure": "wrong_branch"}),
+                )],
+            ),
+        )
+        .unwrap();
+        let block = summary_block(tw, audits_dir.path());
+
+        let result = block.execute(&summary_request(&["reaction_new"])).await.unwrap();
+
+        let md = std::fs::read_to_string(&result.audit_artifacts[0]).unwrap();
+        assert!(md.contains("Projects skipped: wrong branch"), "{md}");
+        assert!(md.contains(
+            "| reaction_new | wrong branch: chore/dependency-update-2026-09-24, expected main |"
+        ));
+        assert!(
+            result.summary.contains("1 project(s) skipped: wrong branch"),
+            "{}",
+            result.summary
         );
     }
 

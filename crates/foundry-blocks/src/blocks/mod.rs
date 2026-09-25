@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 use foundry_sdk::task_block::TaskBlockResult;
 
 mod agent_helpers;
+mod branch_guard;
 mod change_detection;
 mod checkout_sync;
 mod digest_io;

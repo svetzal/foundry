@@ -92,11 +92,26 @@ the step committed) and in the step's summary:
 
 Foundry never force-pushes.
 
+After the maintain agent finishes, Foundry checks that the checkout is on the
+registry's configured branch. If the agent left it on its own branch (or a
+detached `HEAD`) that fast-forwards the configured branch, Foundry moves the
+configured branch forward, checks it out and deletes the agent's branch with
+`git branch -d`. If it does not fast-forward, the run fails with a reason that
+names the branch, and the checkout is left for a human.
+
 After the whole run, the maintenance summary checks every push-enabled project
 again and lists any that still hold unpushed commits in an **Unpushed
 commits** section at the top of `audits/runs/<date>/summary.md` ("N commit(s)
-ahead of origin/main"). The block's result line says `WARNING: N project(s)
-have unpushed commits`.
+ahead of origin/main"). Two more sections sit beside it:
+
+- **Scanner failures**: projects whose dependency audit did not run, with the
+  error. The post-push audit block is marked failed (not ok) when this happens,
+  and the release-audit table says "scanner failed", never "clean".
+- **Projects skipped: wrong branch**: projects whose validation stopped because
+  the checkout was on another branch (`sync_failure: "wrong_branch"`).
+
+The block's result line carries a `WARNING:` naming each of these that is not
+empty.
 
 The one-shot `foundry task` / campaign path is unaffected — it already builds
 its isolated worktree from the fetched remote tip.

@@ -96,6 +96,13 @@ Each entry classifies one advisory on the day of the scan:
 | **accepted** | present, `expires` today-or-later (or absent) | suppressed; noted under "Accepted" |
 | **lapsed** | present, `expires` has passed | **resurfaces as a live finding** and is flagged under "Lapsed acceptances — re-decide" |
 
+An entry matches a finding when it names the finding's ID or any alias the
+scanner reports for the same advisory. pip-audit, osv-scanner and cargo-audit
+report aliases, so one entry for `CVE-2026-45829` also accepts the pip-audit
+finding `PYSEC-2026-311`. An active acceptance under any alias wins over a
+lapsed one. The post-push auditor and the `scan_requested` scan read the same
+file with the same semantics.
+
 The expiry is deliberate: an acceptance is a decision to revisit, not a
 permanent mute. A malformed `expires` string fails safe — the advisory
 resurfaces rather than hiding.

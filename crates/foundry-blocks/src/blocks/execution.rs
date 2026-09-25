@@ -10,6 +10,7 @@ use foundry_sdk::workflow::WorkflowType;
 use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway};
 
 use super::agent_helpers::{CodingAgentSpec, invoke_coding_agent};
+use super::branch_guard::BranchGuard;
 use super::change_detection::{
     capture_pre_execution_sha, detect_post_execution_changes, only_auxiliary_changes,
 };
@@ -191,7 +192,52 @@ pub(crate) async fn execute_agent_block(
         ctx.label,
     )
     .await;
+    let outcome = if ctx.workflow == WorkflowType::Maintain {
+        guard_configured_branch(shell, &project_path, &entry.branch, outcome).await
+    } else {
+        outcome
+    };
     build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await
+}
+
+/// Put the checkout back on its configured branch after the maintain agent,
+/// or turn the run into a failure that says why it could not be.
+///
+/// Change detection runs afterwards and still sees the agent's work: it diffs
+/// against the pre-agent SHA, and the fast-forward leaves `HEAD` on the same
+/// commit.
+async fn guard_configured_branch(
+    shell: &dyn ShellGateway,
+    project_path: &Path,
+    branch: &str,
+    outcome: AgentOutcome,
+) -> AgentOutcome {
+    match super::branch_guard::restore_configured_branch(shell, project_path, branch).await {
+        BranchGuard::OnBranch | BranchGuard::Restored { .. } => outcome,
+        BranchGuard::Unknown(reason) => {
+            // Best-effort: the branch cannot be read (not a Git checkout, or
+            // Git failed). Validation checks the branch before the next run,
+            // so nothing is lost by not guarding here.
+            tracing::warn!(%reason, "could not read the branch after the agent; branch guard skipped");
+            outcome
+        }
+        BranchGuard::Failed(reason) => match outcome {
+            AgentOutcome::AgentFailed { stderr, failure } => AgentOutcome::AgentFailed {
+                stderr: format!("{reason}\n{stderr}"),
+                failure,
+            },
+            AgentOutcome::Success { .. } => AgentOutcome::AgentFailed {
+                stderr: reason,
+                failure: None,
+            },
+            // The agent never ran, so it did not move the branch; its own
+            // failure is the one to report.
+            unavailable @ AgentOutcome::Unavailable { .. } => {
+                tracing::warn!(%reason, "checkout is off its configured branch");
+                unavailable
+            }
+        },
+    }
 }
 
 /// Prevent an isolated task executor from pushing through the checkout's

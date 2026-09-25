@@ -85,11 +85,20 @@ foundry --offline registry add --name my-tool …   # direct registry.json recov
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
 | `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
-| `audit_exceptions` | No | string[] (default `[]`) | Array of CVE/advisory IDs the project has formally accepted as not-applicable. Matching vulnerabilities are suppressed from the post-push auditor. This is Foundry's own copy — independent of hone's gate config and the supply-chain `.supply-chain-allow.json`. Record rationale in `notes`; remove entries once upstream patches. |
+| `audit_exceptions` | No | string[] (default `[]`) | Legacy: advisory IDs accepted without an expiry. Kept for compatibility. Prefer the repository's `.supply-chain-allow.json`, which records a reason and an expiry in git. |
 
-#### Accepted-risk CVEs (`audit_exceptions`)
+#### Accepted-risk advisories
 
-When a project's supply-chain scan surfaces a CVE that your team has formally reviewed and accepted — for example, because the vulnerable code path is unreachable in your deployment — you can suppress it from Foundry's post-push auditor by listing it in `audit_exceptions`:
+Record an accepted advisory in the repository's `.supply-chain-allow.json`
+(see [Supply-chain scan](supply-chain.md#the-allowlist--committed-per-repo-memory)).
+Every entry has a written reason and an expiry, and it lives in git. The
+post-push auditor, the `scan_requested` scan and the nightly supply-chain scan
+all read it. An active entry accepts the finding; a lapsed one resurfaces it.
+An entry matches when it names any identifier the scanner reports for the
+advisory (for example PYSEC, CVE or GHSA for the same pip-audit finding).
+
+The older registry field `audit_exceptions` still works, with the same
+alias matching, but it has no expiry and no `registry edit` flag:
 
 ```json
 {
@@ -99,7 +108,7 @@ When a project's supply-chain scan surfaces a CVE that your team has formally re
 }
 ```
 
-Matching is case-insensitive. Each suppressed CVE is logged at `info` level so suppression is never silent. The field is Foundry's own policy record — independent of hone's gate configuration and the supply-chain `.supply-chain-allow.json` allowlist. Remove an entry once the upstream advisory is patched.
+Matching is case-insensitive. Each accepted finding is logged at `info` level and named in the audit's result line (`accepted: PYSEC-2026-311 (allowlist)`), so suppression is never silent. Remove an entry once the upstream advisory is patched.
 
 ### Stack values
 
@@ -111,7 +120,7 @@ stack-specific commands.
 | `"rust"` | `cargo audit --json` | Requires `cargo-audit` to be installed |
 | `"typescript"` | `npm audit --json` | Exit code 1 = vulnerabilities found (not a tool failure) |
 | `"python"` | `.venv/bin/pip-audit --format=json` | Runs the project's own `pip-audit` from `.venv`; a project without it is reported as not scanned |
-| `"elixir"` | `mix deps.audit --format=json` | — |
+| `"elixir"` | `mix deps.audit --format=json` (`mix_audit`) in each Mix project | Foundry audits every Mix project in the repository that declares `mix_audit` as a dependency: the root `mix.exs`, or subprojects such as `apps/*` and `vendor/*` when there is no root project. `deps`, `_build`, `node_modules` and hidden directories are never searched. A repository where no Mix project declares `mix_audit` is reported as not scanned. Exit 1 means findings; output without a JSON report, from any subproject, fails the whole scan and names the subproject. `mix hex.audit` (retired packages) is not part of the audit: it is not an advisory database and has no JSON output; run it as a gate |
 | `"cpp"` | — | Placeholder for C++ projects; audit tooling not yet wired |
 | `"swift"` | `osv-scanner scan source --format json --lockfile Package.resolved` | Requires `osv-scanner` on the daemon's `PATH` and a committed `Package.resolved`. Exit code 1 = vulnerabilities found; 127/128 are tool failures. Findings carry the CVE alias when the advisory has one, otherwise the GHSA id |
 | `"kotlin"` | `./gradlew dependencyCheckAggregate --rerun --no-parallel --no-daemon` | Runs the project's own OWASP Dependency-Check task, so its suppression file and settings apply. The project must configure `formats` to include `JSON`; Foundry reads `build/reports/dependency-check/dependency-check-report.json` (Dependency-Check 13 and later) or `build/reports/dependency-check-report.json` (earlier), whichever this run wrote most recently, and accepts a report only when this run wrote it. Gradle exits 1 both for a `failBuildOnCVSS` finding and for a broken build, so a missing or stale report is a scan failure. Findings follow the project's `failBuildOnCVSS`: a finding whose highest CVSS score is below it does not count (the project's build treats it as triage), suppressed findings never count, and without a numeric `failBuildOnCVSS` every live finding counts. `--rerun` stops Gradle skipping the task as UP-TO-DATE, which would leave the previous report in place. Timeout is 60 minutes because the NVD download is slow; set `NVD_API_KEY` in the daemon's environment |

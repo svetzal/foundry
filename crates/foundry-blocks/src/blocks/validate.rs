@@ -43,6 +43,8 @@ task_block_new! {
 enum BranchCheckOutcome {
     Ok,
     Err(String),
+    /// The checkout is on another branch than the registry's.
+    WrongBranch(String),
 }
 
 /// Verify the git branch at `path` matches `expected_branch`.
@@ -81,7 +83,7 @@ async fn check_git_branch(
     if current_branch != expected_branch {
         let reason = format!("wrong branch: {current_branch}, expected {expected_branch}");
         tracing::warn!(%project, %reason, "branch mismatch");
-        return Ok(BranchCheckOutcome::Err(reason));
+        return Ok(BranchCheckOutcome::WrongBranch(reason));
     }
 
     Ok(BranchCheckOutcome::Ok)
@@ -171,10 +173,19 @@ impl TaskBlock for ValidateProject {
             }
 
             // 2. Check git branch (recovers from detached HEAD).
-            if let BranchCheckOutcome::Err(reason) =
-                check_git_branch(&project, path, &expected_branch, shell.as_ref()).await?
-            {
-                return Ok(error_result(&project, throttle, &reason));
+            match check_git_branch(&project, path, &expected_branch, shell.as_ref()).await? {
+                BranchCheckOutcome::Ok => {}
+                BranchCheckOutcome::Err(reason) => {
+                    return Ok(error_result(&project, throttle, &reason));
+                }
+                BranchCheckOutcome::WrongBranch(reason) => {
+                    return Ok(failure_result(
+                        &project,
+                        throttle,
+                        &reason,
+                        Some(GitSyncFailure::WrongBranch),
+                    ));
+                }
             }
 
             // 3. Sync the checkout with its remote before any work touches it.
@@ -487,6 +498,10 @@ mod tests {
         assert_eq!(result.events[0].payload["status"], "error");
         let reason = result.events[0].payload["reason"].as_str().unwrap();
         assert!(reason.contains("wrong branch"), "unexpected reason: {reason}");
+        assert_eq!(
+            result.events[0].payload["sync_failure"], "wrong_branch",
+            "typed, so the maintenance summary can list the project loudly"
+        );
     }
 
     #[tokio::test]

@@ -119,21 +119,32 @@ impl AuditReleaseTag {
                         tag: String::new(),
                         vulnerable: false,
                         dirty: Some(false),
-                        scan_error: Some(msg),
+                        scan_error: Some(msg.clone()),
                     })
                     .expect("ReleaseTagAuditedPayload is infallibly serializable");
-                    return Ok(single_event_result(
-                        "Post-push audit: scanner failed".to_string(),
+                    // Not ok: a scan that did not run must never read as
+                    // success. The event still flows so the summary can list it.
+                    let mut result = single_event_result(
+                        format!("Post-push audit: scanner failed: {msg}"),
                         EventType::ReleaseTagAudited,
                         project,
                         throttle,
                         event_payload,
-                    ));
+                    );
+                    result.success = false;
+                    return Ok(result);
                 }
                 Ok(result) => result,
             };
-            let reported =
-                crate::scanner::filter_audit_exceptions(&audit_result, &entry.audit_exceptions);
+            let allowlist = crate::scanner::read_allowlist_or_empty(&project, path);
+            let triage = crate::scanner::triage_findings(
+                &audit_result,
+                &entry.audit_exceptions,
+                &allowlist,
+                chrono::Local::now().date_naive(),
+            );
+            let note = crate::scanner::acceptance_note(&triage);
+            let reported = triage.live;
             let vulnerable = !reported.is_empty();
             let cve = reported
                 .first()
@@ -154,7 +165,11 @@ impl AuditReleaseTag {
             })
             .expect("ReleaseTagAuditedPayload is infallibly serializable");
             Ok(single_event_result(
-                format!("Post-push audit: {} vulnerable={}", entry.stack, vulnerable),
+                format!(
+                    "Post-push audit: {} vulnerable={vulnerable}{note}{}",
+                    entry.stack,
+                    below_threshold_note(audit_result.below_threshold)
+                ),
                 EventType::ReleaseTagAudited,
                 project,
                 throttle,
@@ -237,6 +252,7 @@ impl AuditReleaseTag {
             perform_tag_checkout_and_scan(
                 &path,
                 &entry.stack,
+                &entry.audit_exceptions,
                 &original_branch,
                 &project,
                 throttle,
@@ -360,9 +376,14 @@ async fn find_latest_release_tag(
 ///
 /// Falls back to the payload values when no release tags exist or when the
 /// scanner cannot run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site; the arguments are the audit context"
+)]
 async fn perform_tag_checkout_and_scan(
     path: &std::path::Path,
     stack: &foundry_sdk::registry::Stack,
+    audit_exceptions: &[String],
     original_branch: &str,
     project: &str,
     throttle: foundry_sdk::throttle::Throttle,
@@ -428,7 +449,7 @@ async fn perform_tag_checkout_and_scan(
                     Some(msg),
                 ));
             }
-            Ok(result) => result.vulnerabilities,
+            Ok(result) => live_findings(project, path, &result, audit_exceptions),
         }
     } else {
         tracing::info!(project = %project, "no release tags found, falling back to payload");
@@ -488,6 +509,11 @@ fn emit_payload_result(
     scan_error: Option<String>,
 ) -> TaskBlockResult {
     tracing::info!(%cve, %vulnerable, "audited release tag");
+    let summary = match &scan_error {
+        Some(err) => format!("Release tag audit: scanner failed: {err}"),
+        None => format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+    };
+    let failed = scan_error.is_some();
     #[allow(
         clippy::expect_used,
         reason = "ReleaseTagAuditedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
@@ -501,13 +527,47 @@ fn emit_payload_result(
         scan_error,
     })
     .expect("ReleaseTagAuditedPayload is infallibly serializable");
-    single_event_result(
-        format!("Release tag audited: {cve} vulnerable={vulnerable}"),
+    let mut result = single_event_result(
+        summary,
         EventType::ReleaseTagAudited,
         project,
         throttle,
         event_payload,
+    );
+    // Not ok when the scan did not run: it must never read as success.
+    result.success = !failed;
+    result
+}
+
+/// The findings in `result` the project has not accepted. The allowlist is
+/// read from the working branch (restored after the tag scan): the current
+/// acceptance record is the policy.
+fn live_findings(
+    project: &str,
+    path: &std::path::Path,
+    result: &crate::scanner::AuditResult,
+    audit_exceptions: &[String],
+) -> Vec<crate::scanner::Vulnerability> {
+    let allowlist = crate::scanner::read_allowlist_or_empty(project, path);
+    crate::scanner::triage_findings(
+        result,
+        audit_exceptions,
+        &allowlist,
+        chrono::Local::now().date_naive(),
     )
+    .live
+    .into_iter()
+    .cloned()
+    .collect()
+}
+
+/// `"; N finding(s) below the project's CVSS threshold not counted"`, or empty.
+pub(super) fn below_threshold_note(below_threshold: u32) -> String {
+    if below_threshold == 0 {
+        String::new()
+    } else {
+        format!("; {below_threshold} finding(s) below the project's CVSS threshold not counted")
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +728,7 @@ mod tests {
             version: None,
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }]);
         let block = AuditReleaseTag::with_gateways(registry, shell, scanner);
 
@@ -748,8 +809,11 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success, "cleanup/rollback command failures must not fail the audit");
+        // Every checkout fails here, including the tag checkout, so no scan
+        // ran: that is a scanner failure (not ok), and the event still flows.
+        assert!(!result.success, "a scan that did not run is not ok");
         assert_eq!(result.events[0].event_type, EventType::ReleaseTagAudited);
+        assert!(result.events[0].payload["scan_error"].is_string());
     }
 
     /// Fails only `git tag --sort=-v:refname` with a real `Err` (spawn
@@ -815,7 +879,7 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success, "tag listing failure must not fail the audit block itself");
+        assert!(!result.success, "a scan that did not run is not ok");
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
@@ -893,7 +957,7 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
+        assert!(!result.success, "scanner failure is not ok");
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
@@ -910,6 +974,109 @@ mod tests {
                 .contains("audit tool not installed"),
             "scan_error should contain the error message"
         );
+    }
+
+    #[tokio::test]
+    async fn post_push_scanner_failure_is_not_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "coach_phoenix",
+            dir.path().to_str().unwrap(),
+        ));
+        let scanner =
+            FakeScannerGateway::with_error("generic audit JSON: expected top-level array");
+        let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
+        let trigger = test_helpers::make_trigger(
+            EventType::ProjectChangesPushed,
+            "coach_phoenix",
+            serde_json::json!({"cve": "none"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(!result.success, "a scan that did not run must not read as success");
+        assert!(result.summary.contains("scanner failed"), "{}", result.summary);
+        assert_eq!(result.events.len(), 1, "the event still flows to the summary");
+    }
+
+    #[tokio::test]
+    async fn post_push_audit_accepts_allowlisted_advisory_by_alias() {
+        // researcher-cli and zk-chat on 2026-09-25: flagged vulnerable for
+        // PYSEC-2026-311 although the allowlist accepted its CVE alias.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".supply-chain-allow.json"),
+            r#"{"version": 1, "allowed": [{"cve": "CVE-2026-45829", "reason": "chromadb path not exposed", "expires": "2099-12-24"}]}"#,
+        )
+        .unwrap();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "zk-chat",
+            dir.path().to_str().unwrap(),
+        ));
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
+            cve: Some("PYSEC-2026-311".to_string()),
+            severity: None,
+            package: "chromadb".to_string(),
+            version: Some("1.5.9".to_string()),
+            fix_version: None,
+            fix_package: None,
+            aliases: vec![
+                "CVE-2026-45829".to_string(),
+                "GHSA-f4j7-r4q5-qw2c".to_string(),
+            ],
+        }]);
+        let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
+        let trigger = test_helpers::make_trigger(
+            EventType::ProjectChangesPushed,
+            "zk-chat",
+            serde_json::json!({"cve": "none"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events[0].payload["vulnerable"], false);
+        assert!(
+            result
+                .summary
+                .contains("vulnerable=false; accepted: PYSEC-2026-311 (allowlist)"),
+            "{}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn post_push_audit_resurfaces_a_lapsed_acceptance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".supply-chain-allow.json"),
+            r#"{"version": 1, "allowed": [{"cve": "CVE-2026-45829", "reason": "r", "expires": "2020-01-01"}]}"#,
+        )
+        .unwrap();
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "zk-chat",
+            dir.path().to_str().unwrap(),
+        ));
+        let scanner = FakeScannerGateway::with_vulnerabilities(vec![Vulnerability {
+            cve: Some("CVE-2026-45829".to_string()),
+            severity: None,
+            package: "chromadb".to_string(),
+            version: None,
+            fix_version: None,
+            fix_package: None,
+            aliases: Vec::new(),
+        }]);
+        let block = AuditReleaseTag::with_gateways(registry, FakeShellGateway::success(), scanner);
+        let trigger = test_helpers::make_trigger(
+            EventType::ProjectChangesPushed,
+            "zk-chat",
+            serde_json::json!({"cve": "none"}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events[0].payload["vulnerable"], true);
+        assert!(result.summary.contains("lapsed acceptance"), "{}", result.summary);
     }
 
     // -- VulnerabilityDetected path: git checkout failure --
@@ -979,7 +1146,7 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
+        assert!(!result.success, "a scan that did not run is not ok");
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
@@ -1059,7 +1226,7 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
+        assert!(!result.success, "a scan that did not run is not ok");
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);
@@ -1135,7 +1302,7 @@ mod tests {
         );
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.success);
+        assert!(!result.success, "a scan that did not run is not ok");
         assert_eq!(result.events.len(), 1);
         let emitted = &result.events[0];
         assert_eq!(emitted.event_type, EventType::ReleaseTagAudited);

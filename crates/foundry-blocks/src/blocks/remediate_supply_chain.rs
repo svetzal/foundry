@@ -833,6 +833,7 @@ mod tests {
                     version: f.version.clone(),
                     fix_version: f.fix_version.clone(),
                     fix_package: f.fix_package.clone(),
+                    aliases: Vec::new(),
                 })
                 .collect(),
         )
@@ -1233,6 +1234,7 @@ mod tests {
             version: None,
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }];
 
         let (cleared, unresolved) = partition_cleared(&[&gone, &stays, &other_pkg], &rescan);

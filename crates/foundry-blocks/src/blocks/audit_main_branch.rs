@@ -78,10 +78,14 @@ impl TaskBlock for AuditMainBranch {
                         (cve_from_payload, dirty_from_payload)
                     }
                     Ok(audit_result) => {
-                        let reported = crate::scanner::filter_audit_exceptions(
+                        let allowlist = crate::scanner::read_allowlist_or_empty(&project, path);
+                        let triage = crate::scanner::triage_findings(
                             &audit_result,
                             &entry.audit_exceptions,
+                            &allowlist,
+                            chrono::Local::now().date_naive(),
                         );
+                        let reported = triage.live;
 
                         if reported.is_empty() {
                             // Scan genuinely ran and reported nothing (no lockfile / is
@@ -216,6 +220,7 @@ mod tests {
             version: None,
             fix_version: None,
             fix_package: None,
+            aliases: Vec::new(),
         }]);
         let block = AuditMainBranch::with_gateways(registry, scanner);
 

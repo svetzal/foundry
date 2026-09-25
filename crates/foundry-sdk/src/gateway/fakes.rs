@@ -146,8 +146,14 @@ impl FakeScannerGateway {
             result: Ok(AuditResult {
                 vulnerabilities: vulns,
                 error: None,
+                below_threshold: 0,
             }),
         })
+    }
+
+    /// Return exactly this audit result.
+    pub fn with_result(result: AuditResult) -> Arc<Self> {
+        Arc::new(Self { result: Ok(result) })
     }
 
     /// Return an audit result carrying a tool-level error.
@@ -156,6 +162,7 @@ impl FakeScannerGateway {
             result: Ok(AuditResult {
                 vulnerabilities: vec![],
                 error: Some(msg.into()),
+                below_threshold: 0,
             }),
         })
     }

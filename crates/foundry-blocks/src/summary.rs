@@ -58,6 +58,20 @@ pub(crate) enum UnpushedStatus {
     Unknown(String),
 }
 
+/// A project whose audit did not run, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScannerFailureEntry {
+    pub(crate) name: String,
+    pub(crate) error: String,
+}
+
+/// A project not worked on because its checkout was on another branch.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WrongBranchEntry {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+}
+
 /// Aggregate results for a full maintenance run.
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceRunSummary {
@@ -69,6 +83,10 @@ pub(crate) struct MaintenanceRunSummary {
     pub(crate) local_installs: Vec<LocalInstallEntry>,
     /// Push-enabled projects left with unpushed commits after the run.
     pub(crate) unpushed: Vec<UnpushedEntry>,
+    /// Projects whose audit did not run.
+    pub(crate) scanner_failures: Vec<ScannerFailureEntry>,
+    /// Projects skipped because the checkout was on the wrong branch.
+    pub(crate) wrong_branch: Vec<WrongBranchEntry>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -164,6 +182,53 @@ fn render_unpushed(summary: &MaintenanceRunSummary, out: &mut String) {
     wln!(out);
 }
 
+/// A markdown table cell: pipes escaped, line breaks flattened.
+fn cell(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").replace('|', "\\|")
+}
+
+/// Audits that did not run. A failed scan is not a clean scan, so it is listed
+/// beside the unpushed commits, not folded into the status table.
+fn render_scanner_failures(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.scanner_failures.is_empty() {
+        return;
+    }
+    wln!(out, "## \u{26a0}\u{fe0f} Scanner failures");
+    wln!(out);
+    wln!(
+        out,
+        "The dependency audit did not run for these projects. They are not known to be clean."
+    );
+    wln!(out);
+    wln!(out, "| Project | Error |");
+    wln!(out, "|---------|-------|");
+    for entry in &summary.scanner_failures {
+        wln!(out, "| {} | {} |", entry.name, cell(&entry.error));
+    }
+    wln!(out);
+}
+
+/// Projects the run did not work on because the checkout was on another
+/// branch. Until someone restores the branch, every nightly skips them.
+fn render_wrong_branch(summary: &MaintenanceRunSummary, out: &mut String) {
+    if summary.wrong_branch.is_empty() {
+        return;
+    }
+    wln!(out, "## \u{26a0}\u{fe0f} Projects skipped: wrong branch");
+    wln!(out);
+    wln!(
+        out,
+        "These checkouts are not on their configured branch, so maintenance skipped them."
+    );
+    wln!(out);
+    wln!(out, "| Project | Reason |");
+    wln!(out, "|---------|--------|");
+    for entry in &summary.wrong_branch {
+        wln!(out, "| {} | {} |", entry.name, cell(&entry.reason));
+    }
+    wln!(out);
+}
+
 /// Render a maintenance run summary as markdown.
 pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     let mut out = String::new();
@@ -174,6 +239,8 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     wln!(out);
 
     render_unpushed(summary, &mut out);
+    render_scanner_failures(summary, &mut out);
+    render_wrong_branch(summary, &mut out);
 
     // Project status table
     wln!(out, "## Project Status");
@@ -243,6 +310,8 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     wln!(out, "- Failed: {failed}");
     wln!(out, "- Skipped: {skipped}");
     wln!(out, "- Projects with unpushed commits: {}", summary.unpushed.len());
+    wln!(out, "- Projects with scanner failures: {}", summary.scanner_failures.len());
+    wln!(out, "- Projects skipped (wrong branch): {}", summary.wrong_branch.len());
     wln!(out, "- Total duration: {}", format_duration(summary.total_duration_secs));
     wln!(out, "- Average duration: {}", format_duration(average_duration));
 
@@ -271,6 +340,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed,
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         }
     }
 
@@ -296,6 +367,46 @@ mod tests {
         assert!(md.contains("| foundry | **4 commit(s) ahead of origin/main** |"), "{md}");
         assert!(md.contains("| gilt-cli | could not check: could not resolve origin/main |"));
         assert!(md.contains("- Projects with unpushed commits: 2"));
+    }
+
+    #[test]
+    fn render_lists_scanner_failures_and_wrong_branch_projects_up_top() {
+        let mut summary = summary_with_unpushed(vec![]);
+        summary.scanner_failures = vec![ScannerFailureEntry {
+            name: "bedrock".to_string(),
+            error: "no mix.exs was found in the current directory".to_string(),
+        }];
+        summary.wrong_branch = vec![WrongBranchEntry {
+            name: "reaction_new".to_string(),
+            reason: "wrong branch: chore/dependency-update-2026-09-24, expected main".to_string(),
+        }];
+
+        let md = render(&summary);
+
+        let table = md.find("## Project Status").unwrap();
+        let scanner = md.find("Scanner failures").expect("scanner failures section");
+        let skipped = md.find("Projects skipped: wrong branch").expect("wrong-branch section");
+        assert!(scanner < table && skipped < table, "both come before the status table");
+        assert!(
+            md.contains("| bedrock | no mix.exs was found in the current directory |"),
+            "{md}"
+        );
+        assert!(md.contains(
+            "| reaction_new | wrong branch: chore/dependency-update-2026-09-24, expected main |"
+        ));
+        assert!(md.contains("- Projects with scanner failures: 1"));
+        assert!(md.contains("- Projects skipped (wrong branch): 1"));
+    }
+
+    #[test]
+    fn render_escapes_pipes_and_newlines_in_table_cells() {
+        let mut summary = summary_with_unpushed(vec![]);
+        summary.scanner_failures = vec![ScannerFailureEntry {
+            name: "p".to_string(),
+            error: "a | b\nc".to_string(),
+        }];
+        let md = render(&summary);
+        assert!(md.contains("| p | a \\| b c |"), "{md}");
     }
 
     #[test]
@@ -326,6 +437,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -363,6 +476,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -400,6 +515,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -424,6 +541,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -449,6 +568,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -465,6 +586,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -486,6 +609,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -507,6 +632,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -535,6 +662,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
 
         let md = render(&summary);
@@ -566,6 +695,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -596,6 +727,8 @@ mod tests {
             ],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -624,6 +757,8 @@ mod tests {
                 },
             ],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
@@ -641,6 +776,8 @@ mod tests {
             auto_releases: vec![],
             local_installs: vec![],
             unpushed: vec![],
+            scanner_failures: vec![],
+            wrong_branch: vec![],
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));

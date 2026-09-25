@@ -97,6 +97,29 @@ impl SupplyChainAllowlist {
     /// an unparseable expiry resurfaces the advisory rather than hiding it).
     #[must_use]
     pub fn decide(&self, cve: &str, today: NaiveDate) -> AllowDecision {
+        self.decide_any(&[cve], today)
+    }
+
+    /// Classify an advisory known by several identifiers (its ID plus the
+    /// aliases the scanner reports: CVE, GHSA, PYSEC, …). An entry naming any
+    /// of them matches. An active acceptance under any alias wins over a lapsed
+    /// one; a lapse is reported only when no alias is actively accepted.
+    #[must_use]
+    pub fn decide_any(&self, ids: &[&str], today: NaiveDate) -> AllowDecision {
+        let mut lapsed = None;
+        for id in ids {
+            match self.decide_one(id, today) {
+                AllowDecision::NotListed => {}
+                active @ AllowDecision::Active { .. } => return active,
+                expired @ AllowDecision::Expired { .. } => {
+                    lapsed.get_or_insert(expired);
+                }
+            }
+        }
+        lapsed.unwrap_or(AllowDecision::NotListed)
+    }
+
+    fn decide_one(&self, cve: &str, today: NaiveDate) -> AllowDecision {
         let Some(entry) = self.allowed.iter().find(|e| e.cve.eq_ignore_ascii_case(cve)) else {
             return AllowDecision::NotListed;
         };
@@ -227,6 +250,50 @@ mod tests {
             list.decide("GHSA-gv7w-RQVM-qjhr", day("2026-06-15")),
             AllowDecision::Active { .. }
         ));
+    }
+
+    #[test]
+    fn decide_any_matches_an_alias() {
+        // zk-chat on 2026-09-25: pip-audit reports PYSEC-2026-311, the
+        // allowlist names the CVE alias.
+        let a = allowlist(vec![entry("CVE-2026-45829", Some("2026-12-24"))]);
+        assert!(matches!(
+            a.decide_any(
+                &["PYSEC-2026-311", "CVE-2026-45829", "GHSA-f4j7-r4q5-qw2c"],
+                day("2026-09-25")
+            ),
+            AllowDecision::Active { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_any_prefers_an_active_acceptance_over_a_lapsed_one() {
+        let a = allowlist(vec![
+            entry("PYSEC-2026-311", Some("2026-01-01")),
+            entry("CVE-2026-45829", Some("2026-12-24")),
+        ]);
+        assert!(matches!(
+            a.decide_any(&["PYSEC-2026-311", "CVE-2026-45829"], day("2026-09-25")),
+            AllowDecision::Active { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_any_reports_a_lapse_when_no_alias_is_active() {
+        let a = allowlist(vec![entry("GHSA-f4j7-r4q5-qw2c", Some("2026-01-01"))]);
+        assert!(matches!(
+            a.decide_any(&["PYSEC-2026-311", "GHSA-f4j7-r4q5-qw2c"], day("2026-09-25")),
+            AllowDecision::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_any_with_no_matching_id_is_not_listed() {
+        let a = allowlist(vec![entry("CVE-2026-1", None)]);
+        assert_eq!(
+            a.decide_any(&["CVE-2026-2", "GHSA-x"], day("2026-09-25")),
+            AllowDecision::NotListed
+        );
     }
 
     #[test]
