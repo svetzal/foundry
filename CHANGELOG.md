@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-09-24
+
+### Fixed
+
+- Kotlin audits failed with "exited 0 without writing a fresh report" on
+  Dependency-Check 13, which writes its report to
+  `build/reports/dependency-check/dependency-check-report.json`. Foundry now
+  looks in both the old and the new location and uses the newest report this
+  run wrote; the freshness check is unchanged.
+- Kotlin findings now follow the project's own `failBuildOnCVSS` (read from
+  `build.gradle.kts` or `build.gradle` when it is a numeric literal). A finding
+  whose highest CVSS score is below it does not count as a vulnerability, which
+  matches the project's build: those are reported for triage, not failures.
+  Before, every medium finding counted, so a project whose own audit passed
+  would have raised a vulnerability for each of them. The number left out is
+  logged.
+
 ## [0.38.1] - 2026-09-24
 
 ### Fixed
