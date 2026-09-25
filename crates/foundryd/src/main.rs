@@ -630,6 +630,11 @@ fn register_pipeline_blocks(
         agent.clone(),
         registry.clone(),
     )));
+    engine.register(Box::new(foundry_blocks::blocks::PlanMajorUpgrades::new(
+        Arc::clone(&trace_writer),
+        registry.clone(),
+        Arc::new(foundry_blocks::gateway::ProcessShellGateway),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::GenerateSummary::new(
         trace_writer,
         audits_dir,

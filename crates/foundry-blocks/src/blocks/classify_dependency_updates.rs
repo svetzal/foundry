@@ -21,8 +21,8 @@ use std::sync::{Arc, RwLock};
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    ChainContext, ClassificationPhase, DependencyUpdatesClassifiedPayload, ProjectCompletedPayload,
-    SupplyChainScannedPayload,
+    ChainContext, ClassificationPhase, DependencyReviewRequestedPayload,
+    DependencyUpdatesClassifiedPayload, ProjectCompletedPayload, SupplyChainScannedPayload,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -168,7 +168,13 @@ impl TaskBlock for ClassifyDependencyUpdates {
                 .map(|p| p.success)
                 .unwrap_or(false)
         });
+        // A review may preview another policy; nothing else overrides the registry.
+        let policy_preview = (phase == ClassificationPhase::Review)
+            .then(|| trigger.parse_payload::<DependencyReviewRequestedPayload>().ok())
+            .flatten()
+            .and_then(|p| p.policy);
         let entry = require_project!(self, project);
+        let policy = policy_preview.or(entry.update_policy);
         let source = Arc::clone(&self.source);
         let events_dir = self.events_dir.clone();
 
@@ -200,7 +206,7 @@ impl TaskBlock for ClassifyDependencyUpdates {
                 today,
             )
             .await;
-            let decided = brief::build(entry.update_policy, &classification);
+            let decided = brief::build(policy, &classification);
             let rendered = brief::render(&decided, &classification);
 
             let summary = format!(
@@ -493,5 +499,35 @@ mod tests {
 
         let serde = p.brief.apply.iter().find(|u| u.package == "serde").unwrap();
         assert_eq!(serde.security.as_deref(), Some("RUSTSEC-2026-0001"));
+    }
+
+    #[tokio::test]
+    async fn a_review_can_preview_another_policy_without_touching_the_registry() {
+        let dir = repo();
+        let events = tempfile::tempdir().unwrap();
+        let b = block(dir.path(), Some(UpdatePolicy::Patch), events.path());
+        let review =
+            test_event!(EventType::DependencyReviewRequested, "my-project", {"policy": "major"});
+
+        let result = b.execute(&review).await.unwrap();
+        let p: DependencyUpdatesClassifiedPayload = result.events[0].parse_payload().unwrap();
+
+        assert_eq!(p.brief.policy, UpdatePolicy::Major);
+        let registered = b.registry.read().unwrap().projects[0].update_policy;
+        assert_eq!(registered, Some(UpdatePolicy::Patch));
+    }
+
+    #[tokio::test]
+    async fn only_a_review_may_override_the_policy() {
+        let dir = repo();
+        let events = tempfile::tempdir().unwrap();
+        let b = block(dir.path(), Some(UpdatePolicy::Patch), events.path());
+        let mut trigger = gates_trigger("maintain");
+        trigger.payload["policy"] = serde_json::json!("major");
+
+        let result = b.execute(&trigger).await.unwrap();
+        let p: DependencyUpdatesClassifiedPayload = result.events[0].parse_payload().unwrap();
+
+        assert_eq!(p.brief.policy, UpdatePolicy::Patch);
     }
 }

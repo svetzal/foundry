@@ -7,6 +7,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod campaign;
+pub mod dependencies;
 pub mod event;
 pub mod registry;
 pub mod sentinel;

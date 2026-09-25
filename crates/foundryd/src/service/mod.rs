@@ -80,12 +80,8 @@ impl FoundryService {
     }
 }
 
-/// Track the event in the workflow registry and spawn `run_workflow` on the
-/// tokio runtime. Used by both the gRPC `emit()` handler and the in-process
-/// scheduler so every root event flows through the same trace/audit machinery.
-pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
-    let event_id = event.id.clone();
-    let trace_id = event.trace_id.clone().unwrap_or_default();
+/// Record a root event as an active workflow, so `foundry status` shows it.
+pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
     // Read the campaign generically off the root payload rather than matching
     // on event type: every campaign root event names it under the same key, so
     // this stays correct as new campaign roots are added.
@@ -94,18 +90,25 @@ pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
         .get("campaign")
         .and_then(serde_json::Value::as_str)
         .map(ToString::to_string);
-
-    // Insert before spawning: the spawned task's `WorkflowGuard` removes this
-    // entry on drop, and a fast workflow could otherwise finish and remove it
-    // before it was ever recorded.
-    ctx.workflow_tracker.insert(ActiveWorkflow {
-        event_id: event_id.clone(),
+    tracker.insert(ActiveWorkflow {
+        event_id: event.id.clone(),
         event_type: event.event_type.to_string(),
         project: event.project.clone(),
-        trace_id,
+        trace_id: event.trace_id.clone().unwrap_or_default(),
         started_at: chrono::Utc::now(),
         campaign,
     });
+}
+
+/// Track the event in the workflow registry and spawn `run_workflow` on the
+/// tokio runtime. Used by both the gRPC `emit()` handler and the in-process
+/// scheduler so every root event flows through the same trace/audit machinery.
+pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
+    let event_id = event.id.clone();
+    // Insert before spawning: the spawned task's `WorkflowGuard` removes this
+    // entry on drop, and a fast workflow could otherwise finish and remove it
+    // before it was ever recorded.
+    track_workflow(&event, &ctx.workflow_tracker);
 
     let span = tracing::info_span!(
         "process",

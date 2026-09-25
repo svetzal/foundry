@@ -295,6 +295,10 @@ pub struct DependencyUpdatesClassifiedPayload {
 pub struct DependencyReviewRequestedPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Preview the brief and majors lane under this policy instead of the
+    /// registered one. Changes nothing in the registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<UpdatePolicy>,
 }
 
 /// What the majors lane decided for one major upgrade.
@@ -374,6 +378,10 @@ pub struct MajorUpgradesPlannedPayload {
     /// `true` when the dispatches will actually run (nightly, full throttle).
     #[serde(default)]
     pub dispatch_enabled: bool,
+    /// `true` for an on-demand review of one project; the nightly summary
+    /// ignores these.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
     /// Set when prior task history could not be read, so dedupe was blind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_warning: Option<String>,

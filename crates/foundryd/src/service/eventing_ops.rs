@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 use tonic::{Request, Response, Status};
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::{MajorUpgradeStatus, MajorUpgradesPlannedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::trace::ProcessResult;
@@ -104,17 +105,82 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
     traces
 }
 
+/// The major-upgrade tasks a nightly summary phase planned, as root
+/// `ExecutionRequested` events — one task per major, in plan order.
+///
+/// Empty unless the plan enabled dispatch (nightly, full throttle). Each event
+/// is a fresh workflow root with its own trace, exactly as `foundry task`
+/// would emit it.
+pub(super) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
+    summary
+        .parsed_events_of::<MajorUpgradesPlannedPayload>(EventType::MajorUpgradesPlanned)
+        .filter(|plan| plan.dispatch_enabled && !plan.review)
+        .flat_map(|plan| plan.upgrades)
+        .filter(|m| m.status == MajorUpgradeStatus::Dispatch)
+        .map(|m| {
+            Event::new(
+                EventType::ExecutionRequested,
+                m.project.clone(),
+                Throttle::Full,
+                serde_json::json!({
+                    "project": m.project,
+                    "workflow": "task",
+                    "prompt": m.objective,
+                }),
+            )
+            .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+            .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+        })
+        .collect()
+}
+
+/// A boxed `run_workflow`, so a workflow can start further workflows (the
+/// majors lane) without an infinitely recursive future type.
+fn run_workflow_boxed(
+    event: Event,
+    ctx: super::RuntimeContext,
+) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(run_workflow(
+        event,
+        ctx.engine,
+        ctx.trace_store,
+        ctx.workflow_tracker,
+        ctx.trace_writer,
+        ctx.event_tx,
+        ctx.registry,
+    ))
+}
+
+/// Run the planned major-upgrade tasks one after another, each as its own
+/// tracked workflow. Sequential on purpose: each task builds, tests and may
+/// land on trunk, and two at once on one project would race to land.
+fn dispatch_major_upgrades(dispatches: Vec<Event>, ctx: super::RuntimeContext) {
+    if dispatches.is_empty() {
+        return;
+    }
+    tracing::info!(count = dispatches.len(), "dispatching major-upgrade tasks");
+    tokio::spawn(async move {
+        for event in dispatches {
+            tracing::info!(project = %event.project, event_id = %event.id, "starting major-upgrade task");
+            super::track_workflow(&event, &ctx.workflow_tracker);
+            run_workflow_boxed(event, ctx.clone()).await;
+        }
+    });
+}
+
 /// After a system-level maintenance cycle completes, write per-project sub-traces
-/// to disk and emit `MaintenanceSummaryRequested` for the summary phase.
+/// to disk and emit `MaintenanceSummaryRequested` for the summary phase. When
+/// the summary phase plans major-upgrade tasks for dispatch, start them.
 async fn finalise_system_maintenance(
     result: &ProcessResult,
-    engine: &Engine,
-    trace_writer: &TraceWriter,
-    registry: &Arc<RwLock<Registry>>,
+    ctx: &super::RuntimeContext,
     throttle: Throttle,
-    event_tx: &broadcast::Sender<Event>,
     root_event_id: &str,
 ) {
+    let engine = &ctx.engine;
+    let trace_writer = &ctx.trace_writer;
+    let registry = &ctx.registry;
+    let event_tx = &ctx.event_tx;
     // Extract skipped projects before any .await — RwLock guards must not cross await points.
     // A poisoned registry lock must not abort the maintenance summary: log it
     // and degrade to an empty skipped-project list rather than taking down
@@ -180,6 +246,8 @@ async fn finalise_system_maintenance(
         tracing::warn!(error = %e, "failed to write summary trace");
     }
 
+    dispatch_major_upgrades(planned_major_dispatches(&summary_result), ctx.clone());
+
     // Best-effort: a send error means no Watch subscribers are attached,
     // which is the normal steady state; summary emission must not depend on
     // a listener.
@@ -202,6 +270,14 @@ pub(super) async fn run_workflow(
     let root_project = event.project.clone();
     let root_throttle = event.throttle;
 
+    let ctx = super::RuntimeContext {
+        engine: Arc::clone(&engine),
+        trace_store: Arc::clone(&trace_store),
+        workflow_tracker: Arc::clone(&tracker),
+        trace_writer: Arc::clone(&trace_writer),
+        event_tx: event_tx.clone(),
+        registry: Arc::clone(&registry),
+    };
     let _guard = WorkflowGuard::new(tracker, event_id.clone());
 
     let result = engine.process(event).await;
@@ -217,16 +293,7 @@ pub(super) async fn run_workflow(
     }
 
     if root_event_type == EventType::MaintenanceCycleStarted && root_project == "system" {
-        finalise_system_maintenance(
-            &result,
-            &engine,
-            &trace_writer,
-            &registry,
-            root_throttle,
-            &event_tx,
-            &event_id,
-        )
-        .await;
+        finalise_system_maintenance(&result, &ctx, root_throttle, &event_id).await;
     } else if root_event_type == EventType::ProjectRunStarted {
         let success = result.is_success();
         let completed = Event::new(
@@ -350,7 +417,9 @@ mod tests {
 
     use crate::proto::EmitRequest;
 
-    use super::{extract_per_project_traces, parse_emit_request, parse_throttle};
+    use super::{
+        extract_per_project_traces, parse_emit_request, parse_throttle, planned_major_dispatches,
+    };
 
     fn basic_emit_request() -> EmitRequest {
         EmitRequest {
@@ -477,5 +546,54 @@ mod tests {
             total_duration_ms: 0,
         };
         assert!(extract_per_project_traces(&result).is_empty());
+    }
+
+    fn plan_event(dispatch_enabled: bool, review: bool) -> Event {
+        let upgrade = |package: &str, status: &str| {
+            serde_json::json!({
+                "project": "alpha", "ecosystem": "npm", "manifest": ".", "package": package,
+                "from": "1.0.0", "to": "2.0.0",
+                "objective": format!("Upgrade {package} from 1.0.0 to 2.0.0 in alpha: adapt call sites, keep all gates green."),
+                "command": "foundry task alpha '...'", "status": status,
+            })
+        };
+        Event::new(
+            EventType::MajorUpgradesPlanned,
+            "system".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "upgrades": [upgrade("x", "dispatch"), upgrade("y", "overflow"), upgrade("z", "dispatch")],
+                "per_project_cap": 2, "per_night_cap": 6,
+                "dispatch_enabled": dispatch_enabled, "review": review,
+            }),
+        )
+    }
+
+    fn summary_with(events: Vec<Event>) -> ProcessResult {
+        ProcessResult {
+            events,
+            block_executions: vec![],
+            total_duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn planned_dispatches_become_separate_task_roots_in_plan_order() {
+        let dispatches = planned_major_dispatches(&summary_with(vec![plan_event(true, false)]));
+
+        assert_eq!(dispatches.len(), 2, "only dispatch entries run");
+        assert!(dispatches.iter().all(|e| e.event_type == EventType::ExecutionRequested));
+        assert_eq!(dispatches[0].payload["workflow"], "task");
+        assert!(dispatches[0].payload["prompt"].as_str().unwrap().starts_with("Upgrade x from"));
+        assert!(dispatches[1].payload["prompt"].as_str().unwrap().starts_with("Upgrade z from"));
+        assert_ne!(dispatches[0].trace_id, dispatches[1].trace_id, "each task is its own trace");
+        assert!(dispatches[0].parent_span_id.is_none(), "each task is a root");
+    }
+
+    #[test]
+    fn nothing_is_dispatched_under_dry_run_or_for_a_review() {
+        assert!(planned_major_dispatches(&summary_with(vec![plan_event(false, false)])).is_empty());
+        assert!(planned_major_dispatches(&summary_with(vec![plan_event(true, true)])).is_empty());
+        assert!(planned_major_dispatches(&summary_with(vec![])).is_empty());
     }
 }

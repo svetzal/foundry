@@ -233,6 +233,67 @@ pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<
     Ok(())
 }
 
+/// Classify one project's dependency updates and show the brief and the
+/// majors plan. Applies nothing and dispatches nothing.
+pub async fn deps(addr: &str, project: &str, policy: Option<&str>) -> Result<()> {
+    let payload = match policy {
+        Some(p) => {
+            p.parse::<foundry_sdk::registry::UpdatePolicy>()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            serde_json::json!({ "policy": p })
+        }
+        None => serde_json::Value::Null,
+    };
+    let runner = WorkflowRunner::new(addr, project);
+    println!("Classifying dependency updates for {project}...");
+    let (_event_id, events) = runner
+        .run_workflow("dependency_review_requested", payload, |t, p| {
+            t == "major_upgrades_planned" || review_block_failed(t, p)
+        })
+        .await?;
+    println!();
+    if let Some(failed) =
+        events.iter().find(|e| review_block_failed(&e.event_type, &e.payload_json))
+    {
+        let summary = serde_json::from_str::<serde_json::Value>(&failed.payload_json)
+            .ok()
+            .and_then(|v| v.get("summary").and_then(serde_json::Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        anyhow::bail!("dependency review failed: {summary}");
+    }
+
+    let payload_of = |event_type: &str| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.event_type == event_type)
+            .map(|e| e.payload_json.as_str())
+    };
+    let mut out = String::new();
+    match payload_of("dependency_updates_classified").map(serde_json::from_str) {
+        Some(Ok(classified)) => out.push_str(&render::dependencies::classification(&classified)),
+        Some(Err(e)) => anyhow::bail!("unreadable classification payload: {e}"),
+        None => anyhow::bail!("the daemon emitted no classification for {project}"),
+    }
+    if let Some(Ok(plan)) = payload_of("major_upgrades_planned").map(serde_json::from_str) {
+        out.push_str(&render::dependencies::majors_plan(&plan));
+    }
+    print!("{out}");
+    Ok(())
+}
+
+/// Whether a watched event says a block in the review chain failed, so the
+/// review would never reach its terminal event.
+fn review_block_failed(event_type: &str, payload_json: &str) -> bool {
+    event_type == "block_completed"
+        && serde_json::from_str::<serde_json::Value>(payload_json).is_ok_and(|v| {
+            matches!(
+                v.get("block").and_then(serde_json::Value::as_str),
+                Some("Classify Dependency Updates" | "Plan Major Upgrades")
+            ) && v.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+        })
+}
+
 pub async fn scout(addr: &str, project: &str, agent: Option<&str>) -> Result<()> {
     let agent_provider = resolve_agent_override(agent)?;
     let payload = match &agent_provider {
@@ -376,5 +437,16 @@ mod tests {
     fn system_run_does_not_exit_on_empty_payload() {
         assert!(!is_run_complete("maintenance_summary_requested", "{}", true));
         assert!(!is_run_complete("maintenance_summary_requested", "", true));
+    }
+
+    #[test]
+    fn a_failed_classify_or_plan_block_ends_the_review() {
+        let failed = r#"{"block":"Classify Dependency Updates","success":false,"summary":"project not found"}"#;
+        let ok = r#"{"block":"Classify Dependency Updates","success":true}"#;
+        let other = r#"{"block":"Install Locally","success":false}"#;
+        assert!(super::review_block_failed("block_completed", failed));
+        assert!(!super::review_block_failed("block_completed", ok));
+        assert!(!super::review_block_failed("block_completed", other));
+        assert!(!super::review_block_failed("dependency_updates_classified", failed));
     }
 }

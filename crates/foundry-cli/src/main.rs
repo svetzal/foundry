@@ -149,6 +149,19 @@ enum Commands {
         agent: Option<String>,
     },
 
+    /// Show a project's outdated dependencies, what maintenance would apply
+    /// under its update policy, and what the majors lane would dispatch.
+    /// Changes nothing.
+    Deps {
+        /// Project name from registry
+        project: String,
+
+        /// Preview under this policy (patch, minor, major) instead of the
+        /// registered one; the registry is not changed
+        #[arg(long, value_parser = ["patch", "minor", "major"])]
+        policy: Option<String>,
+    },
+
     /// Scout a project for intent drift (bug candidates)
     Scout {
         /// Project name from registry
@@ -677,6 +690,9 @@ async fn main() -> Result<()> {
             description,
             agent,
         } => workflow_commands::task(&addr, &project, &description, agent.as_deref()).await,
+        Commands::Deps { project, policy } => {
+            workflow_commands::deps(&addr, &project, policy.as_deref()).await
+        }
         Commands::Scout { project, agent } => {
             workflow_commands::scout(&addr, &project, agent.as_deref()).await
         }

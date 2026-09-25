@@ -5,7 +5,7 @@ use chrono::Utc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    GitSyncFailure, LocalInstallCompletedPayload, MaintenanceSummaryRequestedPayload,
+    GitSyncFailure, LocalInstallCompletedPayload, MajorUpgradesPlannedPayload,
     ProjectCompletedPayload, ProjectValidationCompletedPayload, ReleaseCompletedPayload,
     ReleaseTagAuditedPayload,
 };
@@ -24,8 +24,10 @@ use crate::trace_writer::TraceWriter;
 ///
 /// Observer — always runs regardless of throttle.
 ///
-/// Sinks on `MaintenanceSummaryRequested` — emitted by the service layer once
-/// a cycle's per-project traces are persisted. Reads per-project trace data
+/// Sinks on `MajorUpgradesPlanned` (nightly, not a review) — emitted by
+/// `Plan Major Upgrades` on `MaintenanceSummaryRequested`, which the service
+/// layer emits once a cycle's per-project traces are persisted. The majors
+/// plan rides on it, carrying the trace locations forward. Reads per-project trace data
 /// via the `TraceWriter`, builds a `MaintenanceRunSummary`, renders it as
 /// markdown, and writes it to the audits directory.
 ///
@@ -340,11 +342,15 @@ impl TaskBlock for GenerateSummary {
     task_block_meta! {
         name: "Generate Summary",
         kind: Observer,
-        sinks_on: [MaintenanceSummaryRequested],
+        sinks_on: [MajorUpgradesPlanned],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        trigger.parse_payload::<MajorUpgradesPlannedPayload>().is_ok_and(|p| !p.review)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
+        let p = parse_payload!(trigger, MajorUpgradesPlannedPayload);
         let trace_writer = Arc::clone(&self.trace_writer);
         let audits_dir = self.audits_dir.clone();
         let registry = Arc::clone(&self.registry);
@@ -541,7 +547,7 @@ mod tests {
     fn sinks_on_expected() {
         let dir = tempfile::tempdir().unwrap();
         let block = summary_block(make_trace_writer(dir.path()), dir.path());
-        assert_eq!(block.sinks_on(), &[EventType::MaintenanceSummaryRequested]);
+        assert_eq!(block.sinks_on(), &[EventType::MajorUpgradesPlanned]);
     }
 
     #[test]
@@ -566,7 +572,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"alpha": "evt_alpha", "beta": "evt_beta"},
@@ -609,7 +615,7 @@ mod tests {
         let ids: serde_json::Map<String, serde_json::Value> =
             names.iter().map(|n| ((*n).to_string(), format!("evt_{n}").into())).collect();
         test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": ids,
@@ -797,7 +803,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"good-project": "evt_good", "bad-project": "evt_bad"},
@@ -826,7 +832,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"alpha": "evt_alpha"},
@@ -853,7 +859,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"missing-project": "evt_missing"},
@@ -881,7 +887,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({
                 "project_trace_ids": {"my-project": "evt_proj"},
@@ -910,7 +916,7 @@ mod tests {
         let block = summary_block(tw, audits_dir.path());
 
         let trigger = test_helpers::make_trigger(
-            EventType::MaintenanceSummaryRequested,
+            EventType::MajorUpgradesPlanned,
             "_system",
             serde_json::json!({}),
         );
