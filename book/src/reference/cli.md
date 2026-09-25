@@ -176,6 +176,29 @@ state. Non-complete work is preserved on a remote branch or, if push fails, in a
 Git bundle. For landed work, `preservation_ref` carries the landed commit SHA;
 otherwise it identifies the preserved branch or bundle artifact.
 
+## `foundry deps`
+
+Show a project's outdated dependencies, what maintenance would apply under its
+update policy, and what the majors lane would dispatch. Nothing is applied and
+nothing is dispatched.
+
+```bash
+foundry deps <project> [--policy patch|minor|major]
+```
+
+| Argument   | Required | Description                                                                 |
+| ---------- | -------- | --------------------------------------------------------------------------- |
+| `project`  | Yes      | Registered project name                                                     |
+| `--policy` | No       | Preview under this policy instead of the registered one; the registry does not change |
+
+The command emits `dependency_review_requested` and waits for
+`major_upgrades_planned`. It prints a table of outdated direct dependencies
+(current, constraint, in range, newest non-major, major), the updates
+maintenance would apply, the updates held back by the policy or by holds,
+lapsed holds, anything not classified, and each major with its status and
+`foundry task` command. See
+[Dependency Update Policy](../guide/dependency-update-policy.md).
+
 ## `foundry campaign`
 
 Manage durable, evidence-terminated engineering objectives.

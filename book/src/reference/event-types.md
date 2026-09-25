@@ -363,6 +363,44 @@ self-healing gates were added.
 | `skipped`   | number | Projects that were skipped (already active or `skip=true`) |
 | `projects`  | array  | Per-project result objects (name, status, duration_secs)   |
 
+## Dependency Update Policy
+
+| Type | Description |
+| --- | --- |
+| `dependency_review_requested` | Command: classify one project's dependency updates and plan its majors, applying nothing. Optional payload `{ "policy": "major" }` previews another policy |
+| `dependency_updates_classified` | A project's direct dependencies were classified and the maintain brief decided |
+| `major_upgrades_planned` | The majors lane decided each major upgrade: `dispatch`, `deduped`, `overflow`, `deferred` or `proposed` |
+
+**`dependency_updates_classified` payload**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `project` | string | Registered project name |
+| `phase` | string | `before` (the maintain brief), `after` (maintenance completed) or `review` |
+| `workflow` | string (optional) | `maintain` in the `before` and `after` phases |
+| `success` | bool (optional) | In the `after` phase, whether maintenance succeeded |
+| `classification` | object | `outdated[]` (per dependency: `ecosystem`, `manifest`, `package`, `current`, `requirement`, `in_range`, `non_major`, `major`, `hold`, `advisories`), `classified[]`, `unclassified[]`, `lapsed_holds[]`, `holds_warning`, `transitive_advisories[]`, `advisory_source` |
+| `brief` | object | `policy`, `policy_set`, `apply[]`, `held_by_policy[]`, `held_by_hold[]`, `majors[]` |
+
+In the `before` phase the payload also carries the gate-resolution fields
+(`gates`, `actions` and the rest of the chain context) forward to
+`Execute Maintain`.
+
+**`major_upgrades_planned` payload**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `upgrades` | array | One entry per major: `project`, `ecosystem`, `manifest`, `package`, `from`, `to`, `security`, `objective`, `command`, `status`, `reason` |
+| `per_project_cap` | number | `FOUNDRY_MAJOR_TASKS_PER_PROJECT` in force |
+| `per_night_cap` | number | `FOUNDRY_MAJOR_TASKS_PER_NIGHT` in force |
+| `dispatch_enabled` | bool | `true` only for the nightly run at `full` throttle |
+| `review` | bool | `true` for an on-demand review |
+| `history_warning` | string (optional) | Set when earlier tasks could not be read for dedupe |
+
+In the nightly run the payload also carries the
+`maintenance_summary_requested` fields (`project_trace_ids`,
+`skipped_projects`, `total_duration_ms`, `root_event_id`).
+
 ## Release Tag Audit
 
 | Type                  | Description                                    |

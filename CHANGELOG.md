@@ -15,9 +15,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
   prints it on an `Updates:` line; a project without one behaves as `minor`.
 - `foundry registry edit --clear-install` removes a project's install
   configuration. Passing `--install-command ""` never cleared it.
+- Deterministic dependency classification before the maintain agent runs.
+  `Classify Dependency Updates` reads each ecosystem's manifest and lockfile
+  (Cargo, Hex for every Mix project the audit covers, npm with
+  `package-lock.json` or `bun.lock`, PyPI with `uv.lock`, the Gradle version
+  catalog, SwiftPM) and each registry, and classifies every outdated direct
+  dependency as patch, minor or major. A `0.x` minor bump is a major. A stack
+  or file it cannot read is reported as "not classified", never as up to date.
+- The maintain prompt is now a brief: the exact updates to apply under the
+  project's policy, the updates held back and why, and the majors left for
+  separate tasks. The agent must not go beyond the list. A maintain retry may
+  not move dependencies further.
+- The majors lane. After the nightly summary, each major a `major`-policy
+  project may take is dispatched as its own `foundry task` ("Upgrade <pkg> from
+  <a> to <b> in <project>: adapt call sites, keep all gates green"), one after
+  another. Dedupe skips a major whose task is in flight or left preserved work.
+  `FOUNDRY_MAJOR_TASKS_PER_PROJECT` (default 2) and
+  `FOUNDRY_MAJOR_TASKS_PER_NIGHT` (default 6) cap it; overflow is reported with
+  its command. `minor` and `patch` projects get proposals with the command.
+- Security fixes override the ceiling: a patch or minor fix is applied anyway;
+  a major fix goes to the majors lane whatever the policy. The supply-chain
+  auto-fixer follows the same rule (`task_lane` outcome) and reverts a full
+  update that took a major.
+- `.dependency-holds.json`: a committed, per-repo hold that keeps a package at
+  or below a version until an expiry. Lapsed holds are listed for a new
+  decision; a malformed file applies no holds and warns.
+- The maintenance summary gains a "Dependency drift" section near the top and
+  per-project dependency detail: policy, updates applied by class, updates
+  applied beyond the brief, held updates, majors lane decisions with commands,
+  lapsed holds and unclassified scopes.
+- `foundry deps <project> [--policy X]` shows a project's outdated
+  dependencies, its brief and what the majors lane would dispatch, changing
+  nothing.
+- Events `dependency_review_requested`, `dependency_updates_classified` and
+  `major_upgrades_planned`.
 
 ### Changed
 
+- `Execute Maintain` now runs on `dependency_updates_classified` (phase
+  `before`) instead of `gate_resolution_completed`, and `Generate Summary` runs
+  on `major_upgrades_planned` instead of `maintenance_summary_requested`.
 - Gate commands and their `fix_command` now run with `CARGO_INCREMENTAL=0`.
   A gate run builds once and exits, so Cargo's incremental cache was only disk
   cost: on one Mac, `target/debug/incremental` held about half of 176 GiB of

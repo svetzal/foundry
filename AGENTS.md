@@ -120,6 +120,7 @@ Rules:
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
 | `foundry task <project> "<description>" [--agent <provider>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict |
 | `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
+| `foundry deps <project> [--policy patch\|minor\|major]` | Show outdated dependencies, the maintain brief under the project's update policy, and what the majors lane would dispatch; changes nothing |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
 | `foundry run` | Full maintenance across registered projects (the nightly schedule is now driven by the `nightly-maintenance` sentinel inside `foundryd`) |
@@ -443,6 +444,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 - `~/.foundry/ops-digests/YYYY-MM-DD.md` — ops digest output (periodic summary of MBOS events), one file per day. Override the parent dir via `FOUNDRY_OPS_DIGESTS_DIR`.
 - `~/.foundry/ops-digest.watermark` — ISO 8601 timestamp of the newest MBOS event included in the last successfully written ops digest. Advances atomically after each write so subsequent runs only process newer events.
 - `~/.foundry/triage/YYYY-MM-DD.md` — post-maintenance failure triage digest, one file per maintenance run. Override the parent dir via `FOUNDRY_TRIAGE_DIR`. See `book/src/guide/maintenance-triage.md`.
+- `.dependency-holds.json` (per repo, committed) — dependency holds: keep a package at or below a version until an expiry. Foundry reads it, never writes it; it mirrors `.supply-chain-allow.json`. See `book/src/guide/dependency-update-policy.md`.
 - `~/.foundry/supply-chain/YYYY-MM-DD.md` — nightly supply-chain advisory scan digest, one file per scan. Override the parent dir via `FOUNDRY_SUPPLY_CHAIN_DIR`. See `book/src/guide/supply-chain.md`. The per-repo allowlist `.supply-chain-allow.json` is a neutral artifact Foundry reads (never writes).
 - `~/.foundry/events/YYYY-MM.jsonl` — event persistence (configurable via `FOUNDRY_EVENTS_DIR`)
 
@@ -467,4 +469,6 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |
 | `FOUNDRY_TRIAGE_DIR` | `~/.foundry/triage` | Post-maintenance triage digest output directory |
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Nightly supply-chain advisory digest output directory |
+| `FOUNDRY_MAJOR_TASKS_PER_PROJECT` | `2` | Most major-upgrade tasks the nightly majors lane dispatches for one project. Overflow is reported in the summary with its `foundry task` command. |
+| `FOUNDRY_MAJOR_TASKS_PER_NIGHT` | `6` | Most major-upgrade tasks the nightly majors lane dispatches across every project. |
 | `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | *(unset → off)* | Truthy (`1`/`true`/`yes`/`on`) enables the supply-chain auto-fix engine (verified, commit-only Rust in-range bumps). Off by default — the formation only classifies until this is set. |

@@ -53,16 +53,30 @@ ProjectMaintenanceRequested
   └─ ResolveGates (Observer)
        └─ GateResolutionCompleted {workflow: "maintain", gates: [...]}
             ├─ RunPreflightGates (Observer) — skips for maintain, emits PreflightCompleted {skipped: true}
-            └─ ExecuteMaintain (Mutator, AI Coding)
-                 └─ ExecutionCompleted {workflow: "maintain"}
-                      └─ RunVerifyGates (Observer)
-                           └─ GateVerificationCompleted
-                                └─ RouteGateResult (Observer)
-                                     ├─ [passed] ProjectMaintenanceCompleted
-                                     │    └─ SummarizeResult → CommitAndPush
-                                     └─ [failed, retries < 3] RetryRequested
-                                          └─ RetryExecution → loops back
+            └─ ClassifyDependencyUpdates (Observer) — classifies deps, applies the update policy
+                 └─ DependencyUpdatesClassified {phase: "before", brief, gates}
+                      └─ ExecuteMaintain (Mutator, AI Coding) — prompt = the brief: exact updates, nothing more
+                           └─ ExecutionCompleted {workflow: "maintain"}
+                                └─ RunVerifyGates (Observer)
+                                     └─ GateVerificationCompleted
+                                          └─ RouteGateResult (Observer)
+                                               ├─ [passed] ProjectMaintenanceCompleted
+                                               │    ├─ SummarizeResult → CommitAndPush
+                                               │    └─ ClassifyDependencyUpdates → DependencyUpdatesClassified {phase: "after"}
+                                               └─ [failed, retries < 3] RetryRequested
+                                                    └─ RetryExecution → loops back (no further dependency moves)
 ```
+
+The update policy (`patch` / `minor` / `major`, registry field
+`update_policy`, unset behaves as `minor`) decides what the brief lists. Majors
+never run in the maintain session: after the nightly summary, the majors lane
+(`PlanMajorUpgrades`, on `MaintenanceSummaryRequested`) dispatches each one as
+its own `foundry task` for `major` projects (caps
+`FOUNDRY_MAJOR_TASKS_PER_PROJECT`=2, `FOUNDRY_MAJOR_TASKS_PER_NIGHT`=6) and
+proposes them with a command for `minor`/`patch` projects. Security fixes
+override the ceiling. `.dependency-holds.json` holds a package at or below a
+version until an expiry. `foundry deps <project> [--policy X]` shows all of this
+for one project without changing anything.
 
 ## Validate Workflow
 

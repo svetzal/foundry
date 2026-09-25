@@ -34,12 +34,21 @@ flowchart TD
     P -->|fail, retries left| R[[Retry Execution]]
     Q -->|maintain=true| F
     F --> S[[Resolve Gates]]
-    S --> T[[Execute Maintain]]
+    S --> C[[Classify Dependency Updates]]
+    C -->|dependency_updates_classified, phase before| T[[Execute Maintain]]
     T --> U[[Run Verify Gates]]
     U --> V[[Route Gate Result]]
     V -->|pass| W([project_maintenance_completed])
     V -->|fail, retries left| X[[Retry Execution]]
+    W --> C2[[Classify Dependency Updates]]
+    C2 --> Y([dependency_updates_classified, phase after])
 ```
+
+`Classify Dependency Updates` decides, in code, which dependency moves
+maintenance may make, under the project's update policy. `Execute Maintain`
+gets that list as its brief. The step runs again when maintenance completes, so
+the summary can report what was actually applied. See
+[Dependency Update Policy](dependency-update-policy.md).
 
 ### Syncing the Checkout With Its Remote
 
@@ -102,13 +111,21 @@ names the branch, and the checkout is left for a human.
 After the whole run, the maintenance summary checks every push-enabled project
 again and lists any that still hold unpushed commits in an **Unpushed
 commits** section at the top of `audits/runs/<date>/summary.md` ("N commit(s)
-ahead of origin/main"). Two more sections sit beside it:
+ahead of origin/main"). Three more sections sit beside it:
 
 - **Scanner failures**: projects whose dependency audit did not run, with the
   error. The post-push audit block is marked failed (not ok) when this happens,
   and the release-audit table says "scanner failed", never "clean".
 - **Projects skipped: wrong branch**: projects whose validation stopped because
   the checkout was on another branch (`sync_failure: "wrong_branch"`).
+- **Dependency drift**: each project's update policy, the updates applied, the
+  updates held back, the majors lane's decisions, and anything not classified.
+  See [Dependency Update Policy](dependency-update-policy.md#the-summary).
+
+The summary phase runs `Plan Major Upgrades` first
+(`maintenance_summary_requested` → `major_upgrades_planned` →
+`Generate Summary`). After the summary is written, the daemon starts each
+dispatched major upgrade as its own `foundry task`, one after another.
 
 The block's result line carries a `WARNING:` naming each of these that is not
 empty.
@@ -169,10 +186,12 @@ The maintenance workflow uses a single agent invocation in `Execute Maintain`:
 
 | Phase | Capability | Model | Access | Purpose |
 | --- | --- | --- | --- | --- |
-| Execute Maintain | Coding | `claude-sonnet-5` | Full | Update dependencies, fix vulnerabilities, resolve gate failures |
+| Execute Maintain | Coding | `claude-sonnet-5` | Full | Apply the dependency brief, resolve gate failures |
 
-Gate definitions are passed as context so the agent knows what must pass
-after its changes. If the project has an agent file registered, it is
+The prompt carries the dependency brief: the exact updates to apply, and the
+updates held back or left for major-upgrade tasks. The agent must not go
+beyond the list. Gate definitions are passed as context so the agent knows
+what must pass after its changes. If the project has an agent file registered, it is
 supplied via `--agent`.
 
 See the [Iteration Workflow](iteration-workflow.md#agent-capabilities) for

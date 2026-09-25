@@ -117,6 +117,17 @@ foundry run --throttle dry_run
 Each project goes through validation, then routes to iterate or maintain based
 on its registry flags.
 
+Maintain works from a dependency brief decided in code under the project's
+`update_policy` (`patch` | `minor` | `major`; unset behaves as `minor`). The
+agent applies exactly the listed updates. Majors become separate
+`foundry task` runs after the nightly (for `major` projects) or proposals with
+a command (for the others). See what a project would get with:
+
+```bash
+foundry deps <project>                  # outdated deps, the brief, the majors plan
+foundry deps <project> --policy major   # preview another policy; registry unchanged
+```
+
 The same chain fires automatically every night at 02:00 local time via the
 in-daemon `nightly-maintenance` sentinel. Inspect or toggle it with
 `foundry sentinel list | show | enable | disable` (see "Sentinels" below).

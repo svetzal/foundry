@@ -174,14 +174,30 @@ never pushed**:
    lockfile report a visible `apply_failed`/`no_fixer` outcome rather than
    guessing.
 
+The engine follows the [dependency update policy](dependency-update-policy.md)
+rule for security fixes:
+
+- A fix that is a patch or a minor move is applied, whatever the project's
+  policy.
+- A fix that is a major move is never applied by the engine. The outcome is
+  `task_lane`, with the exact `foundry task` command, and the digest lists it
+  under **Major upgrades (run each as its own task)**.
+- If the full compatible update moved any direct dependency by a major (a
+  refresh inside an open constraint such as `>=` can), it is reverted and the
+  findings fall back to targeted pins.
+- A pinned fix above an active `.dependency-holds.json` hold says in its
+  outcome that it overrides the hold, because no fixed release exists inside
+  it.
+
 Each applied fix commits immediately, so a later finding's rollback can never
 clobber an earlier success. Every outcome's `detail` starts with the path taken
 — `full_update` or `targeted_pin` — and a targeted outcome names why the full
 update was not enough (for example, `targeted_pin (after gate verification
 failed after the full update): …`).
 
-The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, and *Not
-auto-fixed (needs attention)* — only when the engine actually ran. Enable it by
+The digest gains a **Remediation** section — *Auto-fixed*, *Reverted*, *Major
+upgrades*, and *Not auto-fixed (needs attention)* — only when the engine
+actually ran. Enable it by
 adding the env var to the daemon's launch environment; disable by removing it.
 
 ## Release-tag audit scan errors

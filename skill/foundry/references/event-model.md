@@ -148,6 +148,14 @@ Event types use PascalCase in code and snake_case on the wire (e.g.,
 | -------------------------- | ------------- |
 | `DriftAssessmentCompleted` | Lifecycle end |
 
+### Dependency Update Policy
+
+| Event                         | Category                                      |
+| ----------------------------- | --------------------------------------------- |
+| `DependencyReviewRequested`   | Command (span opener) — `foundry deps`        |
+| `DependencyUpdatesClassified` | Domain fact — phase `before`, `after`, `review` |
+| `MajorUpgradesPlanned`        | Domain fact — the majors lane's decisions     |
+
 ### Ops Digest Formation
 
 | Event                 | Category                      |
