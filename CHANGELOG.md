@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.6] - 2026-09-25
+
+### Fixed
+
+- A repository with no dependency manifests now reaches the supply-chain
+  digest's "No dependency manifests" section. 0.39.4 detected it but dropped
+  the flag between the scanner and the scan payload, so the project read as a
+  clean scan.
+
 ## [0.39.5] - 2026-09-25
 
 ### Added
