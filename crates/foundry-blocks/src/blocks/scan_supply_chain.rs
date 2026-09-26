@@ -405,6 +405,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_project_with_nothing_to_audit_is_marked_so_in_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_with(vec![test_helpers::project_entry(
+            "cloudformation-ort",
+            dir.path().to_str().unwrap(),
+        )]);
+        let scanner = FakeScannerGateway::with_result(crate::scanner::AuditResult {
+            nothing_to_audit: true,
+            ..crate::scanner::AuditResult::default()
+        });
+        let block = ScanSupplyChain::with_gateways(registry, scanner);
+        let trigger = test_helpers::make_trigger(
+            EventType::SupplyChainScanStarted,
+            "system",
+            serde_json::json!({}),
+        );
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        let p = scanned(&result);
+        assert!(p.projects[0].nothing_to_audit, "the flag reaches the digest");
+        assert!(p.projects[0].scan_error.is_none());
+    }
+
+    #[tokio::test]
     async fn gateway_error_is_recorded_not_lost() {
         let dir = tempfile::tempdir().unwrap();
         let registry = registry_with(vec![test_helpers::project_entry(

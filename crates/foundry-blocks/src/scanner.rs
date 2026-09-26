@@ -1536,7 +1536,7 @@ pub(crate) fn audit_outcome(audit: anyhow::Result<AuditResult>) -> Result<AuditR
                     vulnerabilities: result.vulnerabilities,
                     error: None,
                     below_threshold: 0,
-                    nothing_to_audit: false,
+                    nothing_to_audit: result.nothing_to_audit,
                 })
             }
         }
@@ -3070,6 +3070,15 @@ mod tests {
         let result = super::audit_outcome(audit);
         assert!(result.is_ok());
         assert!(result.unwrap().vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn audit_outcome_keeps_nothing_to_audit() {
+        let audit = Ok(AuditResult {
+            nothing_to_audit: true,
+            ..AuditResult::default()
+        });
+        assert!(super::audit_outcome(audit).unwrap().nothing_to_audit);
     }
 
     // --- repository-wide audit targets ------------------------------------
