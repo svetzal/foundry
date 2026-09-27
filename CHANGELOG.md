@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `comfy-table` upgraded from 7.2.2 to 8.0.1. The CLI only uses
+  `Table::new`, `set_content_arrangement`, `set_header` and `add_row`, all of
+  which are unchanged in 8.x, so every rendered table is byte-identical.
 - `foundry init` now installs on cmx-core 0.4. The release adds generated
   agent installation and Codex frontmatter preservation, neither of which
   foundry uses, so skill install, remove, lock tracking and `--json` output

@@ -74,7 +74,7 @@ rand = "0.10"
 async-stream = "0.3"
 
 # TUI
-comfy-table = "7"
+comfy-table = "8"
 
 # Enum derive utilities
 strum = { version = "0.28", features = ["derive"] }
