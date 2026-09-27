@@ -280,9 +280,9 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cmx-core"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf1b0a506b6456b0848c48e27536b2aaf3053e7ac86cc7890c0f425a196202f0"
+checksum = "81687a0a1ccb0929e5b51c4a9eb07e0ba3499862b8c7effdf231690ad5e291ad"
 dependencies = [
  "anyhow",
  "chrono",
@@ -292,6 +292,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror",
 ]
 
 [[package]]

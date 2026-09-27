@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `foundry init` now installs on cmx-core 0.4. The release adds generated
+  agent installation and Codex frontmatter preservation, neither of which
+  foundry uses, so skill install, remove, lock tracking and `--json` output
+  are unchanged.
+
 ## [0.39.6] - 2026-09-25
 
 ### Fixed
