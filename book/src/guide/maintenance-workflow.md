@@ -101,6 +101,35 @@ the step committed) and in the step's summary:
 
 Foundry never force-pushes.
 
+### Agents never push
+
+Foundry pushes a run's commits only in `Commit and Push`, after the verify
+gates and the suppression check. The agent must not push first. Three layers
+hold that line:
+
+1. **The prompt.** The maintain, retry and remediation prompts say: commit
+   locally if you want to, never push, force-push, tag or change remotes. The
+   iterate and task prompts say Foundry owns Git entirely.
+2. **Prevention.** Every maintain, iterate, task and remediation agent session
+   runs with `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=remote.origin.pushurl` and
+   `GIT_CONFIG_VALUE_0=foundry://agent-push-disabled` in its environment.
+   Every process the agent starts inherits it, so a `git push` to `origin`
+   fails. Nothing is written to the repository, and `Commit and Push` runs
+   outside that environment, so Foundry's own push works as before.
+3. **Detection.** A maintain run records `origin/<branch>` before the first
+   agent session. After each attempt Foundry fetches it and checks whether it
+   moved to commits the checkout holds. The fetch catches a push to an
+   explicit URL, which bypasses the push URL. If the agent pushed, the run
+   fails with "needs review: agent pushed directly to origin/<branch> …",
+   naming the pushed commits and the result of the suppression check, which
+   still runs over them. The run is not retried (a retry cannot undo a push),
+   and the maintenance summary lists it as failed with that reason.
+
+An agent could still get around the prevention layer on purpose, for example
+by pushing to an explicit URL instead of `origin`. The detection layer reports
+that case. (Adding a push URL with `git -c` does not help it: Git pushes to
+every configured push URL, and the disabled one fails the push.)
+
 After the maintain agent finishes, Foundry checks that the checkout is on the
 registry's configured branch. If the agent left it on its own branch (or a
 detached `HEAD`) that fast-forwards the configured branch, Foundry moves the

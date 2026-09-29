@@ -171,12 +171,21 @@ Dependency-Check suppressions, `pip-audit --ignore-vuln`, cargo deny/audit
 ignore lists or equivalent files; and never claim that no fix exists without
 citing the registry or OSV entry.
 
-Foundry also checks the result. After the maintain agent, it diffs the
-checkout against `origin/<branch>`. A run that added an allowlist entry, an
-`ignore_advisories` entry, a Dependency-Check suppression, an ignore flag or
-an ignore-list advisory, or an npm override that pins a package to a version
-the latest supply-chain scan marks vulnerable, fails with "needs review: …".
-It is never green, and its commits are not pushed.
+Foundry also checks the result. Before the first maintain agent session it
+records where the run started (`HEAD` and `origin/<branch>`), and after each
+attempt it diffs the checkout against that start. The diff covers the agent's
+commits, pushed or not, and anything left uncommitted; a retry is checked
+against the same start as the first attempt. A run that added an allowlist
+entry, an `ignore_advisories` entry, a Dependency-Check suppression, an ignore
+flag or an ignore-list advisory, or an npm override that pins a package to a
+version the latest supply-chain scan marks vulnerable, fails with
+"needs review: …". It is never green, and its commits are not pushed.
+
+The check does not compare against `origin/<branch>` because the agent can
+move it: on 2026-09-29 a maintain agent pushed its own commit, the diff
+against the remote came back empty, and a suppression in that commit would
+have passed unchecked. See
+[Agents never push](maintenance-workflow.md#agents-never-push).
 
 ## Holds
 

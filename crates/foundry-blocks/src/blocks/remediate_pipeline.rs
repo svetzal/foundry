@@ -164,7 +164,9 @@ async fn run_remediation(
     let prompt = format!(
         "The GitHub Actions CI pipeline '{run_name}' for project '{project}' is failing. \
          Diagnose and fix the CI failure so the pipeline passes.\n\n\
-         Failure logs:\n{failure_logs}"
+         {git_rule}\n\
+         Failure logs:\n{failure_logs}",
+        git_rule = super::push_guard::COMMIT_LOCALLY_RULE,
     );
 
     let agent_file = super::resolve_agent_file(&entry.agent);
@@ -177,7 +179,7 @@ async fn run_remediation(
             prompt,
             agent_file,
             provider,
-            env: Vec::new(),
+            env: super::push_guard::push_disabled_environment(),
             timeout: RemediatePipeline::CLAUDE_TIMEOUT,
             trace_id: trace_id.clone(),
         },
@@ -297,6 +299,31 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
         assert_eq!(result.events[0].payload["pipeline_fix"], true);
         assert_eq!(result.events[0].payload["success"], true);
+    }
+
+    #[tokio::test]
+    async fn the_pipeline_agent_commits_locally_and_cannot_push() {
+        let (mut entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        entry.repo = "owner/repo".to_string();
+        let registry = test_helpers::registry_with_entry(entry);
+        let agent = FakeAgentGateway::success();
+        let block = RemediatePipeline::new(agent.clone(), registry);
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 99999,
+            "run_name": "CI",
+            "failure_logs": "error: test failed",
+        });
+        block.execute(&t).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert!(invocations[0].prompt.contains("never push"));
+        assert!(
+            invocations[0]
+                .env
+                .contains(&("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string()))
+        );
     }
 
     #[tokio::test]

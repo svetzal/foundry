@@ -112,6 +112,7 @@ mod install;
 mod observe_commits;
 mod observe_events;
 mod plan_major_upgrades;
+mod push_guard;
 mod release;
 mod remediate;
 mod remediate_pipeline;

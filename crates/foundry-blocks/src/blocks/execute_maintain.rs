@@ -139,8 +139,10 @@ fn build_maintain_prompt(
          in your final message instead of making the change.\n\n\
          {rules}\n\
          Foundry checks this run for new suppressions; a run that adds one fails and \
-         needs review.{gates_context}",
+         needs review.\n\n\
+         {git_rule}{gates_context}",
         rules = super::suppression_guard::ADVISORY_RULES,
+        git_rule = super::push_guard::COMMIT_LOCALLY_RULE,
     )
 }
 
@@ -419,27 +421,25 @@ mod tests {
             dir.path().to_str().unwrap(),
             "rust-craftsperson",
         ));
-        // Shell sequence: rev-parse HEAD → sha; branch guard's
-        // rev-parse --abbrev-ref HEAD → main; git diff --name-only <sha> → files
+        let ok = |stdout: &str| CommandResult {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        };
+        // Shell sequence: the run's start (rev-parse HEAD, origin/main); the
+        // pre-agent HEAD; the branch guard's rev-parse --abbrev-ref HEAD; the
+        // direct-push check (fetch, origin/main unmoved); the suppression
+        // diff (nothing added); then change detection's diff --name-only.
         let shell = FakeShellGateway::sequence(vec![
-            CommandResult {
-                stdout: "abc123\n".to_string(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
-            },
-            CommandResult {
-                stdout: "main\n".to_string(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
-            },
-            CommandResult {
-                stdout: "Cargo.lock\nnew-patch.txt\n".to_string(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
-            },
+            ok("abc123\n"),
+            ok("abc123\n"),
+            ok("abc123\n"),
+            ok("main\n"),
+            ok(""),
+            ok("abc123\n"),
+            ok(""),
+            ok("Cargo.lock\nnew-patch.txt\n"),
         ]);
         let block = ExecuteMaintain::with_gateways(agent, registry, shell);
         let trigger = test_event!(EventType::DependencyUpdatesClassified, "my-project", {
@@ -735,5 +735,15 @@ mod tests {
         );
         assert!(prompt.contains("Never edit .supply-chain-allow.json"));
         assert!(prompt.contains("unless you cite"));
+        assert!(
+            prompt.contains("commit your work locally") && prompt.contains("never push"),
+            "Foundry pushes after its checks: {prompt}"
+        );
+        assert!(
+            agent.invocations()[0]
+                .env
+                .contains(&("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string())),
+            "the maintain agent runs with pushing disabled"
+        );
     }
 }

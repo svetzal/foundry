@@ -7,6 +7,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A maintain agent can no longer push past Foundry's checks. On 2026-09-29
+  mojentic-kt's agent pushed its own commit; the suppression check then
+  diffed against an `origin/main` that already held it and saw nothing, and
+  `Commit and Push` reported nothing to push. Now:
+  - The maintain, retry and remediation prompts say to commit locally and
+    never push; Foundry pushes after its checks.
+  - Maintain, iterate, task and remediation agent sessions run with
+    `remote.origin.pushurl` set to `foundry://agent-push-disabled` through
+    `GIT_CONFIG_*` environment variables, so a `git push` to `origin` fails.
+    Foundry's own push is unaffected.
+  - A maintain run records its starting `HEAD` and `origin/<branch>` before
+    the first agent session and carries them through retries
+    (`maintain_base`). The suppression check diffs against that start, so it
+    covers pushed commits and a retry is checked against the same commit as
+    the first attempt.
+  - If `origin/<branch>` moved during the run to commits the checkout holds
+    (checked after a fetch, so an explicit-URL push is seen too), the run
+    fails with "needs review: agent pushed directly to origin/<branch> …",
+    naming the commits and the suppression check's result. It is not
+    retried. The failure metadata carries a new `needs_review` field, and
+    `Route Gate Result` stops without retrying whenever it is set.
+
 ### Changed
 
 - `comfy-table` upgraded from 7.2.2 to 8.0.1. The CLI only uses

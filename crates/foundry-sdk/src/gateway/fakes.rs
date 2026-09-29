@@ -211,6 +211,9 @@ pub struct AgentInvocation {
     /// Trace the request carried. Recorded so tests can prove a block forwards
     /// its trigger's trace into the session that spends the tokens.
     pub trace_id: Option<String>,
+    /// Environment the session was given, so tests can prove a block keeps
+    /// the agent from pushing.
+    pub env: Vec<(String, String)>,
 }
 
 /// Behaviour specification for a single `FakeAgentGateway` response.
@@ -296,6 +299,7 @@ impl AgentGateway for FakeAgentGateway {
             trace_id: request.trace_id.clone(),
             agent_file: request.agent_file.as_ref().map(|p| p.display().to_string()),
             provider: request.provider,
+            env: request.env.clone(),
         };
         self.invocations.lock().unwrap().push(inv);
         let result = self.next_result();

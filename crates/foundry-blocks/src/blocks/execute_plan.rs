@@ -249,11 +249,12 @@ fn build_execution_prompt(
          - The plan above describes mutations that MUST be applied to the source files. Apply them now.\n\
          - Do NOT skip the plan because quality gates currently pass. Passing gates is necessary, not sufficient — the purpose of this run is to apply the plan, not to re-verify a clean tree.\n\
          - After applying the plan, the working tree MUST contain modifications to the files named or implied by the plan. If `git status --porcelain` would be empty when you finish, you have not done the job and the run has failed.\n\
-         - Foundry owns Git finalization for this run. Do NOT commit, push, merge, rebase, tag, or modify refs. Repository guidance that normally requires a commit or push does not apply inside this Foundry task worktree. Leave the completed changes in the working tree for Foundry to review and finalize.\n\
+         {git_rule}\
          - Make only the changes the plan describes; do not expand scope.\n\n\
          {rules}\n\
          - Once the plan is applied, the following quality gates must still pass:{gates_context}",
         rules = super::suppression_guard::ADVISORY_RULES,
+        git_rule = super::push_guard::FOUNDRY_OWNS_GIT_RULE,
     )
 }
 

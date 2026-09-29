@@ -4,7 +4,10 @@
 //! go away by suppressing it rather than upgrading, though a fixed release
 //! existed. The prompt now forbids it ([`ADVISORY_RULES`]); this guard checks
 //! the result. After the maintain agent, everything the run changed relative
-//! to `origin/<branch>` is scanned for new suppression entries:
+//! to the commit it started from is scanned for new suppression entries. The
+//! start is recorded before the first agent session, not read from
+//! `origin/<branch>`: an agent that pushes moves the remote, and a diff
+//! against it would then be empty (2026-09-29, mojentic-kt).
 //!
 //! - any entry added to `.supply-chain-allow.json`;
 //! - `ignore_advisories` (or an advisory ID) added to a `mix.exs`, or to a
@@ -190,17 +193,19 @@ async fn git_output(shell: &dyn ShellGateway, dir: &Path, args: &[&str]) -> Opti
         .map(|r| r.stdout)
 }
 
-/// Every suppression the maintain run added relative to `origin/<branch>`.
-/// Empty when nothing was added, or when `origin/<branch>` cannot be read.
+/// Every suppression the maintain run added relative to `base`: the commit
+/// the run started from (see `push_guard::capture_maintain_base`), or
+/// `origin/<branch>` when that could not be recorded. The diff covers the
+/// agent's commits, pushed or not, and anything left uncommitted.
+/// Empty when nothing was added, or when `base` cannot be read.
 pub(crate) async fn run_suppressions(
     shell: &dyn ShellGateway,
     project_path: &Path,
-    branch: &str,
+    base: &str,
     project: &str,
     events_dir: &Path,
 ) -> Vec<String> {
-    let base = format!("origin/{branch}");
-    let Some(diff) = git_output(shell, project_path, &["diff", "-U0", "--no-color", &base]).await
+    let Some(diff) = git_output(shell, project_path, &["diff", "-U0", "--no-color", base]).await
     else {
         // Best-effort: without the base there is nothing to compare; the
         // prompt rules still apply and the audit still reports advisories.

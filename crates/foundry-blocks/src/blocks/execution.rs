@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use foundry_sdk::gateway::AgentFailureMetadata;
-use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext};
+use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, MaintainBase};
 use foundry_sdk::registry::ProjectEntry;
 use foundry_sdk::task_block::TaskBlockResult;
 use foundry_sdk::throttle::Throttle;
@@ -166,6 +166,11 @@ pub(crate) async fn build_execution_outcome(
 /// Execute the common agent-driven body shared by `ExecutePlan`, `ExecuteMaintain`,
 /// and `RetryExecution`: resolve the project path and agent file, capture the
 /// pre-execution HEAD SHA, invoke the coding agent, and build the result.
+///
+/// For the maintain workflow it also records where the run started (on the
+/// first attempt; retries inherit it through the chain's `maintain_base`) and,
+/// after the agent, runs the branch guard, the direct-push check and the
+/// suppression guard against that start.
 pub(crate) async fn execute_agent_block(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
@@ -176,6 +181,16 @@ pub(crate) async fn execute_agent_block(
     let project_path = PathBuf::from(&entry.path);
     let agent_file = super::resolve_agent_file(&entry.agent);
     let provider = super::chain_agent_provider(ctx.payload);
+    let maintain_base = if ctx.workflow == WorkflowType::Maintain {
+        match LoopContext::extract_from(ctx.payload).maintain_base {
+            Some(base) => Some(base),
+            None => {
+                super::push_guard::capture_maintain_base(shell, &project_path, &entry.branch).await
+            }
+        }
+    } else {
+        None
+    };
     let pre_sha = capture_pre_execution_sha(shell, &project_path).await;
     let outcome = invoke_coding_agent(
         agent,
@@ -192,37 +207,96 @@ pub(crate) async fn execute_agent_block(
         ctx.label,
     )
     .await;
-    let outcome = if ctx.workflow == WorkflowType::Maintain {
-        let outcome = guard_configured_branch(shell, &project_path, &entry.branch, outcome).await;
-        guard_suppressions(shell, &project_path, entry, &foundry_sdk::paths::events_dir(), outcome)
-            .await
-    } else {
-        outcome
+    if ctx.workflow != WorkflowType::Maintain {
+        return build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await;
+    }
+    let outcome = guard_configured_branch(shell, &project_path, &entry.branch, outcome).await;
+    let outcome = guard_maintain_run(
+        shell,
+        &project_path,
+        entry,
+        &foundry_sdk::paths::events_dir(),
+        maintain_base.as_ref(),
+        outcome,
+    )
+    .await;
+    // Carry the run's start forward so a retry checks against the same commit.
+    let mut payload = ctx.payload.clone();
+    if let (Some(base), Some(object)) = (&maintain_base, payload.as_object_mut()) {
+        #[allow(
+            clippy::expect_used,
+            reason = "MaintainBase is two strings and infallibly serializable"
+        )]
+        let value = serde_json::to_value(base).expect("MaintainBase is infallibly serializable");
+        object.insert("maintain_base".to_string(), value);
+    }
+    let ctx = ExecutionContext {
+        payload: &payload,
+        trace_id: ctx.trace_id.clone(),
+        ..*ctx
     };
-    build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await
+    build_execution_outcome(shell, &project_path, &ctx, outcome, pre_sha).await
 }
 
-/// Fail a maintain run that suppressed an advisory instead of fixing it.
-/// The run is not green, so its commits are not pushed, and the summary says
-/// it needs review.
-async fn guard_suppressions(
+/// Foundry's checks on a maintain run, after the agent and before anything
+/// is pushed.
+///
+/// - An agent that pushed directly fails the run and needs review; nothing a
+///   retry does can undo the push, so the failure stops the workflow.
+/// - A run that added an advisory suppression fails and needs review; a
+///   retry is told to remove it and upgrade instead.
+///
+/// Both compare against `base`, where the run started, so commits the agent
+/// already pushed are still checked. Without a recorded base the suppression
+/// guard falls back to `origin/<branch>` and the push check is skipped.
+async fn guard_maintain_run(
     shell: &dyn ShellGateway,
     project_path: &Path,
     entry: &ProjectEntry,
     events_dir: &Path,
+    base: Option<&MaintainBase>,
     outcome: AgentOutcome,
 ) -> AgentOutcome {
-    if !matches!(outcome, AgentOutcome::Success { .. }) {
+    if matches!(outcome, AgentOutcome::Unavailable { .. }) {
+        // The agent never ran, so it pushed and changed nothing.
         return outcome;
     }
-    let found = super::suppression_guard::run_suppressions(
-        shell,
-        project_path,
-        &entry.branch,
-        &entry.name,
-        events_dir,
-    )
-    .await;
+    let pushed = match base {
+        Some(base) => {
+            super::push_guard::detect_direct_push(shell, project_path, &entry.branch, base).await
+        }
+        None => None,
+    };
+    let check_suppressions = pushed.is_some() || matches!(outcome, AgentOutcome::Success { .. });
+    let found = if check_suppressions {
+        let fallback = format!("origin/{}", entry.branch);
+        let diff_base = base.map_or(fallback.as_str(), |b| b.head.as_str());
+        super::suppression_guard::run_suppressions(
+            shell,
+            project_path,
+            diff_base,
+            &entry.name,
+            events_dir,
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+    if let Some(push) = pushed {
+        let reason = super::push_guard::direct_push_reason(&entry.branch, &push, &found);
+        tracing::warn!(project = %entry.name, %reason, "maintain agent pushed directly");
+        let failure = match outcome {
+            AgentOutcome::AgentFailed {
+                failure: Some(failure),
+                ..
+            } => failure,
+            _ => AgentFailureMetadata::default(),
+        };
+        return AgentOutcome::AgentFailed {
+            stderr: reason.clone(),
+            failure: Some(failure.with_needs_review(reason)),
+        };
+    }
     if found.is_empty() {
         return outcome;
     }
@@ -274,23 +348,18 @@ async fn guard_configured_branch(
     }
 }
 
-/// Prevent an isolated task executor from pushing through the checkout's
-/// configured `origin`. The environment is inherited by shell commands spawned
-/// by every supported CLI agent, while Foundry's reviewer and finalizer run
+/// Keep the agent from pushing through the checkout's `origin` in every
+/// workflow whose commits Foundry pushes itself (see `push_guard`). The
+/// environment is inherited by shell commands spawned by every supported CLI
+/// agent, while Foundry's reviewer, finalizer and `Commit and Push` run
 /// outside it and retain normal Git access.
 fn execution_environment(workflow: WorkflowType) -> Vec<(String, String)> {
-    if workflow != WorkflowType::Task {
-        return Vec::new();
+    match workflow {
+        WorkflowType::Task | WorkflowType::Maintain | WorkflowType::Iterate => {
+            super::push_guard::push_disabled_environment()
+        }
+        _ => Vec::new(),
     }
-
-    vec![
-        ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
-        ("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string()),
-        (
-            "GIT_CONFIG_VALUE_0".to_string(),
-            "foundry://task-executor-push-disabled".to_string(),
-        ),
-    ]
 }
 
 #[cfg(test)]
@@ -314,24 +383,31 @@ mod tests {
     }
 
     #[test]
-    fn task_execution_disables_origin_push_for_agent_process() {
-        let env = execution_environment(WorkflowType::Task);
-
-        assert_eq!(env.len(), 3);
-        assert!(env.contains(&("GIT_CONFIG_COUNT".to_string(), "1".to_string())));
-        assert!(
-            env.contains(&("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string()))
-        );
-        assert!(env.contains(&(
-            "GIT_CONFIG_VALUE_0".to_string(),
-            "foundry://task-executor-push-disabled".to_string()
-        )));
+    fn task_maintain_and_iterate_disable_origin_push_for_the_agent() {
+        for workflow in [
+            WorkflowType::Task,
+            WorkflowType::Maintain,
+            WorkflowType::Iterate,
+        ] {
+            let env = execution_environment(workflow);
+            assert!(
+                env.contains(&(
+                    "GIT_CONFIG_KEY_0".to_string(),
+                    "remote.origin.pushurl".to_string()
+                )),
+                "{workflow} must run the agent with pushing disabled"
+            );
+            assert!(env.contains(&(
+                "GIT_CONFIG_VALUE_0".to_string(),
+                crate::blocks::push_guard::PUSH_DISABLED_URL.to_string()
+            )));
+        }
     }
 
     #[test]
-    fn non_task_execution_does_not_override_git_remote() {
-        assert!(execution_environment(WorkflowType::Iterate).is_empty());
-        assert!(execution_environment(WorkflowType::Maintain).is_empty());
+    fn workflows_foundry_does_not_push_keep_the_remote() {
+        assert!(execution_environment(WorkflowType::Prompt).is_empty());
+        assert!(execution_environment(WorkflowType::Scout).is_empty());
     }
 
     // --- iterate: clean tree → failure override ---
@@ -597,14 +673,19 @@ mod tests {
         let ok = crate::gateway::AgentOutcome::Success {
             stdout: "done".to_string(),
         };
-        let outcome = super::guard_suppressions(&*shell, dir.path(), &entry, dir.path(), ok).await;
+        let outcome =
+            super::guard_maintain_run(&*shell, dir.path(), &entry, dir.path(), None, ok).await;
         let crate::gateway::AgentOutcome::AgentFailed { stderr, .. } = outcome else {
             panic!("expected a failure");
         };
         assert!(stderr.starts_with("needs review: "), "{stderr}");
         assert!(stderr.contains("CVE-2026-64941"));
         let calls = shell.invocations();
-        assert_eq!(calls[0].args, ["diff", "-U0", "--no-color", "origin/main"]);
+        assert_eq!(
+            calls[0].args,
+            ["diff", "-U0", "--no-color", "origin/main"],
+            "without a recorded start the guard falls back to origin/<branch>"
+        );
     }
 
     #[tokio::test]
@@ -620,7 +701,256 @@ mod tests {
         let ok = crate::gateway::AgentOutcome::Success {
             stdout: "done".to_string(),
         };
-        let outcome = super::guard_suppressions(&*shell, dir.path(), &entry, dir.path(), ok).await;
+        let outcome =
+            super::guard_maintain_run(&*shell, dir.path(), &entry, dir.path(), None, ok).await;
         assert!(matches!(outcome, crate::gateway::AgentOutcome::Success { .. }));
+    }
+
+    // --- real Git: the agent pushes before Foundry's checks ---
+
+    mod direct_push {
+        use std::path::Path;
+        use std::process::Command;
+
+        use foundry_sdk::payload::MaintainBase;
+        use foundry_sdk::throttle::Throttle;
+        use foundry_sdk::workflow::WorkflowType;
+
+        use crate::blocks::push_guard::{capture_maintain_base, push_disabled_environment};
+        use crate::gateway::fakes::FakeAgentGateway;
+        use crate::gateway::{AgentOutcome, ProcessShellGateway};
+
+        use super::super::{ExecutionContext, execute_agent_block, guard_maintain_run};
+
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        fn commit(dir: &Path, file: &str, contents: &str, message: &str) {
+            std::fs::write(dir.join(file), contents).unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-q", "-m", message]);
+        }
+
+        /// A bare `origin` and a checkout of it with one pushed commit.
+        struct Repo {
+            _root: tempfile::TempDir,
+            remote: std::path::PathBuf,
+            work: std::path::PathBuf,
+        }
+
+        fn repo() -> Repo {
+            let root = tempfile::tempdir().unwrap();
+            let remote = root.path().join("origin.git");
+            let work = root.path().join("work");
+            std::fs::create_dir_all(&remote).unwrap();
+            git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+            git(root.path(), &["clone", "-q", remote.to_str().unwrap(), "work"]);
+            git(&work, &["config", "user.email", "test@example.com"]);
+            git(&work, &["config", "user.name", "Test"]);
+            git(&work, &["checkout", "-q", "-B", "main"]);
+            commit(&work, "README.md", "init", "init");
+            git(&work, &["push", "-q", "origin", "main"]);
+            Repo {
+                _root: root,
+                remote,
+                work,
+            }
+        }
+
+        const SUPPRESSION: &str =
+            "[\n  {\"cve\": \"CVE-2026-64941\", \"reason\": \"no fix available\"}\n]\n";
+
+        async fn guard(
+            repo: &Repo,
+            base: Option<&MaintainBase>,
+            outcome: AgentOutcome,
+        ) -> AgentOutcome {
+            let shell = ProcessShellGateway;
+            let entry = crate::blocks::test_helpers::project_entry(
+                "mojentic-kt",
+                repo.work.to_str().unwrap(),
+            );
+            let events = tempfile::tempdir().unwrap();
+            guard_maintain_run(&shell, &repo.work, &entry, events.path(), base, outcome).await
+        }
+
+        fn success() -> AgentOutcome {
+            AgentOutcome::Success {
+                stdout: "done".to_string(),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_suppression_the_agent_pushed_is_still_caught_and_the_run_needs_review() {
+            let repo = repo();
+            let base = capture_maintain_base(&ProcessShellGateway, &repo.work, "main")
+                .await
+                .expect("base recorded");
+            // The agent commits a suppression and pushes it, as mojentic-kt's
+            // agent pushed its own commit on 2026-09-29.
+            commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
+            git(&repo.work, &["push", "-q", "origin", "main"]);
+
+            let outcome = guard(&repo, Some(&base), success()).await;
+
+            let AgentOutcome::AgentFailed { stderr, failure } = outcome else {
+                panic!("a direct push must fail the run");
+            };
+            assert!(
+                stderr.starts_with("needs review: agent pushed directly to origin/main"),
+                "{stderr}"
+            );
+            assert!(stderr.contains("chore: allow advisory"), "names the pushed commit: {stderr}");
+            assert!(
+                stderr.contains("CVE-2026-64941"),
+                "the suppression check still ran over the pushed commit: {stderr}"
+            );
+            let failure = failure.expect("failure metadata");
+            assert!(failure.needs_review.is_some(), "the run stops for review, no retry");
+            assert!(!failure.is_terminal_provider_failure());
+        }
+
+        #[tokio::test]
+        async fn a_clean_direct_push_still_needs_review() {
+            let repo = repo();
+            let base =
+                capture_maintain_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            commit(
+                &repo.work,
+                "build.gradle.kts",
+                "kover 0.9.10",
+                "chore(deps): Kover 0.9.9 -> 0.9.10",
+            );
+            git(&repo.work, &["push", "-q", "origin", "main"]);
+
+            let AgentOutcome::AgentFailed { stderr, failure } =
+                guard(&repo, Some(&base), success()).await
+            else {
+                panic!("a direct push must fail the run");
+            };
+            assert!(stderr.contains("Kover 0.9.9 -> 0.9.10"), "{stderr}");
+            assert!(stderr.contains("found no new suppressions"), "{stderr}");
+            assert!(failure.unwrap().needs_review.is_some());
+        }
+
+        #[tokio::test]
+        async fn a_push_to_an_explicit_url_is_seen_after_the_fetch() {
+            let repo = repo();
+            let base =
+                capture_maintain_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            commit(&repo.work, "a.txt", "a", "chore: bump");
+            // Bypasses origin's push URL and does not move the tracking ref.
+            git(&repo.work, &["push", "-q", repo.remote.to_str().unwrap(), "main"]);
+
+            let outcome = guard(&repo, Some(&base), success()).await;
+            let AgentOutcome::AgentFailed { stderr, .. } = outcome else {
+                panic!("an explicit-URL push must fail the run");
+            };
+            assert!(stderr.contains("pushed directly"), "{stderr}");
+        }
+
+        #[tokio::test]
+        async fn local_commits_are_not_a_push_and_a_local_suppression_is_retried() {
+            let repo = repo();
+            let base =
+                capture_maintain_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
+
+            let AgentOutcome::AgentFailed { stderr, failure } =
+                guard(&repo, Some(&base), success()).await
+            else {
+                panic!("a suppression fails the run");
+            };
+            assert!(stderr.starts_with("needs review: this maintenance run added"), "{stderr}");
+            assert!(failure.is_none(), "not a review stop: a retry may remove the suppression");
+        }
+
+        #[tokio::test]
+        async fn a_retry_checks_against_the_runs_start_not_its_own() {
+            let repo = repo();
+            let base =
+                capture_maintain_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            // Attempt 1 committed a suppression locally and failed; the retry
+            // starts after it. The guard must still see it.
+            commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
+            let payload = serde_json::json!({
+                "project": "mojentic-kt",
+                "workflow": "maintain",
+                "maintain_base": serde_json::to_value(&base).unwrap(),
+            });
+            let ctx = ExecutionContext {
+                trace_id: None,
+                project: "mojentic-kt",
+                workflow: WorkflowType::Maintain,
+                payload: &payload,
+                throttle: Throttle::Full,
+                label: "retry 1",
+                retry_count: Some(1),
+                correction_needed: true,
+            };
+            let entry = crate::blocks::test_helpers::project_entry(
+                "mojentic-kt",
+                repo.work.to_str().unwrap(),
+            );
+            let agent = FakeAgentGateway::success();
+            let result =
+                execute_agent_block(&*agent, &ProcessShellGateway, &entry, &ctx, String::new())
+                    .await;
+            assert!(!result.success, "{}", result.summary);
+            assert!(result.summary.contains("CVE-2026-64941"), "{}", result.summary);
+            assert_eq!(
+                result.events[0].payload["maintain_base"]["head"], base.head,
+                "the run's start is carried forward unchanged"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_first_attempt_records_the_runs_start_for_retries() {
+            let repo = repo();
+            let head = git(&repo.work, &["rev-parse", "HEAD"]);
+            let payload = serde_json::json!({ "project": "p", "workflow": "maintain" });
+            let ctx = ExecutionContext {
+                trace_id: None,
+                project: "p",
+                workflow: WorkflowType::Maintain,
+                payload: &payload,
+                throttle: Throttle::Full,
+                label: "maintenance",
+                retry_count: None,
+                correction_needed: true,
+            };
+            let entry =
+                crate::blocks::test_helpers::project_entry("p", repo.work.to_str().unwrap());
+            let agent = FakeAgentGateway::success();
+            let result =
+                execute_agent_block(&*agent, &ProcessShellGateway, &entry, &ctx, String::new())
+                    .await;
+            assert!(result.success, "{}", result.summary);
+            let recorded = &result.events[0].payload["maintain_base"];
+            assert_eq!(recorded["head"], head);
+            assert_eq!(recorded["origin"], head);
+        }
+
+        #[test]
+        fn the_push_disabled_environment_blocks_a_plain_git_push() {
+            let repo = repo();
+            commit(&repo.work, "a.txt", "a", "local only");
+            let out = Command::new("git")
+                .current_dir(&repo.work)
+                .args(["push", "-q", "origin", "main"])
+                .envs(push_disabled_environment())
+                .output()
+                .unwrap();
+            assert!(!out.status.success(), "the agent's push must fail");
+            let remote_head = git(&repo.remote, &["rev-parse", "main"]);
+            let local_head = git(&repo.work, &["rev-parse", "HEAD"]);
+            assert_ne!(remote_head, local_head, "nothing reached origin");
+            // Foundry's own push, outside the agent's environment, still works.
+            git(&repo.work, &["push", "-q", "origin", "main"]);
+            assert_eq!(git(&repo.remote, &["rev-parse", "main"]), local_head);
+        }
     }
 }

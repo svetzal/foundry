@@ -102,6 +102,13 @@ pub struct AgentFailureMetadata {
     pub terminal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Why the run must stop and wait for a person, set by Foundry's own
+    /// checks after the agent session rather than by the provider (for
+    /// example: the agent pushed its commits itself, before Foundry's checks
+    /// ran). A run with this set is not retried: another attempt cannot undo
+    /// what needs reviewing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_review: Option<String>,
 }
 
 impl AgentFailureMetadata {
@@ -136,6 +143,13 @@ impl AgentFailureMetadata {
     pub fn terminal(mut self, kind: AgentFailureKind) -> Self {
         self.failure_kind = Some(kind);
         self.terminal = true;
+        self
+    }
+
+    /// Mark the failure as needing review, with the reason a person reads.
+    #[must_use]
+    pub fn with_needs_review(mut self, reason: impl Into<String>) -> Self {
+        self.needs_review = Some(reason.into());
         self
     }
 
@@ -599,6 +613,30 @@ mod provider_tests {
         assert_eq!(json, "\"codex\"");
         let back: AgentProvider = serde_json::from_str("\"opencode\"").unwrap();
         assert_eq!(back, AgentProvider::Opencode);
+    }
+}
+
+#[cfg(test)]
+mod needs_review_tests {
+    use super::AgentFailureMetadata;
+
+    #[test]
+    fn needs_review_is_not_a_provider_failure_and_round_trips() {
+        let failure = AgentFailureMetadata::default().with_needs_review("agent pushed directly");
+        assert!(
+            !failure.is_terminal_provider_failure(),
+            "a review stop must not open a provider circuit breaker"
+        );
+        let json = serde_json::to_value(&failure).unwrap();
+        assert_eq!(json["needs_review"], "agent pushed directly");
+        let back: AgentFailureMetadata = serde_json::from_value(json).unwrap();
+        assert_eq!(back.needs_review.as_deref(), Some("agent pushed directly"));
+    }
+
+    #[test]
+    fn needs_review_is_omitted_when_absent() {
+        let json = serde_json::to_value(AgentFailureMetadata::default()).unwrap();
+        assert!(json.get("needs_review").is_none());
     }
 }
 

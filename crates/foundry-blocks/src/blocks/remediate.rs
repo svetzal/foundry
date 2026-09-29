@@ -111,7 +111,10 @@ impl TaskBlock for RemediateVulnerability {
                 "You are remediating vulnerability {cve} in project '{project}'. \
                  Update the affected dependencies to patched versions, \
                  fix any breaking changes caused by the updates, \
-                 and ensure the project builds and passes its quality gates."
+                 and ensure the project builds and passes its quality gates.\n\n\
+                 {rules}\n{git_rule}",
+                rules = super::suppression_guard::ADVISORY_RULES,
+                git_rule = super::push_guard::COMMIT_LOCALLY_RULE,
             );
 
             let agent_file = super::resolve_agent_file(&entry.agent);
@@ -124,7 +127,7 @@ impl TaskBlock for RemediateVulnerability {
                     prompt,
                     agent_file,
                     provider,
-                    env: Vec::new(),
+                    env: super::push_guard::push_disabled_environment(),
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
                 },
@@ -279,6 +282,29 @@ mod tests {
         assert!(invocations[0].prompt.contains("CVE-2026-0001"));
         assert_eq!(invocations[0].tier, ModelTier::Balanced);
         assert_eq!(invocations[0].effort, ReasoningEffort::Medium);
+    }
+
+    #[tokio::test]
+    async fn the_remediation_agent_commits_locally_and_cannot_push() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry_with_agent(
+            "my-project",
+            dir.path().to_str().unwrap(),
+            "claude",
+        ));
+        let agent = FakeAgentGateway::success();
+        let block = RemediateVulnerability::new(agent.clone(), registry);
+        block.execute(&dirty_trigger("my-project", "CVE-2026-0001")).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert!(invocations[0].prompt.contains("never push"));
+        assert!(invocations[0].prompt.contains("Never suppress, ignore or allowlist"));
+        assert!(
+            invocations[0]
+                .env
+                .contains(&("GIT_CONFIG_KEY_0".to_string(), "remote.origin.pushurl".to_string())),
+            "the session must run with origin's push URL disabled"
+        );
     }
 
     // --- decide_remediate pure function tests ---

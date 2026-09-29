@@ -134,6 +134,11 @@ fn build_retry_prompt(
     } else {
         String::new()
     };
+    let git_rule = match workflow {
+        WorkflowType::Maintain => super::push_guard::COMMIT_LOCALLY_RULE,
+        WorkflowType::Iterate | WorkflowType::Task => super::push_guard::FOUNDRY_OWNS_GIT_RULE,
+        _ => "",
+    };
     format!(
         "You are retrying a {workflow} operation on project '{project}' \
          (attempt {retry_count} of 3).\n\n\
@@ -141,7 +146,7 @@ fn build_retry_prompt(
          {failure_context}{prior_work_section}\n\n\
          Please fix the issues that caused these gate failures. \
          Focus specifically on the failures listed above. \
-         Make only the changes necessary to resolve these issues.{dependency_rule}"
+         Make only the changes necessary to resolve these issues.{dependency_rule}\n\n{git_rule}"
     )
 }
 
@@ -431,6 +436,31 @@ mod tests {
             }),
         );
         test_helpers::assert_forwards_actions(&block, &trigger).await;
+    }
+
+    #[tokio::test]
+    async fn retries_tell_the_agent_not_to_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RetryExecution::new(agent.clone(), registry);
+
+        block.execute(&retry_event("my-project", 1, "maintain")).await.unwrap();
+        block.execute(&retry_event("my-project", 1, "iterate")).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert!(invocations[0].prompt.contains("commit your work locally"));
+        assert!(invocations[0].prompt.contains("never push"));
+        assert!(invocations[1].prompt.contains("Do NOT commit, push"));
+        for invocation in &invocations {
+            assert!(
+                invocation.env.contains(&(
+                    "GIT_CONFIG_KEY_0".to_string(),
+                    "remote.origin.pushurl".to_string()
+                ))
+            );
+        }
     }
 
     #[tokio::test]

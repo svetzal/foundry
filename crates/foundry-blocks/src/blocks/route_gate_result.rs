@@ -21,6 +21,9 @@ use super::TriggerContext;
 /// - Failed and `retry_count < 3` → emit `RetryRequested` with incremented
 ///   `retry_count` and failure context
 /// - Failed and retries exhausted → emit completion event with `success: false`
+/// - Failed with `needs_review` set (Foundry's own post-agent checks, e.g. the
+///   agent pushed directly) → emit completion event with `success: false` and
+///   the review reason, without retrying
 ///
 /// Loop awareness: when `loop_context` is present in the payload and the
 /// workflow is `iterate`, emits `InnerIterationCompleted` instead of
@@ -178,6 +181,18 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
         throttle,
     } = decision;
     let max_retries: u64 = 3;
+    let stop = |summary: String, failure| StoppedRun {
+        project,
+        workflow,
+        completion_event_type: completion_event_type.clone(),
+        throttle,
+        summary,
+        failure,
+    };
+    if let Some(reason) = failure.needs_review.clone() {
+        tracing::warn!(project = %project, %reason, "run needs review; skipping retries");
+        return stop(reason, failure).into_result(context);
+    }
     if failure.is_terminal_provider_failure() {
         tracing::warn!(
             project = %project,
@@ -185,29 +200,7 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
             summary = %failure.stop_summary(),
             "terminal agent/provider failure detected; skipping retries"
         );
-
-        let loop_context = context.loop_context;
-        #[allow(
-            clippy::expect_used,
-            reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
-        )]
-        return super::emit_event_result(
-            format!("{project}: {}", failure.stop_summary()),
-            false,
-            completion_event_type,
-            project,
-            throttle,
-            &ProjectCompletedPayload {
-                project: project.to_string(),
-                success: false,
-                summary: failure.stop_summary(),
-                workflow: workflow.to_string(),
-                loop_context,
-                changes: None,
-                failure,
-            },
-        )
-        .expect("ProjectCompletedPayload is infallibly serializable");
+        return stop(failure.stop_summary(), failure).into_result(context);
     }
 
     if retry_count < max_retries {
@@ -240,35 +233,49 @@ fn handle_retry_or_exhaustion(decision: RetryDecision<'_>) -> TaskBlockResult {
         .expect("RetryRequestedPayload is infallibly serializable");
     }
 
-    // Retries exhausted
     tracing::warn!(
         project = %project,
         retry_count = retry_count,
         "gates failed, retries exhausted"
     );
+    stop(format!("gates failed after {retry_count} retries"), failure).into_result(context)
+}
 
-    let loop_context = context.loop_context;
-    #[allow(
-        clippy::expect_used,
-        reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
-    )]
-    super::emit_event_result(
-        format!("{project}: gates failed after {retry_count} retries"),
-        false,
-        completion_event_type,
-        project,
-        throttle,
-        &ProjectCompletedPayload {
-            project: project.to_string(),
-            success: false,
-            summary: format!("gates failed after {retry_count} retries"),
-            workflow: workflow.to_string(),
-            loop_context,
-            changes: None,
-            failure,
-        },
-    )
-    .expect("ProjectCompletedPayload is infallibly serializable")
+/// A run that ends failed without another attempt.
+struct StoppedRun<'a> {
+    project: &'a str,
+    workflow: WorkflowType,
+    completion_event_type: EventType,
+    throttle: Throttle,
+    summary: String,
+    failure: AgentFailureMetadata,
+}
+
+impl StoppedRun<'_> {
+    fn into_result(self, context: LoopContext) -> TaskBlockResult {
+        let project = self.project;
+        #[allow(
+            clippy::expect_used,
+            reason = "ProjectCompletedPayload is infallibly serializable (Payload Conventions, AGENTS.md)"
+        )]
+        super::emit_event_result(
+            format!("{project}: {}", self.summary),
+            false,
+            self.completion_event_type,
+            project,
+            self.throttle,
+            &ProjectCompletedPayload {
+                project: project.to_string(),
+                success: false,
+                summary: self.summary,
+                workflow: self.workflow.to_string(),
+                loop_context: context.loop_context,
+                changes: None,
+                failure: self.failure,
+            },
+        )
+        .expect("ProjectCompletedPayload is infallibly serializable")
+    }
 }
 
 /// Build a summary of gate failures from the gate results slice.
@@ -405,6 +412,28 @@ mod tests {
             result.events[0].payload["summary"],
             "agent account limit reached; workflow stopped"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_needs_review_stops_without_retry() {
+        let reason = "needs review: agent pushed directly to origin/main before Foundry's checks";
+        let trigger = test_event!(EventType::GateVerificationCompleted, "mojentic-kt", {
+            "project": "mojentic-kt",
+            "required_passed": false,
+            "all_passed": false,
+            "retry_count": 0,
+            "workflow": "maintain",
+            "results": [],
+            "needs_review": reason,
+        });
+        let result = RouteGateResult.execute(&trigger).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1, "no RetryRequested: a retry cannot undo a push");
+        assert_eq!(result.events[0].event_type, EventType::ProjectMaintenanceCompleted);
+        assert_eq!(result.events[0].payload["success"], false);
+        assert_eq!(result.events[0].payload["summary"], reason);
+        assert_eq!(result.events[0].payload["needs_review"], reason);
     }
 
     // --- maintain workflow ---
