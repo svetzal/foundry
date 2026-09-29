@@ -160,6 +160,7 @@ fn simple_spec(name: &str, path: &str, stack: Stack) -> ProjectSpec {
         notes: None,
         timeout_secs: None,
         update_policy: None,
+        installs_skill: None,
     }
 }
 
@@ -749,6 +750,7 @@ async fn add_offline_writes_project_to_file() {
         notes: None,
         timeout_secs: None,
         update_policy: None,
+        installs_skill: None,
     };
 
     registry_commands::add(tmp.path(), DUMMY_ADDR, true, spec)

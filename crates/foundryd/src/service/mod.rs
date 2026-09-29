@@ -643,6 +643,7 @@ mod tests {
             notes: String::new(),
             timeout_secs: 0,
             update_policy: String::new(),
+            installs_skill: String::new(),
         });
 
         let resp = service.registry_add(req).await.expect("add should succeed");
@@ -679,6 +680,7 @@ mod tests {
                 notes: String::new(),
                 timeout_secs: 0,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             })
         };
 
@@ -710,6 +712,7 @@ mod tests {
                 notes: String::new(),
                 timeout_secs: 0,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }))
             .await
             .expect("add should succeed");
@@ -761,6 +764,7 @@ mod tests {
                 notes: String::new(),
                 timeout_secs: 0,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }))
             .await
             .expect("add should succeed");
@@ -793,6 +797,7 @@ mod tests {
                 timeout_secs: 0,
                 clear_timeout: false,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }))
             .await
             .expect("edit should succeed");
@@ -834,6 +839,7 @@ mod tests {
                 timeout_secs: 0,
                 clear_timeout: false,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }))
             .await
             .unwrap_err();

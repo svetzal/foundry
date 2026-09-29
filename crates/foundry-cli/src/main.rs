@@ -233,7 +233,7 @@ enum Commands {
 
     /// Manage the project registry
     #[command(subcommand)]
-    Registry(RegistryCommands),
+    Registry(Box<RegistryCommands>),
 
     /// Manage scheduled sentinels (proactive workflow triggers)
     #[command(subcommand)]
@@ -394,6 +394,13 @@ enum RegistryCommands {
         /// (unset behaves as minor and is flagged in the maintenance summary)
         #[arg(long, value_parser = ["patch", "minor", "major"])]
         update_policy: Option<String>,
+
+        /// Skill install after the binary install: `true` runs
+        /// `<binary> init --global --force` (binary from the brew formula or
+        /// the project name; skipped with no install config), `false`
+        /// disables it, any other value is a command run verbatim
+        #[arg(long, value_name = "true|false|COMMAND")]
+        installs_skill: Option<String>,
     },
 
     /// Remove a project from the daemon-owned registry
@@ -474,6 +481,11 @@ enum RegistryCommands {
         /// Set how far maintenance may move dependencies: patch, minor, or major
         #[arg(long, value_parser = ["patch", "minor", "major"])]
         update_policy: Option<String>,
+
+        /// Set the skill install: `true` (derived `<binary> init --global
+        /// --force`), `false` (disabled), or a command run verbatim
+        #[arg(long, value_name = "true|false|COMMAND")]
+        installs_skill: Option<String>,
     },
 }
 
@@ -506,6 +518,7 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
             update_policy,
+            installs_skill,
         } => {
             let spec = registry_commands::SpecArgs {
                 name,
@@ -524,6 +537,7 @@ async fn handle_registry_command(
                 notes,
                 timeout_secs,
                 update_policy,
+                installs_skill,
             };
             registry_commands::add_from_args(path, addr, offline, spec).await
         }
@@ -549,6 +563,7 @@ async fn handle_registry_command(
             notes,
             timeout_secs,
             update_policy,
+            installs_skill,
         } => {
             let edits = registry_commands::EditArgs {
                 path: project_path,
@@ -568,6 +583,7 @@ async fn handle_registry_command(
                 notes,
                 timeout_secs,
                 update_policy,
+                installs_skill,
             };
             registry_commands::edit_from_args(path, addr, offline, &name, edits).await
         }
@@ -731,7 +747,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Registry(sub) => {
-            handle_registry_command(sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)
+            handle_registry_command(*sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)
                 .await
         }
         Commands::Campaign(sub) => {

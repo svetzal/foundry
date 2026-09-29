@@ -87,6 +87,7 @@ Add a project to the daemon's in-memory registry and persist the change to
 | `notes`           | string | Human-readable notes (empty → none)                                            |
 | `timeout_secs`    | uint64 | Per-project timeout (0 → use default 3600 s)                                   |
 | `update_policy`   | string | `patch`, `minor` or `major` (empty → not set; maintenance behaves as `minor`)  |
+| `installs_skill`  | string | `true`, `false`, or a skill-install command (empty → not set; blank → `INVALID_ARGUMENT`) |
 
 **Response:**
 
@@ -225,6 +226,7 @@ non-zero are applied. Use `clear_*` booleans to explicitly clear optional fields
 | `timeout_secs`    | uint64 | Set timeout (0 → no change unless `clear_timeout`)                        |
 | `clear_timeout`   | bool   | Revert timeout to the daemon default                                      |
 | `update_policy`   | string | Set `patch`, `minor` or `major` (empty → no change)                       |
+| `installs_skill`  | string | Set `true`, `false`, or a skill-install command (empty → no change; blank → `INVALID_ARGUMENT`) |
 
 **Response:**
 

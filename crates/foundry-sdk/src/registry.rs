@@ -278,35 +278,109 @@ pub enum InstallsSkill {
     Custom { command: String },
 }
 
-/// Derive the default skill-install command for a project.
+/// The resolved skill-install decision for a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillInstall {
+    /// Run this shell command after the binary install step.
+    Run(String),
+    /// Do not run a skill install, for the stated human-readable reason.
+    Skip(String),
+}
+
+/// Decide whether and how a project installs its skill.
 ///
-/// If the project uses a Homebrew install with a non-empty formula, the formula
-/// name is used as the binary; otherwise the project name is used. The suffix
-/// ` init --global --force` is always appended.
+/// - Absent `installs_skill` skips ("not configured").
+/// - `false` skips ("disabled").
+/// - A custom command runs verbatim, whatever the install config is.
+/// - `true` derives `<binary> init --global --force`. The binary is the
+///   Homebrew formula for a brew install (or the project name when the formula
+///   is empty), and the project name for a command install. With no install
+///   config there is no binary to derive from, so the skill install skips.
 ///
 /// # Examples
 ///
 /// ```
-/// use foundry_sdk::registry::{InstallConfig, derive_default_skill_install_command};
+/// use foundry_sdk::registry::{InstallConfig, InstallsSkill, SkillInstall, resolve_skill_install};
 ///
-/// let cmd = derive_default_skill_install_command(
-///     Some(&InstallConfig::Brew("gilt".to_string())),
-///     "my-project",
+/// let brew = InstallConfig::Brew("gilt".to_string());
+/// assert_eq!(
+///     resolve_skill_install(Some(&InstallsSkill::Default(true)), Some(&brew), "my-project"),
+///     SkillInstall::Run("gilt init --global --force".to_string()),
 /// );
-/// assert_eq!(cmd, "gilt init --global --force");
 ///
-/// let cmd = derive_default_skill_install_command(None, "my-project");
-/// assert_eq!(cmd, "my-project init --global --force");
+/// let command = InstallConfig::Command("./install.sh".to_string());
+/// assert_eq!(
+///     resolve_skill_install(Some(&InstallsSkill::Default(true)), Some(&command), "foundry"),
+///     SkillInstall::Run("foundry init --global --force".to_string()),
+/// );
+///
+/// assert!(matches!(
+///     resolve_skill_install(Some(&InstallsSkill::Default(true)), None, "hone-cli"),
+///     SkillInstall::Skip(_),
+/// ));
 /// ```
-pub fn derive_default_skill_install_command(
+#[must_use]
+pub fn resolve_skill_install(
+    installs_skill: Option<&InstallsSkill>,
     install: Option<&InstallConfig>,
     project_name: &str,
-) -> String {
-    let binary = match install {
-        Some(InstallConfig::Brew(formula)) if !formula.is_empty() => formula.as_str(),
-        _ => project_name,
-    };
-    format!("{binary} init --global --force")
+) -> SkillInstall {
+    match installs_skill {
+        None => SkillInstall::Skip("not configured".to_string()),
+        Some(InstallsSkill::Default(false)) => {
+            SkillInstall::Skip("disabled (installs_skill false)".to_string())
+        }
+        Some(InstallsSkill::Custom { command }) => SkillInstall::Run(command.clone()),
+        Some(InstallsSkill::Default(true)) => {
+            let binary = match install {
+                Some(InstallConfig::Brew(formula)) if !formula.is_empty() => formula.as_str(),
+                Some(_) => project_name,
+                None => {
+                    return SkillInstall::Skip(
+                        "no install config, so there is no binary to derive \
+                         `<binary> init --global --force` from; set \
+                         --installs-skill \"<command>\" to choose one"
+                            .to_string(),
+                    );
+                }
+            };
+            SkillInstall::Run(format!("{binary} init --global --force"))
+        }
+    }
+}
+
+/// Parse an `--installs-skill` value.
+///
+/// `"true"` enables the derived default command, `"false"` disables the skill
+/// install, and any other non-blank value is a custom command run verbatim.
+///
+/// # Errors
+///
+/// Returns `RegistryMutationError::InvalidInstallsSkill` when the value is
+/// empty or whitespace.
+///
+/// # Examples
+///
+/// ```
+/// use foundry_sdk::registry::{InstallsSkill, parse_installs_skill};
+///
+/// assert!(matches!(parse_installs_skill("true"), Ok(InstallsSkill::Default(true))));
+/// assert!(matches!(parse_installs_skill("false"), Ok(InstallsSkill::Default(false))));
+/// assert!(matches!(
+///     parse_installs_skill("hone init --global --force"),
+///     Ok(InstallsSkill::Custom { .. }),
+/// ));
+/// assert!(parse_installs_skill("  ").is_err());
+/// ```
+pub fn parse_installs_skill(s: &str) -> Result<InstallsSkill, RegistryMutationError> {
+    match s {
+        "true" => Ok(InstallsSkill::Default(true)),
+        "false" => Ok(InstallsSkill::Default(false)),
+        _ if s.trim().is_empty() => Err(RegistryMutationError::InvalidInstallsSkill),
+        command => Ok(InstallsSkill::Custom {
+            command: command.to_string(),
+        }),
+    }
 }
 
 impl std::fmt::Display for Stack {
@@ -352,6 +426,9 @@ pub enum RegistryMutationError {
     /// The given update policy name is not recognised.
     #[error("invalid update policy '{0}'; use: patch, minor, major")]
     InvalidUpdatePolicy(String),
+    /// The installs-skill value was empty or whitespace.
+    #[error("invalid installs-skill value; use: true, false, or a non-empty command")]
+    InvalidInstallsSkill,
 }
 
 /// All fields required when adding a new project.
@@ -374,6 +451,7 @@ pub struct ProjectSpec {
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
     pub update_policy: Option<UpdatePolicy>,
+    pub installs_skill: Option<InstallsSkill>,
 }
 
 /// Optional overrides when editing an existing project.
@@ -408,6 +486,8 @@ pub struct ProjectEdits {
     pub clear_timeout: bool,
     /// `Some(p)` sets the dependency update policy; `None` leaves it unchanged.
     pub update_policy: Option<UpdatePolicy>,
+    /// `Some(v)` sets the skill-install behaviour; `None` leaves it unchanged.
+    pub installs_skill: Option<InstallsSkill>,
 }
 
 impl Registry {
@@ -449,7 +529,7 @@ impl Registry {
                 release: spec.release,
             },
             install,
-            installs_skill: None,
+            installs_skill: spec.installs_skill,
             timeout_secs: spec.timeout_secs,
             audit_exceptions: Vec::new(),
             update_policy: spec.update_policy,
@@ -545,6 +625,9 @@ impl Registry {
         }
         if let Some(policy) = edits.update_policy {
             project.update_policy = Some(policy);
+        }
+        if let Some(installs_skill) = edits.installs_skill {
+            project.installs_skill = Some(installs_skill);
         }
 
         Ok(project)
@@ -939,39 +1022,6 @@ mod tests {
     }
 
     #[test]
-    fn derive_default_skill_install_command_brew_formula() {
-        let cmd = derive_default_skill_install_command(
-            Some(&InstallConfig::Brew("gilt".to_string())),
-            "my-project",
-        );
-        assert_eq!(cmd, "gilt init --global --force");
-    }
-
-    #[test]
-    fn derive_default_skill_install_command_brew_empty_formula_falls_back_to_project_name() {
-        let cmd = derive_default_skill_install_command(
-            Some(&InstallConfig::Brew(String::new())),
-            "my-project",
-        );
-        assert_eq!(cmd, "my-project init --global --force");
-    }
-
-    #[test]
-    fn derive_default_skill_install_command_non_brew_install_uses_project_name() {
-        let cmd = derive_default_skill_install_command(
-            Some(&InstallConfig::Command("cargo install --path .".to_string())),
-            "my-project",
-        );
-        assert_eq!(cmd, "my-project init --global --force");
-    }
-
-    #[test]
-    fn derive_default_skill_install_command_no_install_uses_project_name() {
-        let cmd = derive_default_skill_install_command(None, "my-project");
-        assert_eq!(cmd, "my-project init --global --force");
-    }
-
-    #[test]
     fn all_stack_variants_deserialize() {
         for (json, expected) in [
             ("rust", Stack::Rust),
@@ -1035,6 +1085,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
         }
     }
 
@@ -1393,5 +1444,139 @@ mod tests {
             )
             .unwrap();
         assert!(entry.install.is_none());
+    }
+
+    // --- skill-install resolution ---
+
+    fn run(cmd: &str) -> SkillInstall {
+        SkillInstall::Run(cmd.to_string())
+    }
+
+    #[test]
+    fn resolve_skill_install_brew_formula_is_the_binary() {
+        let brew = InstallConfig::Brew("gilt".to_string());
+        assert_eq!(
+            resolve_skill_install(Some(&InstallsSkill::Default(true)), Some(&brew), "my-project"),
+            run("gilt init --global --force")
+        );
+    }
+
+    #[test]
+    fn resolve_skill_install_empty_brew_formula_falls_back_to_project_name() {
+        let brew = InstallConfig::Brew(String::new());
+        assert_eq!(
+            resolve_skill_install(Some(&InstallsSkill::Default(true)), Some(&brew), "my-project"),
+            run("my-project init --global --force")
+        );
+    }
+
+    #[test]
+    fn resolve_skill_install_command_install_uses_project_name() {
+        let command = InstallConfig::Command("cargo install --path .".to_string());
+        assert_eq!(
+            resolve_skill_install(
+                Some(&InstallsSkill::Default(true)),
+                Some(&command),
+                "my-project"
+            ),
+            run("my-project init --global --force")
+        );
+    }
+
+    #[test]
+    fn resolve_skill_install_without_install_config_skips_with_reason() {
+        let SkillInstall::Skip(reason) =
+            resolve_skill_install(Some(&InstallsSkill::Default(true)), None, "hone-cli")
+        else {
+            panic!("expected a skip");
+        };
+        assert!(reason.contains("no install config"), "{reason}");
+        assert!(reason.contains("--installs-skill"), "{reason}");
+        assert!(!reason.contains("hone-cli"), "{reason}");
+    }
+
+    #[test]
+    fn resolve_skill_install_custom_command_runs_verbatim_even_without_install() {
+        let custom = InstallsSkill::Custom {
+            command: "hone init --global --force".to_string(),
+        };
+        assert_eq!(
+            resolve_skill_install(Some(&custom), None, "hone-cli"),
+            run("hone init --global --force")
+        );
+    }
+
+    #[test]
+    fn resolve_skill_install_absent_and_false_skip() {
+        let brew = InstallConfig::Brew("gilt".to_string());
+        assert_eq!(
+            resolve_skill_install(None, Some(&brew), "gilt"),
+            SkillInstall::Skip("not configured".to_string())
+        );
+        assert_eq!(
+            resolve_skill_install(Some(&InstallsSkill::Default(false)), Some(&brew), "gilt"),
+            SkillInstall::Skip("disabled (installs_skill false)".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_installs_skill_accepts_booleans_and_commands() {
+        assert!(matches!(parse_installs_skill("true"), Ok(InstallsSkill::Default(true))));
+        assert!(matches!(parse_installs_skill("false"), Ok(InstallsSkill::Default(false))));
+        assert!(matches!(
+            parse_installs_skill("hone init --global --force"),
+            Ok(InstallsSkill::Custom { command }) if command == "hone init --global --force"
+        ));
+    }
+
+    #[test]
+    fn parse_installs_skill_rejects_blank_values() {
+        for blank in ["", "   ", "\t"] {
+            assert_eq!(
+                parse_installs_skill(blank).unwrap_err(),
+                RegistryMutationError::InvalidInstallsSkill
+            );
+        }
+    }
+
+    #[test]
+    fn add_project_records_installs_skill() {
+        let mut registry = empty_registry();
+        let spec = ProjectSpec {
+            installs_skill: Some(InstallsSkill::Default(true)),
+            ..minimal_spec("alpha")
+        };
+        let entry = registry.add_project(spec).unwrap();
+        assert!(matches!(entry.installs_skill, Some(InstallsSkill::Default(true))));
+    }
+
+    #[test]
+    fn edit_project_sets_installs_skill_and_leaves_it_when_absent() {
+        let mut registry = empty_registry();
+        registry.add_project(minimal_spec("alpha")).unwrap();
+        registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    installs_skill: Some(InstallsSkill::Custom {
+                        command: "alpha skill".to_string(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let entry = registry
+            .edit_project(
+                "alpha",
+                ProjectEdits {
+                    agent: Some("other".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            &entry.installs_skill,
+            Some(InstallsSkill::Custom { command }) if command == "alpha skill"
+        ));
     }
 }

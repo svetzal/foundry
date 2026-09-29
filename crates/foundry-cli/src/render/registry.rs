@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 
 use comfy_table::{ContentArrangement, Table};
 use foundry_sdk::registry::{
-    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, UpdatePolicy,
-    derive_default_skill_install_command,
+    ActionFlags, InstallConfig, InstallsSkill, ProjectEntry, SkillInstall, UpdatePolicy,
+    resolve_skill_install,
 };
 
 /// Render a project's full detail view as a multi-line string.
@@ -83,8 +83,10 @@ fn format_installs_skill_line(
 ) -> String {
     match installs_skill {
         InstallsSkill::Default(true) => {
-            let cmd = derive_default_skill_install_command(install, project_name);
-            format!("Installs skill: yes (default -- runs {cmd})")
+            match resolve_skill_install(Some(installs_skill), install, project_name) {
+                SkillInstall::Run(cmd) => format!("Installs skill: yes (default -- runs {cmd})"),
+                SkillInstall::Skip(reason) => format!("Installs skill: skipped -- {reason}"),
+            }
         }
         InstallsSkill::Default(false) => "Installs skill: no (explicitly disabled)".to_string(),
         InstallsSkill::Custom { command } => format!("Installs skill: command: {command}"),
@@ -176,9 +178,21 @@ mod tests {
     }
 
     #[test]
-    fn line_default_true_with_no_install_falls_back_to_project_name() {
-        let line = format_installs_skill_line(&InstallsSkill::Default(true), None, "my-project");
-        assert_eq!(line, "Installs skill: yes (default -- runs my-project init --global --force)");
+    fn line_default_true_with_command_install_uses_project_name() {
+        let line = format_installs_skill_line(
+            &InstallsSkill::Default(true),
+            Some(&InstallConfig::Command("./install.sh".to_string())),
+            "foundry",
+        );
+        assert_eq!(line, "Installs skill: yes (default -- runs foundry init --global --force)");
+    }
+
+    #[test]
+    fn line_default_true_with_no_install_reports_skip_and_reason() {
+        let line = format_installs_skill_line(&InstallsSkill::Default(true), None, "hone-cli");
+        assert!(line.starts_with("Installs skill: skipped -- no install config"), "{line}");
+        assert!(line.contains("--installs-skill"), "{line}");
+        assert!(!line.contains("hone-cli init"), "{line}");
     }
 
     #[test]

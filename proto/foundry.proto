@@ -238,6 +238,7 @@ message RegistryAddRequest {
     string notes = 14;
     uint64 timeout_secs = 15;
     string update_policy = 16;   // patch | minor | major; empty means not set.
+    string installs_skill = 17;  // true, false, or a command; empty means not set.
 }
 
 message RegistryAddResponse {
@@ -292,6 +293,7 @@ message RegistryEditRequest {
     uint64 timeout_secs = 24;
     bool clear_timeout = 25;
     string update_policy = 26;   // patch | minor | major; empty leaves it unchanged.
+    string installs_skill = 27;  // true, false, or a command; empty leaves it unchanged.
 }
 
 message RegistryEditResponse {

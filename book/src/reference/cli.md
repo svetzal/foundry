@@ -564,6 +564,12 @@ Installs skill: yes (default -- runs my-tool init --global --force)
 Timeout:   3600s (default)
 ```
 
+When `installs_skill` is `true` but the project has no install config, there is
+no binary to derive the command from. The line then reports the skip and the
+reason, for example
+`Installs skill: skipped -- no install config, so there is no binary to derive ...`.
+Set a command with `--installs-skill "<command>"` to fix it.
+
 ### `foundry registry add`
 
 Add a new project to the daemon-owned registry. By default this requires a
@@ -590,7 +596,8 @@ foundry registry add \
   [--install-brew my-formula] \
   [--notes "Human-readable notes about the project"] \
   [--timeout-secs 3600] \
-  [--update-policy minor]
+  [--update-policy minor] \
+  [--installs-skill true]
 ```
 
 | Option              | Required | Description                                                       |
@@ -611,6 +618,7 @@ foundry registry add \
 | `--notes`           | No       | Human-readable notes                                              |
 | `--timeout-secs`    | No       | Command timeout in seconds (default: 3600)                        |
 | `--update-policy`   | No       | `patch`, `minor` or `major`: how far maintenance may move dependencies. Unset behaves as `minor` and is flagged in the maintenance summary. See [Dependency update policy](../guide/dependency-update-policy.md) |
+| `--installs-skill`  | No       | `true` (run `<binary> init --global --force`, binary from the brew formula or the project name; skipped when there is no install config), `false` (no skill install), or a command to run verbatim. See [Skill install](../guide/registry.md#skill-install) |
 
 ### `foundry registry remove <name>`
 
@@ -664,3 +672,4 @@ foundry registry edit my-tool \
 | `--notes`           | Set notes (pass empty string `""` to clear)                  |
 | `--timeout-secs`    | Set command timeout in seconds                               |
 | `--update-policy`   | Set the dependency update policy: `patch`, `minor` or `major` |
+| `--installs-skill`  | Set the skill install: `true`, `false`, or a command to run verbatim. An empty value is rejected |

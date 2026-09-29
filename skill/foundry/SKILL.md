@@ -430,6 +430,9 @@ foundry registry edit my-project --update-policy major
 # Remove the install configuration
 foundry registry edit my-project --clear-install
 
+# Choose the skill install (true | false | "<command>")
+foundry registry edit my-project --installs-skill "my-binary init --global --force"
+
 # Remove a project
 foundry registry remove my-project
 ```
@@ -441,6 +444,7 @@ foundry registry remove my-project
 - `--audit` — enable vulnerability auditing
 - `--release` — enable automatic releases
 - `--update-policy` — dependency ceiling for maintenance: `patch` (lockfile only), `minor` (may widen constraints), `major` (majors become separate tasks). Unset behaves as `minor` and is flagged in the maintenance summary
+- `--installs-skill` — skill install after the local install: `true` derives `<binary> init --global --force` (brew formula, else project name; skipped with no install config), `false` disables, any other value runs verbatim
 - `--skip` — temporarily disable without removing
 
 ## Examining Results

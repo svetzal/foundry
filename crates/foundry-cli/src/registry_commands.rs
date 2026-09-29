@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use foundry_sdk::registry::{
     InstallConfig, InstallsSkill, ProjectEdits, ProjectEntry, ProjectSpec, Registry, UpdatePolicy,
-    parse_stack,
+    parse_installs_skill, parse_stack,
 };
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
@@ -33,6 +33,8 @@ pub struct SpecArgs {
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
     pub update_policy: Option<String>,
+    /// `true`, `false`, or a custom skill-install command.
+    pub installs_skill: Option<String>,
 }
 
 /// Parameters for constructing `ProjectEdits` from CLI arguments.
@@ -55,6 +57,8 @@ pub struct EditArgs {
     pub notes: Option<String>,
     pub timeout_secs: Option<u64>,
     pub update_policy: Option<String>,
+    /// `true`, `false`, or a custom skill-install command.
+    pub installs_skill: Option<String>,
 }
 
 pub fn init(registry_path: &Path, offline: bool) -> Result<()> {
@@ -148,6 +152,7 @@ pub async fn add_from_args(
     }
 
     let update_policy = parse_update_policy(args.update_policy.as_deref())?;
+    let installs_skill = parse_installs_skill_arg(args.installs_skill.as_deref())?;
     let name = args.name.clone();
     let mut client =
         connect_daemon_required(addr, &registry_offline_hint(&format!("add --name {name}")))
@@ -170,6 +175,7 @@ pub async fn add_from_args(
             notes: args.notes.unwrap_or_default(),
             timeout_secs: args.timeout_secs.unwrap_or(0),
             update_policy: policy_wire(update_policy),
+            installs_skill: installs_skill_wire(installs_skill.as_ref()),
         })
         .await
         .map_err(status_to_anyhow)?;
@@ -205,6 +211,7 @@ pub async fn add(registry_path: &Path, addr: &str, offline: bool, spec: ProjectS
         notes: spec.notes.unwrap_or_default(),
         timeout_secs: spec.timeout_secs.unwrap_or(0),
         update_policy: policy_wire(spec.update_policy),
+        installs_skill: installs_skill_wire(spec.installs_skill.as_ref()),
     };
     client.registry_add(req).await.map_err(status_to_anyhow)?;
     println!("Added project '{name}' to registry.");
@@ -322,11 +329,13 @@ fn edit_request(name: &str, edits: &ProjectEdits) -> RegistryEditRequest {
         timeout_secs: edits.timeout_secs.unwrap_or(0),
         clear_timeout: edits.clear_timeout,
         update_policy: policy_wire(edits.update_policy),
+        installs_skill: installs_skill_wire(edits.installs_skill.as_ref()),
     }
 }
 
 fn edit_request_from_args(name: &str, args: &EditArgs) -> Result<RegistryEditRequest> {
     let update_policy = parse_update_policy(args.update_policy.as_deref())?;
+    let installs_skill = parse_installs_skill_arg(args.installs_skill.as_deref())?;
     let (skip_str, clear_skip) = match &args.skip {
         None => (String::new(), false),
         Some(skip) if skip.is_empty() => (String::new(), true),
@@ -361,6 +370,7 @@ fn edit_request_from_args(name: &str, args: &EditArgs) -> Result<RegistryEditReq
         timeout_secs: args.timeout_secs.unwrap_or(0),
         clear_timeout: false,
         update_policy: policy_wire(update_policy),
+        installs_skill: installs_skill_wire(installs_skill.as_ref()),
     })
 }
 
@@ -376,6 +386,22 @@ fn parse_update_policy(value: Option<&str>) -> Result<Option<UpdatePolicy>> {
 /// The wire form of an optional policy: empty means "not set" / "unchanged".
 fn policy_wire(policy: Option<UpdatePolicy>) -> String {
     policy.map(|p| p.to_string()).unwrap_or_default()
+}
+
+/// Parse an optional `--installs-skill` value, rejecting blank values before
+/// anything is sent to the daemon or written to disk.
+fn parse_installs_skill_arg(value: Option<&str>) -> Result<Option<InstallsSkill>> {
+    value.map(parse_installs_skill).transpose().map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// The wire form of an optional installs-skill value: empty means "not set" /
+/// "unchanged", otherwise `true`, `false`, or the custom command.
+fn installs_skill_wire(installs_skill: Option<&InstallsSkill>) -> String {
+    match installs_skill {
+        None => String::new(),
+        Some(InstallsSkill::Default(enabled)) => enabled.to_string(),
+        Some(InstallsSkill::Custom { command }) => command.clone(),
+    }
 }
 
 fn edit_offline(registry_path: &Path, name: &str, edits: ProjectEdits) -> Result<()> {
@@ -405,6 +431,7 @@ pub fn spec_from_args(args: SpecArgs) -> Result<ProjectSpec> {
         notes: args.notes,
         timeout_secs: args.timeout_secs,
         update_policy: parse_update_policy(args.update_policy.as_deref())?,
+        installs_skill: parse_installs_skill_arg(args.installs_skill.as_deref())?,
     })
 }
 
@@ -435,6 +462,7 @@ pub fn edits_from_args(args: EditArgs) -> Result<ProjectEdits> {
         notes: args.notes,
         timeout_secs: args.timeout_secs,
         update_policy: parse_update_policy(args.update_policy.as_deref())?,
+        installs_skill: parse_installs_skill_arg(args.installs_skill.as_deref())?,
         ..Default::default()
     })
 }
@@ -528,7 +556,7 @@ fn project_from_proto(project: &Project) -> Result<ProjectEntry> {
 #[cfg(test)]
 mod tests {
     use super::{EditArgs, SpecArgs, edit_request, edits_from_args, spec_from_args};
-    use foundry_sdk::registry::ProjectEdits;
+    use foundry_sdk::registry::{InstallsSkill, ProjectEdits};
 
     // --- spec_from_args ---
 
@@ -551,6 +579,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
         })
         .expect("valid stack");
         assert_eq!(spec.stack.to_string(), "rust");
@@ -576,6 +605,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
         });
         assert!(result.is_err());
     }
@@ -601,6 +631,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
             clear_install: false,
         })
         .expect("ok");
@@ -626,6 +657,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
             clear_install: false,
         })
         .expect("ok");
@@ -651,6 +683,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
             clear_install: false,
         })
         .expect("ok");
@@ -676,6 +709,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
             clear_install: false,
         });
         assert!(result.is_err());
@@ -700,6 +734,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
             clear_install: false,
         })
         .expect("valid stack");
@@ -784,6 +819,7 @@ mod tests {
             notes: None,
             timeout_secs: None,
             update_policy: None,
+            installs_skill: None,
         }
     }
 
@@ -854,5 +890,66 @@ mod tests {
 
         proto.update_policy = String::new();
         assert_eq!(super::project_from_proto(&proto).unwrap().update_policy, None);
+    }
+
+    // --- installs skill ---
+
+    #[test]
+    fn edit_request_from_args_carries_installs_skill() {
+        let enable = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                installs_skill: Some("true".to_string()),
+                ..bare_edit_args()
+            },
+        )
+        .unwrap();
+        assert_eq!(enable.installs_skill, "true");
+
+        let custom = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                installs_skill: Some("hone init --global --force".to_string()),
+                ..bare_edit_args()
+            },
+        )
+        .unwrap();
+        assert_eq!(custom.installs_skill, "hone init --global --force");
+
+        let unchanged = super::edit_request_from_args("proj", &bare_edit_args()).unwrap();
+        assert_eq!(unchanged.installs_skill, "");
+    }
+
+    #[test]
+    fn edit_request_from_args_rejects_blank_installs_skill() {
+        let err = super::edit_request_from_args(
+            "proj",
+            &EditArgs {
+                installs_skill: Some("  ".to_string()),
+                ..bare_edit_args()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("installs-skill"), "{err}");
+    }
+
+    #[test]
+    fn edits_from_args_offline_carries_installs_skill() {
+        let edits = edits_from_args(EditArgs {
+            installs_skill: Some("false".to_string()),
+            ..bare_edit_args()
+        })
+        .unwrap();
+        assert!(matches!(edits.installs_skill, Some(InstallsSkill::Default(false))));
+    }
+
+    #[test]
+    fn edit_request_wires_installs_skill_from_edits() {
+        let edits = ProjectEdits {
+            installs_skill: Some(InstallsSkill::Default(false)),
+            ..Default::default()
+        };
+        assert_eq!(edit_request("p", &edits).installs_skill, "false");
+        assert_eq!(edit_request("p", &ProjectEdits::default()).installs_skill, "");
     }
 }

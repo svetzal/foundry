@@ -5,7 +5,7 @@ use tonic::{Request, Response, Status};
 
 use foundry_sdk::registry::{
     InstallConfig, InstallsSkill, ProjectEdits, ProjectSpec, Registry, RegistryMutationError,
-    UpdatePolicy, parse_stack,
+    UpdatePolicy, parse_installs_skill, parse_stack,
 };
 
 use crate::proto::{
@@ -28,9 +28,8 @@ fn mutation_error_to_status(err: RegistryMutationError) -> Status {
         RegistryMutationError::ConflictingInstall => {
             Status::invalid_argument("provide at most one of install_command or install_brew")
         }
-        err @ RegistryMutationError::InvalidUpdatePolicy(_) => {
-            Status::invalid_argument(err.to_string())
-        }
+        err @ (RegistryMutationError::InvalidUpdatePolicy(_)
+        | RegistryMutationError::InvalidInstallsSkill) => Status::invalid_argument(err.to_string()),
     }
 }
 
@@ -177,6 +176,7 @@ pub(super) fn add(
             Some(req.timeout_secs)
         },
         update_policy: policy_from_wire(&req.update_policy)?,
+        installs_skill: installs_skill_from_wire(&req.installs_skill)?,
     };
 
     let entry_proto = {
@@ -334,7 +334,16 @@ fn edits_from_request(req: &RegistryEditRequest) -> Result<ProjectEdits, Status>
         },
         clear_timeout: req.clear_timeout,
         update_policy: policy_from_wire(&req.update_policy)?,
+        installs_skill: installs_skill_from_wire(&req.installs_skill)?,
     })
+}
+
+/// Parse the wire installs-skill value: empty means "not set" / "unchanged".
+fn installs_skill_from_wire(value: &str) -> Result<Option<InstallsSkill>, Status> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    parse_installs_skill(value).map(Some).map_err(mutation_error_to_status)
 }
 
 pub(super) fn edit(
@@ -415,6 +424,7 @@ mod tests {
             notes: String::new(),
             timeout_secs: 0,
             update_policy: String::new(),
+            installs_skill: String::new(),
         })
     }
 
@@ -696,6 +706,7 @@ mod tests {
             notes: String::new(),
             timeout_secs: 0,
             update_policy: String::new(),
+            installs_skill: String::new(),
         });
         let err = add(&reg, &path, req).unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -768,6 +779,7 @@ mod tests {
                 timeout_secs: 0,
                 clear_timeout: false,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }),
         )
         .unwrap();
@@ -810,6 +822,7 @@ mod tests {
                 timeout_secs: 0,
                 clear_timeout: false,
                 update_policy: String::new(),
+                installs_skill: String::new(),
             }),
         )
         .unwrap_err();
@@ -845,6 +858,7 @@ mod tests {
             timeout_secs: 0,
             clear_timeout: false,
             update_policy: String::new(),
+            installs_skill: String::new(),
         };
         let err = edits_from_request(&req).unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -880,6 +894,7 @@ mod tests {
             timeout_secs: 0,
             clear_timeout: false,
             update_policy: String::new(),
+            installs_skill: String::new(),
         };
         let edits = edits_from_request(&req).unwrap();
         assert_eq!(edits.iterate, Some(true));
@@ -990,5 +1005,86 @@ mod tests {
 
         assert_eq!(proto.install_command, "");
         assert!(reg.read().unwrap().projects[0].install.is_none());
+    }
+
+    // --- installs skill ---
+
+    fn installs_skill_edit_request(name: &str, value: &str) -> Request<RegistryEditRequest> {
+        Request::new(RegistryEditRequest {
+            name: name.to_string(),
+            installs_skill: value.to_string(),
+            ..RegistryEditRequest::default()
+        })
+    }
+
+    #[test]
+    fn add_records_installs_skill_and_reports_it() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let mut req = add_request("proj-s").into_inner();
+        req.installs_skill = "true".to_string();
+
+        let proto = add(&reg, &path, Request::new(req)).unwrap().into_inner().project.unwrap();
+
+        assert!(proto.installs_skill_default);
+        assert!(matches!(
+            reg.read().unwrap().projects[0].installs_skill,
+            Some(InstallsSkill::Default(true))
+        ));
+    }
+
+    #[test]
+    fn edit_sets_installs_skill_and_empty_leaves_it_unchanged() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        add(&reg, &path, add_request("proj-k")).unwrap();
+
+        let proto =
+            edit(&reg, &path, installs_skill_edit_request("proj-k", "hone init --global --force"))
+                .unwrap()
+                .into_inner()
+                .project
+                .unwrap();
+        assert_eq!(proto.installs_skill_command, "hone init --global --force");
+
+        let proto = edit(&reg, &path, installs_skill_edit_request("proj-k", "false"))
+            .unwrap()
+            .into_inner()
+            .project
+            .unwrap();
+        assert!(proto.installs_skill_explicitly_disabled);
+        assert_eq!(proto.installs_skill_command, "");
+
+        let proto = edit(&reg, &path, installs_skill_edit_request("proj-k", ""))
+            .unwrap()
+            .into_inner()
+            .project
+            .unwrap();
+        assert!(proto.installs_skill_explicitly_disabled);
+    }
+
+    #[test]
+    fn edit_with_blank_installs_skill_is_invalid_argument_and_changes_nothing() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        add(&reg, &path, add_request("proj-b")).unwrap();
+
+        let err = edit(&reg, &path, installs_skill_edit_request("proj-b", "   ")).unwrap_err();
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(reg.read().unwrap().projects[0].installs_skill.is_none());
+    }
+
+    #[test]
+    fn add_with_blank_installs_skill_is_invalid_argument_and_changes_nothing() {
+        let reg = empty_registry();
+        let (_f, path) = tmp_path();
+        let mut req = add_request("proj-w").into_inner();
+        req.installs_skill = " ".to_string();
+
+        let err = add(&reg, &path, Request::new(req)).unwrap_err();
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(reg.read().unwrap().projects.is_empty());
     }
 }

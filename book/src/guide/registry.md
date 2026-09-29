@@ -83,6 +83,7 @@ foundry --offline registry add --name my-tool …   # direct registry.json recov
 | `skip` | No | string or null | Absent or `null` means not skipped; a non-empty string value is the skip reason. Accepts `true` (treated as `"skipped"`) and `false`/`null` for backwards compatibility |
 | `actions` | No | object | Which automation steps are enabled; all default to `false` |
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
+| `installs_skill` | No | bool or object | Whether to install the project's agent skill after the local install — see [Skill install](#skill-install) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
 | `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
 | `update_policy` | No | string | How far nightly maintenance may move dependencies: `"patch"`, `"minor"` or `"major"`. Absent means not set: maintenance behaves as `"minor"` and the maintenance summary flags the project. See [Dependency update policy](dependency-update-policy.md) |
@@ -161,6 +162,23 @@ automation completes. Exactly one variant is used per entry:
 ```json
 "install": { "brew": "my-formula" }
 ```
+
+### Skill install
+
+The `installs_skill` field tells Foundry to run a skill-install command after a
+successful local install. A failed skill install is a warning. It does not fail
+the install.
+
+| Value | Result |
+|-------|--------|
+| absent or `false` | No skill install |
+| `true` | Run `<binary> init --global --force`. The binary is the brew formula for a brew install, and the project name for a command install. With no `install` config, Foundry does not guess a binary: it skips the skill install, and `foundry registry show` gives the reason |
+| `{ "command": "..." }` | Run this command exactly as written |
+
+Use the object form when the binary name is not the project name (for example,
+project `hone-cli` with binary `hone`). Set the field from the CLI with
+`--installs-skill true`, `--installs-skill false`, or
+`--installs-skill "hone init --global --force"`.
 
 ## Minimal Project Entry
 
@@ -260,6 +278,9 @@ foundry registry edit my-tool --update-policy major
 
 # Remove the install configuration
 foundry registry edit my-tool --clear-install
+
+# Run a skill install after the local install (true | false | "<command>")
+foundry registry edit hone-cli --installs-skill "hone init --global --force"
 
 # Skip a project temporarily
 foundry registry edit my-tool --skip "Waiting for CI to stabilise"

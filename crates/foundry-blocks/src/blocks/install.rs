@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{LocalInstallCompletedPayload, LocalSkillInstallCompletedPayload};
-use foundry_sdk::registry::{
-    InstallConfig, InstallsSkill, Registry, derive_default_skill_install_command,
-};
+use foundry_sdk::registry::{InstallConfig, Registry, SkillInstall, resolve_skill_install};
 use foundry_sdk::task_block::{BlockKind, RetryPolicy, TaskBlock, TaskBlockResult};
 
 use crate::gateway::ShellGateway;
@@ -222,7 +220,7 @@ fn resolve_install(
 /// Resolve and run the skill-install command for a project, if configured.
 ///
 /// Returns `Some(event)` when the skill install was attempted (regardless of
-/// success), or `None` when no skill install is configured.
+/// success), or `None` when [`resolve_skill_install`] decides to skip it.
 ///
 /// Failures are logged as warnings and do NOT fail the caller — binary install
 /// already succeeded; skill drift is a soft warning only.
@@ -233,15 +231,16 @@ async fn run_skill_install(
     install_config: &InstallConfig,
     shell: &dyn ShellGateway,
 ) -> Option<Event> {
-    let installs_skill = entry.installs_skill.as_ref()?;
-
-    // Resolve the command to run.
-    let cmd = match installs_skill {
-        InstallsSkill::Default(false) => return None,
-        InstallsSkill::Default(true) => {
-            derive_default_skill_install_command(Some(install_config), &entry.name)
+    let cmd = match resolve_skill_install(
+        entry.installs_skill.as_ref(),
+        Some(install_config),
+        &entry.name,
+    ) {
+        SkillInstall::Run(cmd) => cmd,
+        SkillInstall::Skip(reason) => {
+            tracing::debug!(project = %project, reason = %reason, "skill install skipped");
+            return None;
         }
-        InstallsSkill::Custom { command } => command.clone(),
     };
 
     tracing::info!(project = %project, command = %cmd, "running skill install");
@@ -521,6 +520,42 @@ mod tests {
         let cmd = skill_event.payload["command"].as_str().unwrap();
         // Falls back to project name when install is Command (not Brew)
         assert_eq!(cmd, "my-project init --global --force");
+    }
+
+    #[tokio::test]
+    async fn installs_skill_true_without_install_config_runs_nothing() {
+        let registry = registry_with_install_and_skill(None, Some(InstallsSkill::Default(true)));
+        let shell = FakeShellGateway::success();
+        let shell_for_inspect = Arc::clone(&shell);
+        let block =
+            InstallLocally::with_gateways(registry, shell as Arc<dyn crate::gateway::ShellGateway>);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.events.len(), 1, "no install config must not derive a skill install");
+        assert_eq!(result.events[0].event_type, EventType::LocalInstallCompleted);
+        assert!(shell_for_inspect.invocations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn installs_skill_true_empty_brew_formula_falls_back_to_project_name() {
+        let registry = registry_with_install_and_skill(
+            Some(InstallConfig::Brew(String::new())),
+            Some(InstallsSkill::Default(true)),
+        );
+        let shell = FakeShellGateway::success();
+        let block = InstallLocally::with_gateways(registry, shell);
+        let trigger = make_trigger("my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(
+            result.events[1].payload["command"].as_str().unwrap(),
+            "my-project init --global --force"
+        );
     }
 
     #[tokio::test]

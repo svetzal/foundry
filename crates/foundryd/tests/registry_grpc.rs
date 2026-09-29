@@ -171,6 +171,7 @@ fn add_request(name: &str) -> RegistryAddRequest {
         notes: String::new(),
         timeout_secs: 0,
         update_policy: String::new(),
+        installs_skill: String::new(),
     }
 }
 
@@ -322,6 +323,7 @@ fn edit_branch_request(name: &str, branch: &str) -> RegistryEditRequest {
         timeout_secs: 0,
         clear_timeout: false,
         update_policy: String::new(),
+        installs_skill: String::new(),
     }
 }
 
@@ -499,6 +501,7 @@ async fn list_returns_full_daemon_owned_project_fields() {
             notes: "server note".to_string(),
             timeout_secs: 45,
             update_policy: String::new(),
+            installs_skill: String::new(),
         }))
         .await
         .expect("seed daemon registry");
@@ -544,6 +547,7 @@ async fn show_returns_full_daemon_owned_project_fields() {
             notes: "server note".to_string(),
             timeout_secs: 90,
             update_policy: String::new(),
+            installs_skill: String::new(),
         }))
         .await
         .expect("seed daemon registry");
