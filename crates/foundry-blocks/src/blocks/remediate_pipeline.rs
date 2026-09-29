@@ -7,7 +7,7 @@ use foundry_sdk::payload::PipelineCheckedPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 
-use crate::gateway::{AgentGateway, AgentProvider};
+use crate::gateway::{AgentGateway, AgentProvider, ProcessShellGateway, ShellGateway};
 
 use super::{SimulatedSuccess, TriggerContext};
 
@@ -33,16 +33,19 @@ fn decide_pipeline_remediate(trigger: &Event) -> PipelineRemediateDecision {
     }
 }
 
-agent_block_new!(
+agent_execution_block! {
     /// Attempts to fix a failing GitHub Actions pipeline.
     /// Mutator -- simulated success at `dry_run`.
     ///
     /// Self-filters: only acts when `passing=false` in the trigger payload.
     ///
     /// Uses `AgentGateway` with `Coding` capability and `Full` access to
-    /// diagnose and fix the CI failure.
+    /// diagnose and fix the CI failure. The session runs with pushing
+    /// disabled and between `run_guard`'s checks: a fix that silences an
+    /// audit job by suppressing an advisory, or an agent that pushes, fails
+    /// the remediation with `needs_review` and nothing is pushed.
     pub struct RemediatePipeline
-);
+}
 
 impl RemediatePipeline {
     /// Generous timeout for Claude CLI -- pipeline fixes can take several minutes.
@@ -108,6 +111,7 @@ impl TaskBlock for RemediatePipeline {
 
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let shell = Arc::clone(&self.shell);
 
         tracing::info!(%project, %run_name, "remediating pipeline failure");
 
@@ -122,6 +126,7 @@ impl TaskBlock for RemediatePipeline {
                 trace_id,
             },
             agent,
+            shell,
         ))
     }
 }
@@ -139,6 +144,7 @@ struct RemediationRequest {
 async fn run_remediation(
     request: RemediationRequest,
     agent: Arc<dyn AgentGateway>,
+    shell: Arc<dyn ShellGateway>,
 ) -> anyhow::Result<TaskBlockResult> {
     let RemediationRequest {
         project,
@@ -171,7 +177,7 @@ async fn run_remediation(
 
     let agent_file = super::resolve_agent_file(&entry.agent);
 
-    let outcome = super::invoke_coding_agent(
+    let session = super::invoke_coding_agent(
         &*agent,
         &project,
         super::CodingAgentSpec {
@@ -184,8 +190,8 @@ async fn run_remediation(
             trace_id: trace_id.clone(),
         },
         "remediate pipeline",
-    )
-    .await;
+    );
+    let outcome = super::run_guard::guard_remediation(&*shell, &entry, session).await;
 
     Ok(super::build_agent_remediation_result(
         &project,
@@ -348,6 +354,49 @@ mod tests {
         assert_eq!(result.events[0].event_type, EventType::RemediationCompleted);
         assert_eq!(result.events[0].payload["success"], false);
         assert!(result.summary.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_fix_that_ignores_an_advisory_needs_review() {
+        use crate::blocks::test_helpers::git_repo::{commit, repo};
+
+        let repo = repo();
+        commit(&repo.work, "AGENTS.md", "# Agent guidance", "docs");
+        crate::blocks::test_helpers::git_repo::git(&repo.work, &["push", "-q", "origin", "main"]);
+        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+            "my-project",
+            repo.work.to_str().unwrap(),
+        ));
+        // The audit job fails; the agent silences it instead of upgrading.
+        let agent = Arc::new(test_helpers::ActingAgent {
+            act: |dir: &std::path::Path| {
+                std::fs::write(
+                    dir.join("deny.toml"),
+                    "[advisories]\nignore = [\"RUSTSEC-2026-0001\"]\n",
+                )
+                .unwrap();
+            },
+        });
+        let block = RemediatePipeline::with_gateways(
+            agent,
+            registry,
+            Arc::new(crate::gateway::ProcessShellGateway),
+        );
+        let t = test_event!(EventType::PipelineChecked, "my-project", {
+            "passing": false,
+            "conclusion": "failure",
+            "run_id": 1,
+            "run_name": "CI",
+            "failure_logs": "error[vulnerability]: RUSTSEC-2026-0001",
+        });
+
+        let result = block.execute(&t).await.unwrap();
+
+        assert!(!result.success, "{}", result.summary);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], false);
+        let reason = payload["needs_review"].as_str().expect("needs_review");
+        assert!(reason.contains("RUSTSEC-2026-0001"), "{reason}");
     }
 
     // --- decide_pipeline_remediate pure function tests ---

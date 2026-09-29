@@ -69,6 +69,19 @@ impl ShellGateway for CleanProcessShellGateway {
 // -- Vulnerability remediation integration tests --
 
 fn vuln_engine() -> Engine {
+    vuln_engine_with(foundry_sdk::gateway::fakes::FakeAgentGateway::success()).engine
+}
+
+/// The remediation chain wired to a real checkout and a real bare `origin`.
+struct VulnChain {
+    engine: Engine,
+    work: std::path::PathBuf,
+    remote: std::path::PathBuf,
+}
+
+fn vuln_engine_with(
+    remediation_agent: Arc<dyn foundry_blocks::gateway::AgentGateway>,
+) -> VulnChain {
     use foundry_sdk::registry::{ActionFlags, ProjectEntry, Stack};
     use std::sync::RwLock;
 
@@ -92,6 +105,8 @@ fn vuln_engine() -> Engine {
     let _ = git_ok(dir.path(), &["push", "-u", "origin", "main"]);
     // Create an uncommitted change so CommitAndPush triggers
     std::fs::write(dir.path().join("CHANGES.md"), "changes").unwrap();
+    let work = dir.path().to_path_buf();
+    let remote = remote_dir.path().to_path_buf();
     std::mem::forget(dir);
     std::mem::forget(remote_dir);
 
@@ -126,13 +141,12 @@ fn vuln_engine() -> Engine {
         &registry,
     ))));
     engine.register(Box::new(foundry_blocks::blocks::AuditMainBranch::new(Arc::clone(&registry))));
-    let agent: Arc<dyn foundry_blocks::gateway::AgentGateway> =
-        foundry_sdk::gateway::fakes::FakeAgentGateway::success();
-    engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::new(
-        agent,
-        Arc::clone(&registry),
-    )));
     let shell: Arc<dyn ShellGateway> = Arc::new(CleanProcessShellGateway);
+    engine.register(Box::new(foundry_blocks::blocks::RemediateVulnerability::with_gateways(
+        remediation_agent,
+        Arc::clone(&registry),
+        Arc::clone(&shell),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::CommitAndPush::with_gateways(
         Arc::clone(&registry),
         Arc::clone(&shell),
@@ -146,7 +160,11 @@ fn vuln_engine() -> Engine {
         Arc::clone(&registry),
         shell,
     )));
-    engine
+    VulnChain {
+        engine,
+        work,
+        remote,
+    }
 }
 
 #[tokio::test]
@@ -321,4 +339,178 @@ async fn scan_dry_run_scans_and_audits_only() {
 
     // Scanner tool unavailable in temp dir — chain ends at scan_requested.
     assert_eq!(types, ["scan_requested"]);
+}
+
+// -- The remediation agent is checked like the maintain agent --
+
+/// A remediation agent that does its work in the checkout: runs `act` there,
+/// with the session environment Foundry gave it, then reports success.
+struct ActingAgent<F> {
+    act: F,
+}
+
+impl<F> foundry_blocks::gateway::AgentGateway for ActingAgent<F>
+where
+    F: Fn(&Path, &[(String, String)]) + Send + Sync,
+{
+    fn invoke<'a>(
+        &'a self,
+        request: &'a foundry_sdk::gateway::AgentRequest,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<foundry_sdk::gateway::AgentResponse>>
+                + Send
+                + 'a,
+        >,
+    > {
+        (self.act)(&request.working_dir, &request.env);
+        Box::pin(async { Ok(foundry_sdk::gateway::AgentResponse::success("remediated")) })
+    }
+}
+
+/// Run git as the agent would: in its session environment.
+fn agent_git(dir: &Path, env: &[(String, String)], args: &[&str]) -> std::process::Output {
+    let mut command = Command::new("git");
+    command.current_dir(dir).args(args);
+    clean_git_env(&mut command);
+    command.envs(env.iter().map(|(k, v)| (k, v)));
+    command.output().unwrap()
+}
+
+fn rev_parse(dir: &Path, rev: &str) -> String {
+    let mut command = Command::new("git");
+    command.current_dir(dir).args(["rev-parse", rev]);
+    clean_git_env(&mut command);
+    String::from_utf8_lossy(&command.output().unwrap().stdout).trim().to_string()
+}
+
+fn dirty_vulnerability(cve: &str) -> Event {
+    Event::new(
+        EventType::VulnerabilityDetected,
+        "test-project".to_string(),
+        Throttle::Full,
+        serde_json::json!({ "cve": cve, "vulnerable": true, "dirty": true }),
+    )
+}
+
+fn event_types(events: &[Event]) -> Vec<String> {
+    events.iter().map(|e| e.event_type.as_str()).collect()
+}
+
+#[tokio::test]
+async fn a_remediation_agent_that_allowlists_its_cve_needs_review_and_is_not_pushed_or_released() {
+    let agent = Arc::new(ActingAgent {
+        act: |dir: &Path, env: &[(String, String)]| {
+            // Asked to fix CVE-2026-1234, the agent allowlists it instead.
+            std::fs::write(
+                dir.join(".supply-chain-allow.json"),
+                "[\n  {\"cve\": \"CVE-2026-1234\", \"reason\": \"no fix available\"}\n]\n",
+            )
+            .unwrap();
+            assert!(agent_git(dir, env, &["add", ".supply-chain-allow.json"]).status.success());
+            assert!(
+                agent_git(dir, env, &["commit", "-q", "-m", "chore: accept CVE-2026-1234"])
+                    .status
+                    .success()
+            );
+        },
+    });
+    let chain = vuln_engine_with(agent);
+    let remote_before = rev_parse(&chain.remote, "main");
+
+    let result = chain.engine.process(dirty_vulnerability("CVE-2026-1234")).await;
+    let types = event_types(&result.events);
+
+    let remediation = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::RemediationCompleted)
+        .expect("remediation completed");
+    assert_eq!(remediation.payload["success"], false, "a suppression is never a fix");
+    let reason = remediation.payload["needs_review"].as_str().expect("needs_review set");
+    assert!(reason.starts_with("needs review: "), "{reason}");
+    assert!(reason.contains("CVE-2026-1234"), "{reason}");
+    assert!(
+        !types.contains(&"project_changes_pushed".to_string()),
+        "nothing pushed: {types:?}"
+    );
+    assert!(!types.contains(&"release_completed".to_string()), "no release: {types:?}");
+    assert!(!types.contains(&"local_install_completed".to_string()), "no install: {types:?}");
+    assert_eq!(rev_parse(&chain.remote, "main"), remote_before, "origin/main did not move");
+    let head = rev_parse(&chain.work, "HEAD");
+    assert_ne!(head, remote_before, "the suppression commit stays local for review");
+}
+
+#[tokio::test]
+async fn a_remediation_agent_that_pushes_directly_needs_review_and_is_not_released() {
+    let agent = Arc::new(ActingAgent {
+        act: |dir: &Path, env: &[(String, String)]| {
+            std::fs::write(dir.join("Cargo.lock"), "# bumped the vulnerable crate\n").unwrap();
+            assert!(agent_git(dir, env, &["add", "Cargo.lock"]).status.success());
+            assert!(
+                agent_git(dir, env, &["commit", "-q", "-m", "fix: bump for CVE-2026-1234"])
+                    .status
+                    .success()
+            );
+            // `git push origin` is disabled in the session, so the agent
+            // pushes to origin's URL instead.
+            let blocked = agent_git(dir, env, &["push", "-q", "origin", "main"]);
+            assert!(!blocked.status.success(), "the session's push to origin must fail");
+            let url = agent_git(dir, env, &["remote", "get-url", "origin"]);
+            let url = String::from_utf8_lossy(&url.stdout).trim().to_string();
+            assert!(agent_git(dir, env, &["push", "-q", &url, "main"]).status.success());
+        },
+    });
+    let chain = vuln_engine_with(agent);
+
+    let result = chain.engine.process(dirty_vulnerability("CVE-2026-1234")).await;
+    let types = event_types(&result.events);
+
+    let remediation = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::RemediationCompleted)
+        .expect("remediation completed");
+    assert_eq!(remediation.payload["success"], false);
+    let reason = remediation.payload["needs_review"].as_str().expect("needs_review set");
+    assert!(
+        reason.starts_with("needs review: agent pushed directly to origin/main"),
+        "{reason}"
+    );
+    assert!(reason.contains("fix: bump for CVE-2026-1234"), "{reason}");
+    assert!(
+        !types.contains(&"project_changes_pushed".to_string()),
+        "Foundry pushed nothing: {types:?}"
+    );
+    assert!(!types.contains(&"release_completed".to_string()), "no release: {types:?}");
+    assert!(!types.contains(&"local_install_completed".to_string()), "no install: {types:?}");
+}
+
+#[tokio::test]
+async fn a_clean_remediation_is_still_pushed() {
+    let agent = Arc::new(ActingAgent {
+        act: |dir: &Path, env: &[(String, String)]| {
+            std::fs::write(dir.join("Cargo.lock"), "# bumped the vulnerable crate\n").unwrap();
+            assert!(agent_git(dir, env, &["add", "Cargo.lock"]).status.success());
+            assert!(
+                agent_git(dir, env, &["commit", "-q", "-m", "fix: bump for CVE-2026-1234"])
+                    .status
+                    .success()
+            );
+        },
+    });
+    let chain = vuln_engine_with(agent);
+
+    let result = chain.engine.process(dirty_vulnerability("CVE-2026-1234")).await;
+    let types = event_types(&result.events);
+
+    let remediation = result
+        .events
+        .iter()
+        .find(|e| e.event_type == EventType::RemediationCompleted)
+        .expect("remediation completed");
+    assert_eq!(remediation.payload["success"], true, "{:?}", remediation.payload);
+    assert!(remediation.payload.get("needs_review").is_none());
+    assert!(types.contains(&"project_changes_pushed".to_string()), "{types:?}");
+    assert_eq!(rev_parse(&chain.remote, "main"), rev_parse(&chain.work, "HEAD"));
 }

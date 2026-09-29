@@ -163,23 +163,29 @@ The supply-chain auto-fix engine follows the same rule. See
 
 ### Suppressions are not fixes
 
-Maintenance has no reviewer, so the maintain prompt, its retry prompt and the
-task prompt carry three rules: never suppress, ignore or allowlist an advisory
+Maintenance has no reviewer, so the maintain prompt, its retry prompt, the
+vulnerability remediation prompt and the iterate and task prompt carry three
+rules: never suppress, ignore or allowlist an advisory
 that has a fixed release (upgrade instead, past the policy ceiling if need
 be); never edit `.supply-chain-allow.json`, `ignore_advisories`,
 Dependency-Check suppressions, `pip-audit --ignore-vuln`, cargo deny/audit
 ignore lists or equivalent files; and never claim that no fix exists without
 citing the registry or OSV entry.
 
-Foundry also checks the result. Before the first maintain agent session it
-records where the run started (`HEAD` and `origin/<branch>`), and after each
-attempt it diffs the checkout against that start. The diff covers the agent's
-commits, pushed or not, and anything left uncommitted; a retry is checked
-against the same start as the first attempt. A run that added an allowlist
-entry, an `ignore_advisories` entry, a Dependency-Check suppression, an ignore
-flag or an ignore-list advisory, or an npm override that pins a package to a
-version the latest supply-chain scan marks vulnerable, fails with
-"needs review: …". It is never green, and its commits are not pushed.
+Foundry also checks the result, for every agent whose commits it pushes:
+maintain, iterate, task, vulnerability remediation and pipeline remediation.
+Before the first agent session it records where the run started (`HEAD` and
+`origin/<branch>`), and after each attempt it diffs the checkout against the
+commit those two shared. The diff covers the agent's commits, pushed or not,
+anything left uncommitted, new files never added to Git, and commits an
+earlier failed run left unpushed; a retry is checked against the same start
+as the first attempt. A run that added an allowlist entry, an
+`ignore_advisories` entry, a Dependency-Check suppression, an ignore flag or
+an ignore-list advisory, or an npm override that pins a package to a version
+the latest supply-chain scan marks vulnerable, fails with "needs review: …".
+It is never green, and its commits are not pushed. Maintain and iterate retry
+it (the retry is told to remove the suppression); remediation and tasks stop
+for review.
 
 The check does not compare against `origin/<branch>` because the agent can
 move it: on 2026-09-29 a maintain agent pushed its own commit, the diff

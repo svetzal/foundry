@@ -14,8 +14,9 @@
 //!   pointed at an unusable URL ([`push_disabled_environment`]). A plain
 //!   `git push` from the agent, or from any tool it starts, fails. Foundry's
 //!   own push runs outside the agent's environment and is unaffected.
-//! - **Detection:** a maintain run records where it started
-//!   ([`capture_maintain_base`]) and afterwards checks whether
+//! - **Detection:** every guarded run (see `run_guard`: maintain, iterate,
+//!   task, remediation) records where it started ([`capture_run_base`]) and
+//!   afterwards checks whether
 //!   `origin/<branch>` moved to commits the checkout holds
 //!   ([`detect_direct_push`]). It fetches first, so a push to an explicit URL
 //!   that bypassed the push URL is still seen. A run that pushed fails and
@@ -24,7 +25,7 @@
 
 use std::path::Path;
 
-use foundry_sdk::payload::MaintainBase;
+use foundry_sdk::payload::RunBase;
 
 use crate::gateway::ShellGateway;
 
@@ -33,7 +34,7 @@ use crate::gateway::ShellGateway;
 pub(crate) const PUSH_DISABLED_URL: &str = "foundry://agent-push-disabled";
 
 /// Git rule for prompts whose commits Foundry pushes (maintenance,
-/// remediation): commits are fine, pushes are not.
+/// vulnerability and pipeline remediation): commits are fine, pushes are not.
 pub(crate) const COMMIT_LOCALLY_RULE: &str = "\
 Git rules: commit your work locally if you want to, but never push, force-push, tag, or \
 change remotes. Foundry checks your commits and pushes them itself after its checks pass. \
@@ -86,16 +87,16 @@ fn remote_ref(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
 }
 
-/// Record where a maintain run starts: `HEAD` and `origin/<branch>`.
+/// Record where an agent run starts: `HEAD` and `origin/<branch>`.
 /// `None` when `HEAD` cannot be read (not a Git checkout, or no commits).
-pub(crate) async fn capture_maintain_base(
+pub(crate) async fn capture_run_base(
     shell: &dyn ShellGateway,
     dir: &Path,
     branch: &str,
-) -> Option<MaintainBase> {
+) -> Option<RunBase> {
     let head = git_line(shell, dir, &["rev-parse", "HEAD"]).await?;
     let origin = git_line(shell, dir, &["rev-parse", "--verify", "-q", &remote_ref(branch)]).await;
-    Some(MaintainBase { head, origin })
+    Some(RunBase { head, origin })
 }
 
 /// Whether the remote moved during the session to commits the checkout holds.
@@ -124,7 +125,7 @@ pub(crate) async fn detect_direct_push(
     shell: &dyn ShellGateway,
     dir: &Path,
     branch: &str,
-    base: &MaintainBase,
+    base: &RunBase,
 ) -> Option<DirectPush> {
     match shell.run(dir, "git", &["fetch", "-q", "origin", branch], None, None).await {
         Ok(r) if r.success => {}
@@ -180,7 +181,7 @@ pub(crate) fn direct_push_reason(
         "Foundry's suppression check ran over them and found no new suppressions".to_string()
     } else {
         format!(
-            "they add advisory suppressions, which maintenance must never do: {}",
+            "they add advisory suppressions, which an agent must never do: {}",
             suppressions.join("; ")
         )
     };

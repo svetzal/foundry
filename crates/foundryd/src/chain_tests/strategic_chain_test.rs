@@ -72,6 +72,8 @@ fn single_iterate_shell() -> Arc<dyn ShellGateway> {
             exit_code: 0,
             success: true,
         },
+        // Run guard: no recorded start (see test_helpers::no_run_base)
+        test_helpers::no_run_base(),
         // ExecutePlan: git rev-parse HEAD → sha
         CommandResult {
             stdout: "abc123\n".to_string(),
@@ -79,6 +81,9 @@ fn single_iterate_shell() -> Arc<dyn ShellGateway> {
             exit_code: 0,
             success: true,
         },
+        // Run guard: suppression diff and untracked listing find nothing
+        test_helpers::nothing_suppressed(),
+        test_helpers::nothing_suppressed(),
         // ExecutePlan: git diff --name-only <sha> → has real changes
         CommandResult {
             stdout: "src/lib.rs\n".to_string(),

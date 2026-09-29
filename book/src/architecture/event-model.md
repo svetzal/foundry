@@ -45,7 +45,7 @@ roadmap for completing all task blocks and workflows is in
 |-------|---------|---------|
 | `vulnerability_detected` | External / nightly audit | Entry point for remediation workflow |
 | `remediation_started` | RemediateVulnerability | Fix attempt underway |
-| `remediation_completed` | RemediateVulnerability | Fix attempt finished (success or failure) |
+| `remediation_completed` | RemediateVulnerability, RemediatePipeline | Fix attempt finished (success or failure); `needs_review` is set when the agent pushed directly or added an advisory suppression |
 
 ### Distribution Pipeline
 

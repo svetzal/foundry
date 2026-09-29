@@ -116,14 +116,19 @@ hold that line:
    Every process the agent starts inherits it, so a `git push` to `origin`
    fails. Nothing is written to the repository, and `Commit and Push` runs
    outside that environment, so Foundry's own push works as before.
-3. **Detection.** A maintain run records `origin/<branch>` before the first
-   agent session. After each attempt Foundry fetches it and checks whether it
-   moved to commits the checkout holds. The fetch catches a push to an
-   explicit URL, which bypasses the push URL. If the agent pushed, the run
-   fails with "needs review: agent pushed directly to origin/<branch> …",
-   naming the pushed commits and the result of the suppression check, which
-   still runs over them. The run is not retried (a retry cannot undo a push),
-   and the maintenance summary lists it as failed with that reason.
+3. **Detection.** Every maintain, iterate, task, vulnerability-remediation
+   and pipeline-remediation run records `HEAD` and `origin/<branch>` before
+   its first agent session (`run_base`, carried through retries). After each
+   attempt Foundry fetches `origin/<branch>` and checks whether it moved to
+   commits the checkout holds. The fetch catches a push to an explicit URL,
+   which bypasses the push URL. If the agent pushed, the run fails with
+   "needs review: agent pushed directly to origin/<branch> …", naming the
+   pushed commits and the result of the suppression check, which still runs
+   over them. The run is not retried (a retry cannot undo a push), and the
+   maintenance summary lists it as failed with that reason. A remediation
+   that trips a check reports `needs_review` on `remediation_completed` and
+   is not pushed or released; a task gets a `blocked_on_decision` verdict
+   without a review session and does not land.
 
 An agent could still get around the prevention layer on purpose, for example
 by pushing to an explicit URL instead of `origin`. The detection layer reports

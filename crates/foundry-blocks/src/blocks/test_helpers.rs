@@ -260,3 +260,68 @@ pub async fn assert_missing_project_fails(
     assert!(!result.success, "expected failure for missing project");
     assert!(result.events.is_empty(), "expected no events for missing project");
 }
+
+/// Real Git fixtures: a bare `origin` and a checkout of it.
+pub mod git_repo {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    pub fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    pub fn commit(dir: &Path, file: &str, contents: &str, message: &str) {
+        std::fs::write(dir.join(file), contents).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", message]);
+    }
+
+    /// A bare `origin` and a checkout of it with one pushed commit.
+    pub struct Repo {
+        pub _root: tempfile::TempDir,
+        pub remote: PathBuf,
+        pub work: PathBuf,
+    }
+
+    pub fn repo() -> Repo {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("origin.git");
+        let work = root.path().join("work");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(root.path(), &["clone", "-q", remote.to_str().unwrap(), "work"]);
+        git(&work, &["config", "user.email", "test@example.com"]);
+        git(&work, &["config", "user.name", "Test"]);
+        git(&work, &["checkout", "-q", "-B", "main"]);
+        commit(&work, "README.md", "init", "init");
+        git(&work, &["push", "-q", "origin", "main"]);
+        Repo {
+            _root: root,
+            remote,
+            work,
+        }
+    }
+}
+
+/// An agent that does its work in the checkout: runs `act` in the request's
+/// working directory, then reports success.
+pub struct ActingAgent<F> {
+    pub act: F,
+}
+
+impl<F> AgentGateway for ActingAgent<F>
+where
+    F: Fn(&std::path::Path) + Send + Sync,
+{
+    fn invoke<'a>(
+        &'a self,
+        request: &'a crate::gateway::AgentRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>,
+    > {
+        (self.act)(&request.working_dir);
+        Box::pin(async { Ok(AgentResponse::success("done")) })
+    }
+}

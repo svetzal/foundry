@@ -86,24 +86,9 @@ pub(crate) fn emit_result(
 fn remediation_completed_event(
     project: &str,
     throttle: Throttle,
-    cve: Option<String>,
-    pipeline_fix: Option<bool>,
-    success: bool,
-    summary: Option<String>,
-    dry_run: Option<bool>,
+    payload: &RemediationCompletedPayload,
 ) -> Event {
-    event_from_infallible_payload(
-        EventType::RemediationCompleted,
-        project,
-        throttle,
-        &RemediationCompletedPayload {
-            cve,
-            success,
-            summary,
-            dry_run,
-            pipeline_fix,
-        },
-    )
+    event_from_infallible_payload(EventType::RemediationCompleted, project, throttle, payload)
 }
 
 /// Build a `TaskBlockResult` for an agent-driven remediation, handling the
@@ -120,10 +105,21 @@ pub(crate) fn build_agent_remediation_result(
     success_label: &str,
     failure_label: &str,
 ) -> TaskBlockResult {
+    let needs_review = match &outcome {
+        AgentOutcome::AgentFailed {
+            failure: Some(failure),
+            ..
+        } => failure.needs_review.clone(),
+        _ => None,
+    };
     let (raw_output, success, summary) = match outcome {
         AgentOutcome::Success { stdout } => {
             let out = stdout.trim().to_string();
             (Some(out), true, "remediation completed".to_string())
+        }
+        AgentOutcome::AgentFailed { stderr, .. } if needs_review.is_some() => {
+            let summary = needs_review.clone().unwrap_or_default();
+            (Some(stderr), false, summary)
         }
         AgentOutcome::AgentFailed { stderr, failure } => {
             let summary = failure
@@ -152,11 +148,14 @@ pub(crate) fn build_agent_remediation_result(
         events: vec![remediation_completed_event(
             project,
             throttle,
-            cve,
-            pipeline_fix,
-            success,
-            Some(summary.clone()),
-            None,
+            &RemediationCompletedPayload {
+                cve,
+                success,
+                summary: Some(summary.clone()),
+                dry_run: None,
+                pipeline_fix,
+                needs_review,
+            },
         )],
         success,
         summary: if success {
@@ -264,11 +263,14 @@ pub(crate) fn dry_run_remediation_event(
     vec![remediation_completed_event(
         &trigger.project,
         trigger.throttle,
-        cve,
-        pipeline_fix,
-        true,
-        summary,
-        Some(true),
+        &RemediationCompletedPayload {
+            cve,
+            success: true,
+            summary,
+            dry_run: Some(true),
+            pipeline_fix,
+            needs_review: None,
+        },
     )]
 }
 
@@ -472,6 +474,33 @@ mod tests {
         assert!(result.raw_output.is_some());
         let payload = &result.events[0].payload;
         assert_eq!(payload["success"], false);
+    }
+
+    #[test]
+    fn a_remediation_that_needs_review_fails_and_carries_the_reason() {
+        let reason = "needs review: this run added advisory suppressions, which an agent must \
+                      never do; upgrade to the fixed release instead: CVE-2024-1234";
+        let result = build_agent_remediation_result(
+            "proj",
+            full(),
+            AgentOutcome::AgentFailed {
+                stderr: reason.to_string(),
+                failure: Some(
+                    foundry_sdk::gateway::AgentFailureMetadata::default().with_needs_review(reason),
+                ),
+            },
+            Some("CVE-2024-1234".to_string()),
+            None,
+            "Remediated CVE-2024-1234",
+            "Remediation of CVE-2024-1234 failed",
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.summary, format!("Remediation of CVE-2024-1234 failed: {reason}"));
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["needs_review"], reason);
+        assert_eq!(payload["summary"], reason);
     }
 
     #[test]

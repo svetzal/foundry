@@ -7,6 +7,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The remediation agents are now checked like the maintain agent. 0.39.7
+  gave `Remediate Vulnerability` and `Remediate Pipeline` the prompt rules and
+  the push-disabled environment, but not the post-agent checks, and an agent
+  asked to fix a CVE is the one most tempted to allowlist it. Both now record
+  `HEAD` and `origin/<branch>` before the agent, then run the direct-push
+  check and the suppression check. A tripped check fails the remediation with
+  `needs_review` on `remediation_completed` (new optional field). Its commits
+  stay local, so no `project_changes_pushed`, no post-push audit, no release
+  and no install follow. There is no retry.
+- Iterate and task agent runs get the same two checks (all three workflows
+  already ran with pushing disabled). An iterate suppression fails the
+  attempt and is retried with the suppression called out; a task that trips
+  either check gets a `blocked_on_decision` verdict without a review session
+  and does not land.
+- The suppression check now sees files the agent never added to Git.
+  `Commit and Push` stages them with `git add -A`, so an untracked
+  `.supply-chain-allow.json` would otherwise have been pushed unchecked. This
+  also applied to maintain runs.
+- The suppression check diffs from the commit `HEAD` and `origin/<branch>`
+  shared at the start of the run, not from `HEAD`. A suppression commit a
+  failed run left unpushed now fails the next run instead of being pushed
+  with it.
+
+### Changed
+
+- `LoopContext.maintain_base` / `MaintainBase` are now `run_base` /
+  `RunBase`, since every guarded workflow records one. A first attempt always
+  records a fresh start; only a retry inherits one.
+
 ## [0.39.8] - 2026-09-29
 
 ### Fixed

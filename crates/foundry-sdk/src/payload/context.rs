@@ -157,21 +157,22 @@ pub struct LoopContext {
     pub task_branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
-    /// Where a maintain run started. Recorded before its first agent session
-    /// and carried through every retry, so each attempt is checked against
-    /// the same commit. `None` outside the maintain workflow.
+    /// Where an agent run whose commits Foundry pushes (maintain, iterate,
+    /// task) started. Recorded before its first agent session and carried
+    /// through every retry, so each attempt is checked against the same
+    /// commit. `None` for workflows Foundry does not guard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub maintain_base: Option<MaintainBase>,
+    pub run_base: Option<RunBase>,
 }
 
-/// The commits a maintain run started from.
+/// The commits an agent run started from.
 ///
 /// Foundry's post-agent checks (the suppression guard, direct-push detection)
-/// compare against these rather than against `origin/<branch>`: an agent that
-/// pushes moves `origin/<branch>`, and a check against it would then see
-/// nothing to check.
+/// compare against these rather than against `origin/<branch>` read after the
+/// session: an agent that pushes moves `origin/<branch>`, and a check against
+/// it would then see nothing to check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MaintainBase {
+pub struct RunBase {
     /// `HEAD` before the first agent session.
     pub head: String,
     /// `origin/<branch>` before the first agent session, when it resolved.
@@ -207,9 +208,7 @@ impl LoopContext {
                 .get("base_ref")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-            maintain_base: payload
-                .get("maintain_base")
-                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+            run_base: payload.get("run_base").and_then(|v| serde_json::from_value(v.clone()).ok()),
         }
     }
 }
@@ -340,22 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn loop_context_carries_the_maintain_base_through_a_hop() {
+    fn loop_context_carries_the_run_base_through_a_hop() {
         let source = serde_json::json!({
-            "maintain_base": { "head": "abc", "origin": "def" },
+            "run_base": { "head": "abc", "origin": "def" },
         });
         let extracted = LoopContext::extract_from(&source);
-        let base = extracted.maintain_base.clone().expect("maintain_base extracted");
+        let base = extracted.run_base.clone().expect("run_base extracted");
         assert_eq!(base.head, "abc");
         assert_eq!(base.origin.as_deref(), Some("def"));
         let json = serde_json::to_value(&extracted).unwrap();
-        assert_eq!(json["maintain_base"]["head"], "abc");
-        assert!(
-            serde_json::to_value(LoopContext::default())
-                .unwrap()
-                .get("maintain_base")
-                .is_none()
-        );
+        assert_eq!(json["run_base"]["head"], "abc");
+        assert!(serde_json::to_value(LoopContext::default()).unwrap().get("run_base").is_none());
     }
 
     #[test]

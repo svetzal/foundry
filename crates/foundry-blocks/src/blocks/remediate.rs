@@ -6,7 +6,7 @@ use foundry_sdk::payload::MainBranchAuditedPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
-use crate::gateway::AgentGateway;
+use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{SimulatedSuccess, TriggerContext};
 
@@ -41,16 +41,20 @@ fn decide_remediate(trigger: &Event) -> RemediateDecision {
     RemediateDecision::Proceed { cve }
 }
 
-agent_block_new!(
+agent_execution_block! {
     /// Attempts to fix a vulnerability on the main branch.
     /// Mutator — simulated success at `dry_run`.
     ///
     /// Self-filters: only acts when `dirty=true` in the trigger payload.
     ///
     /// Uses `AgentGateway` with `Coding` capability and `Full` access to fix
-    /// the vulnerable dependency.
+    /// the vulnerable dependency. The session runs with pushing disabled and
+    /// between `run_guard`'s checks: an agent that suppresses the advisory
+    /// instead of upgrading, or pushes its own commits, fails the remediation
+    /// with `needs_review`, so `Commit and Push` keeps its commits local and
+    /// no release follows.
     pub struct RemediateVulnerability
-);
+}
 
 impl SimulatedSuccess for RemediateVulnerability {
     type Outcome = Option<String>;
@@ -100,6 +104,7 @@ impl TaskBlock for RemediateVulnerability {
         // Resolve project agent and path from registry.
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
+        let shell = Arc::clone(&self.shell);
         let provider = super::chain_agent_provider(&payload);
 
         tracing::info!(%cve, "remediating vulnerability");
@@ -119,7 +124,8 @@ impl TaskBlock for RemediateVulnerability {
 
             let agent_file = super::resolve_agent_file(&entry.agent);
 
-            let outcome = super::invoke_coding_agent(
+            let label = format!("remediate {cve}");
+            let session = super::invoke_coding_agent(
                 &*agent,
                 &project,
                 super::CodingAgentSpec {
@@ -131,9 +137,9 @@ impl TaskBlock for RemediateVulnerability {
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
                 },
-                &format!("remediate {cve}"),
-            )
-            .await;
+                &label,
+            );
+            let outcome = super::run_guard::guard_remediation(&*shell, &entry, session).await;
 
             let success_label = format!("Remediated {cve}");
             let failure_label = format!("Remediation of {cve} failed");

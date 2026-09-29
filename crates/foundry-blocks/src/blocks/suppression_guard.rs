@@ -1,9 +1,11 @@
-//! The maintain run's suppression guard.
+//! The suppression guard for every agent run whose commits Foundry pushes
+//! (maintain, iterate, task, vulnerability and pipeline remediation; wired up
+//! in `run_guard`).
 //!
-//! Maintenance has no reviewer. Twice on 2026-09-25 an agent made an advisory
+//! Maintenance and remediation have no reviewer. Twice on 2026-09-25 an agent made an advisory
 //! go away by suppressing it rather than upgrading, though a fixed release
 //! existed. The prompt now forbids it ([`ADVISORY_RULES`]); this guard checks
-//! the result. After the maintain agent, everything the run changed relative
+//! the result. After the agent, everything the run changed relative
 //! to the commit it started from is scanned for new suppression entries. The
 //! start is recorded before the first agent session, not read from
 //! `origin/<branch>`: an agent that pushes moves the remote, and a diff
@@ -184,6 +186,53 @@ pub(crate) fn vulnerable_overrides(
     flagged
 }
 
+/// Files larger than this are not read into the untracked diff: suppression
+/// lists are small, and a large generated file is not one.
+const MAX_UNTRACKED_BYTES: u64 = 1024 * 1024;
+
+/// Untracked files, as the lines a diff that added them would show.
+async fn untracked_diff(shell: &dyn ShellGateway, dir: &Path) -> String {
+    let Some(listing) =
+        git_output(shell, dir, &["ls-files", "--others", "--exclude-standard", "-z"]).await
+    else {
+        // Best-effort: the tracked diff above is still checked; logged so a
+        // missed untracked file can be investigated.
+        tracing::warn!(dir = %dir.display(), "suppression guard could not list untracked files");
+        return String::new();
+    };
+    let files: Vec<(String, String)> = listing
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| {
+            let path = dir.join(name);
+            let small = std::fs::metadata(&path)
+                .is_ok_and(|m| m.is_file() && m.len() <= MAX_UNTRACKED_BYTES);
+            // Best-effort: an unreadable or non-UTF-8 file cannot hold a
+            // suppression entry the parsers recognise.
+            let contents = small.then(|| std::fs::read_to_string(&path).ok()).flatten()?;
+            Some((name.to_string(), contents))
+        })
+        .collect();
+    added_file_diff(&files)
+}
+
+/// A unified-diff rendering of newly added files: a `+++ b/<path>` header and
+/// every line as an addition.
+fn added_file_diff(files: &[(String, String)]) -> String {
+    let mut diff = String::new();
+    for (path, contents) in files {
+        diff.push_str("+++ b/");
+        diff.push_str(path);
+        diff.push('\n');
+        for line in contents.lines() {
+            diff.push('+');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+    }
+    diff
+}
+
 async fn git_output(shell: &dyn ShellGateway, dir: &Path, args: &[&str]) -> Option<String> {
     shell
         .run(dir, "git", args, None, None)
@@ -193,10 +242,12 @@ async fn git_output(shell: &dyn ShellGateway, dir: &Path, args: &[&str]) -> Opti
         .map(|r| r.stdout)
 }
 
-/// Every suppression the maintain run added relative to `base`: the commit
-/// the run started from (see `push_guard::capture_maintain_base`), or
+/// Every suppression the agent run added relative to `base`: the commit
+/// the run started from (see `push_guard::capture_run_base`), or
 /// `origin/<branch>` when that could not be recorded. The diff covers the
-/// agent's commits, pushed or not, and anything left uncommitted.
+/// agent's commits, pushed or not, anything left uncommitted, and new files
+/// the agent never added to Git: `Commit and Push` stages those with
+/// `git add -A`, so they would be pushed too.
 /// Empty when nothing was added, or when `base` cannot be read.
 pub(crate) async fn run_suppressions(
     shell: &dyn ShellGateway,
@@ -212,6 +263,7 @@ pub(crate) async fn run_suppressions(
         tracing::warn!(%project, "suppression guard could not diff against {base}");
         return Vec::new();
     };
+    let diff = diff + &untracked_diff(shell, project_path).await;
     let mut found = added_suppressions(&diff);
     let package_json = project_path.join("package.json");
     if diff.contains("package.json")
@@ -229,8 +281,8 @@ pub(crate) async fn run_suppressions(
 /// The failure reason for a run that added suppressions.
 pub(crate) fn needs_review(found: &[String]) -> String {
     format!(
-        "needs review: this maintenance run added advisory suppressions, which maintenance \
-         must never do; upgrade to the fixed release instead: {}",
+        "needs review: this run added advisory suppressions, which an agent must never do; \
+         upgrade to the fixed release instead: {}",
         found.join("; ")
     )
 }
@@ -238,6 +290,40 @@ pub(crate) fn needs_review(found: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_untracked_allowlist_reads_as_added_lines() {
+        let diff = added_file_diff(&[(
+            ".supply-chain-allow.json".to_string(),
+            "[\n  {\"cve\": \"CVE-2026-64941\", \"reason\": \"no fix\"}\n]\n".to_string(),
+        )]);
+        let found = added_suppressions(&diff);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("CVE-2026-64941"), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn an_untracked_suppression_file_is_caught() {
+        let repo = crate::blocks::test_helpers::git_repo::repo();
+        let head = crate::blocks::test_helpers::git_repo::git(&repo.work, &["rev-parse", "HEAD"]);
+        std::fs::write(
+            repo.work.join(".supply-chain-allow.json"),
+            "[{\"cve\": \"CVE-2026-64941\", \"reason\": \"no fix\"}]\n",
+        )
+        .unwrap();
+        let events = tempfile::tempdir().unwrap();
+
+        let found = run_suppressions(
+            &crate::gateway::ProcessShellGateway,
+            &repo.work,
+            &head,
+            "p",
+            events.path(),
+        )
+        .await;
+
+        assert_eq!(found.len(), 1, "an agent that never ran git add is still checked: {found:?}");
+    }
 
     #[test]
     fn allowlist_and_mix_ignores_are_flagged() {

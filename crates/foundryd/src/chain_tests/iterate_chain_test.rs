@@ -69,6 +69,8 @@ async fn happy_path_iterate_chain() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: no recorded start (see test_helpers::no_run_base)
+        test_helpers::no_run_base(),
         // git rev-parse HEAD before ExecutePlan agent — returns sha
         CommandResult {
             stdout: "abc123\n".to_string(),
@@ -76,6 +78,9 @@ async fn happy_path_iterate_chain() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: suppression diff and untracked listing find nothing
+        test_helpers::nothing_suppressed(),
+        test_helpers::nothing_suppressed(),
         // git diff --name-only after ExecutePlan agent — non-empty to indicate real changes
         CommandResult {
             stdout: "src/lib.rs\n".to_string(),
@@ -496,6 +501,8 @@ async fn gate_verification_retry_loop() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: no recorded start (see test_helpers::no_run_base)
+        test_helpers::no_run_base(),
         // ExecutePlan: rev-parse HEAD
         CommandResult {
             stdout: "abc123\n".to_string(),
@@ -503,6 +510,9 @@ async fn gate_verification_retry_loop() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: suppression diff and untracked listing find nothing
+        test_helpers::nothing_suppressed(),
+        test_helpers::nothing_suppressed(),
         // ExecutePlan: git diff --name-only — has real changes
         CommandResult {
             stdout: "src/lib.rs\n".to_string(),
@@ -517,6 +527,8 @@ async fn gate_verification_retry_loop() {
             exit_code: 1,
             success: false,
         },
+        // Run guard: no recorded start (see test_helpers::no_run_base)
+        test_helpers::no_run_base(),
         // RetryExecution: rev-parse HEAD
         CommandResult {
             stdout: "def456\n".to_string(),
@@ -524,6 +536,9 @@ async fn gate_verification_retry_loop() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: suppression diff and untracked listing find nothing
+        test_helpers::nothing_suppressed(),
+        test_helpers::nothing_suppressed(),
         // RetryExecution: git diff --name-only — has real changes
         CommandResult {
             stdout: "src/lib.rs\n".to_string(),
@@ -671,6 +686,8 @@ async fn iterate_with_maintain_chaining() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: no recorded start (see test_helpers::no_run_base)
+        test_helpers::no_run_base(),
         // ExecutePlan: rev-parse HEAD
         CommandResult {
             stdout: "abc123\n".to_string(),
@@ -678,6 +695,9 @@ async fn iterate_with_maintain_chaining() {
             exit_code: 0,
             success: true,
         },
+        // Run guard: suppression diff and untracked listing find nothing
+        test_helpers::nothing_suppressed(),
+        test_helpers::nothing_suppressed(),
         // ExecutePlan: git diff --name-only — changes
         CommandResult {
             stdout: "src/lib.rs\n".to_string(),

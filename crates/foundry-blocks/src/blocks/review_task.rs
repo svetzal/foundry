@@ -81,6 +81,11 @@ impl TaskBlock for ReviewTask {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();
+        if let Some(reason) = p.failure.needs_review.clone() {
+            // Domain skip: see `stop_for_review`.
+            let reviewed = needs_review_payload(&project, objective, reason, p.results, context);
+            return stop_for_review(project, throttle, reviewed);
+        }
         let working_dir = match context.task_worktree.clone() {
             Some(worktree) => PathBuf::from(worktree),
             None if throttle == Throttle::DryRun => PathBuf::from(&entry.path),
@@ -163,9 +168,94 @@ impl TaskBlock for ReviewTask {
     }
 }
 
+/// The review of a task Foundry's post-agent checks stopped: the agent
+/// pushed, or added an advisory suppression. Accepting that is a person's
+/// decision, not the reviewer's, so no review session runs and the verdict
+/// keeps the task from landing.
+fn needs_review_payload(
+    project: &str,
+    objective: String,
+    reason: String,
+    gate_results: Vec<foundry_sdk::gates::GateResult>,
+    context: LoopContext,
+) -> TaskReviewedPayload {
+    TaskReviewedPayload {
+        project: project.to_string(),
+        objective,
+        review: reason.clone(),
+        gate_results,
+        verdict: needs_review_verdict(reason),
+        context,
+    }
+}
+
+fn stop_for_review(
+    project: String,
+    throttle: Throttle,
+    reviewed: TaskReviewedPayload,
+) -> foundry_sdk::task_block::BlockFuture<'static> {
+    tracing::warn!(project = %project, reason = %reviewed.review, "task needs review; skipping the reviewer");
+    Box::pin(async move {
+        super::emit_event_result(
+            format!("{project}: task needs review"),
+            false,
+            EventType::TaskReviewed,
+            &project,
+            throttle,
+            &reviewed,
+        )
+    })
+}
+
+/// The verdict for a task Foundry's post-agent checks stopped.
+fn needs_review_verdict(reason: String) -> TaskVerdict {
+    TaskVerdict::BlockedOnDecision {
+        finding: reason,
+        options: vec![
+            "Remove the flagged change (upgrade instead of suppressing) and run the task again"
+                .to_string(),
+            "Accept the advisory yourself, in a commit of your own, then run the task again"
+                .to_string(),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_review_prompt, parse_verdict};
+
+    #[tokio::test]
+    async fn a_task_foundry_stopped_for_review_is_blocked_without_a_review_session() {
+        use foundry_sdk::event::EventType;
+        use foundry_sdk::task_block::TaskBlock;
+
+        use crate::blocks::test_helpers;
+        use crate::gateway::fakes::FakeAgentGateway;
+
+        let reason = "needs review: this run added advisory suppressions, which an agent must \
+                      never do; upgrade to the fixed release instead: CVE-2026-64941";
+        let registry = test_helpers::registry_with_project("p", "/nonexistent");
+        let agent = FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
+        let block = super::ReviewTask::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+            "project": "p",
+            "workflow": "task",
+            "all_passed": false,
+            "required_passed": false,
+            "results": [],
+            "retry_count": 0,
+            "needs_review": reason,
+            "task_worktree": "/nonexistent/worktree",
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "the reviewer must not be asked");
+        assert!(!result.success);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["verdict"], "blocked_on_decision");
+        assert_eq!(payload["finding"], reason);
+    }
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::TaskVerdict;
 

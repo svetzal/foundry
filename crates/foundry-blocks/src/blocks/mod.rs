@@ -124,6 +124,7 @@ mod review_task;
 mod route_gate_result;
 mod route_project;
 mod route_validation_result;
+mod run_guard;
 mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;

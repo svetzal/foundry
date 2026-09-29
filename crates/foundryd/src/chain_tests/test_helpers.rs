@@ -37,6 +37,30 @@ pub fn registry_with_project(name: &str, path: &str) -> Arc<RwLock<Registry>> {
 }
 
 /// Build a shell gateway that always returns a successful, empty result.
+/// `git rev-parse HEAD` failing as the run guard records a run's start
+/// (`capture_run_base`): the run then has no recorded start, so the direct-push
+/// check is skipped and the suppression check diffs against `origin/<branch>`.
+pub fn no_run_base() -> CommandResult {
+    CommandResult {
+        stdout: String::new(),
+        stderr: "fatal: not a git repository".to_string(),
+        exit_code: 128,
+        success: false,
+    }
+}
+
+/// One step of the suppression check after a successful agent run finding
+/// nothing: it runs `git diff` and then lists untracked files, and each comes
+/// back empty.
+pub fn nothing_suppressed() -> CommandResult {
+    CommandResult {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        success: true,
+    }
+}
+
 pub fn passing_shell() -> Arc<dyn ShellGateway> {
     FakeShellGateway::always(CommandResult {
         stdout: String::new(),
