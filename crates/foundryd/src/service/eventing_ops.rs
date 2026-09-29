@@ -171,11 +171,16 @@ fn dispatch_major_upgrades(dispatches: Vec<Event>, ctx: super::RuntimeContext) {
 /// After a system-level maintenance cycle completes, write per-project sub-traces
 /// to disk and emit `MaintenanceSummaryRequested` for the summary phase. When
 /// the summary phase plans major-upgrade tasks for dispatch, start them.
-async fn finalise_system_maintenance(
+///
+/// `interrupted` is set when foundryd, restarting, closes a cycle it was
+/// stopped during (see `recovery`); the summary then says so, and the summary
+/// phase plans no major-upgrade dispatches.
+pub(super) async fn finalise_system_maintenance(
     result: &ProcessResult,
     ctx: &super::RuntimeContext,
     throttle: Throttle,
     root_event_id: &str,
+    interrupted: Option<foundry_sdk::payload::InterruptedCycle>,
 ) {
     let engine = &ctx.engine;
     let trace_writer = &ctx.trace_writer;
@@ -235,6 +240,7 @@ async fn finalise_system_maintenance(
             "skipped_projects": skipped_projects,
             "total_duration_ms": result.total_duration_ms,
             "root_event_id": root_event_id,
+            "interrupted": interrupted,
         }),
     )
     .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
@@ -293,7 +299,7 @@ pub(super) async fn run_workflow(
     }
 
     if root_event_type == EventType::MaintenanceCycleStarted && root_project == "system" {
-        finalise_system_maintenance(&result, &ctx, root_throttle, &event_id).await;
+        finalise_system_maintenance(&result, &ctx, root_throttle, &event_id, None).await;
     } else if root_event_type == EventType::ProjectRunStarted {
         let success = result.is_success();
         let completed = Event::new(

@@ -163,6 +163,16 @@ automation completes. Exactly one variant is used per entry:
 "install": { "brew": "my-formula" }
 ```
 
+Homebrew installs run on macOS only. On any other host, `Install Locally`
+skips the step with "install via brew not supported on <os>" and never starts
+`brew`; the maintenance summary shows the skip and its reason. Clear the
+config on that host with `foundry registry edit <name> --clear-install`, or
+give it a `command` install that works there.
+
+An install command that fails, or cannot be started at all, is recorded as a
+failed `local_install_completed` event with the reason in `details`, and the
+maintenance summary lists it under **Local Installs**.
+
 ### Skill install
 
 The `installs_skill` field tells Foundry to run a skill-install command after a

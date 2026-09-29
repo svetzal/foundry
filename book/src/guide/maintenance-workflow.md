@@ -157,7 +157,27 @@ The summary phase runs `Plan Major Upgrades` first
 dispatched major upgrade as its own `foundry task`, one after another.
 
 The block's result line carries a `WARNING:` naming each of these that is not
-empty.
+empty. Failed install steps are counted there too, and the **Local Installs**
+table gives the reason for each failure or skip.
+
+### When a project's chain fails, or foundryd stops
+
+Each project's run ends in a `project_run_completed` event, and the cycle
+completes when all of them have arrived. If a block fails before a project
+reaches that event, nothing else can produce it. When the run has nothing left
+to execute, the engine closes the cycle anyway: `maintenance_cycle_completed`
+is recorded with a `missing` list naming each project that did not finish and
+the block that stopped it, and the summary is written as usual.
+
+If foundryd itself stops during a cycle (killed, crashed, host restarted),
+nothing records the end. On its next start foundryd looks back seven days for
+system cycles with no `maintenance_cycle_completed` on their trace. For each
+one it records the completion, with the unfinished projects as `missing`, and
+runs the summary phase over the events the cycle did log. That summary opens
+with a **Cycle interrupted** section, lists the unfinished projects as failed,
+is filed under the date the cycle started (as `summary-interrupted-<HHMM>.md`
+if a summary for that day already exists), and starts no major-upgrade tasks
+and no triage.
 
 The one-shot `foundry task` / campaign path is unaffected — it already builds
 its isolated worktree from the fetched remote tip.

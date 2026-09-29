@@ -47,6 +47,8 @@ pub(crate) struct LocalInstallEntry {
     pub(crate) name: String,
     pub(crate) method: String,
     pub(crate) success: bool,
+    /// Why it failed, or `skipped: <reason>`; `None` for a plain success.
+    pub(crate) note: Option<String>,
 }
 
 /// A push-enabled project whose branch holds commits its remote does not.
@@ -153,6 +155,8 @@ pub(crate) struct MaintenanceRunSummary {
     pub(crate) majors: MajorsSummary,
     /// Filesystems the run writes to that are low on space, described.
     pub(crate) low_disk: Vec<String>,
+    /// Set when foundryd stopped during the cycle and closed it on restart.
+    pub(crate) interrupted: Option<foundry_sdk::payload::InterruptedCycle>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -208,15 +212,16 @@ fn render_local_installs(summary: &MaintenanceRunSummary, out: &mut String) {
     wln!(out);
     wln!(out, "## Local Installs");
     wln!(out);
-    wln!(out, "| Project | Method | Status |");
-    wln!(out, "|---------|--------|--------|");
+    wln!(out, "| Project | Method | Status | Detail |");
+    wln!(out, "|---------|--------|--------|--------|");
     for entry in &summary.local_installs {
         let status_icon = if entry.success {
             "\u{2705}"
         } else {
             "\u{274c}"
         };
-        wln!(out, "| {} | {} | {} |", entry.name, entry.method, status_icon);
+        let note = entry.note.as_deref().unwrap_or("").replace('|', "\\|");
+        wln!(out, "| {} | {} | {} | {} |", entry.name, entry.method, status_icon, note);
     }
 }
 
@@ -328,6 +333,30 @@ fn majors_cell(summary: &MaintenanceRunSummary, project: &str) -> String {
     } else {
         counts.iter().map(|(l, n)| format!("{n} {l}")).collect::<Vec<_>>().join(", ")
     }
+}
+
+/// A cycle foundryd stopped in the middle of: first, because every other
+/// section describes only what ran before the stop.
+fn render_interrupted(summary: &MaintenanceRunSummary, out: &mut String) {
+    let Some(interrupted) = &summary.interrupted else {
+        return;
+    };
+    wln!(out, "## \u{26a0}\u{fe0f} Cycle interrupted");
+    wln!(out);
+    wln!(
+        out,
+        "foundryd stopped during this cycle (started {}, last event {}) and closed it \
+         when it next started. {} project(s) did not finish; they are listed as failed \
+         below. Nothing from this cycle was dispatched on restart.",
+        interrupted.started_at.format("%Y-%m-%d %H:%M UTC"),
+        interrupted.last_event_at.format("%Y-%m-%d %H:%M UTC"),
+        interrupted.unfinished.len()
+    );
+    wln!(out);
+    for project in &interrupted.unfinished {
+        wln!(out, "- {}", cell(project));
+    }
+    wln!(out);
 }
 
 /// Filesystems low on space: the next run's tasks and builds will fail on
@@ -627,6 +656,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     wln!(out, "# Foundry Maintenance Run \u{2014} {run_at}");
     wln!(out);
 
+    render_interrupted(summary, &mut out);
     render_unpushed(summary, &mut out);
     render_scanner_failures(summary, &mut out);
     render_wrong_branch(summary, &mut out);
@@ -737,6 +767,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         }
     }
 
@@ -837,6 +868,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -879,6 +911,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -921,6 +954,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -950,6 +984,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -980,6 +1015,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -1001,6 +1037,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -1027,6 +1064,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -1053,6 +1091,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -1086,6 +1125,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
 
         let md = render(&summary);
@@ -1122,6 +1162,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -1157,6 +1198,7 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -1177,11 +1219,13 @@ mod tests {
                     name: "alpha".to_string(),
                     method: "cargo".to_string(),
                     success: true,
+                    note: None,
                 },
                 LocalInstallEntry {
                     name: "beta".to_string(),
                     method: "brew".to_string(),
                     success: false,
+                    note: Some("failed to spawn command: brew".to_string()),
                 },
             ],
             unpushed: vec![],
@@ -1190,11 +1234,15 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
         assert!(md.contains("| alpha | cargo |"));
-        assert!(md.contains("| beta | brew |"));
+        assert!(
+            md.contains("| beta | brew | \u{274c} | failed to spawn command: brew |"),
+            "a failed install says why: {md}"
+        );
     }
 
     #[test]
@@ -1212,11 +1260,27 @@ mod tests {
             dependencies: vec![],
             majors: MajorsSummary::default(),
             low_disk: vec![],
+            interrupted: None,
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));
         assert!(!md.contains("## Auto-Releases"));
         assert!(!md.contains("## Local Installs"));
+    }
+
+    #[test]
+    fn render_puts_an_interruption_first() {
+        let mut summary = summary_with_unpushed(vec![]);
+        summary.interrupted = Some(foundry_sdk::payload::InterruptedCycle {
+            started_at: fixed_time(),
+            last_event_at: fixed_time(),
+            unfinished: vec!["context-mixer2".to_string(), "zk-chat".to_string()],
+        });
+        let md = render(&summary);
+        let banner = md.find("## \u{26a0}\u{fe0f} Cycle interrupted").expect("banner");
+        assert!(banner < md.find("## Project Status").unwrap());
+        assert!(md.contains("2 project(s) did not finish"), "{md}");
+        assert!(md.contains("- context-mixer2"), "{md}");
     }
 
     #[test]

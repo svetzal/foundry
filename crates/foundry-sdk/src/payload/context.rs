@@ -295,6 +295,21 @@ pub struct GatherCompletedPayload {
     pub context: serde_json::Value,
     /// The completed children, in arrival order.
     pub children: Vec<GatheredChild>,
+    /// Children that never completed. Non-empty only when the engine closed
+    /// the gather because nothing was left to run (a block failed before the
+    /// child's completion), or when foundryd, restarting, closed a gather it
+    /// had been killed in the middle of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<MissingChild>,
+}
+
+/// A scattered child that never reached its completion event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingChild {
+    /// The project the child ran in.
+    pub project: String,
+    /// Why it did not complete, for a person to read.
+    pub reason: String,
 }
 
 #[cfg(test)]

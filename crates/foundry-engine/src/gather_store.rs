@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{GatherCompletedPayload, GatheredChild};
+use foundry_sdk::payload::{GatherCompletedPayload, GatheredChild, MissingChild};
 use foundry_sdk::scatter::{GatherPolicy, GatherSpec};
 use foundry_sdk::throttle::Throttle;
 
@@ -29,6 +29,9 @@ pub(crate) struct GatherGroup {
     /// outer group.
     parent_gather_id: Option<String>,
     expected: usize,
+    /// The project of each scattered child, used to name the children that
+    /// never completed when the group has to be closed early.
+    child_projects: Vec<String>,
     on: Vec<EventType>,
     policy: GatherPolicy,
     reduce_event_type: EventType,
@@ -58,6 +61,7 @@ impl GatherGroup {
             gather_id,
             parent_gather_id: trigger.gather_id.clone(),
             expected,
+            child_projects: Vec::new(),
             on: gather.on,
             policy: gather.policy,
             reduce_event_type: gather.reduce_event_type,
@@ -72,6 +76,37 @@ impl GatherGroup {
         }
     }
 
+    /// Record the project of each scattered child.
+    #[must_use]
+    pub(crate) fn with_child_projects(mut self, projects: Vec<String>) -> Self {
+        self.child_projects = projects;
+        self
+    }
+
+    /// The children that have not arrived, each with the reason `reason_for`
+    /// gives for its project.
+    fn missing(&self, reason_for: &dyn Fn(&str) -> String) -> Vec<MissingChild> {
+        let mut outstanding = self.child_projects.clone();
+        for child in &self.arrived {
+            if let Some(i) = outstanding.iter().position(|p| *p == child.project) {
+                outstanding.swap_remove(i);
+            }
+        }
+        let unnamed = self
+            .expected
+            .saturating_sub(self.arrived.len())
+            .saturating_sub(outstanding.len());
+        outstanding.extend(std::iter::repeat_n("(unknown)".to_string(), unnamed));
+        outstanding.sort();
+        outstanding
+            .into_iter()
+            .map(|project| MissingChild {
+                reason: reason_for(&project),
+                project,
+            })
+            .collect()
+    }
+
     fn is_satisfied(&self) -> bool {
         self.policy.is_satisfied(self.arrived.len(), self.expected)
     }
@@ -79,13 +114,14 @@ impl GatherGroup {
     /// Consume the group and synthesize its reduce event. `caused_by` is the
     /// `id` of the completion that satisfied the group, or `None` for an
     /// empty scatter that was satisfied on registration.
-    fn into_reduce_event(self, caused_by: Option<String>) -> Event {
+    fn into_reduce_event(self, caused_by: Option<String>, missing: Vec<MissingChild>) -> Event {
         let payload = GatherCompletedPayload {
             gather_id: self.gather_id,
             expected: self.expected,
             arrived: self.arrived.len(),
             context: self.context,
             children: self.arrived,
+            missing,
         };
         #[allow(
             clippy::expect_used,
@@ -123,7 +159,7 @@ impl GatherStore {
     /// or a `Count(0)` policy.
     pub(crate) fn open(&mut self, group: GatherGroup) -> Option<Event> {
         if group.is_satisfied() {
-            return Some(group.into_reduce_event(None));
+            return Some(group.into_reduce_event(None, Vec::new()));
         }
         self.groups.insert(group.gather_id.clone(), group);
         None
@@ -160,9 +196,34 @@ impl GatherStore {
                 reason = "`group` was just borrowed from `self.groups` via this same `gather_id` above"
             )]
             let group = self.groups.remove(gather_id).expect("group was just present");
-            return Some(group.into_reduce_event(Some(event.id.clone())));
+            return Some(group.into_reduce_event(Some(event.id.clone()), Vec::new()));
         }
         None
+    }
+
+    /// Close one open group that can no longer be satisfied, synthesizing its
+    /// reduce event with the children that never arrived listed as `missing`.
+    ///
+    /// Called when the traversal has nothing left to run: any completion a
+    /// group is still waiting for can no longer be produced, because a block
+    /// on that child's path failed without emitting it. Closing the group
+    /// keeps one failed child from stopping the whole fan-in. Innermost groups
+    /// close first, so a nested reduce can still count toward its outer group.
+    ///
+    /// `reason_for(gather_id, project)` explains why a child did not finish.
+    pub(crate) fn close_stalled(
+        &mut self,
+        reason_for: &dyn Fn(&str, &str) -> String,
+    ) -> Option<Event> {
+        let parents: HashSet<&str> =
+            self.groups.values().filter_map(|g| g.parent_gather_id.as_deref()).collect();
+        let mut candidates: Vec<&String> =
+            self.groups.keys().filter(|id| !parents.contains(id.as_str())).collect();
+        candidates.sort();
+        let gather_id = (*candidates.first()?).clone();
+        let group = self.groups.remove(&gather_id)?;
+        let missing = group.missing(&|project| reason_for(&gather_id, project));
+        Some(group.into_reduce_event(None, missing))
     }
 }
 
@@ -311,6 +372,50 @@ mod tests {
             Some("gth_outer"),
             "the reduce event rejoins the outer gather group",
         );
+    }
+
+    #[test]
+    fn close_stalled_names_the_children_that_never_arrived() {
+        let trigger = scatter_trigger();
+        let mut store = GatherStore::new();
+        store.open(all_group("gth_1", 3, &trigger).with_child_projects(vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ]));
+        assert!(store.record(&completion("gth_1", "beta", true)).is_none());
+
+        let reduce = store
+            .close_stalled(&|gather, project| format!("{gather}/{project} stopped"))
+            .expect("the open group closes");
+        let payload: GatherCompletedPayload = reduce.parse_payload().unwrap();
+        assert_eq!(payload.arrived, 1);
+        let missing: Vec<(&str, &str)> = payload
+            .missing
+            .iter()
+            .map(|m| (m.project.as_str(), m.reason.as_str()))
+            .collect();
+        assert_eq!(
+            missing,
+            [
+                ("alpha", "gth_1/alpha stopped"),
+                ("gamma", "gth_1/gamma stopped")
+            ]
+        );
+        assert!(store.close_stalled(&|_, _| String::new()).is_none(), "nothing left open");
+    }
+
+    #[test]
+    fn close_stalled_closes_the_inner_group_first() {
+        let mut store = GatherStore::new();
+        store.open(all_group("gth_outer", 1, &scatter_trigger()));
+        let nested = scatter_trigger().with_gather_id(Some("gth_outer".to_string()));
+        store.open(all_group("gth_inner", 2, &nested));
+
+        let first = store.close_stalled(&|_, _| String::new()).unwrap();
+        let payload: GatherCompletedPayload = first.parse_payload().unwrap();
+        assert_eq!(payload.gather_id, "gth_inner");
+        assert_eq!(first.gather_id.as_deref(), Some("gth_outer"));
     }
 
     #[test]

@@ -29,19 +29,66 @@ fn local_install_completed_event(
     )
 }
 
-task_block_new! {
-    /// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
-    /// Mutator — simulated success at `dry_run`.
-    ///
-    /// Terminal block: this is the end of both the dirty and clean vulnerability
-    /// remediation paths.
-    ///
-    /// Dispatches based on the project's `InstallConfig` in the registry:
-    /// - `Command` — runs the specified shell command in the project directory
-    /// - `Brew` — runs `brew upgrade <formula>` (installs if not already present)
-    /// - absent — skips gracefully with `success=true`
-    pub struct InstallLocally {
-        shell: ShellGateway = crate::gateway::ProcessShellGateway
+/// Reinstalls a tool locally after changes are pushed or a release pipeline completes.
+/// Mutator — simulated success at `dry_run`.
+///
+/// Terminal block: this is the end of both the dirty and clean vulnerability
+/// remediation paths.
+///
+/// Dispatches based on the project's `InstallConfig` in the registry:
+/// - `Command` — runs the specified shell command in the project directory
+/// - `Brew` — runs `brew upgrade <formula>` (installs if not already present).
+///   Homebrew is macOS-only here: on any other host the step is skipped with
+///   `install via brew not supported on <os>` and `brew` is never spawned.
+/// - absent — skips gracefully with `success=true`
+///
+/// Every outcome is recorded as a `LocalInstallCompleted` event, including a
+/// command that could not be started, so the maintenance summary can report
+/// it per project.
+pub struct InstallLocally {
+    registry: Arc<std::sync::RwLock<Registry>>,
+    shell: Arc<dyn ShellGateway>,
+    /// The host operating system, as `std::env::consts::OS` names it.
+    host_os: &'static str,
+}
+
+impl InstallLocally {
+    pub fn new(registry: Arc<std::sync::RwLock<Registry>>) -> Self {
+        Self {
+            registry,
+            shell: Arc::new(crate::gateway::ProcessShellGateway),
+            host_os: std::env::consts::OS,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_gateways(
+        registry: Arc<std::sync::RwLock<Registry>>,
+        shell: Arc<dyn ShellGateway>,
+    ) -> Self {
+        Self {
+            registry,
+            shell,
+            host_os: std::env::consts::OS,
+        }
+    }
+
+    /// Behave as if running on `os` (for example `"linux"`).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_host_os(mut self, os: &'static str) -> Self {
+        self.host_os = os;
+        self
+    }
+}
+
+/// Why an install config cannot run on this host, or `None` when it can.
+fn unsupported_on_host(install: &InstallConfig, host_os: &str) -> Option<String> {
+    match install {
+        InstallConfig::Brew(_) if host_os != "macos" => {
+            Some(format!("install via brew not supported on {host_os}"))
+        }
+        _ => None,
     }
 }
 
@@ -96,6 +143,7 @@ impl TaskBlock for InstallLocally {
             Err(e) => return Box::pin(async move { Err(e) }),
         };
         let shell = Arc::clone(&self.shell);
+        let host_os = self.host_os;
 
         Box::pin(async move {
             // Guard: project must be in the registry and have an install config.
@@ -104,21 +152,37 @@ impl TaskBlock for InstallLocally {
                 Err(skip) => return Ok(skip),
             };
 
-            let (method_name, cmd_result) = match &install_config {
+            if let Some(reason) = unsupported_on_host(&install_config, host_os) {
+                // Domain skip: the config cannot run here; say so rather than
+                // spawn a program the host does not have.
+                tracing::warn!(project = %project, %reason, "install skipped");
+                return Ok(skipped_on_host(&project, throttle, reason));
+            }
+
+            let (method_name, spawned) = match &install_config {
                 InstallConfig::Command(cmd) => {
                     tracing::info!(project = %project, command = %cmd, "running install command");
                     let project_dir = Path::new(&entry.path);
-                    let result = shell.run(project_dir, "sh", &["-c", cmd], None, None).await?;
-                    ("command", result)
+                    ("command", shell.run(project_dir, "sh", &["-c", cmd], None, None).await)
                 }
                 InstallConfig::Brew(formula) => {
                     tracing::info!(project = %project, formula = %formula, "running brew upgrade");
                     // brew upgrade installs the formula if not already present and upgrades if it
                     // is. "already up-to-date" is treated as success by brew (exit 0).
-                    let result = shell
-                        .run(Path::new("/"), "brew", &["upgrade", formula], None, None)
-                        .await?;
-                    ("brew", result)
+                    (
+                        "brew",
+                        shell.run(Path::new("/"), "brew", &["upgrade", formula], None, None).await,
+                    )
+                }
+            };
+            let cmd_result = match spawned {
+                Ok(result) => result,
+                Err(e) => {
+                    // Record: a command that could not start is a failed
+                    // install, reported per project in the summary rather
+                    // than only in the daemon log.
+                    tracing::warn!(project = %project, method = method_name, error = %e, "install command could not start");
+                    return Ok(could_not_start(&project, throttle, method_name, &e.to_string()));
                 }
             };
 
@@ -167,6 +231,52 @@ impl TaskBlock for InstallLocally {
                 ..Default::default()
             })
         })
+    }
+}
+
+/// The result for an install config this host cannot run.
+fn skipped_on_host(
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    reason: String,
+) -> TaskBlockResult {
+    TaskBlockResult::success(
+        format!("Skipped: {reason}"),
+        vec![local_install_completed_event(
+            project,
+            throttle,
+            &LocalInstallCompletedPayload {
+                method: Some("brew".to_string()),
+                success: true,
+                status: Some("skipped".to_string()),
+                reason: Some(reason),
+                ..Default::default()
+            },
+        )],
+    )
+}
+
+/// The result for an install command that could not be started at all.
+fn could_not_start(
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    method: &str,
+    error: &str,
+) -> TaskBlockResult {
+    TaskBlockResult {
+        events: vec![local_install_completed_event(
+            project,
+            throttle,
+            &LocalInstallCompletedPayload {
+                method: Some(method.to_string()),
+                success: false,
+                details: Some(error.to_string()),
+                ..Default::default()
+            },
+        )],
+        success: false,
+        summary: format!("Install via {method} failed: {error}"),
+        ..Default::default()
     }
 }
 
@@ -396,6 +506,58 @@ mod tests {
         assert!(result.summary.contains("failed"));
     }
 
+    /// A shell whose commands cannot be started at all.
+    struct UnspawnableShell;
+
+    impl crate::gateway::ShellGateway for UnspawnableShell {
+        fn run<'a>(
+            &'a self,
+            _working_dir: &'a std::path::Path,
+            command: &'a str,
+            _args: &'a [&'a str],
+            _env: Option<&'a [(String, String)]>,
+            _timeout: Option<Duration>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<CommandResult>> + Send + 'a>,
+        > {
+            Box::pin(async move { anyhow::bail!("failed to spawn command: {command}") })
+        }
+    }
+
+    #[tokio::test]
+    async fn brew_on_linux_is_skipped_and_never_spawned() {
+        let registry = registry_with_install(Some(InstallConfig::Brew("hone".to_string())));
+        let shell = FakeShellGateway::success();
+        let block = InstallLocally::with_gateways(registry, shell.clone()).with_host_os("linux");
+
+        let result = block.execute(&make_trigger("my-project")).await.unwrap();
+
+        assert!(result.success, "a skip is not a failed run");
+        assert!(shell.invocations().is_empty(), "brew must never be spawned on linux");
+        assert_eq!(result.events.len(), 1);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["status"], "skipped");
+        assert_eq!(payload["reason"], "install via brew not supported on linux");
+        assert_eq!(payload["method"], "brew");
+    }
+
+    #[tokio::test]
+    async fn an_install_command_that_cannot_start_is_recorded_not_raised() {
+        let registry = registry_with_install(Some(InstallConfig::Brew("hone".to_string())));
+        let block = InstallLocally::with_gateways(registry, Arc::new(UnspawnableShell))
+            .with_host_os("macos");
+
+        let result =
+            block.execute(&make_trigger("my-project")).await.expect("recorded, not an Err");
+
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1, "the summary needs the event");
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["method"], "brew");
+        assert_eq!(payload["details"], "failed to spawn command: brew");
+    }
+
     #[tokio::test]
     async fn brew_install_success() {
         let registry = registry_with_install(Some(InstallConfig::Brew("mytool".to_string())));
@@ -405,7 +567,7 @@ mod tests {
             exit_code: 0,
             success: true,
         });
-        let block = InstallLocally::with_gateways(registry, shell);
+        let block = InstallLocally::with_gateways(registry, shell).with_host_os("macos");
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -475,7 +637,8 @@ mod tests {
         });
         let shell_for_inspect = Arc::clone(&shell);
         let block =
-            InstallLocally::with_gateways(registry, shell as Arc<dyn crate::gateway::ShellGateway>);
+            InstallLocally::with_gateways(registry, shell as Arc<dyn crate::gateway::ShellGateway>)
+                .with_host_os("macos");
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();
@@ -546,7 +709,7 @@ mod tests {
             Some(InstallsSkill::Default(true)),
         );
         let shell = FakeShellGateway::success();
-        let block = InstallLocally::with_gateways(registry, shell);
+        let block = InstallLocally::with_gateways(registry, shell).with_host_os("macos");
         let trigger = make_trigger("my-project");
 
         let result = block.execute(&trigger).await.unwrap();

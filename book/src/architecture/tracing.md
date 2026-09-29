@@ -177,6 +177,12 @@ fan-out group it belongs to, so the engine can count it toward the gather.
 Stamping is "set if unset", and an event outside any fan-out simply carries
 `None`.
 
+A gather still open when the traversal has nothing left to run can no longer be
+satisfied: some child's chain ended in a failed block before its completion.
+The engine then closes the innermost such group itself and delivers its reduce
+event, whose `missing` field names each child that did not arrive and the block
+that stopped it. One failed child therefore never stops the fan-in.
+
 ## Span-Opener Registry
 
 The span-opener registry is implemented as `EventType::is_span_opener` in

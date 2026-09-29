@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let event_writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir));
+    let event_writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir.clone()));
 
     let traces_dir = foundry_sdk::paths::traces_dir();
     let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
@@ -135,6 +135,7 @@ async fn main() -> Result<()> {
         registry,
     };
 
+    service::spawn_interrupted_cycle_recovery(&ctx, events_dir);
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
 
     let service = service::FoundryService::new(

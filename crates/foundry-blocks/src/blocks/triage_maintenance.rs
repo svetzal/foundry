@@ -42,6 +42,15 @@ impl TaskBlock for TriageMaintenance {
         sinks_on: [MaintenanceSummaryRequested],
     }
 
+    /// A cycle closed after an interruption is not triaged: the run window
+    /// is computed back from the request time, which for a recovered cycle is
+    /// hours or days after the run, and the triage digest is dated today.
+    fn accepts(&self, trigger: &Event) -> bool {
+        trigger
+            .parse_payload::<MaintenanceSummaryRequestedPayload>()
+            .is_ok_and(|p| p.interrupted.is_none())
+    }
+
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let p = parse_payload!(trigger, MaintenanceSummaryRequestedPayload);
         let project = trigger.project.clone();
@@ -193,6 +202,24 @@ mod tests {
         kind: Observer,
         sinks_on: [MaintenanceSummaryRequested],
     );
+
+    #[test]
+    fn accepts_returns_true_for_a_normal_cycle() {
+        let block = TriageMaintenance::new(std::path::PathBuf::from("/tmp"), 14);
+        assert!(block.accepts(&make_trigger(1000)));
+    }
+
+    #[test]
+    fn accepts_returns_false_when_the_cycle_was_interrupted() {
+        let block = TriageMaintenance::new(std::path::PathBuf::from("/tmp"), 14);
+        let mut trigger = make_trigger(1000);
+        trigger.payload["interrupted"] = serde_json::json!({
+            "started_at": "2026-09-26T06:00:00Z",
+            "last_event_at": "2026-09-26T08:42:06Z",
+            "unfinished": ["context-mixer2"],
+        });
+        assert!(!block.accepts(&trigger));
+    }
 
     #[tokio::test]
     async fn emits_triage_completed_with_skipped_when_no_failures() {

@@ -338,7 +338,10 @@ impl TaskBlock for PlanMajorUpgrades {
             let (prior, history_warning) =
                 prior_tasks(events_dir, &paths, shell.as_ref(), now).await;
             let upgrades = majors::plan(&inputs, &prior, caps);
-            let dispatch_enabled = !review && throttle.permits_mutation();
+            // A cycle closed after an interruption is reported, not acted on:
+            // starting upgrade tasks from a daemon restart would surprise.
+            let dispatch_enabled =
+                !review && throttle.permits_mutation() && summary_fields.interrupted.is_none();
             let payload = MajorUpgradesPlannedPayload {
                 upgrades,
                 per_project_cap: caps.per_project,
@@ -350,6 +353,7 @@ impl TaskBlock for PlanMajorUpgrades {
                 skipped_projects: summary_fields.skipped_projects,
                 total_duration_ms: summary_fields.total_duration_ms,
                 root_event_id: summary_fields.root_event_id,
+                interrupted: summary_fields.interrupted,
             };
             let summary = plan_summary(&payload);
             let rendered = render_plan(&payload);
@@ -693,6 +697,43 @@ mod tests {
         assert_eq!(p.project_trace_ids.len(), 2);
         assert_eq!(p.skipped_projects, ["off"]);
         assert_eq!(p.total_duration_ms, 5000);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_cycle_plans_without_dispatching() {
+        let traces = tempfile::tempdir().unwrap();
+        let events = tempfile::tempdir().unwrap();
+        let tw = TraceWriter::new(traces.path().to_str().unwrap());
+        write_trace(
+            &tw,
+            "evt_a",
+            vec![
+                classified(
+                    "alpha",
+                    ClassificationPhase::Before,
+                    UpdatePolicy::Major,
+                    vec![major("x")],
+                ),
+                maintenance_done("alpha", true),
+            ],
+        );
+        let b = block(traces.path(), events.path(), Caps::default());
+        let mut request = summary_request(&[("alpha", "evt_a")], Throttle::Full);
+        request.payload["interrupted"] = serde_json::json!({
+            "started_at": "2026-09-26T06:00:00Z",
+            "last_event_at": "2026-09-26T08:42:06Z",
+            "unfinished": ["context-mixer2"],
+        });
+
+        let result = b.execute(&request).await.unwrap();
+
+        let p: MajorUpgradesPlannedPayload = result.events[0].parse_payload().unwrap();
+        assert!(!p.dispatch_enabled, "a restart must not start upgrade tasks");
+        assert_eq!(
+            p.interrupted.map(|i| i.unfinished),
+            Some(vec!["context-mixer2".to_string()]),
+            "forwarded to the summary"
+        );
     }
 
     #[tokio::test]

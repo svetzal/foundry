@@ -252,6 +252,38 @@ impl Engine {
         let mut block_executions = Vec::new();
         let mut state = ProcessState::new(event);
 
+        loop {
+            self.drain_queue(&mut state, &mut block_executions).await;
+            // Nothing left to run. A gather still open now waits for
+            // completions no block can produce any more: close it, so one
+            // failed child cannot keep the fan-in from completing.
+            let reasons = failed_block_reasons(&block_executions, &state.all_events);
+            let reason_for = |gather_id: &str, project: &str| {
+                reasons
+                    .get(&(gather_id.to_string(), project.to_string()))
+                    .cloned()
+                    .unwrap_or_else(|| "its chain ended without a completion event".to_string())
+            };
+            let propagator = Propagator::new(&self.emitter, &self.stamper);
+            if !propagator.close_stalled_gather(&mut state, &reason_for) {
+                break;
+            }
+        }
+
+        ProcessResult {
+            events: state.all_events,
+            block_executions,
+            total_duration_ms: u64::try_from(process_start.elapsed().as_millis())
+                .unwrap_or(u64::MAX),
+        }
+    }
+
+    /// Dispatch queued events to their blocks until the queue is empty.
+    async fn drain_queue(
+        &self,
+        state: &mut ProcessState,
+        block_executions: &mut Vec<foundry_sdk::trace::BlockExecution>,
+    ) {
         while let Some(current) = state.queue.pop() {
             let matching: Vec<&dyn TaskBlock> = self
                 .blocks
@@ -271,16 +303,9 @@ impl Engine {
                 let _block_guard = block_span.enter();
                 tracing::info!("executing");
 
-                let execution = self.run_block(block, &current, &mut state).await;
+                let execution = self.run_block(block, &current, state).await;
                 block_executions.push(execution);
             }
-        }
-
-        ProcessResult {
-            events: state.all_events,
-            block_executions,
-            total_duration_ms: u64::try_from(process_start.elapsed().as_millis())
-                .unwrap_or(u64::MAX),
         }
     }
 
@@ -289,6 +314,30 @@ impl Engine {
     pub fn list_blocks(&self) -> Vec<(&str, &[EventType])> {
         self.blocks.iter().map(|b| (b.name(), b.sinks_on())).collect()
     }
+}
+
+/// Why each child of a fan-out stopped, keyed by `(gather_id, project)`: the
+/// last block in that child's chain that failed without emitting anything.
+fn failed_block_reasons(
+    executions: &[foundry_sdk::trace::BlockExecution],
+    events: &[Event],
+) -> std::collections::HashMap<(String, String), String> {
+    let by_id: std::collections::HashMap<&str, &Event> =
+        events.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut reasons = std::collections::HashMap::new();
+    for execution in executions.iter().filter(|x| !x.success && x.emitted_event_ids.is_empty()) {
+        let Some(trigger) = by_id.get(execution.trigger_event_id.as_str()) else {
+            continue;
+        };
+        let Some(gather_id) = trigger.gather_id.clone() else {
+            continue;
+        };
+        reasons.insert(
+            (gather_id, trigger.project.clone()),
+            format!("{} failed: {}", execution.block_name, execution.summary),
+        );
+    }
+    reasons
 }
 
 #[cfg(test)]
@@ -1282,6 +1331,95 @@ mod tests {
                 Ok(TaskBlockResult::success("observed reduce", vec![]))
             })
         }
+    }
+
+    /// Test block: like [`ChildWorker`], but errors for `child-1`, so that
+    /// child's run never reaches its completion.
+    struct FailingChildWorker;
+
+    impl TaskBlock for FailingChildWorker {
+        fn name(&self) -> &'static str {
+            "FailingChildWorker"
+        }
+
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::ProjectRunStarted]
+        }
+
+        fn execute(
+            &self,
+            trigger: &Event,
+        ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<TaskBlockResult>> + Send + '_>>
+        {
+            let project = trigger.project.clone();
+            let throttle = trigger.throttle;
+            Box::pin(async move {
+                if project == "child-1" {
+                    anyhow::bail!("failed to spawn command: brew");
+                }
+                Ok(TaskBlockResult::success(
+                    "child completed",
+                    vec![Event::new(
+                        EventType::ProjectRunCompleted,
+                        project,
+                        throttle,
+                        serde_json::json!({ "success": true }),
+                    )],
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_child_whose_chain_fails_does_not_stop_the_gather() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = Engine::new();
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 3,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(FailingChildWorker));
+        engine.register(Box::new(ReduceObserver {
+            sinks: vec![EventType::MaintenanceCycleCompleted],
+            seen: Arc::clone(&seen),
+        }));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(trigger).await;
+
+        assert_eq!(
+            type_count(&result, &EventType::MaintenanceCycleCompleted),
+            1,
+            "the cycle completes although one child never did",
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the reduce block still ran");
+        let payload: foundry_sdk::payload::GatherCompletedPayload =
+            seen[0].parse_payload().unwrap();
+        assert_eq!(payload.expected, 3);
+        assert_eq!(payload.arrived, 2);
+        assert_eq!(payload.missing.len(), 1);
+        assert_eq!(payload.missing[0].project, "child-1");
+        assert!(
+            payload.missing[0].reason.contains("FailingChildWorker")
+                && payload.missing[0].reason.contains("failed to spawn command: brew"),
+            "the reason names the block that stopped the child: {}",
+            payload.missing[0].reason
+        );
     }
 
     fn type_count(result: &ProcessResult, ty: &EventType) -> usize {

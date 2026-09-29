@@ -31,6 +31,7 @@ use foundry_engine::engine::Engine;
 
 mod campaign_ops;
 mod eventing_ops;
+mod recovery;
 mod registry_ops;
 mod sentinel_ops;
 mod tracing_ops;
@@ -97,6 +98,16 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
         trace_id: event.trace_id.clone().unwrap_or_default(),
         started_at: chrono::Utc::now(),
         campaign,
+    });
+}
+
+/// Close, in the background, any maintenance cycle foundryd was stopped in
+/// the middle of (see `recovery`). Call once at start, before the scheduler
+/// can fire a new cycle.
+pub fn spawn_interrupted_cycle_recovery(ctx: &RuntimeContext, events_dir: std::path::PathBuf) {
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        recovery::recover_interrupted_cycles(&ctx, &events_dir).await;
     });
 }
 

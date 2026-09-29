@@ -33,6 +33,33 @@ pub struct MaintenanceSummaryRequestedPayload {
     pub total_duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
+    /// Set when this summary is for a cycle foundryd was stopped in the
+    /// middle of, and closed on its next start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<InterruptedCycle>,
+}
+
+/// A maintenance cycle that never finished because foundryd stopped during
+/// it (killed, crashed, host restarted). Recorded on the next start so the
+/// cycle still gets a summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedCycle {
+    /// When the cycle started.
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// The last event foundryd recorded for the cycle before it stopped.
+    pub last_event_at: chrono::DateTime<chrono::Utc>,
+    /// Projects whose run had not completed.
+    pub unfinished: Vec<String>,
+}
+
+impl InterruptedCycle {
+    /// The status line for a project that did not finish.
+    pub fn unfinished_reason(&self) -> String {
+        format!(
+            "interrupted: foundryd stopped (last event {}) before this run finished",
+            self.last_event_at.format("%Y-%m-%d %H:%M UTC")
+        )
+    }
 }
 
 /// Payload for `ProjectRunCompleted`.

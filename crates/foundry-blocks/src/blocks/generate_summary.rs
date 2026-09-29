@@ -272,6 +272,13 @@ fn extract_local_installs(project: &str, result: &ProcessResult) -> Vec<LocalIns
             name: project.to_string(),
             method: p.method.unwrap_or_else(|| "unknown".to_string()),
             success: p.success,
+            note: if p.status.as_deref() == Some("skipped") {
+                Some(format!("skipped: {}", p.reason.unwrap_or_default()))
+            } else if p.success {
+                None
+            } else {
+                p.details
+            },
         })
         .collect()
 }
@@ -439,9 +446,34 @@ fn load_project_results(
     loaded
 }
 
+/// Report every project an interrupted cycle did not finish as failed, with
+/// the interruption as the reason, whatever its partial trace suggests.
+fn mark_unfinished(
+    projects: &mut Vec<ProjectResult>,
+    interrupted: &foundry_sdk::payload::InterruptedCycle,
+) {
+    let reason = interrupted.unfinished_reason();
+    for name in &interrupted.unfinished {
+        match projects.iter_mut().find(|p| &p.name == name) {
+            Some(project) => project.status = ProjectStatus::Failed(reason.clone()),
+            None => projects.push(ProjectResult {
+                name: name.clone(),
+                status: ProjectStatus::Failed(reason.clone()),
+                duration_secs: None,
+            }),
+        }
+    }
+}
+
 /// The loud problems in a run, for the block's result line.
 fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     let mut warnings = Vec::new();
+    if let Some(interrupted) = &summary.interrupted {
+        warnings.push(format!(
+            "cycle interrupted: {} project(s) did not finish",
+            interrupted.unfinished.len()
+        ));
+    }
     if !summary.unpushed.is_empty() {
         warnings.push(format!("{} project(s) have unpushed commits", summary.unpushed.len()));
     }
@@ -466,6 +498,10 @@ fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     if beyond > 0 {
         warnings.push(format!("{beyond} project(s) applied dependency updates beyond the brief"));
     }
+    let failed_installs = summary.local_installs.iter().filter(|i| !i.success).count();
+    if failed_installs > 0 {
+        warnings.push(format!("{failed_installs} install step(s) failed"));
+    }
     if !summary.low_disk.is_empty() {
         warnings.push(format!("{} filesystem(s) low on disk", summary.low_disk.len()));
     }
@@ -480,10 +516,29 @@ fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     warnings
 }
 
-fn write_summary(audits_dir: &std::path::Path, markdown: &str) -> anyhow::Result<String> {
-    let date = Utc::now().format("%Y-%m-%d").to_string();
-    let runs_dir = audits_dir.join("runs").join(&date);
-    if let Err(e) = std::fs::create_dir_all(&runs_dir) {
+/// Where a run's summary goes: `runs/<date>/summary.md`, dated by the run.
+///
+/// An interrupted cycle is dated by when it started and never overwrites a
+/// summary already written for that day; it takes
+/// `summary-interrupted-<HHMM>.md` instead.
+fn summary_path(
+    audits_dir: &std::path::Path,
+    interrupted: Option<&foundry_sdk::payload::InterruptedCycle>,
+) -> std::path::PathBuf {
+    let started = interrupted.map_or_else(Utc::now, |i| i.started_at);
+    let runs_dir = audits_dir.join("runs").join(started.format("%Y-%m-%d").to_string());
+    let plain = runs_dir.join("summary.md");
+    if interrupted.is_some() && plain.exists() {
+        return runs_dir.join(format!("summary-interrupted-{}.md", started.format("%H%M")));
+    }
+    plain
+}
+
+fn write_summary(summary_path: &std::path::Path, markdown: &str) -> anyhow::Result<String> {
+    let Some(runs_dir) = summary_path.parent() else {
+        return Err(anyhow::anyhow!("summary path has no directory: {}", summary_path.display()));
+    };
+    if let Err(e) = std::fs::create_dir_all(runs_dir) {
         tracing::error!(
             error = %e,
             path = %runs_dir.display(),
@@ -492,8 +547,7 @@ fn write_summary(audits_dir: &std::path::Path, markdown: &str) -> anyhow::Result
         return Err(anyhow::anyhow!("Failed to create directory: {e}"));
     }
 
-    let summary_path = runs_dir.join("summary.md");
-    if let Err(e) = std::fs::write(&summary_path, markdown) {
+    if let Err(e) = std::fs::write(summary_path, markdown) {
         tracing::error!(
             error = %e,
             path = %summary_path.display(),
@@ -529,6 +583,7 @@ impl TaskBlock for GenerateSummary {
             let project_trace_ids = p.project_trace_ids;
             let skipped_projects = p.skipped_projects;
             let total_duration_ms = p.total_duration_ms;
+            let interrupted = p.interrupted;
 
             let LoadedResults {
                 mut projects,
@@ -546,6 +601,10 @@ impl TaskBlock for GenerateSummary {
                 per_night_cap: p.per_night_cap,
                 history_warning: p.history_warning,
             };
+
+            if let Some(interrupted) = &interrupted {
+                mark_unfinished(&mut projects, interrupted);
+            }
 
             for name in &skipped_projects {
                 projects.push(ProjectResult {
@@ -574,12 +633,14 @@ impl TaskBlock for GenerateSummary {
                 dependencies,
                 majors,
                 low_disk,
+                interrupted,
             };
             let warnings = summary_warnings(&summary);
 
             let markdown = crate::summary::render(&summary);
 
-            let path_str = match write_summary(&audits_dir, &markdown) {
+            let path = summary_path(&audits_dir, summary.interrupted.as_ref());
+            let path_str = match write_summary(&path, &markdown) {
                 Ok(p) => p,
                 Err(e) => return Ok(TaskBlockResult::failure(e.to_string())),
             };
@@ -774,6 +835,52 @@ mod tests {
         assert!(content.contains("alpha"));
         assert!(content.contains("beta"));
         assert!(content.contains("success"));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_cycle_gets_a_dated_summary_that_names_the_unfinished_projects() {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        tw.write("evt_alpha", &successful_trace("alpha")).unwrap();
+        // context-mixer2's partial trace has no failed block: without the
+        // interruption it would read as a success.
+        tw.write("evt_cm2", &successful_trace("context-mixer2")).unwrap();
+        let block = summary_block(tw, audits_dir.path());
+        let trigger = || {
+            test_helpers::make_trigger(
+                EventType::MajorUpgradesPlanned,
+                "system",
+                serde_json::json!({
+                    "project_trace_ids": {"alpha": "evt_alpha", "context-mixer2": "evt_cm2"},
+                    "skipped_projects": [],
+                    "total_duration_ms": 1000,
+                    "interrupted": {
+                        "started_at": "2026-09-26T06:00:00Z",
+                        "last_event_at": "2026-09-26T08:42:06Z",
+                        "unfinished": ["context-mixer2", "zk-chat"],
+                    },
+                }),
+            )
+        };
+
+        let result = block.execute(&trigger()).await.unwrap();
+
+        let path = std::path::PathBuf::from(&result.audit_artifacts[0]);
+        assert_eq!(path, audits_dir.path().join("runs/2026-09-26/summary.md"), "dated by the run");
+        let md = std::fs::read_to_string(&path).unwrap();
+        assert!(md.contains("Cycle interrupted"), "{md}");
+        assert!(md.contains("| context-mixer2 | \u{274c} failed |"), "{md}");
+        assert!(md.contains("| zk-chat | \u{274c} failed |"), "{md}");
+        assert!(md.contains("| alpha | \u{2705} success |"), "{md}");
+        assert!(result.summary.contains("cycle interrupted: 2 project(s) did not finish"));
+
+        // A second write for the same day never overwrites the first.
+        let again = block.execute(&trigger()).await.unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(&again.audit_artifacts[0]),
+            audits_dir.path().join("runs/2026-09-26/summary-interrupted-0600.md")
+        );
     }
 
     fn push_registry(entries: &[(&str, bool)]) -> Arc<RwLock<Registry>> {
@@ -1276,6 +1383,30 @@ mod tests {
         assert_eq!(installs.len(), 1);
         assert_eq!(installs[0].method, "brew");
         assert!(installs[0].success);
+        assert_eq!(installs[0].note, None);
+    }
+
+    #[test]
+    fn install_failures_and_skips_carry_their_reason() {
+        let trace = trace_with(
+            "hone-cli",
+            vec![
+                (
+                    EventType::LocalInstallCompleted,
+                    serde_json::json!({"method": "brew", "success": false, "details": "failed to spawn command: brew"}),
+                ),
+                (
+                    EventType::LocalInstallCompleted,
+                    serde_json::json!({"method": "brew", "success": true, "status": "skipped", "reason": "install via brew not supported on linux"}),
+                ),
+            ],
+        );
+        let installs = extract_local_installs("hone-cli", &trace);
+        assert_eq!(installs[0].note.as_deref(), Some("failed to spawn command: brew"));
+        assert_eq!(
+            installs[1].note.as_deref(),
+            Some("skipped: install via brew not supported on linux")
+        );
     }
 
     // -- dependency reporting --

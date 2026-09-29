@@ -65,6 +65,28 @@ impl<'a> Propagator<'a> {
         self.deliver_reduce_if_satisfied(&reduce, state);
     }
 
+    /// Close one gather group that can no longer be satisfied (see
+    /// [`GatherStore::close_stalled`]) and deliver its reduce event. Returns
+    /// `false` when no group is open.
+    pub(crate) fn close_stalled_gather(
+        &self,
+        state: &mut ProcessState,
+        reason_for: &dyn Fn(&str, &str) -> String,
+    ) -> bool {
+        let Some(reduce) = state.gather_store.close_stalled(reason_for) else {
+            return false;
+        };
+        tracing::warn!(
+            reduce_event = %reduce.event_type,
+            "gather closed with children that never completed"
+        );
+        self.emitter.persist_one(&reduce);
+        state.all_events.push(reduce.clone());
+        state.queue.push(reduce.clone());
+        self.deliver_reduce_if_satisfied(&reduce, state);
+        true
+    }
+
     /// Propagate trace IDs, stamp OTel-shaped span context, persist to JSONL,
     /// broadcast to Watch subscribers, and optionally deliver to the processing
     /// queue. Delivered events are offered to the gather store, which may
@@ -119,7 +141,8 @@ impl<'a> Propagator<'a> {
         for child in &mut children {
             child.gather_id = Some(gather_id.clone());
         }
-        let group = GatherGroup::new(gather_id.clone(), children.len(), gather, trigger);
+        let group = GatherGroup::new(gather_id.clone(), children.len(), gather, trigger)
+            .with_child_projects(children.iter().map(|c| c.project.clone()).collect());
         let immediate = state.gather_store.open(group);
         let child_count = children.len();
         let (child_ids, _payloads) =

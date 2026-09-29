@@ -422,6 +422,9 @@ pub struct MajorUpgradesPlannedPayload {
     pub total_duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
+    /// Forwarded from `MaintenanceSummaryRequested`: the cycle was interrupted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<super::InterruptedCycle>,
 }
 
 #[cfg(test)]

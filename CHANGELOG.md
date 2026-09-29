@@ -30,6 +30,41 @@ project adheres to [Semantic Versioning](https://semver.org/).
     naming the commits and the suppression check's result. It is not
     retried. The failure metadata carries a new `needs_review` field, and
     `Route Gate Result` stops without retrying whenever it is set.
+- A maintenance cycle foundryd was stopped during now gets closed and
+  summarized. The 2026-09-26 nightly on the ops host never completed and
+  wrote no summary: at 08:44 UTC every process owned by the service user,
+  foundryd included, was killed with SIGKILL (the systemd user manager and
+  the user's syncthing service died in the same second; no OOM kill was
+  logged), and foundryd did not start again until 12:03. On start, foundryd
+  now looks back seven days for system cycles with no
+  `maintenance_cycle_completed`, records one with the unfinished projects as
+  `missing`, and writes the summary from the events the cycle logged. The
+  summary opens with "Cycle interrupted", lists unfinished projects as
+  failed, is dated by the cycle, never overwrites an existing summary, and
+  dispatches no major-upgrade tasks and no triage.
+- A block that fails before a project's `project_run_completed` no longer
+  leaves the cycle without a `maintenance_cycle_completed`. When nothing is
+  left to run, the engine closes any gather still open and records the
+  children that never arrived (`missing`, with the failing block's error).
+- `Install Locally` no longer starts `brew` on a host that is not macOS. It
+  records the step as skipped with "install via brew not supported on
+  <os>". An install command that cannot start is recorded as a failed
+  `local_install_completed` event instead of an engine error that only
+  reached the daemon log.
+- The maintenance summary's Local Installs table has a Detail column with
+  each failure's or skip's reason, and the result line warns when install
+  steps failed.
+- Skill installs are no longer derived from the project name when a
+  project has no install config. `foundry registry show hone-cli` on a host
+  with no install config said it would run `hone-cli init --global --force`;
+  the binary is `hone`. It now reports the skip and why.
+
+### Added
+
+- `foundry registry add` and `foundry registry edit` take
+  `--installs-skill <true|false|"command">`, online and `--offline`.
+  `RegistryAddRequest.installs_skill` (17) and
+  `RegistryEditRequest.installs_skill` (27) carry it over gRPC.
 
 ### Changed
 
