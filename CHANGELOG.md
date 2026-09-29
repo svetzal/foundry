@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.9] - 2026-09-29
+
 ### Fixed
 
 - The remediation agents are now checked like the maintain agent. 0.39.7
