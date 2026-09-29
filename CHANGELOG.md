@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.8] - 2026-09-29
+
+### Fixed
+
+- A summary for an interrupted cycle is headed with the time the cycle
+  started, not the time foundryd restarted. The first one written (the
+  2026-09-26 nightly on the ops host) was headed 2026-09-29.
+- The summary's majors column said "would dispatch (dry run)" whenever
+  dispatch was off, including for an interrupted cycle that was not a dry
+  run. It now says "would dispatch (not started)".
+
 ## [0.39.7] - 2026-09-29
 
 ### Fixed
