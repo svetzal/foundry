@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.39.7] - 2026-09-29
+
 ### Fixed
 
 - A maintain agent can no longer push past Foundry's checks. On 2026-09-29
