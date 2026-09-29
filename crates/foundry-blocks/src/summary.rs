@@ -311,7 +311,7 @@ fn policy_label(policy: UpdatePolicy, set: bool) -> String {
 fn major_status_label(status: MajorUpgradeStatus, dispatch_enabled: bool) -> &'static str {
     match (status, dispatch_enabled) {
         (MajorUpgradeStatus::Dispatch, true) => "dispatched",
-        (MajorUpgradeStatus::Dispatch, false) => "would dispatch (dry run)",
+        (MajorUpgradeStatus::Dispatch, false) => "would dispatch (not started)",
         (MajorUpgradeStatus::Deduped, _) => "deduped",
         (MajorUpgradeStatus::Overflow, _) => "overflow",
         (MajorUpgradeStatus::Deferred, _) => "deferred",

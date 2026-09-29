@@ -621,7 +621,8 @@ impl TaskBlock for GenerateSummary {
             let low_disk = find_low_disk(&names, &registry);
 
             let summary = MaintenanceRunSummary {
-                run_at: Utc::now(),
+                // An interrupted cycle is reported as the run it was.
+                run_at: interrupted.as_ref().map_or_else(Utc::now, |i| i.started_at),
                 total_duration_secs: Some(total_duration_ms / 1000),
                 projects,
                 release_audits,
@@ -870,6 +871,10 @@ mod tests {
         assert_eq!(path, audits_dir.path().join("runs/2026-09-26/summary.md"), "dated by the run");
         let md = std::fs::read_to_string(&path).unwrap();
         assert!(md.contains("Cycle interrupted"), "{md}");
+        assert!(
+            md.starts_with("# Foundry Maintenance Run \u{2014} 2026-09-26 06:00:00 UTC"),
+            "headed with the cycle's start, not the restart: {md}"
+        );
         assert!(md.contains("| context-mixer2 | \u{274c} failed |"), "{md}");
         assert!(md.contains("| zk-chat | \u{274c} failed |"), "{md}");
         assert!(md.contains("| alpha | \u{2705} success |"), "{md}");
