@@ -118,6 +118,11 @@ Each carries `item_id`, `project`, `objective`, `kind` (`task`,
 landed commit or preservation ref, the worktree path and whether it was
 removed.
 
+Read the ledger with `foundry queue` (running, queued, open and the newest 20
+settled items), `foundry queue open` (only the three open states) and
+`foundry queue show <item_id>` (one item's full record). All three take `--json`
+and `--offline`, and all three are read-only.
+
 ### Campaign Formation
 
 | Event                      | Category      |

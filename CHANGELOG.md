@@ -83,6 +83,35 @@ project adheres to [Semantic Versioning](https://semver.org/).
   No dispatch or ledger-write behaviour changes, and no CLI command is added
   yet.
 
+- `foundry queue` reads the work-item ledger from the operator's side. Until now
+  the ledger was recorded and served but had no command, so the answer to "what
+  is running, and what still needs me?" was still a JSON file. `foundry queue`
+  prints four groups on one screen: running, queued (`submitted` or `queued`),
+  open (`preserved`, `needs_decision`, `failed` — settled but still owing
+  something to a person), and the newest 20 settled items (`landed`,
+  `cancelled`), each line carrying the item's id, project, kind, lane, state,
+  the timestamp that placed it in its group and its one-line reason. The 20-item
+  cap applies to the settled group alone. `foundry queue open` prints only the
+  open group, and `foundry queue show <id>` prints one item's full durable
+  record, where an optional field the ledger never recorded produces no line at
+  all — so a recorded `worktree_removed: false` reads `no` while an unrecorded
+  one is silent, and the two are never conflated. All three take `--json` (an
+  array for the list forms, an object for `show`, optional fields absent when
+  unset) and render the human and JSON forms from the same fetched data. Group
+  membership and order come from the daemon's `ListWorkItems` response; the CLI
+  groups by state and never re-sorts. All three are read-only and all three are
+  daemon-authoritative online: they render the response directly, never read,
+  create or mutate the client-side `FOUNDRY_WORK_ITEMS_PATH`, fail with an error
+  naming the matching `--offline` command when `foundryd` is unreachable, and
+  surface a `NOT_FOUND` from `GetWorkItem` as the id-not-found error rather than
+  an empty record. `--offline` reads the ledger file directly in the same
+  grouping order the RPC documents: a missing store renders empty groups and
+  exits zero without creating the file, and a malformed one is an error naming
+  the parse failure. `foundry queue show` prints the record alone — no existing
+  read RPC accepts a `trace_id`, so the item's `work_item_*` events are not
+  listed, and no RPC was added to reach them. No daemon, block, ledger, proto or
+  dispatch behaviour changes.
+
 ### Fixed
 
 - The ledger now records a task dispatch from the workflow's **root**

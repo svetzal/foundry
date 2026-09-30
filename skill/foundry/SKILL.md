@@ -355,6 +355,53 @@ What happens:
 The release chain also fires automatically during vulnerability remediation when
 the main branch is clean after a CVE fix.
 
+### 11. Inspect the Work Queue
+
+The work-item ledger is the durable record of every unit of work Foundry
+dispatched. `foundry queue` reads it. All three forms are read-only.
+
+```bash
+# Everything on one screen: running, queued, open, newest 20 settled
+foundry queue
+
+# Only the work that still needs a person
+foundry queue open
+
+# One item's full durable record
+foundry queue show wi_0123456789abcdef01234567
+
+# Machine-readable
+foundry queue --json
+foundry queue show wi_0123456789abcdef01234567 --json
+```
+
+The four groups are **running**, **queued** (`submitted` or `queued`), **open**
+(`preserved`, `needs_decision`, `failed` — settled but still owing something to
+a person), and the newest 20 **settled** items (`landed`, `cancelled`). The
+20-item cap applies to the settled group alone.
+
+Start with `foundry queue open` when you want the shortest answer to "what is
+waiting on me?" — those three states are settled but unfinished.
+
+`show` prints every durable field, including `verdict`, `landed_commit`,
+`preservation_ref`, `worktree`, `worktree_removed` and `trace_id`. An optional
+field the ledger never recorded prints no line at all, so a recorded
+`worktree_removed: false` reads `no` while an unrecorded one is silent. Use the
+`Trace` field with `foundry history` to find the run's events — `show` prints
+the record alone.
+
+Without `--offline`, all three go through typed gRPC against daemon-owned state:
+the list forms render `ListWorkItems`, `show` renders `GetWorkItem`. The online
+path never reads, creates or mutates the client-side ledger file, and if
+`foundryd` is unreachable the command fails with an error naming the matching
+`--offline` command rather than falling back. Pass `--offline` only to read
+`~/.foundry/work-items.json` directly when the daemon is not running; a missing
+file renders empty groups and exits zero, a malformed one is an error.
+
+On every start `foundryd` settles each item still `running` as `failed` with the
+reason `daemon restarted`, so after a restart look in `foundry queue open` for
+work that needs re-dispatching.
+
 ### Prefer convenience commands over raw emit
 
 Always use the convenience commands above (`task`, `campaign`, `iterate`,

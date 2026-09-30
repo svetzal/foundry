@@ -162,6 +162,25 @@ mod tests {
     }
 
     #[test]
+    fn queue_commands_never_use_daemon_fallback_helpers() {
+        let src = include_str!("queue_commands.rs");
+        assert!(
+            !src.contains("with_daemon_or_offline("),
+            "queue_commands.rs must not use with_daemon_or_offline; \
+            the online queue path is daemon-authoritative"
+        );
+        assert!(
+            !src.contains("daemon not reachable"),
+            "queue_commands.rs must not contain the fallback warning string; \
+            the online queue path must fail cleanly instead"
+        );
+        assert!(
+            src.contains("connect_daemon_required"),
+            "queue_commands.rs must use connect_daemon_required for online commands"
+        );
+    }
+
+    #[test]
     fn sentinel_commands_never_use_daemon_fallback_helpers() {
         let src = include_str!("sentinel_commands.rs");
         assert!(

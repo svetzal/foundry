@@ -142,6 +142,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry gates <project>` | Auto-discover quality gates |
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
+| `foundry queue [show <id>\|open]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--json` and `--offline` supported. Read-only |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
 ### Campaign commands
@@ -171,6 +172,37 @@ are legal.
 | `foundry campaign cancel <name> --reason … [--now] [--discard-work]` | Yes (or `--offline`) | Mutates via `CancelCampaign`. Terminal and non-resumable, and unlike `complete` it does **not** require `authorized_by`. `--now` aborts the in-flight workflow and kills the running agent; `--discard-work` requires `--now`. `--offline` is graceful-only — `--offline --now` is refused, not downgraded |
 
 > **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`complete`/`cancel` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign`/`CancelCampaign` do not emit a terminal event.
+
+### Queue commands
+
+`foundry queue` is the operator-facing read of the daemon-owned work-item
+ledger. All three forms are read-only — they change no item and dispatch
+nothing. Group membership and order come from the daemon's `ListWorkItems`
+response; the CLI groups by state and never re-sorts. The 20-item cap applies to
+the settled group alone.
+
+| Command | Daemon required? | Notes |
+|---------|-----------------|-------|
+| `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
+| `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Prints the record alone — no read RPC accepts a `trace_id`, so the item's `work_item_*` events are not listed |
+| `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+
+All three take `--json`; the list forms emit an array, `show` emits an object,
+optional fields are absent when unset, and the human and JSON forms of one
+command render from the same fetched data.
+
+> **Note for scripts/automation**: without `--offline`, online `foundry queue`,
+> `queue show` and `queue open` do not silently fall back and surface stable
+> typed gRPC status errors instead. They render the daemon response directly,
+> never read the client-side ledger file, and if `FOUNDRY_WORK_ITEMS_PATH` is
+> absent the online path leaves it absent. If `foundryd` is not listening, all
+> three fail with an error naming the matching `--offline` command and leave any
+> existing client-side ledger file untouched byte-for-byte. A `NOT_FOUND` from
+> `GetWorkItem` surfaces as the id-not-found error, not as an empty record.
+> `--offline` reads `FOUNDRY_WORK_ITEMS_PATH` through
+> `foundry_sdk::work_item::WorkItemStore::load` and applies the same grouping
+> order the RPC documents: a missing or empty store renders empty groups and
+> exits zero without creating the file, and a malformed one is an error.
 
 ### Registry commands
 

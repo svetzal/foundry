@@ -9,6 +9,7 @@ mod daemon;
 mod event_commands;
 mod gates_commands;
 mod init_commands;
+mod queue_commands;
 mod registry_commands;
 mod render;
 mod sentinel_commands;
@@ -231,6 +232,21 @@ enum Commands {
         init: bool,
     },
 
+    /// Inspect the work-item ledger (queue, queue show, queue open)
+    ///
+    /// `foundry queue` prints running, queued, open and recently settled work
+    /// on one screen; `foundry queue show <id>` prints one item's full durable
+    /// record; `foundry queue open` prints only the items that still need a
+    /// person.
+    Queue {
+        #[command(subcommand)]
+        command: Option<QueueCommands>,
+
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Manage the project registry
     #[command(subcommand)]
     Registry(Box<RegistryCommands>),
@@ -287,6 +303,26 @@ enum CampaignCommands {
         /// Add owner-authorized cycles to the campaign budget before resuming
         #[arg(long, default_value_t = 0)]
         add_cycles: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum QueueCommands {
+    /// Show one work item's full durable record
+    Show {
+        /// Work-item id (e.g. `wi_0123456789abcdef01234567`)
+        id: String,
+
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show only the open group — the work that still needs a person
+    Open {
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -590,6 +626,44 @@ async fn handle_registry_command(
     }
 }
 
+/// Dispatch one `foundry queue` invocation.
+///
+/// A bare `foundry queue` (no subcommand) is the overview, so `--json` is
+/// accepted both on the parent and on each subcommand.
+async fn handle_queue_command(
+    command: Option<QueueCommands>,
+    parent_json: bool,
+    work_items_path: &std::path::Path,
+    addr: &str,
+    offline: bool,
+) -> Result<()> {
+    match command {
+        None => {
+            queue_commands::list(
+                work_items_path,
+                addr,
+                offline,
+                queue_commands::View::Overview,
+                parent_json,
+            )
+            .await
+        }
+        Some(QueueCommands::Open { json }) => {
+            queue_commands::list(
+                work_items_path,
+                addr,
+                offline,
+                queue_commands::View::Open,
+                json || parent_json,
+            )
+            .await
+        }
+        Some(QueueCommands::Show { id, json }) => {
+            queue_commands::show(work_items_path, addr, offline, &id, json || parent_json).await
+        }
+    }
+}
+
 async fn handle_sentinel_command(
     sub: SentinelCommands,
     path: &std::path::Path,
@@ -745,6 +819,16 @@ async fn main() -> Result<()> {
             } else {
                 gates_commands::show(&project_dir)
             }
+        }
+        Commands::Queue { command, json } => {
+            handle_queue_command(
+                command,
+                json,
+                &foundry_sdk::paths::work_items_path(),
+                &addr,
+                cli.offline,
+            )
+            .await
         }
         Commands::Registry(sub) => {
             handle_registry_command(*sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)

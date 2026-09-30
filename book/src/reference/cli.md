@@ -310,6 +310,70 @@ is nothing uncommitted left to discard — the flag would silently do nothing.
 is no daemon holding a workflow to abort, and reporting a kill that never
 happened would be worse than failing.
 
+## `foundry queue`
+
+Inspect the daemon-owned work-item ledger — the durable record of every unit of
+work Foundry dispatched. All three forms are read-only.
+
+```bash
+foundry queue [--json] [--offline]
+foundry queue show <id> [--json] [--offline]
+foundry queue open [--json] [--offline]
+```
+
+| Subcommand | Daemon required?       | Description                                                                   |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------- |
+| *(none)*   | Yes unless `--offline` | Print running, queued, open and the newest 20 settled items on one screen      |
+| `show`     | Yes unless `--offline` | Print one item's full durable record, including every settlement field        |
+| `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed`         |
+
+| Argument   | Description                                                 |
+| ---------- | ----------------------------------------------------------- |
+| `<id>`     | Work-item id, e.g. `wi_0123456789abcdef01234567` (`show` only) |
+
+| Option      | Description                                                        |
+| ----------- | ------------------------------------------------------------------ |
+| `--json`    | Emit machine-readable JSON instead of human output                 |
+| `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` directly instead of calling the daemon |
+
+The four groups are **running**, **queued** (`submitted` or `queued`), **open**
+(`preserved`, `needs_decision`, `failed` — settled but still needing a person),
+and the newest 20 **settled** items (`landed`, `cancelled`). The 20-item cap
+applies to the settled group alone; older terminal items are omitted. Each line
+carries the item's id, project, kind, lane, state, the timestamp that placed it
+in its group, and its one-line reason. Group order and the order within each
+group come from the daemon's `ListWorkItems` response — the CLI groups by state
+and never re-sorts.
+
+`show` renders every durable field, and an optional field the ledger never
+recorded produces no line at all rather than an empty string or `false`. A
+recorded `worktree_removed: false` therefore prints `Worktree removed: no`,
+while an unrecorded one prints nothing. `show` prints the record alone; it does
+not list the item's `work_item_*` events, because an item correlates with them
+by `trace_id` and no read RPC accepts a trace id.
+
+With `--json`, the list forms emit a JSON array and `show` emits a single
+object. Optional fields are absent when unset, so the JSON round-trips the same
+facts the record carries. The human and JSON forms of one command render from
+the same fetched data.
+
+The ledger defaults to `~/.foundry/work-items.json` and can be overridden with
+`FOUNDRY_WORK_ITEMS_PATH`. Without `--offline`, all three commands are
+daemon-authoritative: the list forms render `ListWorkItems` and `show` renders
+`GetWorkItem`. The online path never reads, creates or mutates the client-side
+ledger file, so an absent `FOUNDRY_WORK_ITEMS_PATH` stays absent and an existing
+one is left byte-identical. A `NOT_FOUND` from `GetWorkItem` surfaces as an
+id-not-found error with a non-zero exit, not as an empty record.
+
+If `foundryd` is unreachable, the command fails with a stable actionable error
+naming the matching offline recovery command. There is no silent fallback. Pass
+`--offline` only when the daemon is stopped and you intentionally want to read
+the ledger JSON file directly; it applies the same grouping order the RPC
+documents. A missing ledger renders four empty groups and exits zero without
+creating the file; a malformed one exits non-zero and names the parse failure.
+
+See [The Work Queue](../guide/work-queue.md) for the full model.
+
 ## `foundry sentinel`
 
 Inspect or toggle the daemon-owned scheduled sentinels.

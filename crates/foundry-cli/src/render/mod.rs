@@ -9,6 +9,7 @@
 pub mod campaign;
 pub mod dependencies;
 pub mod event;
+pub mod queue;
 pub mod registry;
 pub mod sentinel;
 pub mod trace_tree;
