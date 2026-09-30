@@ -295,9 +295,16 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo tarpaulin --workspace --fail-under 61
 cargo deny check
 mdbook build book
 ```
+
+The required coverage gate in `.hone-gates.json` covers the whole workspace
+with a 61% minimum. Run it with the toolchain pinned in `rust-toolchain.toml`;
+an environment override or tool-manager shim can select a different compiler.
+For the owner-control coverage investigation and reproduction commands, see
+[the diagnostic record](docs/owner-controls-coverage.md).
 
 See [AGENTS.md](AGENTS.md) for repository conventions and release procedure.
 
