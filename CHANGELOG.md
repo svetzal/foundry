@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.40.3] - 2026-09-30
+
 ### Fixed
 
 - A second `foundryd` can no longer change shared state. On 2026-09-30 an agent
