@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The task reviewer no longer crashes codex with `Argument list too long`
+  (`E2BIG`) on a verbose but fully-passing gate run. A `parite` campaign_cycle
+  task on 2026-09-30 finished a real coding session with 12 files changed and
+  every gate passing (`fmt`, `clippy`, `test`, `build`, `coverage`,
+  `security-deny`, `security-audit`), but the follow-up review never started:
+  `build_review_prompt` folded every gate's full (200-line-capped) output
+  verbatim into the reviewer's prompt, and the seven gates' `cargo test
+  --verbose`-heavy output summed to 162,152 bytes — over Linux's 128 KiB
+  `MAX_ARG_STRLEN` ceiling on a single `execve()` argument string, which binds
+  far tighter than the 2 MiB `ARG_MAX` (argv+envp combined) the incident first
+  suspected. Codex's prompt rides as the last positional argv element with
+  stdin deliberately closed for every invocation, so there is no stdin escape
+  hatch for this provider. `build_review_prompt` now caps a passing gate's
+  output to 800 bytes (a passing gate's noise isn't reviewer-relevant) and a
+  failing gate's to 16 KiB (enough to diagnose a real failure), with a 64 KiB
+  ceiling on the whole gate-results block regardless of gate count, and a
+  logged last-resort truncation of the objective itself if it alone is ever
+  over budget — the review now runs instead of stalling completed work as
+  `runner_error`. Also flagged: `foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES`
+  (256 KiB) is sized against macOS's 1 MiB `ARG_MAX` and does not account for
+  Linux's much tighter `MAX_ARG_STRLEN`, so a campaign that inlines close to
+  its permitted context could hit the same class of failure on any codex
+  invocation, not just review — not fixed here, needs its own decision.
+
 ## [0.40.3] - 2026-09-30
 
 ### Fixed

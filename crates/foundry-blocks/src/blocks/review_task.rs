@@ -25,21 +25,83 @@ fn parse_verdict(output: &str) -> anyhow::Result<TaskVerdict> {
         .map_err(|e| anyhow::anyhow!("reviewer returned no valid task verdict: {e}"))
 }
 
-fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::GateResult]) -> String {
-    let gates = gate_results
-        .iter()
-        .map(|g| {
-            format!(
-                "- {} [{}]: {} (exit {})\n{}",
-                g.name,
-                if g.required { "REQUIRED" } else { "OPTIONAL" },
-                if g.passed { "PASS" } else { "FAIL" },
-                g.exit_code,
-                g.output
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+/// Linux `execve(2)`'s `MAX_ARG_STRLEN` (`PAGE_SIZE * 32`) bounds any single
+/// argv string, independently of the much larger `ARG_MAX` covering argv and
+/// the environment together. Confirmed 128 KiB (4 KiB pages) on
+/// `mojility-ops-01`, the host that hit this. Codex's prompt rides as the
+/// last positional argv element with stdin deliberately closed for every
+/// invocation (see the module doc comment on `gateway/codex.rs` — `codex
+/// exec` blocks reading a piped stdin), so there is no escape hatch: this one
+/// string must stay under the limit on its own.
+const MAX_ARG_STRLEN_BYTES: usize = 128 * 1024;
+
+/// Ceiling for the whole rendered review prompt, leaving headroom below
+/// [`MAX_ARG_STRLEN_BYTES`] for the fixed instructional text around the gate
+/// block and for the marker text truncation itself adds.
+const REVIEW_PROMPT_BUDGET_BYTES: usize = MAX_ARG_STRLEN_BYTES - 4 * 1024;
+
+/// Output kept from one gate that PASSED. A passing gate's raw output
+/// (dependency-cache "Fresh" lines, framework banners, and the like) is not
+/// reviewer-relevant — the header line already carries the pass/fail signal
+/// that matters. This is deliberately small.
+const PASSING_GATE_OUTPUT_BUDGET: usize = 800;
+
+/// Output kept from one gate that FAILED. Diagnosing a failure is the
+/// reviewer's actual job, so this budget is generous — but still bounded,
+/// since every gate's output shares one argv string.
+const FAILING_GATE_OUTPUT_BUDGET: usize = 16 * 1024;
+
+/// Hard ceiling on the whole rendered gate-results block, independent of how
+/// many gates ran. The per-gate budgets above bound the common case
+/// (verbose gates); this bounds the pathological one (many failing gates in
+/// one run).
+const GATES_SECTION_BUDGET_BYTES: usize = 64 * 1024;
+
+/// Keep the last `max_bytes` of `s`, rounded outward to a UTF-8 char
+/// boundary, prefixed with a marker naming how much was cut. A no-op when
+/// `s` already fits — failures more often explain themselves at the end of a
+/// command's output (the final compiler error, the failing assertion) than
+/// at the start, so the tail is what's worth keeping.
+fn cap_tail_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut start = s.len().saturating_sub(max_bytes);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!(
+        "[... {} bytes omitted; showing the last {} ...]\n{}",
+        start,
+        s.len() - start,
+        &s[start..]
+    )
+}
+
+fn render_gate(g: &foundry_sdk::gates::GateResult) -> String {
+    let budget = if g.passed {
+        PASSING_GATE_OUTPUT_BUDGET
+    } else {
+        FAILING_GATE_OUTPUT_BUDGET
+    };
+    format!(
+        "- {} [{}]: {} (exit {})\n{}",
+        g.name,
+        if g.required { "REQUIRED" } else { "OPTIONAL" },
+        if g.passed { "PASS" } else { "FAIL" },
+        g.exit_code,
+        cap_tail_bytes(&g.output, budget)
+    )
+}
+
+/// Render every gate's result, bounded so the block can never exceed
+/// [`GATES_SECTION_BUDGET_BYTES`] regardless of gate count or verbosity.
+fn render_gates(gate_results: &[foundry_sdk::gates::GateResult]) -> String {
+    let joined = gate_results.iter().map(render_gate).collect::<Vec<_>>().join("\n");
+    cap_tail_bytes(&joined, GATES_SECTION_BUDGET_BYTES)
+}
+
+fn render_review_prompt(objective: &str, gates: &str) -> String {
     super::with_single_turn_discipline(&format!(
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
@@ -51,6 +113,39 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
          {{\"verdict\":\"defect\",\"diagnosis\":\"specific diagnosis\"}}\n\
          {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}"
     ))
+}
+
+fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::GateResult]) -> String {
+    let gates = render_gates(gate_results);
+    let prompt = render_review_prompt(objective, &gates);
+    if prompt.len() <= REVIEW_PROMPT_BUDGET_BYTES {
+        return prompt;
+    }
+
+    // The gate-output budgets above bound the confirmed cause (verbose
+    // gates: a real incident measured 162 KB of gate output alone from an
+    // all-passing run of `fmt`/`clippy`/`test`/`build`/`coverage`). Reaching
+    // this branch means the OBJECTIVE text itself — campaign-formation
+    // content this function does not own or size-check — is large enough to
+    // blow the argv budget on its own. That is a gap upstream (see
+    // `foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES`, which is sized
+    // against macOS's 1 MiB `ARG_MAX` and does not account for Linux's much
+    // tighter 128 KiB `MAX_ARG_STRLEN`), not something this function can
+    // properly fix. Log it loudly rather than truncate silently, then
+    // truncate as a last resort so the review still runs instead of
+    // crashing again.
+    let overage = prompt.len() - REVIEW_PROMPT_BUDGET_BYTES;
+    tracing::error!(
+        objective_bytes = objective.len(),
+        prompt_bytes = prompt.len(),
+        budget_bytes = REVIEW_PROMPT_BUDGET_BYTES,
+        "review prompt exceeds the codex argv budget even after capping gate output; the \
+         objective text alone is over budget. Truncating it as a last resort — this is a \
+         workaround, not a fix; objective size needs bounding at campaign formation."
+    );
+    let objective_budget = objective.len().saturating_sub(overage + 512);
+    let truncated_objective = cap_tail_bytes(objective, objective_budget);
+    render_review_prompt(&truncated_objective, &gates)
 }
 
 impl TaskBlock for ReviewTask {
@@ -328,5 +423,136 @@ mod tests {
             prompt.trim_end().ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
             "reviewer prompt must close with the single-turn rule: {prompt}"
         );
+    }
+
+    fn gate_with_output(name: &str, passed: bool, required: bool, output: String) -> GateResult {
+        GateResult {
+            name: name.to_string(),
+            command: format!("run {name}"),
+            passed,
+            required,
+            output,
+            exit_code: i32::from(!passed),
+            duration_ms: None,
+            fix_applied: false,
+        }
+    }
+
+    // Real incident (2026-09-30, mojility-ops-01, trace 6a4c0739a793765e8dc64ecc6cc440df):
+    // a `parite` campaign_cycle task ran `fmt`, `clippy`, `test`, `build`,
+    // `coverage`, `security-deny`, `security-audit` — every gate PASSED, but
+    // `cargo test --verbose`'s 200-line-capped output alone measured 116,958
+    // bytes, and the seven gates summed to 162,152 bytes of output before this
+    // fix. `codex exec`'s prompt argv element exceeded Linux's 128 KiB
+    // `MAX_ARG_STRLEN`, `execve` returned E2BIG ("Argument list too long"),
+    // and the review step never ran — passing work stalled as `runner_error`.
+    #[test]
+    fn a_run_of_verbose_passing_gates_that_once_broke_execve_now_fits_the_argv_budget() {
+        let verbose_passing_output = |lines: usize| -> String {
+            (0..lines)
+                .map(|i| {
+                    format!(
+                        "Fresh some-crate-{i} v1.2.3 (registry `crates-io`): compiled test::case_{i} ... ok"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let gates = vec![
+            gate_with_output("format", true, true, String::new()),
+            gate_with_output("lint", true, true, verbose_passing_output(6)),
+            gate_with_output("test", true, true, verbose_passing_output(200)),
+            gate_with_output("build", true, true, verbose_passing_output(200)),
+            gate_with_output("coverage", true, true, verbose_passing_output(200)),
+            gate_with_output("security-deny", false, false, verbose_passing_output(199)),
+            gate_with_output("security-audit", true, false, verbose_passing_output(10)),
+        ];
+        let objective = "Close only the missing production probe-input sub-gap".repeat(20);
+
+        let prompt = build_review_prompt(&objective, &gates);
+
+        assert!(
+            prompt.len() <= super::REVIEW_PROMPT_BUDGET_BYTES,
+            "prompt was {} bytes, over the {}-byte budget",
+            prompt.len(),
+            super::REVIEW_PROMPT_BUDGET_BYTES
+        );
+        assert!(
+            prompt.len() < super::MAX_ARG_STRLEN_BYTES,
+            "prompt of {} bytes would still overflow execve's MAX_ARG_STRLEN ({} bytes)",
+            prompt.len(),
+            super::MAX_ARG_STRLEN_BYTES
+        );
+    }
+
+    #[test]
+    fn a_single_failing_gate_keeps_far_more_diagnostic_output_than_a_passing_one() {
+        let huge = "x".repeat(200_000);
+        let passing =
+            build_review_prompt("obj", &[gate_with_output("g", true, true, huge.clone())]);
+        let failing = build_review_prompt("obj", &[gate_with_output("g", false, true, huge)]);
+
+        assert!(
+            failing.len() > passing.len(),
+            "a failing gate must retain more of its output than a passing one"
+        );
+        assert!(passing.len() <= super::REVIEW_PROMPT_BUDGET_BYTES);
+        assert!(failing.len() <= super::REVIEW_PROMPT_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn many_failing_gates_stay_within_the_argv_budget() {
+        let huge = "x".repeat(50_000);
+        let gates: Vec<GateResult> = (0..20)
+            .map(|i| gate_with_output(&format!("gate-{i}"), false, true, huge.clone()))
+            .collect();
+
+        let prompt = build_review_prompt("obj", &gates);
+
+        assert!(
+            prompt.len() < super::MAX_ARG_STRLEN_BYTES,
+            "20 failing 50KB gates produced a {}-byte prompt, over MAX_ARG_STRLEN ({} bytes)",
+            prompt.len(),
+            super::MAX_ARG_STRLEN_BYTES
+        );
+    }
+
+    // The gate-output budgets bound the confirmed cause of the incident, but
+    // the objective text comes from campaign formation, which this function
+    // does not control (see `foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES`,
+    // sized against macOS's 1 MiB ARG_MAX rather than Linux's 128 KiB
+    // MAX_ARG_STRLEN). This proves the last-resort branch still keeps the
+    // daemon from crashing even when the objective alone is pathological.
+    #[test]
+    fn a_pathologically_large_objective_is_truncated_rather_than_crashing_execve_again() {
+        let huge_objective = "acceptance criterion. ".repeat(20_000); // ~460 KB
+        assert!(huge_objective.len() > super::MAX_ARG_STRLEN_BYTES);
+
+        let prompt = build_review_prompt(&huge_objective, &[]);
+
+        assert!(
+            prompt.len() < super::MAX_ARG_STRLEN_BYTES,
+            "prompt of {} bytes would still overflow execve's MAX_ARG_STRLEN ({} bytes)",
+            prompt.len(),
+            super::MAX_ARG_STRLEN_BYTES
+        );
+        assert!(
+            prompt.contains("bytes omitted"),
+            "truncation of the oversized objective must be visible in the prompt, not silent"
+        );
+    }
+
+    #[test]
+    fn cap_tail_bytes_is_a_no_op_under_budget() {
+        assert_eq!(super::cap_tail_bytes("short", 100), "short");
+    }
+
+    #[test]
+    fn cap_tail_bytes_rounds_outward_to_a_char_boundary() {
+        // "é" is 2 bytes in UTF-8; cutting at byte 1 would land mid-character.
+        let s = "aéb";
+        let capped = super::cap_tail_bytes(s, 2);
+        assert!(capped.is_char_boundary(capped.len() - 2));
+        assert!(String::from_utf8(capped.into_bytes()).is_ok());
     }
 }
