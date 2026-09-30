@@ -665,6 +665,20 @@ async fn resume_service(
     tokio::task::JoinHandle<()>,
     tokio::sync::broadcast::Receiver<Event>,
 ) {
+    let (client, server, events, _) = resume_service_tracked(dir, registry, engine).await;
+    (client, server, events)
+}
+
+async fn resume_service_tracked(
+    dir: &Path,
+    registry: Arc<RwLock<Registry>>,
+    engine: Engine,
+) -> (
+    crate::proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::broadcast::Receiver<Event>,
+    Arc<crate::workflow_tracker::WorkflowTracker>,
+) {
     use crate::service::{FoundryService, RuntimeContext, StoreConfig};
     let (event_tx, events) = tokio::sync::broadcast::channel(256);
     let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
@@ -683,6 +697,7 @@ async fn resume_service(
         event_tx,
         registry,
     };
+    let tracker = ctx.workflow_tracker.clone();
     let service = FoundryService::new(
         ctx,
         StoreConfig {
@@ -705,7 +720,7 @@ async fn resume_service(
             .unwrap();
     });
     let client = crate::proto::foundry_client::FoundryClient::connect(addr).await.unwrap();
-    (client, server, events)
+    (client, server, events, tracker)
 }
 
 fn preserved_parent(checkout: &Path) -> WorkItem {
@@ -824,6 +839,7 @@ async fn assert_resume_landing(source: &str) {
     let dispatch = observed.iter().find(|e| e.event_type == EventType::ExecutionRequested).unwrap();
     assert_eq!(dispatch.payload["base_ref"], base);
     assert_eq!(dispatch.payload["prompt"], parent.objective);
+    assert_resume_admission(&store, &parent, &child, &observed);
     for id in [&parent.id, &child.id] {
         let read = client
             .get_work_item(crate::proto::GetWorkItemRequest { id: id.clone() })
@@ -1225,6 +1241,8 @@ async fn assert_watch_matches(
             .unwrap()
             .unwrap();
         assert_eq!(event.event_id, expected.id);
+        assert_eq!(event.trace_id, expected.trace_id.clone().unwrap_or_default());
+        assert_eq!(event.project, expected.project);
         assert_eq!(event.event_type, expected.event_type.as_str());
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap(),
@@ -1345,5 +1363,319 @@ fn assert_lifecycle_log_matches(events_dir: &Path, id: &str, observed: &[Event])
             record.payload,
             event.parse_payload::<foundry_sdk::payload::WorkItemEventPayload>().unwrap()
         );
+    }
+}
+
+/// Break a real persistence destination after an earlier lifecycle append succeeds.
+struct BreakResumeLog {
+    events: PathBuf,
+    ledger: Option<PathBuf>,
+}
+
+impl foundry_sdk::task_block::TaskBlock for BreakResumeLog {
+    fn name(&self) -> &'static str {
+        "BreakResumeLog"
+    }
+    fn kind(&self) -> foundry_sdk::task_block::BlockKind {
+        foundry_sdk::task_block::BlockKind::Observer
+    }
+    fn sinks_on(&self) -> &[EventType] {
+        if self.ledger.is_some() {
+            &[EventType::WorkItemStarted]
+        } else {
+            &[EventType::WorkItemSubmitted]
+        }
+    }
+    fn execute(
+        &self,
+        _: &Event,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<foundry_sdk::task_block::TaskBlockResult>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            if let Some(ledger) = &self.ledger {
+                std::fs::create_dir(ledger.with_extension("json.tmp"))?;
+            } else {
+                let month = chrono::Utc::now().format("%Y-%m.jsonl").to_string();
+                std::fs::rename(self.events.join(&month), self.events.join("retained.jsonl"))?;
+                std::fs::create_dir(self.events.join(month))?;
+            }
+            Ok(foundry_sdk::task_block::TaskBlockResult::success(
+                "destination now fails",
+                vec![],
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn resume_generated_client_rejects_first_and_partial_lifecycle_persistence_failure() {
+    for failure in ["first", "partial", "final-ledger-save"] {
+        let partial = failure == "partial";
+        let final_save = failure == "final-ledger-save";
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = task_project(dir.path());
+        let parent = preserved_parent(&checkout);
+        let mut sibling = parent.clone();
+        sibling.id = "wi_unrelated_persistence_sibling".to_string();
+        let ledger = dir.path().join("work-items.json");
+        WorkItemStore {
+            version: 1,
+            items: vec![parent.clone(), sibling.clone()],
+        }
+        .save(&ledger)
+        .unwrap();
+        let events_dir = dir.path().join("events");
+        std::fs::create_dir(&events_dir).unwrap();
+        let history = events_dir.join("2000-01.jsonl");
+        let mut prior_event = Event::new(
+            EventType::WorkItemSettled,
+            parent.project.clone(),
+            Throttle::Full,
+            Event::serialize_payload(&foundry_sdk::payload::WorkItemEventPayload::from_item(
+                &parent,
+            ))
+            .unwrap(),
+        )
+        .with_trace_id(parent.trace_id.clone());
+        prior_event.occurred_at = "2000-01-01T00:00:00Z".parse().unwrap();
+        foundry_engine::event_writer::EventWriter::new(&events_dir)
+            .write(&prior_event)
+            .unwrap();
+        let prior = std::fs::read(&history).unwrap();
+        if failure == "first" {
+            std::fs::create_dir(
+                events_dir.join(chrono::Utc::now().format("%Y-%m.jsonl").to_string()),
+            )
+            .unwrap();
+        }
+        let registry =
+            test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+        let agent = Arc::new(ContinuationAgent {
+            parent: parent.clone(),
+            ledger: ledger.clone(),
+            calls: Mutex::new(0),
+            verdict: r#"{"verdict":"complete"}"#,
+        });
+        let mut engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
+        if partial || final_save {
+            engine.register(Box::new(BreakResumeLog {
+                events: events_dir.clone(),
+                ledger: final_save.then(|| ledger.clone()),
+            }));
+        }
+        let (mut client, server, mut events, tracker) =
+            resume_service_tracked(dir.path(), registry, engine).await;
+        let watch = client
+            .watch(crate::proto::WatchRequest {
+                project: parent.project.clone(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let error = client
+            .resume_work_item(crate::proto::ResumeWorkItemRequest {
+                id: parent.id.clone(),
+                operator_origin: "owner-host (persistence regression)".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Internal);
+        // spawn_workflow tracks before spawning and publishes its root before
+        // removing tracking. Together, an empty tracker and no dispatch in
+        // the broadcaster prove no execution was admitted after this RPC.
+        assert!(tracker.list().is_empty());
+        assert_eq!(*agent.calls.lock().unwrap(), 0);
+        let store = WorkItemStore::load(&ledger).unwrap();
+        let child = assert_rejected_resume_record(&store, &parent, &sibling);
+        assert_eq!(std::fs::read(history).unwrap(), prior);
+        // The receiver sees all synchronous admission output before the RPC returns.
+        let mut observed = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            observed.push(event);
+        }
+        assert!(observed.iter().all(|event| event.event_type != EventType::ExecutionRequested));
+        let lifecycle: Vec<_> = observed
+            .iter()
+            .filter(|e| {
+                matches!(e.event_type, EventType::WorkItemSubmitted | EventType::WorkItemStarted)
+            })
+            .collect();
+        assert_rejected_resume_history(child, &parent, &events_dir, failure, &lifecycle, &observed);
+        assert_watch_through_barrier(&mut client, &parent.project, watch, &lifecycle).await;
+        server.abort();
+    }
+}
+
+fn assert_resume_admission(
+    store: &WorkItemStore,
+    parent: &WorkItem,
+    child: &crate::proto::WorkItem,
+    observed: &[Event],
+) {
+    let dispatch = observed
+        .iter()
+        .find(|event| event.event_type == EventType::ExecutionRequested)
+        .unwrap();
+    assert_eq!(dispatch.payload["admitted_work_item_id"], child.id);
+    assert_eq!(dispatch.trace_id, child.trace_id);
+    let admission: Vec<_> = observed
+        .iter()
+        .filter(|event| {
+            event.payload["item_id"] == child.id
+                && matches!(
+                    event.event_type,
+                    EventType::WorkItemSubmitted | EventType::WorkItemStarted
+                )
+        })
+        .collect();
+    assert_eq!(
+        admission.iter().map(|event| event.event_type.clone()).collect::<Vec<_>>(),
+        vec![EventType::WorkItemSubmitted, EventType::WorkItemStarted]
+    );
+    for event in admission {
+        assert_eq!(event.trace_id, child.trace_id);
+        assert_eq!(event.payload["resumes"], parent.id);
+        assert_eq!(event.payload["objective"], parent.objective);
+        assert_eq!(event.payload["origin"], parent.origin);
+        assert_eq!(event.payload["operator_action"]["command"], "resume");
+        assert_eq!(event.payload["operator_action"]["origin"], "owner-host (finish it)");
+        assert_eq!(event.payload["operator_action"]["previous_reason"], parent.reason);
+    }
+    assert_eq!(
+        store
+            .items
+            .iter()
+            .filter(|item| item.resumes.as_deref() == Some(&parent.id))
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![child.id.as_str()]
+    );
+}
+
+fn assert_rejected_resume_record<'a>(
+    store: &'a WorkItemStore,
+    parent: &WorkItem,
+    sibling: &WorkItem,
+) -> &'a WorkItem {
+    assert_eq!(store.find(&parent.id), Some(parent));
+    assert_eq!(store.find(&sibling.id), Some(sibling));
+    let children: Vec<_> = store
+        .items
+        .iter()
+        .filter(|i| i.resumes.as_deref() == Some(parent.id.as_str()))
+        .collect();
+    assert_eq!(children.len(), 1);
+    let child = children[0];
+    assert_eq!(
+        store.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        vec![parent.id.as_str(), sibling.id.as_str(), child.id.as_str()]
+    );
+    assert_eq!(child.state, WorkItemState::Failed);
+    assert_eq!(child.reason, "resume admission incomplete; execution not dispatched");
+    assert!(child.started_at.is_none());
+    assert!(child.settled_at.is_some());
+    assert_eq!(child.objective, parent.objective);
+    assert_eq!(child.origin, parent.origin);
+    assert_eq!(child.project, parent.project);
+    assert_eq!(child.kind, WorkItemKind::Task);
+    assert_eq!(child.lane, WorkLane::Interactive);
+    assert!(child.disposition.is_none());
+    assert_ne!(child.trace_id, parent.trace_id);
+    assert_eq!(child.trace_id.as_ref().unwrap().len(), 32);
+    let operator = child.operator_action.as_ref().unwrap();
+    assert_eq!(operator.command, "resume");
+    assert_eq!(operator.previous_state, parent.state);
+    assert_eq!(operator.previous_reason, parent.reason);
+    assert_eq!(operator.previous_settled_at, parent.settled_at);
+    assert_eq!(
+        child.operator_action.as_ref().unwrap().origin,
+        "owner-host (persistence regression)"
+    );
+    child
+}
+
+async fn assert_watch_through_barrier(
+    client: &mut crate::proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    project: &str,
+    mut watch: tonic::Streaming<crate::proto::WatchResponse>,
+    lifecycle: &[&Event],
+) {
+    // Emit a harmless root through the production RPC, whose Watch
+    // publication establishes a bounded stream barrier.
+    client
+        .emit(crate::proto::EmitRequest {
+            event_type: "resume_test_barrier".to_string(),
+            project: project.to_string(),
+            payload_json: "{}".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut watched = Vec::new();
+    loop {
+        let event = tokio::time::timeout_at(deadline, watch.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if event.event_type == "resume_test_barrier" {
+            break;
+        }
+        if event.event_type.starts_with("work_item_") {
+            watched.push(event);
+        }
+    }
+    assert_eq!(watched.len(), lifecycle.len());
+    for (actual, expected) in watched.iter().zip(lifecycle.iter()) {
+        assert_eq!(actual.event_id, expected.id);
+        assert_eq!(actual.trace_id, expected.trace_id.clone().unwrap());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&actual.payload_json).unwrap(),
+            expected.payload
+        );
+    }
+}
+
+fn assert_rejected_resume_history(
+    child: &WorkItem,
+    parent: &WorkItem,
+    events_dir: &Path,
+    failure: &str,
+    lifecycle: &[&Event],
+    observed: &[Event],
+) {
+    if failure == "partial" {
+        assert_eq!(lifecycle.len(), 1);
+        let submitted = lifecycle[0];
+        assert_eq!(submitted.event_type, EventType::WorkItemSubmitted);
+        assert_eq!(submitted.payload["item_id"], child.id);
+        assert_eq!(submitted.payload["resumes"], parent.id);
+        assert_eq!(submitted.trace_id, child.trace_id);
+        let bytes = std::fs::read_to_string(events_dir.join("retained.jsonl")).unwrap();
+        let durable: Event = serde_json::from_str(bytes.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(durable).unwrap(),
+            serde_json::to_value(submitted).unwrap()
+        );
+    } else if failure == "final-ledger-save" {
+        assert_eq!(
+            lifecycle.iter().map(|event| event.event_type.clone()).collect::<Vec<_>>(),
+            vec![EventType::WorkItemSubmitted, EventType::WorkItemStarted]
+        );
+        assert_lifecycle_log_matches(events_dir, &child.id, observed);
+        for event in lifecycle {
+            assert_eq!(event.payload["item_id"], child.id);
+            assert_eq!(event.payload["resumes"], parent.id);
+            assert_eq!(event.trace_id, child.trace_id);
+        }
+    } else {
+        assert!(lifecycle.is_empty());
     }
 }

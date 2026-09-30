@@ -14,6 +14,7 @@ use crate::event_writer::EventWriter;
 ///
 /// Both are best-effort: write failures are logged, and a broadcast with no
 /// receivers is normal. Neither ever interrupts event processing.
+#[derive(Clone)]
 pub(crate) struct EventEmitter {
     writer: Option<Arc<EventWriter>>,
     tx: Option<broadcast::Sender<Event>>,
@@ -63,6 +64,24 @@ impl EventEmitter {
                 tracing::debug!(error = %e, event_id = %event.id, "no Watch subscribers for event");
             }
         }
+    }
+
+    /// Admission requires a configured writer and a successful append before
+    /// publication. Ordinary processing deliberately retains its best-effort policy.
+    pub(crate) fn persist_required(&self, event: &Event) -> anyhow::Result<()> {
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("event writer is not configured"))?;
+        writer.write(event)?;
+        if let Some(tx) = &self.tx {
+            // Best-effort: admission depends on durable evidence, not on a
+            // Watch subscriber being attached.
+            if let Err(error) = tx.send(event.clone()) {
+                tracing::debug!(%error, event_id = %event.id, "no Watch subscribers for event");
+            }
+        }
+        Ok(())
     }
 
     /// Persist and broadcast an audit observation without routing it.
@@ -115,5 +134,51 @@ impl EventEmitter {
                 "trigger_event_type": current.event_type.to_string(),
             }),
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_append_failure_is_not_published_but_best_effort_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("not-a-directory");
+        std::fs::write(&destination, "existing bytes").unwrap();
+        let (tx, mut rx) = broadcast::channel(16);
+        let emitter = EventEmitter::new()
+            .with_writer(Arc::new(EventWriter::new(&destination)))
+            .with_broadcaster(tx);
+        let event = Event::new(
+            EventType::WorkItemSubmitted,
+            "test".to_string(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(emitter.persist_required(&event).is_err());
+        assert!(rx.try_recv().is_err());
+        emitter.persist_one(&event);
+        assert_eq!(rx.try_recv().unwrap().id, event.id);
+        emitter.record_progress(&event, "test_progress", serde_json::json!({}));
+        assert_eq!(rx.try_recv().unwrap().causation_id, Some(event.id));
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "existing bytes");
+    }
+
+    #[test]
+    fn required_append_needs_a_writer_but_not_a_watch_subscriber() {
+        let event = Event::new(
+            EventType::WorkItemSubmitted,
+            "test".to_string(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(EventEmitter::new().persist_required(&event).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        EventEmitter::new()
+            .with_writer(Arc::new(EventWriter::new(dir.path())))
+            .persist_required(&event)
+            .unwrap();
     }
 }

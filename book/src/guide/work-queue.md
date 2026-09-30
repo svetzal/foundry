@@ -366,7 +366,26 @@ original. Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
-`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.
+`INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
+
+Admission first saves a child in `failed` with reason `resume admission incomplete;
+execution not dispatched`, no `started_at`, a `settled_at`, and the exact `resumes`
+and operator context. Only after both `work_item_submitted` and `work_item_started`
+roots have been appended successfully does Foundry save that child as `running`
+and dispatch it. If the initial ledger save fails, no child or lifecycle event is
+created. A later lifecycle or final ledger-save failure leaves the staged failed
+child; the parent's obligation and unrelated records remain unchanged. The failed
+child has no preservation disposition; continue using the preserved parent's id.
+An interruption during admission also leaves this non-running record.
+
+Watch publishes each admission lifecycle root only after its write succeeds.
+A rejected admission may retain a successfully written submitted event, or both
+roots if the final ledger save fails. These are evidence of an admission attempt,
+not proof of execution: consult the ledger and RPC result. Earlier event bytes,
+including any partial failed append, remain intact; Foundry never truncates or
+rewrites history to undo admission. Ordinary engine roots, block outputs,
+scatter/gather, progress, close/cancel and restart settlement retain their existing
+best-effort event-persistence behaviour.
 
 ## What `queue` does not do
 

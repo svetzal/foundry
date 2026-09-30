@@ -236,6 +236,21 @@ impl Engine {
     /// Process an event: find matching task blocks, execute them, and propagate
     /// any emitted events through the chain.
     pub async fn process(&self, event: Event) -> ProcessResult {
+        self.process_inner(event, false).await
+    }
+
+    /// Process a root only after its durable append succeeds. A failed append
+    /// returns an error without broadcasting or routing that root. Downstream
+    /// block output, progress and scatter/gather retain their best-effort policy.
+    /// Requires an event writer; intended for persistence-sensitive admission.
+    pub async fn process_required(&self, event: Event) -> anyhow::Result<ProcessResult> {
+        let emitter = self.emitter.clone();
+        let root = event.clone();
+        tokio::task::spawn_blocking(move || emitter.persist_required(&root)).await??;
+        Ok(self.process_inner(event, true).await)
+    }
+
+    async fn process_inner(&self, event: Event, root_recorded: bool) -> ProcessResult {
         let process_start = std::time::Instant::now();
 
         let process_span = tracing::info_span!(
@@ -245,9 +260,11 @@ impl Engine {
         );
         let _process_guard = process_span.enter();
 
-        // Persist the root event before processing begins so it is recorded
-        // even if a downstream block panics.
-        self.emitter.persist_one(&event);
+        // Persist ordinary roots within the existing process span and duration.
+        // Required roots have already been appended and published exactly once.
+        if !root_recorded {
+            self.emitter.persist_one(&event);
+        }
 
         let mut block_executions = Vec::new();
         let mut state = ProcessState::new(event);
@@ -1473,6 +1490,49 @@ mod tests {
             "every child reported success",
         );
         assert_eq!(seen[0].project, "system", "reduce event carries the GatherSpec's project");
+    }
+
+    #[tokio::test]
+    async fn required_root_rejects_before_routing_while_ordinary_scatter_remains_best_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("events");
+        std::fs::write(&destination, "earlier bytes").unwrap();
+        let (tx, mut rx) = broadcast::channel(64);
+        let mut engine = Engine::new()
+            .with_event_writer(Arc::new(EventWriter::new(&destination)))
+            .with_event_broadcaster(tx);
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 1,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(ChildWorker));
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(engine.process_required(trigger.clone()).await.is_err());
+        assert!(rx.try_recv().is_err(), "a rejected root never routes or publishes progress");
+        let result = engine.process(trigger).await;
+        assert_eq!(type_count(&result, &EventType::ProjectRunStarted), 1);
+        assert_eq!(type_count(&result, &EventType::ProjectRunCompleted), 1);
+        assert_eq!(type_count(&result, &EventType::MaintenanceCycleCompleted), 1);
+        let mut observed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            observed.push(event);
+        }
+        for event in result.events {
+            assert!(observed.iter().any(|actual| actual.id == event.id));
+        }
+        assert!(observed.iter().any(|event| event.event_type.as_str() == "block_started"));
+        assert!(observed.iter().any(|event| event.event_type.as_str() == "block_completed"));
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "earlier bytes");
     }
 
     #[tokio::test]

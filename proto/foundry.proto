@@ -636,6 +636,15 @@ message CancelWorkItemResponse { WorkItem item = 1; }
 
 // Resume only preserved work with usable preservation evidence. Persists a new
 // linked task before dispatch; the original stays open until actual landing.
+// Admission stages a failed child with reason "resume admission incomplete;
+// execution not dispatched", no started_at and a settled_at. It becomes running
+// only after submitted/started roots are durably appended and the ledger saved.
+// Initial ledger-save failure creates no child or lifecycle events. Later failure
+// leaves the staged failed child, preserves parent/siblings and dispatches nothing.
+// Successful earlier appends remain in history (even a partial append is never
+// repaired by rewriting/truncation). Watch publishes a lifecycle root only after
+// its append succeeds; a rejected admission may therefore have submitted evidence
+// (or both lifecycle roots if the final ledger save fails), never a failed write.
 // INVALID_ARGUMENT: blank input; NOT_FOUND: unknown id; FAILED_PRECONDITION:
 // ineligible state/project/evidence; INTERNAL: persistence or I/O failure.
 message ResumeWorkItemRequest {

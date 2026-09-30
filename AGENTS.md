@@ -258,7 +258,16 @@ original. Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
-`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.
+`INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
+An initial ledger-save failure creates no child or lifecycle events. Otherwise,
+admission stages a `failed` child with reason `resume admission incomplete;
+execution not dispatched`, no `started_at`, a `settled_at` and no disposition.
+The child becomes `running` only after both admission lifecycle roots are
+persisted and the final ledger save succeeds. Later failures leave that failed
+child and preserve the parent and unrelated records. Successfully written roots
+remain in history and on Watch even if a later admission step fails; failed
+writes are never advertised on Watch. Earlier bytes, including partial appends,
+are never truncated or rewritten.
 
 ### Registry commands
 

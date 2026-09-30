@@ -279,6 +279,7 @@ pub(super) async fn resume_item(
         return Err(Status::invalid_argument("id and operator origin must be nonblank"));
     }
     let path = path.to_path_buf();
+    let admission_path = path.clone();
     let registry = std::sync::Arc::clone(&ctx.registry);
     let (item, base) = tokio::task::spawn_blocking(move || {
         let _guard = foundry_sdk::work_item::ledger_write_gate()
@@ -327,7 +328,14 @@ pub(super) async fn resume_item(
             previous_reason: parent.reason.clone(),
             previous_settled_at: parent.settled_at,
         });
-        store.upsert(child.clone());
+        // Fail closed: until both lifecycle appends and the final ledger save
+        // succeed, this child holds no claim that execution has started.
+        let mut rejected = child.clone();
+        rejected.state = WorkItemState::Failed;
+        rejected.reason = "resume admission incomplete; execution not dispatched".to_string();
+        rejected.started_at = None;
+        rejected.settled_at = Some(chrono::Utc::now());
+        store.upsert(rejected);
         store.save(&path).map_err(|error| {
             Status::internal(format!("failed to persist work-item state: {error}"))
         })?;
@@ -335,6 +343,44 @@ pub(super) async fn resume_item(
     })
     .await
     .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
+    persist_resume_lifecycle(&ctx.engine, &item).await?;
+    let admitted = item.clone();
+    tokio::task::spawn_blocking(move || {
+        let _guard = foundry_sdk::work_item::ledger_write_gate()
+            .lock()
+            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+        let mut store = load_store(&admission_path)?;
+        let current = store
+            .find(&admitted.id)
+            .ok_or_else(|| Status::internal("resume admission record disappeared"))?;
+        if current.state != WorkItemState::Failed {
+            return Err(Status::internal("resume admission record changed before dispatch"));
+        }
+        store.upsert(admitted);
+        store.save(&admission_path).map_err(|error| {
+            Status::internal(format!("failed to persist work-item state: {error}"))
+        })
+    })
+    .await
+    .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
+    let event = foundry_sdk::event::Event::new(
+        foundry_sdk::event::EventType::ExecutionRequested,
+        item.project.clone(),
+        foundry_sdk::throttle::Throttle::Full,
+        serde_json::json!({"project": item.project, "prompt": item.objective,
+            "workflow": "task", "base_ref": base, "admitted_work_item_id": item.id}),
+    )
+    .with_trace_id(item.trace_id.clone());
+    super::spawn_workflow(event, ctx);
+    Ok(item_to_proto(&item))
+}
+
+/// Lifecycle roots are admission prerequisites; their downstream processing
+/// retains the engine's existing policy.
+async fn persist_resume_lifecycle(
+    engine: &foundry_engine::engine::Engine,
+    item: &WorkItem,
+) -> Result<(), Status> {
     for event_type in [
         foundry_sdk::event::EventType::WorkItemSubmitted,
         foundry_sdk::event::EventType::WorkItemStarted,
@@ -348,8 +394,8 @@ pub(super) async fn resume_item(
             &foundry_sdk::payload::WorkItemEventPayload::from_item(&snapshot),
         )
         .map_err(|error| Status::internal(format!("cannot serialize resume: {error}")))?;
-        ctx.engine
-            .process(
+        engine
+            .process_required(
                 foundry_sdk::event::Event::new(
                     event_type,
                     item.project.clone(),
@@ -358,18 +404,12 @@ pub(super) async fn resume_item(
                 )
                 .with_trace_id(item.trace_id.clone()),
             )
-            .await;
+            .await
+            .map_err(|error| {
+                Status::internal(format!("failed to persist resume lifecycle: {error}"))
+            })?;
     }
-    let event = foundry_sdk::event::Event::new(
-        foundry_sdk::event::EventType::ExecutionRequested,
-        item.project.clone(),
-        foundry_sdk::throttle::Throttle::Full,
-        serde_json::json!({"project": item.project, "prompt": item.objective,
-            "workflow": "task", "base_ref": base, "admitted_work_item_id": item.id}),
-    )
-    .with_trace_id(item.trace_id.clone());
-    super::spawn_workflow(event, ctx);
-    Ok(item_to_proto(&item))
+    Ok(())
 }
 
 fn validate_preservation(repo: &str, base: &str) -> Result<(), Status> {
