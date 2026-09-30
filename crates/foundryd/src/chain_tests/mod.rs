@@ -15,5 +15,6 @@ mod iterate_chain_test;
 mod maintain_chain_test;
 mod prompt_chain_test;
 mod release_chain_test;
+mod run_ledger_test;
 mod strategic_chain_test;
 mod work_ledger_test;

@@ -36,6 +36,14 @@ fn decide_cut(trigger: &Event) -> CutDecision {
     CutDecision::Proceed { cve }
 }
 
+/// The CVE a cut will target, or `None` when `CutRelease` will not run.
+pub(super) fn cut_target(trigger: &Event) -> Option<String> {
+    match decide_cut(trigger) {
+        CutDecision::SkipDirty => None,
+        CutDecision::Proceed { cve } => Some(cve),
+    }
+}
+
 agent_execution_block! {
     /// Cuts a patch release in response to a vulnerability detected on the main branch.
     ///
@@ -50,10 +58,7 @@ impl SimulatedSuccess for CutRelease {
     type Outcome = Option<String>;
 
     fn simulate(&self, trigger: &Event) -> Option<String> {
-        match decide_cut(trigger) {
-            CutDecision::SkipDirty => None,
-            CutDecision::Proceed { cve } => Some(cve),
-        }
+        cut_target(trigger)
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Option<String>) -> Vec<Event> {
@@ -80,7 +85,7 @@ impl TaskBlock for CutRelease {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        matches!(decide_cut(trigger), CutDecision::Proceed { .. })
+        cut_target(trigger).is_some()
     }
 
     dry_run_via_simulation!();

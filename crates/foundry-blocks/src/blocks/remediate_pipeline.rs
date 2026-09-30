@@ -33,6 +33,15 @@ fn decide_pipeline_remediate(trigger: &Event) -> PipelineRemediateDecision {
     }
 }
 
+/// Whether `RemediatePipeline` will run on `trigger`.
+///
+/// This is the block's `accepts()` predicate, named so the work-item ledger
+/// records a remediation item exactly when a pipeline remediation runs, rather
+/// than re-deriving the `passing` guard beside it.
+pub(super) fn pipeline_remediation_will_proceed(trigger: &Event) -> bool {
+    matches!(decide_pipeline_remediate(trigger), PipelineRemediateDecision::Proceed)
+}
+
 agent_execution_block! {
     /// Attempts to fix a failing GitHub Actions pipeline.
     /// Mutator -- simulated success at `dry_run`.
@@ -84,7 +93,7 @@ impl TaskBlock for RemediatePipeline {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        matches!(decide_pipeline_remediate(trigger), PipelineRemediateDecision::Proceed)
+        pipeline_remediation_will_proceed(trigger)
     }
 
     dry_run_via_simulation!();

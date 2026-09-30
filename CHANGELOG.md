@@ -42,6 +42,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
   No dispatch is delayed, reordered, merged or deduplicated, and a ledger
   fault never fails, delays or alters a dispatch.
 
+- The work-item ledger now covers the three dispatch paths it had left out, so
+  all six kinds are recorded rather than only the task-shaped three. Each
+  per-project maintenance run inside a cycle is an item (kind `maintenance`,
+  lane `maintenance`, origin `maintenance cycle`), opened at its root
+  `ProjectRunStarted` and settled from its own `ProjectRunCompleted`. Each
+  release is an item (kind `release`), opened at `ReleaseRequested` (lane
+  `interactive`, origin `foundry release`) or at the clean `MainBranchAudited`
+  that cuts an automatic release (lane `maintenance`), and settled from
+  `ReleaseCompleted` with the new tag named in the reason;
+  `ReleasePipelineCompleted` and `LocalInstallCompleted` are downstream
+  observation and leave the settled record untouched. Each remediation is an
+  item (kind `remediation`), opened at the dirty `MainBranchAudited` or the
+  failing `PipelineChecked` that dispatches it and settled from
+  `RemediationCompleted` — a remediation Foundry stopped for review settles
+  `failed` with that review text, since its commits are not pushed and no
+  release follows. Whether an item is opened is decided by the same predicate
+  the dispatching block's `accepts()` already uses, so an item exists exactly
+  when the run does, and a dry run records nothing. Settlement correlates on
+  trace, project *and* kind, so a cycle's fan-out siblings, and a run holding
+  a nested remediation and an automatic release on one trace and project, each
+  settle only the item their own root opened. Task-kind correlation is
+  unchanged. No dispatch is delayed, reordered or altered.
+
 - Two typed gRPC read RPCs serve the work-item ledger from `foundryd`:
   `ListWorkItems` and `GetWorkItem`. Both load `FOUNDRY_WORK_ITEMS_PATH` on
   every call and cache nothing, so a caller always sees the ledger as it

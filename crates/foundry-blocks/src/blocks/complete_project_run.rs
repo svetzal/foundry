@@ -21,6 +21,21 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock};
 /// chain in a cycle emits exactly one `ProjectRunCompleted`.
 pub struct CompleteProjectRun;
 
+/// Whether `trigger` belongs to a per-project run inside a scattered
+/// maintenance cycle.
+///
+/// A `gather_id` is present on every event descending from
+/// `FanOutMaintenance`'s scatter and absent everywhere else, so it is the one
+/// fact that distinguishes a cycle's per-project run from a standalone one.
+/// Named here because it is both this block's `accepts()` predicate and the
+/// condition under which the work-item ledger records a maintenance item: a
+/// standalone run's `ProjectRunCompleted` is synthesized by the service layer
+/// rather than emitted into the chain, so an item recorded for one would never
+/// be settled.
+pub(super) fn in_maintenance_cycle(trigger: &Event) -> bool {
+    trigger.gather_id.is_some()
+}
+
 impl TaskBlock for CompleteProjectRun {
     task_block_meta! {
         name: "Complete Project Run",
@@ -29,7 +44,7 @@ impl TaskBlock for CompleteProjectRun {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        trigger.gather_id.is_some()
+        in_maintenance_cycle(trigger)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {

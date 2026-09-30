@@ -224,14 +224,14 @@ impl TaskBlock for RecordWorkItem {
 impl RecordWorkItem {
     /// Add `item` to the ledger. Returns whether it reached the file.
     fn write(&self, item: &WorkItem) -> bool {
-        let Some(_guard) = lock() else {
+        let Some(_guard) = ledger_lock() else {
             return false;
         };
-        let Some(mut store) = load(&self.store_path) else {
+        let Some(mut store) = load_ledger(&self.store_path) else {
             return false;
         };
         store.upsert(item.clone());
-        save(&store, &self.store_path)
+        save_ledger(&store, &self.store_path)
     }
 }
 
@@ -349,12 +349,12 @@ impl TaskBlock for SettleFailedDispatch {
 
 /// Settle this run's `running` item `failed` with `reason`, and return it.
 fn settle_failed_in_ledger(path: &Path, trigger: &Event, reason: &str) -> Option<WorkItem> {
-    let _guard = lock()?;
-    let mut store = load(path)?;
+    let _guard = ledger_lock()?;
+    let mut store = load_ledger(path)?;
     let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
     item.settle_failed(reason, Utc::now());
     let settled = item.clone();
-    save(&store, path).then_some(settled)
+    save_ledger(&store, path).then_some(settled)
 }
 
 /// Settles a ledger item from the task runner's typed terminal result.
@@ -379,13 +379,13 @@ impl SettleWorkItem {
     /// started before the ledger existed, for one — or when the ledger cannot
     /// be read or written.
     fn settle(&self, trigger: &Event, result: &TaskRunCompletedPayload) -> Option<WorkItem> {
-        let _guard = lock()?;
-        let mut store = load(&self.store_path)?;
+        let _guard = ledger_lock()?;
+        let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
         item.settle_from_task_run(result, removed, Utc::now());
         let settled = item.clone();
-        save(&store, &self.store_path).then_some(settled)
+        save_ledger(&store, &self.store_path).then_some(settled)
     }
 }
 
@@ -459,7 +459,10 @@ impl TaskBlock for SettleWorkItem {
 }
 
 /// Build one work-item lifecycle event.
-fn work_item_event(event_type: EventType, trigger: &Event, item: &WorkItem) -> Event {
+///
+/// Shared with [`super::run_ledger`] so every kind of item reports itself in
+/// the same payload shape.
+pub(super) fn work_item_event(event_type: EventType, trigger: &Event, item: &WorkItem) -> Event {
     super::event_from_infallible_payload(
         event_type,
         &trigger.project,
@@ -473,7 +476,7 @@ fn work_item_event(event_type: EventType, trigger: &Event, item: &WorkItem) -> E
 ///
 /// `foundryd` is long-lived state: a poisoned ledger lock must degrade to "the
 /// dispatch went unrecorded", never to a dead daemon.
-fn lock() -> Option<std::sync::MutexGuard<'static, ()>> {
+pub(super) fn ledger_lock() -> Option<std::sync::MutexGuard<'static, ()>> {
     match ledger_write_gate().lock() {
         Ok(guard) => Some(guard),
         Err(_poisoned) => {
@@ -488,7 +491,7 @@ fn lock() -> Option<std::sync::MutexGuard<'static, ()>> {
 }
 
 /// Load the ledger, absorbing a read fault.
-fn load(path: &Path) -> Option<WorkItemStore> {
+pub(super) fn load_ledger(path: &Path) -> Option<WorkItemStore> {
     match WorkItemStore::load(path) {
         Ok(store) => Some(store),
         Err(error) => {
@@ -506,7 +509,7 @@ fn load(path: &Path) -> Option<WorkItemStore> {
 }
 
 /// Save the ledger, absorbing a write fault. Returns whether it was written.
-fn save(store: &WorkItemStore, path: &Path) -> bool {
+pub(super) fn save_ledger(store: &WorkItemStore, path: &Path) -> bool {
     match store.save(path) {
         Ok(()) => true,
         Err(error) => {

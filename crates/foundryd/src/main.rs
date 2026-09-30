@@ -465,6 +465,10 @@ fn register_blocks(
     let shell: Arc<dyn foundry_blocks::gateway::ShellGateway> =
         Arc::new(foundry_blocks::gateway::ProcessShellGateway);
 
+    // Registered first so a run-shaped item is in the ledger `running` before
+    // the block that dispatches the run is reached: blocks run in
+    // registration order for a given trigger.
+    register_run_ledger_blocks(&mut engine, registry);
     register_core_blocks(&mut engine, registry);
     register_release_blocks(&mut engine, &agent, registry);
     register_gate_blocks(&mut engine, &shell, registry);
@@ -475,6 +479,22 @@ fn register_blocks(
     register_digest_blocks(&mut engine, &agent, &shell, registry, paths.digest);
 
     engine
+}
+
+/// The work-item ledger's run-shaped bracket: one block opens a maintenance
+/// run, a release or a remediation from the root of its chain, and one closes
+/// it from that chain's own typed terminal. Neither changes a dispatch.
+fn register_run_ledger_blocks(
+    engine: &mut foundry_engine::engine::Engine,
+    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
+) {
+    engine.register(Box::new(foundry_blocks::blocks::RecordRunWorkItem::new(
+        foundry_sdk::paths::work_items_path(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::SettleRunWorkItem::new(
+        foundry_sdk::paths::work_items_path(),
+    )));
 }
 
 fn register_campaign_blocks(

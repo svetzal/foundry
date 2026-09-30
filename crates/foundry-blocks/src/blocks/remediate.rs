@@ -41,6 +41,20 @@ fn decide_remediate(trigger: &Event) -> RemediateDecision {
     RemediateDecision::Proceed { cve }
 }
 
+/// The CVE `RemediateVulnerability` will remediate on `trigger`, or `None`
+/// when it will not run at all.
+///
+/// This is the block's `accepts()` predicate, named so the work-item ledger
+/// can record a remediation item exactly when — and only when — a remediation
+/// actually runs. Sharing it rather than re-deriving the `dirty` guard is what
+/// keeps the ledger from opening an item no terminal will ever settle.
+pub(super) fn remediation_target(trigger: &Event) -> Option<String> {
+    match decide_remediate(trigger) {
+        RemediateDecision::SkipClean => None,
+        RemediateDecision::Proceed { cve } => Some(cve),
+    }
+}
+
 agent_execution_block! {
     /// Attempts to fix a vulnerability on the main branch.
     /// Mutator — simulated success at `dry_run`.
@@ -60,10 +74,7 @@ impl SimulatedSuccess for RemediateVulnerability {
     type Outcome = Option<String>;
 
     fn simulate(&self, trigger: &Event) -> Option<String> {
-        match decide_remediate(trigger) {
-            RemediateDecision::SkipClean => None,
-            RemediateDecision::Proceed { cve } => Some(cve),
-        }
+        remediation_target(trigger)
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Option<String>) -> Vec<Event> {
@@ -82,7 +93,7 @@ impl TaskBlock for RemediateVulnerability {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        matches!(decide_remediate(trigger), RemediateDecision::Proceed { .. })
+        remediation_target(trigger).is_some()
     }
 
     dry_run_via_simulation!();

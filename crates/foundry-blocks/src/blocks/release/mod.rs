@@ -25,6 +25,42 @@ use super::read_registry;
 use super::require_project;
 
 // ---------------------------------------------------------------------------
+// Shared dispatch predicates
+// ---------------------------------------------------------------------------
+
+/// Whether `project` has the release action enabled in `registry`.
+///
+/// `ExecuteRelease` treats a disabled release — or an unknown project — as a
+/// domain skip that emits no `ReleaseCompleted`, so this is also the condition
+/// under which the work-item ledger may record a release item: recording one
+/// for a release that will not run would leave it `running` with no terminal
+/// to settle it.
+pub(super) fn release_enabled(
+    registry: &std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+    project: &str,
+) -> bool {
+    // Best-effort: a poisoned registry lock is indistinguishable from
+    // "release disabled" to every caller here, but it is a distinct fault and
+    // must be visible in the log rather than silently read as policy.
+    match super::read_registry(registry) {
+        Ok(guard) => guard.find_project(project).is_some_and(|entry| entry.actions.release),
+        Err(error) => {
+            tracing::warn!(error = %error, "registry lock poisoned while reading the release action");
+            false
+        }
+    }
+}
+
+/// The CVE `CutRelease` will cut a release for on `trigger`, or `None` when it
+/// will not run at all.
+///
+/// This is the block's `accepts()` predicate, named so the work-item ledger
+/// records a release item exactly when an automatic release runs.
+pub(super) fn cut_release_target(trigger: &Event) -> Option<String> {
+    cut_release::cut_target(trigger)
+}
+
+// ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 

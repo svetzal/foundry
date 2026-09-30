@@ -26,15 +26,15 @@ use foundry_engine::engine::Engine;
 
 /// An agent gateway that reads the work-item ledger from disk every time it is
 /// invoked, and replays a fixed script of responses.
-struct LedgerReadingAgent {
+pub(super) struct LedgerReadingAgent {
     store_path: PathBuf,
     responses: Vec<String>,
     /// The ledger as it stood at each invocation, in invocation order.
-    observed: Mutex<Vec<Vec<WorkItem>>>,
+    pub(super) observed: Mutex<Vec<Vec<WorkItem>>>,
 }
 
 impl LedgerReadingAgent {
-    fn new(store_path: PathBuf, responses: Vec<&str>) -> Arc<Self> {
+    pub(super) fn new(store_path: PathBuf, responses: Vec<&str>) -> Arc<Self> {
         Arc::new(Self {
             store_path,
             responses: responses.into_iter().map(str::to_string).collect(),
@@ -43,7 +43,7 @@ impl LedgerReadingAgent {
     }
 
     /// The ledger as it stood when the agent was first invoked.
-    fn ledger_at_first_invocation(&self) -> Vec<WorkItem> {
+    pub(super) fn ledger_at_first_invocation(&self) -> Vec<WorkItem> {
         self.observed.lock().unwrap().first().cloned().unwrap_or_default()
     }
 }

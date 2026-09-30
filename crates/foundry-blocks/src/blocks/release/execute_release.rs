@@ -25,21 +25,7 @@ impl SimulatedSuccess for ExecuteRelease {
     type Outcome = Option<()>;
 
     fn simulate(&self, trigger: &Event) -> Option<()> {
-        // Best-effort: simulation cannot proceed without the registry either
-        // way (a lock failure and "release disabled" both yield no events),
-        // but a poisoned lock is a distinct fault worth surfacing in logs
-        // rather than being silently indistinguishable from "release disabled".
-        let guard = super::super::read_registry(&self.registry)
-            .map_err(|e| {
-                tracing::warn!(error = %e, "registry lock poisoned during release simulation");
-                e
-            })
-            .ok()?;
-        let entry = guard.find_project(&trigger.project)?;
-        if !entry.actions.release {
-            return None;
-        }
-        Some(())
+        super::release_enabled(&self.registry, &trigger.project).then_some(())
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Option<()>) -> Vec<Event> {
