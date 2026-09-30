@@ -600,4 +600,18 @@ original. Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
-`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.
+`INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
+
+If the initial ledger save fails, no child or lifecycle events are created.
+Otherwise admission stages a child in `failed` with reason `resume admission incomplete;
+execution not dispatched`, no `started_at`, a `settled_at`, no disposition, and
+`resumes` set to the exact preserved parent's id. Execution starts only after both
+`work_item_submitted` and `work_item_started` lifecycle roots persist and the final
+ledger save succeeds, making the child `running`. A subsequent failure leaves the
+staged failed child and preserves the parent and unrelated records.
+
+Successful lifecycle appends remain in durable history and are delivered on
+Watch, even when admission later fails. Failed writes are never advertised on
+Watch. Earlier bytes, including partial failed appends, are never truncated or
+rewritten. Lifecycle events alone are not proof of execution: consult the ledger
+and RPC result, and continue from the preserved parent's id.
