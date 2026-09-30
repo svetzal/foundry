@@ -247,7 +247,7 @@ major:
 | `dispatch` | The project's policy is `major` (or the major is a security fix), and nothing below applies. |
 | `proposed` | The project's policy is `minor` or `patch`. The summary prints the `foundry task` command to run it. |
 | `deferred` | Maintenance for the project did not succeed. |
-| `deduped` | A task for the same project, package and target version is in flight (started in the last 24 hours), or an earlier task left a preserved remainder, defect or blocked decision whose branch or bundle still exists. |
+| `deduped` | A task for the same project, package and target version is in flight (started in the last 24 hours), or preserved event history has no matching preserved ledger obligation and its branch or bundle still exists. |
 | `overflow` | Over the per-project or per-night cap. The summary prints the command. |
 
 Each dispatched major becomes one `foundry task` with the objective "Upgrade
@@ -259,6 +259,24 @@ green. Otherwise its work is preserved.
 The daemon starts the dispatched tasks after the maintenance summary is
 written, one after another, each as its own workflow. Under `dry_run` nothing
 is dispatched; the summary says "would dispatch".
+
+
+When an otherwise eligible nightly major upgrade matches a `preserved` ledger
+item by exact registered project, package and target version, the majors lane
+resumes that obligation from its preservation ref and original objective. Its
+child records `kind: major_upgrade`, `lane: maintenance`, origin `nightly majors
+lane` and the exact `resumes` id; automation records no operator action. The
+parent retains its submission identity and evidence. Only an actual child
+landing settles the preserved parent landed; other outcomes leave it open,
+and owner cancellation remains terminal. A selected resume admission failure
+is reported and never falls back to a fresh task.
+
+Continuations count against the existing nightly caps and run sequentially
+with fresh upgrades in the existing order. Update policies, holds, security
+eligibility, successful maintenance and in-flight suppression still apply.
+Reviews, dry runs and interrupted-cycle summaries dispatch nothing. Without a
+matching preserved ledger item, the existing fresh-task and history-suppression
+rules apply. Owner `queue resume` remains an interactive, asynchronous task.
 
 Caps bound the cost:
 

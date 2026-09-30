@@ -48,6 +48,7 @@ pub struct PlanMajorUpgrades {
     shell: Arc<dyn ShellGateway>,
     events_dir: PathBuf,
     caps: Caps,
+    work_items_path: PathBuf,
 }
 
 impl PlanMajorUpgrades {
@@ -62,6 +63,7 @@ impl PlanMajorUpgrades {
             shell,
             events_dir: foundry_sdk::paths::events_dir(),
             caps: Caps::from_env(),
+            work_items_path: foundry_sdk::paths::work_items_path(),
         }
     }
 
@@ -79,7 +81,14 @@ impl PlanMajorUpgrades {
             shell,
             events_dir,
             caps,
+            work_items_path: foundry_sdk::paths::work_items_path(),
         }
+    }
+    /// Use an explicit ledger, alongside the configured trace and event stores.
+    #[must_use]
+    pub fn with_work_items_path(mut self, path: PathBuf) -> Self {
+        self.work_items_path = path;
+        self
     }
 }
 
@@ -318,6 +327,7 @@ impl TaskBlock for PlanMajorUpgrades {
         let caps = self.caps;
         let shell = Arc::clone(&self.shell);
         let events_dir = self.events_dir.clone();
+        let work_items_path = self.work_items_path.clone();
 
         // Gather each project's majors before any await (no lock across awaits).
         let gathered = if review {
@@ -338,13 +348,34 @@ impl TaskBlock for PlanMajorUpgrades {
 
         Box::pin(async move {
             let now = Utc::now();
-            let (prior, history_warning) =
-                prior_tasks(events_dir, &paths, shell.as_ref(), now).await;
+            let ledger = tokio::task::spawn_blocking(move || {
+                foundry_sdk::work_item::WorkItemStore::load(&work_items_path)
+            })
+            .await
+            .map_err(anyhow::Error::from)?;
+            let resumes = match &ledger {
+                Ok(store) => planned_resumes(&inputs, &paths, store),
+                Err(error) => {
+                    tracing::warn!(%error, "work-item ledger unreadable; major dispatch disabled");
+                    serde_json::Map::new()
+                }
+            };
+            let (prior, mut history_warning) =
+                prior_tasks(events_dir, &paths, shell.as_ref(), now, &resumes).await;
+            if let Err(error) = &ledger {
+                let warning = format!("work-item ledger unreadable: {error}; dispatch disabled");
+                history_warning = Some(match history_warning {
+                    Some(history) => format!("{history}; {warning}"),
+                    None => warning,
+                });
+            }
             let upgrades = majors::plan(&inputs, &prior, caps);
             // A cycle closed after an interruption is reported, not acted on:
             // starting upgrade tasks from a daemon restart would surprise.
-            let dispatch_enabled =
-                !review && throttle.permits_mutation() && summary_fields.interrupted.is_none();
+            let dispatch_enabled = !review
+                && throttle.permits_mutation()
+                && summary_fields.interrupted.is_none()
+                && ledger.is_ok();
             let payload = MajorUpgradesPlannedPayload {
                 upgrades,
                 per_project_cap: caps.per_project,
@@ -360,13 +391,16 @@ impl TaskBlock for PlanMajorUpgrades {
             };
             let summary = plan_summary(&payload);
             let rendered = render_plan(&payload);
-            let result: TaskBlockResult = super::emit_result(
+            let mut result: TaskBlockResult = super::emit_result(
                 summary,
                 EventType::MajorUpgradesPlanned,
                 &project,
                 throttle,
                 &payload,
             )?;
+            if !resumes.is_empty() {
+                result.events[0].payload["major_upgrade_resumes"] = resumes.into();
+            }
             Ok(result.with_output(Some(rendered), None))
         })
     }
@@ -433,6 +467,30 @@ impl PlanMajorUpgrades {
     }
 }
 
+/// Exact ids travel with the plan, so admission never silently selects a
+/// different obligation if the ledger changes before sequential execution.
+fn planned_resumes(
+    inputs: &[ProjectMajors],
+    paths: &HashMap<String, PathBuf>,
+    store: &foundry_sdk::work_item::WorkItemStore,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut resumes = serde_json::Map::new();
+    for project in inputs {
+        if !paths.contains_key(&project.project) {
+            continue;
+        }
+        for update in &project.majors {
+            if let Some(parent) =
+                majors::preserved_upgrade(store, &project.project, &update.package, &update.to)
+            {
+                resumes
+                    .insert(majors::objective(&project.project, update), parent.id.clone().into());
+            }
+        }
+    }
+    resumes
+}
+
 /// Earlier upgrade tasks that still block a dispatch, and a warning when the
 /// history could not be read (dedupe was then blind, and the plan says so).
 async fn prior_tasks(
@@ -440,6 +498,7 @@ async fn prior_tasks(
     paths: &HashMap<String, PathBuf>,
     shell: &dyn ShellGateway,
     now: DateTime<Utc>,
+    resumes: &serde_json::Map<String, serde_json::Value>,
 ) -> (Vec<PriorTask>, Option<String>) {
     let history = tokio::task::spawn_blocking(move || {
         logged_upgrade_tasks(&events_dir, now - Duration::days(HISTORY_DAYS))
@@ -459,6 +518,15 @@ async fn prior_tasks(
             continue;
         };
         if let Some(reference) = reference {
+            // A ledger obligation replaces only preserved-history suppression;
+            // running history keeps its existing precedence over resumption.
+            if resumes.keys().any(|objective| {
+                majors::parse_objective(objective) == majors::parse_objective(&task.objective)
+                    && majors::parse_objective(objective)
+                        .is_some_and(|(_, _, project)| project == task.project)
+            }) {
+                continue;
+            }
             let exists = match paths.get(&task.project) {
                 Some(repo) => preserved_ref_exists(shell, repo, &reference).await,
                 None => true,
@@ -576,6 +644,7 @@ mod tests {
             events.to_path_buf(),
             caps,
         )
+        .with_work_items_path(events.join("work-items.json"))
     }
 
     fn write_trace(tw: &TraceWriter, id: &str, events: Vec<Event>) {

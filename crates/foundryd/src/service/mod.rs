@@ -32,7 +32,7 @@ use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 
 mod campaign_ops;
-mod eventing_ops;
+pub(crate) mod eventing_ops;
 mod recovery;
 mod registry_ops;
 mod sentinel_ops;

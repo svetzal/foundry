@@ -337,8 +337,8 @@ pub enum MajorUpgradeStatus {
     /// Dispatched (or, under `dry_run` and in a review, would be dispatched)
     /// as its own `foundry task`.
     Dispatch,
-    /// A task for the same project, package and target is in flight or left
-    /// preserved work; not dispatched again.
+    /// A task for the same project, package and target is in flight, or its
+    /// preserved history has no matching preserved ledger obligation.
     Deduped,
     /// Over the per-project or per-night cap; run it by hand or wait.
     Overflow,

@@ -109,29 +109,75 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
 /// `ExecutionRequested` events — one task per major, in plan order.
 ///
 /// Empty unless the plan enabled dispatch (nightly, full throttle). Each event
-/// is a fresh workflow root with its own trace, exactly as `foundry task`
-/// would emit it.
-pub(super) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
+/// describes a workflow root. A matching ledger obligation carries its exact
+/// parent id for admission; otherwise the root is a fresh `foundry task`.
+pub(crate) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
     summary
-        .parsed_events_of::<MajorUpgradesPlannedPayload>(EventType::MajorUpgradesPlanned)
-        .filter(|plan| plan.dispatch_enabled && !plan.review)
-        .flat_map(|plan| plan.upgrades)
-        .filter(|m| m.status == MajorUpgradeStatus::Dispatch)
-        .map(|m| {
-            Event::new(
-                EventType::ExecutionRequested,
-                m.project.clone(),
-                Throttle::Full,
-                serde_json::json!({
-                    "project": m.project,
-                    "workflow": "task",
-                    "prompt": m.objective,
-                }),
-            )
-            .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
-            .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+        .events
+        .iter()
+        .filter(|event| event.event_type == EventType::MajorUpgradesPlanned)
+        .filter_map(|event| {
+            event
+                .parse_payload::<MajorUpgradesPlannedPayload>()
+                .map(|plan| (event, plan))
+                .map_err(|error| {
+                    // Best-effort: unreadable plans cannot dispatch work.
+                    tracing::warn!(%error, "skipping unreadable major-upgrade plan");
+                })
+                .ok()
+        })
+        .filter(|(_, plan)| plan.dispatch_enabled && !plan.review)
+        .flat_map(|(event, plan)| {
+            plan.upgrades
+                .into_iter()
+                .filter(|m| m.status == MajorUpgradeStatus::Dispatch)
+                .map(move |m| {
+                    let mut payload = serde_json::json!({
+                        "project": m.project, "workflow": "task", "prompt": m.objective,
+                    });
+                    if let Some(id) = event
+                        .payload
+                        .get("major_upgrade_resumes")
+                        .and_then(|resumes| resumes.get(&m.objective))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        payload["nightly_resume_item_id"] = id.into();
+                    }
+                    Event::new(EventType::ExecutionRequested, m.project, Throttle::Full, payload)
+                        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+                        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+                })
         })
         .collect()
+}
+
+/// Resolve the planner's exact parent through the same fail-closed admission
+/// used by owner resumes. The caller awaits execution in nightly plan order.
+pub(crate) async fn prepare_major_dispatch(
+    event: Event,
+    ctx: &super::RuntimeContext,
+    path: &std::path::Path,
+) -> Result<Event, tonic::Status> {
+    let Some(id) = event.payload.get("nightly_resume_item_id").and_then(serde_json::Value::as_str)
+    else {
+        return Ok(event);
+    };
+    let (package, target, project) = event
+        .payload
+        .get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .and_then(foundry_blocks::dependency_updates::majors::parse_objective)
+        .filter(|(_, _, project)| *project == event.project)
+        .ok_or_else(|| {
+            Status::failed_precondition("nightly continuation has no exact upgrade identity")
+        })?;
+    let source = super::work_item_ops::ResumeSource::Nightly {
+        project,
+        package,
+        target,
+    };
+    let (_, root) = super::work_item_ops::admit_resume(path, ctx, id.to_string(), source).await?;
+    Ok(root)
 }
 
 /// A boxed `run_workflow`, so a workflow can start further workflows (the
@@ -160,12 +206,33 @@ fn dispatch_major_upgrades(dispatches: Vec<Event>, ctx: super::RuntimeContext) {
     }
     tracing::info!(count = dispatches.len(), "dispatching major-upgrade tasks");
     tokio::spawn(async move {
-        for event in dispatches {
-            tracing::info!(project = %event.project, event_id = %event.id, "starting major-upgrade task");
-            super::track_workflow(&event, &ctx.workflow_tracker);
-            run_workflow_boxed(event, ctx.clone()).await;
-        }
+        run_major_upgrades(dispatches, ctx, &foundry_sdk::paths::work_items_path()).await;
     });
+}
+
+pub(crate) async fn run_major_upgrades(
+    dispatches: Vec<Event>,
+    ctx: super::RuntimeContext,
+    path: &std::path::Path,
+) {
+    for event in dispatches {
+        let project = event.project.clone();
+        let parent = event.payload.get("nightly_resume_item_id").cloned();
+        let event = match prepare_major_dispatch(event, &ctx, path).await {
+            Ok(event) => event,
+            Err(error) => {
+                // Best-effort: independent planned upgrades can still run after
+                // this admission failure is reported; the selected obligation
+                // and any staged failed child remain in the authoritative ledger.
+                tracing::error!(%error, %project, parent_id = ?parent,
+                    "nightly major continuation admission failed; execution not dispatched");
+                continue;
+            }
+        };
+        tracing::info!(project = %event.project, event_id = %event.id, "starting major-upgrade task");
+        super::track_workflow(&event, &ctx.workflow_tracker);
+        run_workflow_boxed(event, ctx.clone()).await;
+    }
 }
 
 /// After a system-level maintenance cycle completes, write per-project sub-traces

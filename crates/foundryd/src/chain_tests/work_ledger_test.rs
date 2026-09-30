@@ -1679,3 +1679,6 @@ fn assert_rejected_resume_history(
         assert!(lifecycle.is_empty());
     }
 }
+
+#[path = "nightly_major_test.rs"]
+mod nightly_major_test;

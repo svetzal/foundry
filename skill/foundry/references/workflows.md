@@ -78,6 +78,23 @@ override the ceiling. `.dependency-holds.json` holds a package at or below a
 version until an expiry. `foundry deps <project> [--policy X]` shows all of this
 for one project without changing anything.
 
+When an otherwise eligible nightly major upgrade matches a `preserved` ledger
+item by exact registered project, package and target version, the majors lane
+resumes that obligation from its preservation ref and original objective. Its
+child records `kind: major_upgrade`, `lane: maintenance`, origin `nightly majors
+lane` and the exact `resumes` id; automation records no operator action. The
+parent retains its submission identity and evidence. Only an actual child
+landing settles the preserved parent landed; other outcomes leave it open,
+and owner cancellation remains terminal. A selected resume admission failure
+is reported and never falls back to a fresh task.
+
+Continuations count against the existing nightly caps and run sequentially
+with fresh upgrades in the existing order. Update policies, holds, security
+eligibility, successful maintenance and in-flight suppression still apply.
+Reviews, dry runs and interrupted-cycle summaries dispatch nothing. Without a
+matching preserved ledger item, the existing fresh-task and history-suppression
+rules apply. Owner `queue resume` remains an interactive, asynchronous task.
+
 ## Validate Workflow
 
 Triggered by `foundry validate <project>`. Read-only — no mutations.

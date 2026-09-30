@@ -254,3 +254,12 @@ A resumed task records `resumes` on its own work-item lifecycle payloads.
 Only actual landing with a commit can append `WorkItemSettled` for the exact
 linked preserved parent. Nonlanding outcomes and owner-cancelled parents do
 not produce a parent settlement. Existing lifecycle history is retained.
+
+Nightly major continuations use those same admission and settlement events.
+The planner selects a preserved ledger obligation by exact registered project,
+package and target version. The child's lifecycle payloads carry the exact
+`resumes` id and original objective, with `kind: major_upgrade`,
+`lane: maintenance` and origin `nightly majors lane`, without an operator action.
+Successful lifecycle appends remain durable and visible on Watch even if a
+later admission step fails; failed appends are never advertised. A failed
+selected continuation creates no fresh replacement execution.

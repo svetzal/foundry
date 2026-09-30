@@ -12,7 +12,9 @@
 //!   major is not a security fix. The summary prints the command to run it.
 //! - **Deferred** when maintenance for the project did not succeed.
 //! - **Deduped** when a task for the same project, package and target is in
-//!   flight or left preserved work (a remainder, a defect, a blocked decision).
+//!   flight or left preserved history without a matching ledger obligation.
+//!   The nightly planner replaces matching preserved-history suppression with
+//!   a linked continuation, counted against the same dispatch caps.
 //! - **Overflow** past the per-project or per-night cap. Reported, not dropped.
 //! - **Dispatch** otherwise.
 
@@ -103,6 +105,28 @@ pub fn parse_objective(objective: &str) -> Option<(String, String, String)> {
     let (_, rest) = rest.split_once(" to ")?;
     let (target, project) = rest.split_once(" in ")?;
     Some((package.to_string(), target.to_string(), project.to_string()))
+}
+
+/// Select the newest preserved obligation for this exact registered upgrade.
+/// Ref usability is checked during admission; a bad selected ref must fail
+/// rather than turn the obligation into a fresh task.
+pub(crate) fn preserved_upgrade<'a>(
+    store: &'a foundry_sdk::work_item::WorkItemStore,
+    project: &str,
+    package: &str,
+    target: &str,
+) -> Option<&'a foundry_sdk::work_item::WorkItem> {
+    store
+        .items
+        .iter()
+        .filter(|item| {
+            item.state == foundry_sdk::work_item::WorkItemState::Preserved
+                && item.project == project
+                && parse_objective(&item.objective).is_some_and(|(pkg, to, name)| {
+                    pkg == package && to == target && name == project
+                })
+        })
+        .max_by(|a, b| a.settled_at.cmp(&b.settled_at).then_with(|| b.id.cmp(&a.id)))
 }
 
 /// Quote `text` for a POSIX shell.

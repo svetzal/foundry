@@ -267,6 +267,16 @@ pub(super) async fn list_events(
     Ok(Response::new(ListWorkItemEventsResponse { events }))
 }
 
+/// Keep owner attribution and automated upgrade identity explicit at admission.
+pub(super) enum ResumeSource {
+    Owner(String),
+    Nightly {
+        project: String,
+        package: String,
+        target: String,
+    },
+}
+
 /// Admit a continuation atomically before allowing execution to start.
 #[tracing::instrument(skip_all, fields(item_id = %id))]
 pub(super) async fn resume_item(
@@ -275,7 +285,22 @@ pub(super) async fn resume_item(
     id: String,
     operator_origin: String,
 ) -> Result<ProtoWorkItem, Status> {
-    if id.trim().is_empty() || operator_origin.trim().is_empty() {
+    let (item, event) = admit_resume(path, ctx, id, ResumeSource::Owner(operator_origin)).await?;
+    super::spawn_workflow(event, ctx);
+    Ok(item_to_proto(&item))
+}
+
+/// Shared durable admission; scheduling remains the caller's responsibility.
+/// Scheduling and submission identity are explicit for owner and nightly work.
+pub(super) async fn admit_resume(
+    path: &Path,
+    ctx: &super::RuntimeContext,
+    id: String,
+    source: ResumeSource,
+) -> Result<(WorkItem, foundry_sdk::event::Event), Status> {
+    if id.trim().is_empty()
+        || matches!(&source, ResumeSource::Owner(origin) if origin.trim().is_empty())
+    {
         return Err(Status::invalid_argument("id and operator origin must be nonblank"));
     }
     let path = path.to_path_buf();
@@ -295,6 +320,19 @@ pub(super) async fn resume_item(
         if parent.objective.trim().is_empty() {
             return Err(Status::failed_precondition("preserved work has no objective"));
         }
+        if let ResumeSource::Nightly {
+            project,
+            package,
+            target,
+        } = &source
+            && (parent.project != *project
+                || foundry_blocks::dependency_updates::majors::parse_objective(&parent.objective)
+                    != Some((package.clone(), target.clone(), project.clone())))
+        {
+            return Err(Status::failed_precondition(
+                "preserved upgrade identity changed since planning",
+            ));
+        }
         let entry = registry
             .read()
             .map_err(|_| Status::internal("registry lock poisoned"))?
@@ -309,25 +347,13 @@ pub(super) async fn resume_item(
             .ok_or_else(|| Status::failed_precondition("preserved work has no preservation ref"))?
             .clone();
         validate_preservation(&entry.path, &base)?;
-        let mut child = WorkItem::dispatched(
-            foundry_sdk::work_item::WorkItemSpec {
-                project: parent.project.clone(),
-                objective: parent.objective.clone(),
-                kind: foundry_sdk::work_item::WorkItemKind::Task,
-                lane: foundry_sdk::work_item::WorkLane::Interactive,
-                origin: parent.origin.clone(),
-                trace_id: Some(foundry_sdk::event::mint_trace_id()),
+        let child = resume_child(
+            parent,
+            match source {
+                ResumeSource::Owner(origin) => Some(origin),
+                ResumeSource::Nightly { .. } => None,
             },
-            chrono::Utc::now(),
         );
-        child.resumes = Some(parent.id.clone());
-        child.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
-            command: "resume".to_string(),
-            origin: operator_origin,
-            previous_state: parent.state,
-            previous_reason: parent.reason.clone(),
-            previous_settled_at: parent.settled_at,
-        });
         // Fail closed: until both lifecycle appends and the final ledger save
         // succeed, this child holds no claim that execution has started.
         let mut rejected = child.clone();
@@ -371,8 +397,46 @@ pub(super) async fn resume_item(
             "workflow": "task", "base_ref": base, "admitted_work_item_id": item.id}),
     )
     .with_trace_id(item.trace_id.clone());
-    super::spawn_workflow(event, ctx);
-    Ok(item_to_proto(&item))
+    Ok((item, event))
+}
+
+/// Submission identity reflects who is continuing the obligation, while the
+/// original record and its evidence remain untouched.
+fn resume_child(parent: &WorkItem, operator_origin: Option<String>) -> WorkItem {
+    let nightly = operator_origin.is_none();
+    let mut child = WorkItem::dispatched(
+        foundry_sdk::work_item::WorkItemSpec {
+            project: parent.project.clone(),
+            objective: parent.objective.clone(),
+            kind: if nightly {
+                foundry_sdk::work_item::WorkItemKind::MajorUpgrade
+            } else {
+                foundry_sdk::work_item::WorkItemKind::Task
+            },
+            lane: if nightly {
+                foundry_sdk::work_item::WorkLane::Maintenance
+            } else {
+                foundry_sdk::work_item::WorkLane::Interactive
+            },
+            origin: if nightly {
+                "nightly majors lane".to_string()
+            } else {
+                parent.origin.clone()
+            },
+            trace_id: Some(foundry_sdk::event::mint_trace_id()),
+        },
+        chrono::Utc::now(),
+    );
+    child.resumes = Some(parent.id.clone());
+    child.operator_action =
+        operator_origin.map(|origin| foundry_sdk::work_item::WorkItemOperatorAction {
+            command: "resume".to_string(),
+            origin,
+            previous_state: parent.state,
+            previous_reason: parent.reason.clone(),
+            previous_settled_at: parent.settled_at,
+        });
+    child
 }
 
 /// Lifecycle roots are admission prerequisites; their downstream processing

@@ -387,6 +387,23 @@ rewrites history to undo admission. Ordinary engine roots, block outputs,
 scatter/gather, progress, close/cancel and restart settlement retain their existing
 best-effort event-persistence behaviour.
 
+When an otherwise eligible nightly major upgrade matches a `preserved` ledger
+item by exact registered project, package and target version, the majors lane
+resumes that obligation from its preservation ref and original objective. Its
+child records `kind: major_upgrade`, `lane: maintenance`, origin `nightly majors
+lane` and the exact `resumes` id; automation records no operator action. The
+parent retains its submission identity and evidence. Only an actual child
+landing settles the preserved parent landed; other outcomes leave it open,
+and owner cancellation remains terminal. A selected resume admission failure
+is reported and never falls back to a fresh task.
+
+Continuations count against the existing nightly caps and run sequentially
+with fresh upgrades in the existing order. Update policies, holds, security
+eligibility, successful maintenance and in-flight suppression still apply.
+Reviews, dry runs and interrupted-cycle summaries dispatch nothing. Without a
+matching preserved ledger item, the existing fresh-task and history-suppression
+rules apply. Owner `queue resume` remains an interactive, asynchronous task.
+
 ## What `queue` does not do
 
 `queue close` and `queue cancel` do not stop running work.
