@@ -366,46 +366,8 @@ mod tests {
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
 
+    use super::super::test_helpers::git_repo::{CleanProcessShellGateway, git};
     use super::{FinalizeTask, enforce_gate_truth, may_land};
-
-    fn clean_git_env(command: &mut Command) {
-        command.env("GIT_CONFIG_GLOBAL", "/dev/null");
-        command.env_remove("GIT_CONFIG_COUNT");
-        command.env_remove("GIT_CONFIG_PARAMETERS");
-        for index in 0..8 {
-            command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
-            command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
-        }
-    }
-
-    struct CleanProcessShellGateway;
-
-    impl ShellGateway for CleanProcessShellGateway {
-        fn run<'a>(
-            &'a self,
-            working_dir: &'a Path,
-            command: &'a str,
-            args: &'a [&'a str],
-            env: Option<&'a [(String, String)]>,
-            _timeout: Option<Duration>,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
-            Box::pin(async move {
-                let mut child = Command::new(command);
-                child.current_dir(working_dir).args(args);
-                clean_git_env(&mut child);
-                if let Some(env) = env {
-                    child.envs(env.iter().map(|(k, v)| (k, v)));
-                }
-                let output = child.output()?;
-                Ok(CommandResult {
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    exit_code: output.status.code().unwrap_or(1),
-                    success: output.status.success(),
-                })
-            })
-        }
-    }
 
     /// Delegates to `CleanProcessShellGateway` for every command except
     /// worktree/branch cleanup commands, which it fails outright. Used to
@@ -479,20 +441,6 @@ mod tests {
             context: LoopContext::default(),
         };
         assert!(matches!(enforce_gate_truth(&payload), TaskVerdict::Defect { .. }));
-    }
-
-    fn git(cwd: &std::path::Path, args: &[&str]) -> String {
-        let mut command = Command::new("git");
-        command.current_dir(cwd).args(args);
-        clean_git_env(&mut command);
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     fn task_trigger(worktree: &std::path::Path, branch: &str, verdict: TaskVerdict) -> Event {

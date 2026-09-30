@@ -264,12 +264,72 @@ pub async fn assert_missing_project_fails(
 /// Real Git fixtures: a bare `origin` and a checkout of it.
 pub mod git_repo {
     use std::path::{Path, PathBuf};
+    use std::pin::Pin;
     use std::process::Command;
+    use std::time::Duration;
+
+    use anyhow::Result;
+    use foundry_sdk::gateway::{CommandResult, ShellGateway};
+
+    /// Strip the host's Git configuration from `command` so it sees only the
+    /// fixture repository.
+    ///
+    /// An agent session runs with `remote.origin.pushurl` pointed at a disabled
+    /// URL through `GIT_CONFIG_*` (see [`crate::blocks::push_guard`]). Those
+    /// variables are inherited by every child process and outrank repository
+    /// config, so without this a fixture push fails for reasons that have
+    /// nothing to do with the behaviour under test.
+    pub fn clean_git_env(command: &mut Command) {
+        command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+        command.env_remove("GIT_CONFIG_COUNT");
+        command.env_remove("GIT_CONFIG_PARAMETERS");
+        for index in 0..8 {
+            command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
+            command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
+        }
+    }
 
     pub fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        let mut command = Command::new("git");
+        command.current_dir(dir).args(args);
+        clean_git_env(&mut command);
+        let out = command.output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Runs real processes like `ProcessShellGateway`, but with the host's Git
+    /// configuration stripped (see [`clean_git_env`]).
+    ///
+    /// Use this wherever a block under test drives real Git against a fixture
+    /// repository.
+    pub struct CleanProcessShellGateway;
+
+    impl ShellGateway for CleanProcessShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            _timeout: Option<Duration>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+            Box::pin(async move {
+                let mut child = Command::new(command);
+                child.current_dir(working_dir).args(args);
+                clean_git_env(&mut child);
+                if let Some(env) = env {
+                    child.envs(env.iter().map(|(k, v)| (k, v)));
+                }
+                let output = child.output()?;
+                Ok(CommandResult {
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                    exit_code: output.status.code().unwrap_or(1),
+                    success: output.status.success(),
+                })
+            })
+        }
     }
 
     pub fn commit(dir: &Path, file: &str, contents: &str, message: &str) {

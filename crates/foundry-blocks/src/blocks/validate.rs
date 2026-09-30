@@ -347,23 +347,7 @@ mod tests {
         ]
     }
 
-    /// Run git hermetically: ignore global config and any `GIT_CONFIG_*`
-    /// overrides the host environment injects (e.g. a disabled push URL).
-    fn git(path: &std::path::Path, args: &[&str]) {
-        let mut command = std::process::Command::new("git");
-        command
-            .args(args)
-            .current_dir(path)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env_remove("GIT_CONFIG_COUNT")
-            .env_remove("GIT_CONFIG_PARAMETERS");
-        for index in 0..8 {
-            command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
-            command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
-        }
-        let out = command.output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
+    use crate::blocks::test_helpers::git_repo::git;
 
     /// Init a repo at `path` on `main` with one commit, pushed to a bare
     /// `origin` created inside the returned tempdir.

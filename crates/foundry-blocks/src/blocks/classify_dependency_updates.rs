@@ -605,11 +605,7 @@ mod tests {
     }
 
     fn git_repo_behind(dir: &std::path::Path) -> tempfile::TempDir {
-        let git = |cwd: &std::path::Path, args: &[&str]| {
-            let out =
-                std::process::Command::new("git").current_dir(cwd).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
+        use crate::blocks::test_helpers::git_repo::git;
         let remote = tempfile::tempdir().unwrap();
         git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
         git(dir, &["init", "-q", "-b", "main"]);
@@ -637,7 +633,7 @@ mod tests {
         let _remote = git_repo_behind(dir.path());
         let events = tempfile::tempdir().unwrap();
         let b = block(dir.path(), None, events.path())
-            .with_git(Arc::new(crate::gateway::ProcessShellGateway));
+            .with_git(Arc::new(crate::blocks::test_helpers::git_repo::CleanProcessShellGateway));
         let review = test_event!(EventType::DependencyReviewRequested, "my-project", {});
 
         let result = b.execute(&review).await.unwrap();

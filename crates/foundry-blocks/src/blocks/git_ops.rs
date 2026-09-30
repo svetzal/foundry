@@ -1111,12 +1111,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let remote = tmp.path().join("remote.git");
         let work = tmp.path().join("work");
-        let run = |dir: &std::path::Path, args: &[&str]| {
-            let out =
-                std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
+        let run = crate::blocks::test_helpers::git_repo::git;
         run(tmp.path(), &["init", "--bare", "-b", "main", remote.to_str().unwrap()]);
         run(tmp.path(), &["clone", remote.to_str().unwrap(), work.to_str().unwrap()]);
         run(&work, &["config", "user.email", "test@example.com"]);
@@ -1132,7 +1127,10 @@ mod tests {
         run(&work, &["commit", "-m", "Update thiserror"]);
 
         let registry = registry_for("my-project", work.to_str().unwrap(), true);
-        let block = CommitAndPush::new(registry);
+        let block = CommitAndPush::with_gateways(
+            registry,
+            Arc::new(crate::blocks::test_helpers::git_repo::CleanProcessShellGateway),
+        );
         let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
 
         let result = block.execute(&trigger).await.unwrap();

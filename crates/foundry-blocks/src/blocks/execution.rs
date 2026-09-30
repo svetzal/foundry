@@ -697,19 +697,21 @@ mod tests {
         use foundry_sdk::workflow::WorkflowType;
 
         use crate::blocks::push_guard::{capture_run_base, push_disabled_environment};
+        use crate::gateway::AgentOutcome;
         use crate::gateway::fakes::FakeAgentGateway;
-        use crate::gateway::{AgentOutcome, ProcessShellGateway};
 
         use super::super::{ExecutionContext, execute_agent_block};
         use super::guard_maintain_run;
 
-        use crate::blocks::test_helpers::git_repo::{Repo, commit, git, repo};
+        use crate::blocks::test_helpers::git_repo::{
+            CleanProcessShellGateway, Repo, commit, git, repo,
+        };
 
         const SUPPRESSION: &str =
             "[\n  {\"cve\": \"CVE-2026-64941\", \"reason\": \"no fix available\"}\n]\n";
 
         async fn guard(repo: &Repo, base: Option<&RunBase>, outcome: AgentOutcome) -> AgentOutcome {
-            let shell = ProcessShellGateway;
+            let shell = CleanProcessShellGateway;
             let entry = crate::blocks::test_helpers::project_entry(
                 "mojentic-kt",
                 repo.work.to_str().unwrap(),
@@ -727,7 +729,7 @@ mod tests {
         #[tokio::test]
         async fn a_suppression_the_agent_pushed_is_still_caught_and_the_run_needs_review() {
             let repo = repo();
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main")
+            let base = capture_run_base(&CleanProcessShellGateway, &repo.work, "main")
                 .await
                 .expect("base recorded");
             // The agent commits a suppression and pushes it, as mojentic-kt's
@@ -757,7 +759,8 @@ mod tests {
         #[tokio::test]
         async fn a_clean_direct_push_still_needs_review() {
             let repo = repo();
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            let base =
+                capture_run_base(&CleanProcessShellGateway, &repo.work, "main").await.unwrap();
             commit(
                 &repo.work,
                 "build.gradle.kts",
@@ -779,7 +782,8 @@ mod tests {
         #[tokio::test]
         async fn a_push_to_an_explicit_url_is_seen_after_the_fetch() {
             let repo = repo();
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            let base =
+                capture_run_base(&CleanProcessShellGateway, &repo.work, "main").await.unwrap();
             commit(&repo.work, "a.txt", "a", "chore: bump");
             // Bypasses origin's push URL and does not move the tracking ref.
             git(&repo.work, &["push", "-q", repo.remote.to_str().unwrap(), "main"]);
@@ -794,7 +798,8 @@ mod tests {
         #[tokio::test]
         async fn local_commits_are_not_a_push_and_a_local_suppression_is_retried() {
             let repo = repo();
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            let base =
+                capture_run_base(&CleanProcessShellGateway, &repo.work, "main").await.unwrap();
             commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
 
             let AgentOutcome::AgentFailed { stderr, failure } =
@@ -809,7 +814,8 @@ mod tests {
         #[tokio::test]
         async fn a_retry_checks_against_the_runs_start_not_its_own() {
             let repo = repo();
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            let base =
+                capture_run_base(&CleanProcessShellGateway, &repo.work, "main").await.unwrap();
             // Attempt 1 committed a suppression locally and failed; the retry
             // starts after it. The guard must still see it.
             commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
@@ -833,9 +839,14 @@ mod tests {
                 repo.work.to_str().unwrap(),
             );
             let agent = FakeAgentGateway::success();
-            let result =
-                execute_agent_block(&*agent, &ProcessShellGateway, &entry, &ctx, String::new())
-                    .await;
+            let result = execute_agent_block(
+                &*agent,
+                &CleanProcessShellGateway,
+                &entry,
+                &ctx,
+                String::new(),
+            )
+            .await;
             assert!(!result.success, "{}", result.summary);
             assert!(result.summary.contains("CVE-2026-64941"), "{}", result.summary);
             assert_eq!(
@@ -862,9 +873,14 @@ mod tests {
             let entry =
                 crate::blocks::test_helpers::project_entry("p", repo.work.to_str().unwrap());
             let agent = FakeAgentGateway::success();
-            let result =
-                execute_agent_block(&*agent, &ProcessShellGateway, &entry, &ctx, String::new())
-                    .await;
+            let result = execute_agent_block(
+                &*agent,
+                &CleanProcessShellGateway,
+                &entry,
+                &ctx,
+                String::new(),
+            )
+            .await;
             assert!(result.success, "{}", result.summary);
             let recorded = &result.events[0].payload["run_base"];
             assert_eq!(recorded["head"], head);
@@ -908,7 +924,7 @@ mod tests {
 
             let result = execute_agent_block(
                 &*allowlisting_agent(),
-                &ProcessShellGateway,
+                &CleanProcessShellGateway,
                 &entry,
                 &ctx,
                 String::new(),
@@ -934,7 +950,7 @@ mod tests {
 
             let result = execute_agent_block(
                 &*allowlisting_agent(),
-                &ProcessShellGateway,
+                &CleanProcessShellGateway,
                 &entry,
                 &ctx,
                 String::new(),
@@ -951,7 +967,8 @@ mod tests {
             let repo = repo();
             // An earlier run was stopped for this commit, so it stayed local.
             commit(&repo.work, ".supply-chain-allow.json", SUPPRESSION, "chore: allow advisory");
-            let base = capture_run_base(&ProcessShellGateway, &repo.work, "main").await.unwrap();
+            let base =
+                capture_run_base(&CleanProcessShellGateway, &repo.work, "main").await.unwrap();
             // This run's agent changes something unrelated.
             commit(&repo.work, "a.txt", "a", "chore: tidy");
 
@@ -978,9 +995,14 @@ mod tests {
                 crate::blocks::test_helpers::project_entry("p", repo.work.to_str().unwrap());
             let agent = FakeAgentGateway::success();
 
-            let result =
-                execute_agent_block(&*agent, &ProcessShellGateway, &entry, &ctx, String::new())
-                    .await;
+            let result = execute_agent_block(
+                &*agent,
+                &CleanProcessShellGateway,
+                &entry,
+                &ctx,
+                String::new(),
+            )
+            .await;
 
             assert_eq!(result.events[0].payload["run_base"]["head"], head);
         }

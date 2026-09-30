@@ -114,6 +114,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The real-git tests now run Git hermetically, so `cargo test --workspace`
+  passes inside a Foundry agent session. An agent session injects
+  `remote.origin.pushurl = foundry://agent-push-disabled` through `GIT_CONFIG_*`;
+  those variables are inherited by every child process and outrank repository
+  config, so fifteen fixture tests failed on a push that had nothing to do with
+  the behaviour under test. The env-stripping helper and the real-process shell
+  gateway that already existed for the `FinalizeTask` tests now live once, in
+  `test_helpers::git_repo`, and every real-git test uses them. Test-only change;
+  no production behaviour differs.
 - The ledger now records a task dispatch from the workflow's **root**
   `ExecutionRequested` event rather than from `PreflightCompleted`, so a
   dispatch that stops before the coding agent starts is no longer missing from

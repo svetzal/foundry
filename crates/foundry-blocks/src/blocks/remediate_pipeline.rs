@@ -389,7 +389,7 @@ mod tests {
         let block = RemediatePipeline::with_gateways(
             agent,
             registry,
-            Arc::new(crate::gateway::ProcessShellGateway),
+            Arc::new(test_helpers::git_repo::CleanProcessShellGateway),
         );
         let t = test_event!(EventType::PipelineChecked, "my-project", {
             "passing": false,

@@ -314,7 +314,7 @@ mod tests {
         let events = tempfile::tempdir().unwrap();
 
         let found = run_suppressions(
-            &crate::gateway::ProcessShellGateway,
+            &crate::blocks::test_helpers::git_repo::CleanProcessShellGateway,
             &repo.work,
             &head,
             "p",
