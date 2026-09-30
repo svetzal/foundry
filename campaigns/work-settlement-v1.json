@@ -1,0 +1,86 @@
+{
+  "name": "foundry-work-settlement-v1",
+  "project": "foundry",
+  "mission": "Make the work ledger's open list honest and give Foundry reconciliation. A preserved item whose commit is already on the registered trunk (reachable or patch-equivalent) settles as landed, superseded by that commit, checked when a task lands and on a schedule. foundry queue gains typed owner controls: close (open item to cancelled with a reason), resume (dispatch a new task from the preserved branch, linked to and settling the old item), and cancel (a submitted or queued item). The nightly majors lane resumes an open preserved item for the same upgrade instead of opening a fresh branch. A canonical work-reconciler sentinel compares items with worktrees and foundry-task/* branches, local and remote, writes a dated digest of orphans and broken items, emits work_reconcile_completed, and changes nothing. No pacing, no admission-time duplicate detection, no ops-visualizer change.",
+  "intent_refs": [
+    "foundry.work-intake.settlement",
+    "foundry.work-intake.owner-controls",
+    "foundry.work-intake.reconciler"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "campaigns/work-settlement-v1.md",
+    "campaigns/work-ledger-v1.md",
+    "proto/foundry.proto",
+    "crates/foundry-sdk/src/work_item.rs",
+    "crates/foundry-sdk/src/payload/work_item.rs",
+    "crates/foundry-sdk/src/sentinel.rs",
+    "crates/foundryd/src/service/work_item_ops.rs",
+    "crates/foundryd/src/service/work_ledger.rs",
+    "crates/foundryd/src/service/eventing_ops.rs",
+    "crates/foundry-blocks/src/blocks/work_ledger.rs",
+    "crates/foundry-blocks/src/blocks/finalize_task.rs",
+    "crates/foundry-blocks/src/blocks/plan_major_upgrades.rs",
+    "crates/foundry-blocks/src/blocks/cleanup_branches.rs",
+    "crates/foundry-cli/src/queue_commands.rs",
+    "book/src/guide/work-queue.md",
+    "book/src/guide/sentinels.md",
+    "book/src/guide/ops-digest.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo test --workspace",
+      "required": true,
+      "artifacts": [
+        "book/src/guide/work-reconciler.md",
+        "campaigns/work-settlement-v1.md"
+      ]
+    },
+    {
+      "kind": "review",
+      "statement": "A preserved item whose preserved commit is reachable from the registered trunk, or patch-equivalent to it by git cherry, settles as landed with reason 'superseded by <commit>' and emits work_item_settled; the check runs when a task lands on that project and on the reconciler's schedule; a case that cannot be decided safely is left open and named in the reconciler digest. Tests prove both paths in a real temporary repository."
+    },
+    {
+      "kind": "review",
+      "statement": "foundry queue close, resume and cancel exist as typed gRPC mutations that record the operator origin, apply only to the states the brief names and refuse others with a typed error; resume dispatches a new task based on the preserved branch with the original objective and a resumes link, and the old item settles landed only when the new one lands. Service-boundary tests with temporary stores cover allowed and refused states."
+    },
+    {
+      "kind": "review",
+      "statement": "When the nightly majors lane plans an upgrade for which an open preserved item exists on the same project for the same package and target version, it dispatches a resume of that item instead of a fresh task, and a test proves the choice."
+    },
+    {
+      "kind": "review",
+      "statement": "A canonical work-reconciler sentinel (30 */3 * * *) emits work_reconcile_started; its block compares open and running items with Foundry worktrees, the checkout's git worktree list, and foundry-task/* branches local and on origin after a read-only fetch with prune; it writes {FOUNDRY_RECONCILE_DIR}/{date}.md listing orphan worktrees, orphan branches (with whether each is on trunk), broken items, and, as information, non-Foundry worktrees and dirty checkouts; it emits work_reconcile_completed with counts; the ops digest treats orphans and broken items as anomalies; and it deletes nothing. Tests plant each category in a temporary repository and assert the classification and that nothing changed."
+    },
+    {
+      "kind": "review",
+      "statement": "foundry queue shows a superseded item's trunk commit and resumes links, foundry queue reconcile runs the reconciler now and prints the digest, and the proto, CLI reference, work-queue guide, a new work-reconciler guide, the sentinels guide and the AGENTS.md command table document all of it."
+    },
+    {
+      "kind": "review",
+      "statement": "No dispatch is delayed, reordered or held; no admission-time duplicate or conflict detection exists beyond the majors-lane resume rule; ops-visualizer is untouched; the reconciler reads only git and Foundry's own stores and writes only its digest; the ledger file remains the single source of truth."
+    }
+  ],
+  "budget": {
+    "max_cycles": 8
+  },
+  "escalation": [
+    "Supersession or resume cannot be implemented without changing how tasks land, preserve or clean up worktrees.",
+    "The majors-lane resume rule needs a change to the dependency brief or update policy that the owner has not decided.",
+    "An owner control would require the daemon to rewrite history in the ledger rather than append a settlement."
+  ],
+  "authorized_by": "Stacey",
+  "agent_provider": "codex"
+}
