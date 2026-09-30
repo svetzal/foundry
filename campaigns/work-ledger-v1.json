@@ -1,0 +1,78 @@
+{
+  "name": "foundry-work-ledger-v1",
+  "project": "foundry",
+  "mission": "Give Foundry one durable work item record per dispatched unit of work (task, campaign cycle, maintenance run, major upgrade, release, remediation), owned by the daemon in its own store, settled from each formation's existing typed result, surfaced through typed ListWorkItems and GetWorkItem gRPC, emitted as work_item_* events on the Watch stream, and shown by a `foundry queue` command with running, queued, open and recently settled groups. Change no dispatch timing or landing behaviour: every item is admitted and started immediately. Add the charter scope entry for work admission, pacing and settlement. Pacing, planning, the reconciler and ops-visualizer are later slices.",
+  "intent_refs": [
+    "foundry.work-intake.ledger",
+    "foundry.work-intake.observability",
+    "foundry.work-intake.charter-scope"
+  ],
+  "context_paths": [
+    "CHARTER.md",
+    "AGENTS.md",
+    "campaigns/work-ledger-v1.md",
+    "proto/foundry.proto",
+    "crates/foundry-sdk/src/campaign/mod.rs",
+    "crates/foundry-sdk/src/sentinel.rs",
+    "crates/foundry-blocks/src/blocks/finalize_task.rs",
+    "crates/foundry-blocks/src/blocks/task_workspace.rs",
+    "crates/foundryd/src/service/campaign_ops.rs",
+    "crates/foundryd/src/service/recovery.rs",
+    "crates/foundry-cli/src/campaign_commands.rs",
+    "book/src/guide/campaigns.md"
+  ],
+  "done_evidence": [
+    {
+      "kind": "gate",
+      "command": "cargo fmt --all -- --check",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "required": true
+    },
+    {
+      "kind": "gate",
+      "command": "cargo test --workspace",
+      "required": true,
+      "artifacts": [
+        "book/src/guide/work-queue.md",
+        "campaigns/work-ledger-v1.md"
+      ]
+    },
+    {
+      "kind": "review",
+      "statement": "Every dispatch path (foundry task, campaign cycle, per-project maintenance run, major-upgrade task, release, remediation) creates a work item before any agent starts, in a daemon-owned store at FOUNDRY_WORK_ITEMS_PATH written by same-directory temp-file rename, independent of the campaign store."
+    },
+    {
+      "kind": "review",
+      "statement": "Formations settle items from their existing typed results: complete and landing remainder become landed; non-landing remainder, defect and preserved results become preserved with the preservation ref; blocked_on_decision becomes needs_decision; runner_error and pre-agent dispatch failures become failed; the settlement records the worktree path and whether removal succeeded. On daemon start every running item becomes failed with reason 'daemon restarted'. Tests prove each of these."
+    },
+    {
+      "kind": "review",
+      "statement": "work_item_submitted, work_item_started, work_item_settled and work_item_cancelled events carry id, project, kind, lane, state, reason and origin (plus settlement fields on settle), appear on the Watch stream, and are persisted in the durable event log."
+    },
+    {
+      "kind": "review",
+      "statement": "Typed ListWorkItems (optional exact project and state filters, deterministic group-then-time order, request-time store load, empty list for a missing or empty store, gRPC error for a malformed store) and GetWorkItem (NOT_FOUND when absent) are served by foundryd, documented in the proto, and covered by service-boundary tests using temporary stores."
+    },
+    {
+      "kind": "review",
+      "statement": "`foundry queue`, `foundry queue show <id>` and `foundry queue open` render through gRPC with --json variants and an explicit --offline file path; `foundry task` and `foundry campaign advance` accept --origin and record the client hostname; the guide page, CLI reference and AGENTS.md command table document them."
+    },
+    {
+      "kind": "review",
+      "statement": "No dispatch is delayed, reordered, merged, rejected or deduplicated; task landing, preservation and worktree cleanup behave as before; no reconciler, sentinel, pacing, planning or ops-visualizer change is included. CHARTER.md names work admission, pacing and settlement as an owner-decided scope expansion and states the queue is not a backlog."
+    }
+  ],
+  "budget": {
+    "max_cycles": 10
+  },
+  "escalation": [
+    "Recording an item for a dispatch path requires changing that path's timing, landing or cleanup behaviour.",
+    "The item store cannot stay independent of the campaign store without a second source of truth.",
+    "The ordering or grouping rules for ListWorkItems need an owner product decision beyond the completion boundary."
+  ],
+  "authorized_by": "Stacey"
+}
