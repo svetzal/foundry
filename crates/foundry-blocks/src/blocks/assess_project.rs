@@ -157,6 +157,7 @@ async fn run_assessment_agent(
             provider,
             timeout,
             trace_id,
+            requires_json: true,
         },
         "assess project",
     )
@@ -215,6 +216,8 @@ async fn run_naming_agent(
             provider,
             timeout: std::time::Duration::from_secs(60),
             trace_id: trace_id.clone(),
+            // The naming agent answers with a bare kebab-case string, not JSON.
+            requires_json: false,
         },
         "name assessment",
     )
@@ -399,6 +402,14 @@ mod tests {
         assert_eq!(invocations[0].effort, ReasoningEffort::High);
         assert_eq!(invocations[1].tier, ModelTier::Fast);
         assert_eq!(invocations[1].effort, ReasoningEffort::Low);
+        assert!(
+            invocations[0].requires_json,
+            "the assessment answer is parsed as JSON, so it must license the gateway's recovery"
+        );
+        assert!(
+            !invocations[1].requires_json,
+            "the naming answer is a bare kebab-case string, not JSON"
+        );
     }
 
     #[test]

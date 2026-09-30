@@ -87,6 +87,7 @@ impl TaskBlock for StrategicAssessor {
                     provider,
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
+                    requires_json: true,
                 },
                 "strategic assessment",
             )
@@ -273,6 +274,12 @@ mod tests {
         let lc = &payload["loop_context"]["strategic"];
         assert_eq!(lc["iteration"], 0);
         assert_eq!(lc["total_areas"], 1);
+
+        let invocations = agent.invocations();
+        assert!(
+            invocations[0].requires_json,
+            "a block that parses a typed JSON answer must license the gateway's one-shot recovery"
+        );
     }
 
     #[tokio::test]

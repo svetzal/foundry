@@ -205,6 +205,7 @@ impl TaskBlock for ScoutDrift {
                     provider,
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
+                    requires_json: true,
                 },
                 "scout drift",
             )
@@ -421,6 +422,10 @@ mod tests {
                 .ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
             "drift prompt must close with the single-turn rule: {}",
             invocations[0].prompt
+        );
+        assert!(
+            invocations[0].requires_json,
+            "a block that parses a typed JSON answer must license the gateway's one-shot recovery"
         );
     }
 

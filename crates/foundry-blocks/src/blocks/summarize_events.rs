@@ -129,6 +129,8 @@ async fn summarize(
             provider: None,
             timeout: AGENT_TIMEOUT,
             trace_id: trace_id.clone(),
+            // The answer is markdown digest prose, not a typed JSON object.
+            requires_json: false,
         },
         TRACE_LABEL,
     )

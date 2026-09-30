@@ -214,6 +214,10 @@ pub struct AgentInvocation {
     /// Environment the session was given, so tests can prove a block keeps
     /// the agent from pushing.
     pub env: Vec<(String, String)>,
+    /// Whether the request declared that it parses a typed JSON answer.
+    /// Recorded so tests can prove a JSON-parsing block licenses the
+    /// gateway's one-shot resume-for-JSON recovery.
+    pub requires_json: bool,
 }
 
 /// Behaviour specification for a single `FakeAgentGateway` response.
@@ -300,6 +304,7 @@ impl AgentGateway for FakeAgentGateway {
             agent_file: request.agent_file.as_ref().map(|p| p.display().to_string()),
             provider: request.provider,
             env: request.env.clone(),
+            requires_json: request.requires_json,
         };
         self.invocations.lock().unwrap().push(inv);
         let result = self.next_result();

@@ -154,6 +154,7 @@ async fn run_triage_agent(
             provider,
             timeout: std::time::Duration::from_secs(120),
             trace_id: trace_id.clone(),
+            requires_json: true,
         },
         "triage assessment",
     )
@@ -220,7 +221,7 @@ mod tests {
         );
         let registry =
             test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
-        let block = TriageAssessment::new(agent, registry);
+        let block = TriageAssessment::new(agent.clone(), registry);
         let trigger = test_event!(EventType::AssessmentCompleted, "my-project", {
             "project": "my-project",
             "severity": 7,
@@ -237,6 +238,12 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::TriageCompleted);
         assert_eq!(result.events[0].payload["accepted"], true);
+
+        let invocations = agent.invocations();
+        assert!(
+            invocations[0].requires_json,
+            "a block that parses a typed JSON answer must license the gateway's one-shot recovery"
+        );
     }
 
     #[tokio::test]

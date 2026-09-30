@@ -80,6 +80,8 @@ impl TaskBlock for SummarizeResult {
                     provider,
                     timeout: std::time::Duration::from_secs(120),
                     trace_id: trace_id.clone(),
+                    // Prose headline and summary, not a typed JSON object.
+                    requires_json: false,
                 },
                 "summarize result",
             )

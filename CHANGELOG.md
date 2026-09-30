@@ -47,6 +47,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
   answer. A resume that also returns no object leaves the original answer
   untouched, so the caller still reports its original parse failure. Every
   resume is recorded with a `tracing::warn!`.
+- That recovery could not actually succeed as first shipped, and now can. The
+  Claude CLI minted its own session id, so `claude --resume <id>` was handed
+  Foundry's id — one the CLI had never heard of — and every recovery failed
+  with "No conversation found with session ID". The Claude invocation now
+  passes `--session-id <foundry uuid>`, so the CLI adopts Foundry's id and the
+  id Foundry logs under is the id the conversation is stored under. The
+  gateway test no longer compares the resumed id against the
+  `AgentSessionStarted` payload (which passed on the wrong id): its fake CLI
+  reports a session id of its own in the result envelope, and the test asserts
+  the original invocation and the resume name that same id.
+- The recovery now covers every block that parses a typed JSON answer.
+  `requires_json` was hard-coded `false` in the read-only observer wrappers,
+  which silently excluded `ScoutDrift`, `AssessProject`, `StrategicAssessor`
+  and `TriageAssessment` — all four parse JSON and all four were the blocks
+  the single-turn rule was written for. It is now a field on
+  `ReadOnlyAgentSpec` that each block sets, with a test per block asserting
+  its request carries `requires_json: true`. Observers whose answer is prose
+  (commit and ops digests, result summaries, the assessment-naming call) stay
+  `false`.
 - The `foundry queue show` example in the work-queue guide showed an `Origin` of
   `majors`; the ledger records `nightly majors lane`.
 

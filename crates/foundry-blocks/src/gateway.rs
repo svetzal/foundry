@@ -113,10 +113,17 @@ impl CliAgentAdapter for ClaudeAdapter {
         request: &AgentRequest,
         model: &str,
         effort: &str,
-        _session_id: &str,
+        session_id: &str,
         _session_log_dir: &Path,
     ) -> Invocation {
         let mut args: Vec<String> = vec![
+            // Hand the CLI Foundry's own session id rather than letting it mint
+            // one. Without this the id Foundry logs under and the id the CLI
+            // stores the conversation under differ, and `--resume <foundry id>`
+            // fails with "No conversation found with session ID" — which is the
+            // whole recovery path in `resume_for_json`.
+            "--session-id".to_string(),
+            session_id.to_string(),
             "--print".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
@@ -867,8 +874,37 @@ mod claude_json_recovery_tests {
     use tokio::sync::broadcast;
 
     /// Runner that reports one successful turn whose final answer is `answer`.
+    ///
+    /// Stands in for the Claude CLI closely enough to keep the recovery path
+    /// honest: the CLI owns the session id the conversation is stored under and
+    /// reports it in the result envelope, adopting the `--session-id` it was
+    /// handed. A resume that names any other id would fail with "No
+    /// conversation found with session ID", so the tests assert against the id
+    /// this runner reports, never against the one Foundry logged.
     struct AnswerRunner {
         answer: String,
+        /// The argv of the original invocation, and the `session_id` the fake
+        /// CLI reported for it.
+        observed: std::sync::Mutex<Option<(Vec<String>, String)>>,
+    }
+
+    impl AnswerRunner {
+        fn new(answer: &str) -> Self {
+            Self {
+                answer: answer.to_string(),
+                observed: std::sync::Mutex::new(None),
+            }
+        }
+
+        /// The argv of the original invocation.
+        fn original_args(&self) -> Vec<String> {
+            self.observed.lock().expect("observed").clone().expect("a turn ran").0
+        }
+
+        /// The session id the fake CLI stored the conversation under.
+        fn cli_session_id(&self) -> String {
+            self.observed.lock().expect("observed").clone().expect("a turn ran").1
+        }
     }
 
     impl AgentStreamRunner for AnswerRunner {
@@ -879,9 +915,22 @@ mod claude_json_recovery_tests {
             Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
         > {
             let log_path = run.log_path;
+            // The real CLI adopts `--session-id` when given one, and otherwise
+            // mints its own id that the caller never learns.
+            let requested = run
+                .args
+                .iter()
+                .position(|a| *a == "--session-id")
+                .and_then(|at| run.args.get(at + 1))
+                .map(|id| (*id).to_string());
+            let cli_session_id =
+                requested.unwrap_or_else(|| "cli-minted-session-id-unknown-to-foundry".to_string());
+            *self.observed.lock().expect("observed") =
+                Some((run.args.iter().map(|a| (*a).to_string()).collect(), cli_session_id.clone()));
             let line = serde_json::json!({
                 "type": "result",
                 "subtype": "success",
+                "session_id": cli_session_id,
                 "result": self.answer.clone(),
             })
             .to_string();
@@ -936,11 +985,10 @@ mod claude_json_recovery_tests {
     async fn a_turn_without_json_resumes_the_session_once_and_accepts_the_recovered_object() {
         let (tx, mut rx) = broadcast::channel(16);
         let shell = FakeShellGateway::always(recovered_json());
+        let runner = Arc::new(AnswerRunner::new(WAITING_ANSWER));
         let gateway = ClaudeAgentGateway::new_with_streaming(
             Arc::clone(&shell) as Arc<dyn ShellGateway>,
-            Arc::new(AnswerRunner {
-                answer: WAITING_ANSWER.to_string(),
-            }),
+            Arc::clone(&runner) as Arc<dyn AgentStreamRunner>,
             test_support::tmp_dir("foundry-resume"),
             tx,
         );
@@ -948,14 +996,33 @@ mod claude_json_recovery_tests {
         let response = gateway.invoke(&review_request(true)).await.expect("invoke ok");
         assert_eq!(response.stdout, "{\"verdict\":\"complete\"}");
 
+        // The original invocation must hand the CLI Foundry's id, so the CLI
+        // stores the conversation under an id Foundry can resume.
+        let original = runner.original_args();
+        let given_at = original
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("--session-id on the turn");
+        let given = original[given_at + 1].clone();
+        let cli_session_id = runner.cli_session_id();
+        assert_eq!(cli_session_id, given, "the CLI must adopt the id Foundry handed it");
+
         let started = rx.recv().await.expect("started event");
-        let session_id = started.payload["session_id"].as_str().expect("session id").to_string();
+        assert_eq!(
+            started.payload["session_id"].as_str(),
+            Some(cli_session_id.as_str()),
+            "the logged session id and the CLI's must coincide"
+        );
 
         let calls = shell.invocations();
         assert_eq!(calls.len(), 1, "the session must be resumed exactly once: {calls:?}");
         assert_eq!(calls[0].command, "claude");
         let resume_at = calls[0].args.iter().position(|a| a == "--resume").expect("--resume flag");
-        assert_eq!(calls[0].args.get(resume_at + 1), Some(&session_id));
+        assert_eq!(
+            calls[0].args.get(resume_at + 1),
+            Some(&cli_session_id),
+            "the resume must name the id the CLI stored the conversation under"
+        );
     }
 
     #[tokio::test]
@@ -969,9 +1036,7 @@ mod claude_json_recovery_tests {
         });
         let gateway = ClaudeAgentGateway::new_with_streaming(
             Arc::clone(&shell) as Arc<dyn ShellGateway>,
-            Arc::new(AnswerRunner {
-                answer: WAITING_ANSWER.to_string(),
-            }),
+            Arc::new(AnswerRunner::new(WAITING_ANSWER)),
             test_support::tmp_dir("foundry-resume-fail"),
             tx,
         );
@@ -990,10 +1055,9 @@ mod claude_json_recovery_tests {
         let shell = FakeShellGateway::always(recovered_json());
         let gateway = ClaudeAgentGateway::new_with_streaming(
             Arc::clone(&shell) as Arc<dyn ShellGateway>,
-            Arc::new(AnswerRunner {
-                answer: "Here it is:\n```json\n{\"verdict\":\"remainder\",\"gaps\":[\"x\"]}\n```"
-                    .to_string(),
-            }),
+            Arc::new(AnswerRunner::new(
+                "Here it is:\n```json\n{\"verdict\":\"remainder\",\"gaps\":[\"x\"]}\n```",
+            )),
             test_support::tmp_dir("foundry-resume-none"),
             tx,
         );
@@ -1009,9 +1073,7 @@ mod claude_json_recovery_tests {
         let shell = FakeShellGateway::always(recovered_json());
         let gateway = ClaudeAgentGateway::new_with_streaming(
             Arc::clone(&shell) as Arc<dyn ShellGateway>,
-            Arc::new(AnswerRunner {
-                answer: "a prose summary".to_string(),
-            }),
+            Arc::new(AnswerRunner::new("a prose summary")),
             test_support::tmp_dir("foundry-resume-off"),
             tx,
         );

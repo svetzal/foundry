@@ -273,6 +273,13 @@ pub(crate) struct ReadOnlyAgentSpec {
     pub timeout: Duration,
     /// Trace this invocation belongs to, from the block's triggering event.
     pub trace_id: Option<String>,
+    /// Whether this block parses the answer as a typed JSON object. Set it
+    /// whenever the prompt ends with [`SINGLE_TURN_JSON_DISCIPLINE`] — which
+    /// [`json_output_prompt`] and [`with_single_turn_discipline`] both append.
+    /// It is what licenses the gateway to resume the session once when the
+    /// turn ends without the required object; an observer whose answer is
+    /// prose leaves it `false`.
+    pub requires_json: bool,
 }
 
 /// Invoke an agent with `ReadOnly` access at the `Deep` tier and `High`
@@ -300,7 +307,7 @@ pub(crate) async fn invoke_reasoning_agent(
             env: Vec::new(),
             timeout: spec.timeout,
             trace_id: spec.trace_id,
-            requires_json: false,
+            requires_json: spec.requires_json,
         },
         trace_label,
         project,
@@ -333,7 +340,7 @@ pub(crate) async fn invoke_summary_agent(
             env: Vec::new(),
             timeout: spec.timeout,
             trace_id: spec.trace_id,
-            requires_json: false,
+            requires_json: spec.requires_json,
         },
         trace_label,
         project,
@@ -623,6 +630,7 @@ mod tests {
             provider: None,
             timeout: Duration::from_secs(60),
             trace_id: Some("trc_abc".to_string()),
+            requires_json: false,
         };
         invoke_reasoning_agent(&*agent, "proj", spec, "test").await;
         let invocations = agent.invocations();
@@ -646,6 +654,7 @@ mod tests {
             provider: None,
             timeout: Duration::from_secs(60),
             trace_id: Some("trc_carried".to_string()),
+            requires_json: false,
         };
         invoke_reasoning_agent(&*agent, "proj", spec, "test").await;
         assert_eq!(agent.invocations()[0].trace_id.as_deref(), Some("trc_carried"));
@@ -663,6 +672,7 @@ mod tests {
             provider: None,
             timeout: Duration::from_secs(60),
             trace_id: None,
+            requires_json: false,
         };
         invoke_summary_agent(&*agent, "proj", spec, "test").await;
         let invocations = agent.invocations();
