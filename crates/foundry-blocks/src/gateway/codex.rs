@@ -9,10 +9,14 @@
 //!
 //! - `codex exec --json --skip-git-repo-check -m <model>
 //!   -c model_reasoning_effort=<effort> -o <last_message_file>
-//!   {-s read-only | --dangerously-bypass-approvals-and-sandbox} <prompt>`,
-//!   spawned with **stdin closed** (the shared [`AgentStreamRunner`] does this;
-//!   `codex exec` otherwise blocks reading additional input from a piped stdin).
-//! - The prompt is passed positionally as the last argument.
+//!   {-s read-only | --dangerously-bypass-approvals-and-sandbox} -`.
+//! - The prompt is delivered on **stdin**, not in argv. The final `-`
+//!   argument tells `codex exec` to read its instructions from stdin (validated
+//!   against `codex-cli` 0.159.2). The shared [`AgentStreamRunner`] writes the
+//!   prompt and then closes the pipe, so `codex exec` sees end-of-input rather
+//!   than blocking on an open stdin. The prompt must not ride in argv: Linux
+//!   caps one argv element at `MAX_ARG_STRLEN` (131072 bytes), and a larger
+//!   prompt fails the spawn outright with `Argument list too long` (`E2BIG`).
 //! - stdout is JSONL. The authoritative final answer is the agent's last
 //!   message, which `codex` writes verbatim to the `-o <file>` path; we read
 //!   that file after the run. A stream fallback scans for the last
@@ -83,13 +87,13 @@ impl CliAgentAdapter for CodexAdapter {
         // `--agent` flag.
         let prompt = build_prompt(request.agent_file.as_deref(), &request.prompt, &request.project);
 
-        let args = build_codex_argv(model, effort, request.access, &last_message_path, &prompt);
+        let args = build_codex_argv(model, effort, request.access, &last_message_path);
 
         Invocation {
             args,
             env: vec![],
-            // codex takes its prompt in argv.
-            stdin: None,
+            // The trailing `-` in argv makes codex read the prompt from stdin.
+            stdin: Some(prompt.into_bytes()),
             last_message_path: Some(last_message_path),
         }
     }
@@ -158,13 +162,13 @@ cli_agent_gateway! {
 
 // --- Pure helpers (unit-tested without spawning) ----------------------------
 
-/// Build the `codex exec` argv. Prompt is passed positionally last.
+/// Build the `codex exec` argv. The last argument is `-`, which makes codex
+/// read its prompt from stdin — the prompt itself never rides in argv.
 fn build_codex_argv(
     model: &str,
     effort: &str,
     access: AgentAccess,
     last_message_path: &std::path::Path,
-    prompt: &str,
 ) -> Vec<String> {
     let mut args = vec![
         "exec".to_string(),
@@ -186,7 +190,7 @@ fn build_codex_argv(
             args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
         }
     }
-    args.push(prompt.to_string());
+    args.push("-".to_string());
     args
 }
 
@@ -331,9 +335,9 @@ mod tests {
     }
 
     #[test]
-    fn argv_includes_exec_json_model_effort_output_and_prompt() {
+    fn argv_includes_exec_json_model_effort_output_and_stdin_marker() {
         let out = Path::new("/tmp/sess.last.txt");
-        let args = build_codex_argv("gpt-5.4", "medium", AgentAccess::Full, out, "do the thing");
+        let args = build_codex_argv("gpt-5.4", "medium", AgentAccess::Full, out);
         assert_eq!(args[0], "exec");
         assert!(args.iter().any(|a| a == "--json"));
         assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
@@ -343,14 +347,53 @@ mod tests {
         assert_eq!(args[cp + 1], "model_reasoning_effort=medium");
         let op = args.iter().position(|a| a == "-o").unwrap();
         assert_eq!(args[op + 1], "/tmp/sess.last.txt");
-        // prompt is last
-        assert_eq!(args.last().unwrap(), "do the thing");
+        // `-` is last: codex reads the prompt from stdin.
+        assert_eq!(args.last().unwrap(), "-");
+    }
+
+    /// The prompt rides on stdin, never in argv — Linux caps one argv element
+    /// at `MAX_ARG_STRLEN` (131072 bytes). That a payload past the cap arrives
+    /// intact over stdin is proven at the runner level by
+    /// `agent_stream::tests::delivers_a_stdin_payload_larger_than_max_arg_strlen_intact`.
+    #[test]
+    fn invocation_delivers_prompt_on_stdin_not_in_argv() {
+        const MAX_ARG_STRLEN: usize = 131_072;
+        let prompt = "p".repeat(MAX_ARG_STRLEN + 1);
+        let request = AgentRequest {
+            prompt: prompt.clone(),
+            project: "demo".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+
+        let inv = CodexAdapter.build_invocation(
+            &request,
+            "gpt-5.4",
+            "medium",
+            "sess",
+            Path::new("/tmp/codex-sessions"),
+        );
+
+        assert_eq!(inv.args.last().map(String::as_str), Some("-"));
+        assert!(
+            inv.args.iter().all(|a| a.len() < MAX_ARG_STRLEN && !a.contains(&prompt)),
+            "prompt must not ride in argv"
+        );
+        assert_eq!(inv.stdin.as_deref(), Some(prompt.as_bytes()));
     }
 
     #[test]
     fn argv_full_access_bypasses_sandbox() {
         let out = Path::new("/tmp/s.txt");
-        let args = build_codex_argv("gpt-5.4", "medium", AgentAccess::Full, out, "p");
+        let args = build_codex_argv("gpt-5.4", "medium", AgentAccess::Full, out);
         assert!(args.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));
         assert!(!args.iter().any(|a| a == "read-only"));
     }
@@ -358,7 +401,7 @@ mod tests {
     #[test]
     fn argv_readonly_access_uses_read_only_sandbox() {
         let out = Path::new("/tmp/s.txt");
-        let args = build_codex_argv("gpt-5.5", "high", AgentAccess::ReadOnly, out, "p");
+        let args = build_codex_argv("gpt-5.5", "high", AgentAccess::ReadOnly, out);
         let sp = args.iter().position(|a| a == "-s").unwrap();
         assert_eq!(args[sp + 1], "read-only");
         assert!(!args.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));

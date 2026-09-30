@@ -9,6 +9,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The codex gateway now passes the prompt on stdin, so a large prompt no longer
+  fails to spawn. On 2026-09-30 campaign `foundry-work-settlement-v1`
+  (`agent_provider: codex`) escalated at its first formation after three
+  `agent_session_ended` records reading `failed to spawn codex: Argument list
+  too long (os error 7)`: its formation prompt was over Linux's 131072-byte
+  `MAX_ARG_STRLEN` cap on one argv element, and codex took the prompt as the
+  last argv element. `codex exec` now gets `-` as its last argument, which makes
+  it read the prompt from stdin (documented in `codex exec --help` for
+  `codex-cli` 0.159.2). The agent stream runner writes the prompt and then
+  closes stdin, as it already does for claude, so codex does not wait on an
+  open stdin. The persona preamble and every other codex flag are unchanged.
+  This removes the "no stdin escape hatch" limit named in the review-prompt
+  entry below. The opencode gateway still takes its prompt in argv: `opencode`
+  is not installed on the host where this fix was made, so there was no
+  `opencode run --help` to confirm that it reads a prompt from stdin.
 - The task reviewer no longer crashes codex with `Argument list too long`
   (`E2BIG`) on a verbose but fully-passing gate run. A `parite` campaign_cycle
   task on 2026-09-30 finished a real coding session with 12 files changed and
