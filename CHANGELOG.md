@@ -7,6 +7,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry queue show <id>` now prints the item's own `work_item_*` events after
+  its record — one line each with when it occurred, its type, the state it left
+  the item in, the event id and the reason — or an explicit `(no events)` line
+  when there are none. `--json` keeps every existing key unchanged and adds an
+  `events` array. The events come from a new, additive `ListWorkItemEvents` RPC
+  in `foundryd`, which reads the durable event log (`FOUNDRY_EVENTS_DIR`) at
+  request time, caches nothing, never writes and never takes the ledger write
+  gate. It selects events by the exact item id in the event payload — never by
+  trace or project, so the `maintenance`, `remediation` and `release` items of
+  one run each show only their own events — reads every monthly file however
+  old, and returns them oldest first, ties in log order. An unknown id is
+  `NOT_FOUND`; a missing events directory is an empty list; a fault reading the
+  log is `INTERNAL`, never an empty list. A malformed or glued line in the log is
+  skipped with a daemon-side warning and does not hide the item's other events.
+  `--offline` reads the ledger and `FOUNDRY_EVENTS_DIR` directly through the same
+  selection (`foundry_sdk::work_item_events::read_work_item_events`), and the
+  online path still never reads the client-side ledger or events files.
+  `GetWorkItem`, `ListWorkItems`, `foundry queue` and `foundry queue open` are
+  unchanged.
+
 ### Fixed
 
 - A task whose trunk moved while it ran now lands instead of being reported as a

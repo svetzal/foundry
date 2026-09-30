@@ -734,6 +734,47 @@ the ledger path is unreadable.
 client-side ledger file; if `FOUNDRY_WORK_ITEMS_PATH` is absent, the online path
 leaves it absent.
 
+### `ListWorkItemEvents(ListWorkItemEventsRequest) → ListWorkItemEventsResponse`
+
+List one work item's `work_item_*` events (`work_item_submitted`,
+`work_item_started`, `work_item_settled`, `work_item_cancelled`) from the
+durable event log under `FOUNDRY_EVENTS_DIR` (one `YYYY-MM.jsonl` file per
+month). Additive to `GetWorkItem`: a caller that never sends this request sees
+exactly the `GetWorkItem` and `ListWorkItems` behaviour it saw before. The
+ledger and the event log are loaded from disk on every call and nothing is
+cached between requests. This RPC never writes and never takes the ledger write
+gate.
+
+**Request:**
+
+| Field | Type   | Description                             |
+| ----- | ------ | --------------------------------------- |
+| `id`  | string | Exact work-item id whose events to list |
+
+**Response:**
+
+| Field    | Type                   | Description                               |
+| -------- | ---------------------- | ----------------------------------------- |
+| `events` | repeated WorkItemEvent | The item's events, in chronological order |
+
+**Selection and order:** events are selected by exact payload `item_id` — never
+by trace id and never by project, since the items of one maintenance run share
+both — from every monthly file regardless of age, and returned by `occurred_at`
+ascending, ties in log order (file name, then line).
+
+**Errors:** `NOT_FOUND` when no item with that id is in the ledger;
+`FAILED_PRECONDITION` when the ledger contains malformed JSON; `INTERNAL` when
+the ledger path is unreadable, or when an existing events directory or log file
+cannot be read — never an empty list. A known item with no events, or a missing
+events directory, is an empty list. A malformed line in the log (not JSON, or two
+events glued onto one line) is skipped with a warning in the daemon log, and the
+item's well-formed events on other lines are still returned.
+
+**CLI:** `foundry queue show <id>` renders this after `GetWorkItem`. Online
+callers never read the client-side ledger or events files; if
+`FOUNDRY_WORK_ITEMS_PATH` or `FOUNDRY_EVENTS_DIR` is absent, the online path
+leaves it absent.
+
 ### `History(HistoryRequest) → HistoryResponse`
 
 List durable trace history from the daemon-owned trace store.
@@ -875,6 +916,20 @@ caller can tell "not recorded" from a recorded empty string or `false`.
 | `preservation_ref` | optional string | Settlement: the durable ref (branch or `bundle:<path>`) holding unlanded work                                |
 | `worktree`         | optional string | Settlement: the isolated worktree the work ran in                                                            |
 | `worktree_removed` | optional bool   | Settlement: whether that worktree was gone by settlement time; absent when the item records no worktree       |
+
+### `WorkItemEvent`
+
+One `work_item_*` lifecycle event read back from the durable event log, as
+returned by `ListWorkItemEvents`.
+
+| Field         | Type            | Description                                                                  |
+| ------------- | --------------- | ---------------------------------------------------------------------------- |
+| `id`          | string          | The event's own id                                                           |
+| `event_type`  | string          | `work_item_submitted`, `work_item_started`, `work_item_settled`, or `work_item_cancelled` |
+| `occurred_at` | string          | ISO 8601 timestamp the event occurred                                        |
+| `state`       | string          | The item's state as of this event (same vocabulary as `WorkItem.state`)      |
+| `reason`      | string          | Why it was in that state, in one line                                        |
+| `trace_id`    | optional string | The workflow trace the event was emitted on; absent when it carries none     |
 
 ### `Campaign`
 

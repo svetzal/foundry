@@ -23,4 +23,5 @@ pub mod token_usage;
 pub mod trace;
 pub mod triage;
 pub mod work_item;
+pub mod work_item_events;
 pub mod workflow;

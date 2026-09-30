@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
     // stopped in the middle of, so a restart never leaves an item running.
     service::settle_running_work_items_on_start(&ctx, &foundry_sdk::paths::work_items_path()).await;
 
-    service::spawn_interrupted_cycle_recovery(&ctx, events_dir);
+    service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
 
     let service = service::FoundryService::new(
@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
         service::StoreConfig {
             campaigns_path: foundry_sdk::paths::campaigns_path(),
             work_items_path: foundry_sdk::paths::work_items_path(),
+            events_dir,
             registry_path,
             sentinels,
             sentinels_path,

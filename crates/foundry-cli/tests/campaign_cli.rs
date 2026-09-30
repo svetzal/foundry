@@ -145,6 +145,7 @@ fn make_service(
     };
     let stores = StoreConfig {
         work_items_path: std::path::PathBuf::new(),
+        events_dir: std::path::PathBuf::new(),
         campaigns_path,
         registry_path,
         sentinels,

@@ -647,6 +647,57 @@ message GetWorkItemResponse {
     WorkItem item = 1;
 }
 
+// Wire form of one `work_item_*` lifecycle event read back from the durable
+// event log: `work_item_submitted`, `work_item_started`, `work_item_settled`
+// or `work_item_cancelled`.
+message WorkItemEvent {
+    // The event's own id.
+    string id = 1;
+    // The event type's serialized tag, e.g. "work_item_settled".
+    string event_type = 2;
+    // When the event occurred (ISO 8601).
+    string occurred_at = 3;
+    // Where the item stood as of this event, as the item state's serialized
+    // tag (same vocabulary as WorkItem.state).
+    string state = 4;
+    // Why it was in that state, in one line.
+    string reason = 5;
+    // The workflow trace the event was emitted on. Absent when it carries none.
+    optional string trace_id = 6;
+}
+
+// List one work item's `work_item_*` events from the durable event log
+// (`FOUNDRY_EVENTS_DIR`, one `YYYY-MM.jsonl` file per month).
+//
+// Additive to GetWorkItem: a caller that never sends this request sees exactly
+// the GetWorkItem and ListWorkItems behaviour it saw before. Online CLI callers
+// render this response directly and never read the client-side ledger or
+// events files; if those client-side paths are absent, the online path leaves
+// them absent. The ledger and the event log are loaded from disk on every call
+// and nothing is cached between requests. This RPC never writes and never
+// takes the ledger write gate.
+//
+// Events are selected by exact payload `item_id` — never by trace id and never
+// by project, since one run's items can share both — from every monthly file
+// regardless of age, and returned in chronological order: occurred_at
+// ascending, ties in log order.
+//
+// An id absent from the ledger is NOT_FOUND (a malformed ledger is
+// FAILED_PRECONDITION and an unreadable ledger path is INTERNAL, as for
+// GetWorkItem). A known item with no events in the log, or a missing events
+// directory, is an empty list. An I/O fault reading an existing events
+// directory or log file is INTERNAL, never an empty list. A malformed line in
+// the log (not JSON, or two events glued onto one line) is skipped with a
+// warning in the daemon log; the item's well-formed events on other lines are
+// still returned.
+message ListWorkItemEventsRequest {
+    string id = 1;
+}
+
+message ListWorkItemEventsResponse {
+    repeated WorkItemEvent events = 1;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -725,6 +776,11 @@ service Foundry {
 
     // Retrieve one work-item ledger record by exact id, loaded at request time.
     rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
+
+    // List one work item's `work_item_*` events from the durable event log,
+    // selected by exact item id and in chronological order, loaded at request
+    // time.
+    rpc ListWorkItemEvents(ListWorkItemEventsRequest) returns (ListWorkItemEventsResponse);
 
     // Retrieve every event and block execution within a single span.
     rpc Span(SpanRequest) returns (SpanResponse);

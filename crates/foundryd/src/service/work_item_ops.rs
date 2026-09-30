@@ -1,21 +1,24 @@
-//! Reads of the daemon-owned work-item ledger.
+//! Reads of the daemon-owned work-item ledger, and of one item's
+//! `work_item_*` events in the durable event log.
 //!
-//! Both operations here load the store from disk on every call and cache
-//! nothing: the ledger is authoritative on disk, and a reader that cached it
-//! would report work as running after another process settled it. Neither
-//! operation writes, so neither takes the ledger write gate — the gate
-//! serializes load→modify→save sequences, and a read has nothing to lose.
+//! Every operation here loads from disk on every call and caches nothing: the
+//! ledger is authoritative on disk, and a reader that cached it would report
+//! work as running after another process settled it. No operation writes, so
+//! none takes the ledger write gate — the gate serializes load→modify→save
+//! sequences, and a read has nothing to lose.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tonic::{Request, Response, Status};
 
 use foundry_sdk::error::StoreError;
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
+use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
 
 use crate::proto::{
-    GetWorkItemRequest, GetWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse,
-    WorkItem as ProtoWorkItem,
+    GetWorkItemRequest, GetWorkItemResponse, ListWorkItemEventsRequest, ListWorkItemEventsResponse,
+    ListWorkItemsRequest, ListWorkItemsResponse, WorkItem as ProtoWorkItem,
+    WorkItemEvent as ProtoWorkItemEvent,
 };
 
 /// Map a ledger load failure to its gRPC status, matching the campaign-store
@@ -150,6 +153,41 @@ pub(super) fn get(
         })),
         None => Err(Status::not_found(format!("work item '{id}' not found"))),
     }
+}
+
+/// Wire form of one `work_item_*` event.
+fn event_to_proto(record: &WorkItemEventRecord) -> ProtoWorkItemEvent {
+    ProtoWorkItemEvent {
+        id: record.event_id.clone(),
+        event_type: record.event_type.as_str(),
+        occurred_at: record.occurred_at.to_rfc3339(),
+        state: record.payload.state.tag().to_string(),
+        reason: record.payload.reason.clone(),
+        trace_id: record.trace_id.clone(),
+    }
+}
+
+pub(super) async fn list_events(
+    work_items_path: &Path,
+    events_dir: &Path,
+    request: Request<ListWorkItemEventsRequest>,
+) -> Result<Response<ListWorkItemEventsResponse>, Status> {
+    let id = request.into_inner().id;
+    let store = load_store(work_items_path)?;
+    if store.find(&id).is_none() {
+        return Err(Status::not_found(format!("work item '{id}' not found")));
+    }
+
+    // The log holds every event Foundry ever wrote, so reading it is kept off
+    // the async worker threads.
+    let events_dir: PathBuf = events_dir.to_path_buf();
+    let records = tokio::task::spawn_blocking(move || read_work_item_events(&events_dir, &id))
+        .await
+        .map_err(|err| Status::internal(format!("work-item event read did not finish: {err}")))?
+        .map_err(|err| Status::internal(format!("event log is unreadable: {err}")))?;
+
+    let events = records.iter().map(event_to_proto).collect();
+    Ok(Response::new(ListWorkItemEventsResponse { events }))
 }
 
 #[cfg(test)]

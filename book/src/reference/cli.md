@@ -330,7 +330,7 @@ foundry queue open [--json] [--offline]
 | Subcommand | Daemon required?       | Description                                                                   |
 | ---------- | ---------------------- | ----------------------------------------------------------------------------- |
 | *(none)*   | Yes unless `--offline` | Print running, queued, open and the newest 20 settled items on one screen      |
-| `show`     | Yes unless `--offline` | Print one item's full durable record, including every settlement field        |
+| `show`     | Yes unless `--offline` | Print one item's full durable record, then its `work_item_*` events           |
 | `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed`         |
 
 | Argument   | Description                                                 |
@@ -340,7 +340,7 @@ foundry queue open [--json] [--offline]
 | Option      | Description                                                        |
 | ----------- | ------------------------------------------------------------------ |
 | `--json`    | Emit machine-readable JSON instead of human output                 |
-| `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` directly instead of calling the daemon |
+| `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` (and, for `show`, `FOUNDRY_EVENTS_DIR`) directly instead of calling the daemon |
 
 The four groups are **running**, **queued** (`submitted` or `queued`), **open**
 (`preserved`, `needs_decision`, `failed` — settled but still needing a person),
@@ -354,28 +354,35 @@ and never re-sorts.
 `show` renders every durable field, and an optional field the ledger never
 recorded produces no line at all rather than an empty string or `false`. A
 recorded `worktree_removed: false` therefore prints `Worktree removed: no`,
-while an unrecorded one prints nothing. `show` prints the record alone; it does
-not list the item's `work_item_*` events, because an item correlates with them
-by `trace_id` and no read RPC accepts a trace id.
+while an unrecorded one prints nothing. After the record, `show` prints an
+`Events:` heading and the item's own `work_item_*` events, one line each
+(occurred at, event type, state, event id, reason), oldest first. They are
+selected from the durable event log by the item id in the event payload — never
+by trace or project — across every monthly file, however old. An item with no
+events prints `  (no events)`. A malformed line in the log is skipped with a
+daemon-side warning; a fault reading the log is an error, never an empty list.
 
 With `--json`, the list forms emit a JSON array and `show` emits a single
-object. Optional fields are absent when unset, so the JSON round-trips the same
+object: the record's keys, unchanged, plus an `events` array whose entries carry
+`id`, `event_type`, `occurred_at`, `state`, `reason` and an optional
+`trace_id`. Optional fields are absent when unset, so the JSON round-trips the same
 facts the record carries. The human and JSON forms of one command render from
 the same fetched data.
 
 The ledger defaults to `~/.foundry/work-items.json` and can be overridden with
 `FOUNDRY_WORK_ITEMS_PATH`. Without `--offline`, all three commands are
 daemon-authoritative: the list forms render `ListWorkItems` and `show` renders
-`GetWorkItem`. The online path never reads, creates or mutates the client-side
-ledger file, so an absent `FOUNDRY_WORK_ITEMS_PATH` stays absent and an existing
-one is left byte-identical. A `NOT_FOUND` from `GetWorkItem` surfaces as an
+`GetWorkItem` followed by `ListWorkItemEvents`. The online path never reads,
+creates or mutates the client-side ledger or events files, so an absent
+`FOUNDRY_WORK_ITEMS_PATH` or `FOUNDRY_EVENTS_DIR` stays absent and an existing
+ledger is left byte-identical. A `NOT_FOUND` from `GetWorkItem` surfaces as an
 id-not-found error with a non-zero exit, not as an empty record.
 
 If `foundryd` is unreachable, the command fails with a stable actionable error
 naming the matching offline recovery command. There is no silent fallback. Pass
 `--offline` only when the daemon is stopped and you intentionally want to read
-the ledger JSON file directly; it applies the same grouping order the RPC
-documents. A missing ledger renders four empty groups and exits zero without
+the ledger JSON file (and, for `show`, the events directory) directly; it
+applies the same grouping order and event selection the RPCs document. A missing ledger renders four empty groups and exits zero without
 creating the file; a malformed one exits non-zero and names the parse failure.
 
 See [The Work Queue](../guide/work-queue.md) for the full model.

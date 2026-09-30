@@ -184,18 +184,20 @@ the settled group alone.
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
 | `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
-| `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Prints the record alone — no read RPC accepts a `trace_id`, so the item's `work_item_*` events are not listed |
+| `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
 
-All three take `--json`; the list forms emit an array, `show` emits an object,
-optional fields are absent when unset, and the human and JSON forms of one
+All three take `--json`; the list forms emit an array, `show` emits an object
+(the record's keys unchanged, plus an `events` array), optional fields are
+absent when unset, and the human and JSON forms of one
 command render from the same fetched data.
 
 > **Note for scripts/automation**: without `--offline`, online `foundry queue`,
 > `queue show` and `queue open` do not silently fall back and surface stable
 > typed gRPC status errors instead. They render the daemon response directly,
-> never read the client-side ledger file, and if `FOUNDRY_WORK_ITEMS_PATH` is
-> absent the online path leaves it absent. If `foundryd` is not listening, all
+> never read the client-side ledger or events files, and if
+> `FOUNDRY_WORK_ITEMS_PATH` or `FOUNDRY_EVENTS_DIR` is absent the online path
+> leaves it absent. If `foundryd` is not listening, all
 > three fail with an error naming the matching `--offline` command and leave any
 > existing client-side ledger file untouched byte-for-byte. A `NOT_FOUND` from
 > `GetWorkItem` surfaces as the id-not-found error, not as an empty record.
@@ -203,6 +205,11 @@ command render from the same fetched data.
 > `foundry_sdk::work_item::WorkItemStore::load` and applies the same grouping
 > order the RPC documents: a missing or empty store renders empty groups and
 > exits zero without creating the file, and a malformed one is an error.
+> `queue show --offline` also reads `FOUNDRY_EVENTS_DIR` through
+> `foundry_sdk::work_item_events::read_work_item_events`, the same selection
+> and order `ListWorkItemEvents` applies: a missing events directory is
+> `(no events)`, a fault reading the log is an error, and a malformed or glued
+> log line is skipped with a warning without hiding the item's other events.
 
 ### Registry commands
 

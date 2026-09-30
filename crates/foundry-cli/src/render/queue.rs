@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use foundry_sdk::work_item::WorkItemState;
 use serde::Serialize;
 
-use crate::proto::WorkItem;
+use crate::proto::{WorkItem, WorkItemEvent};
 
 /// How many settled items the overview shows.
 ///
@@ -250,6 +250,77 @@ pub fn item_detail(item: &WorkItem) -> String {
     out
 }
 
+/// The heading above an item's events in `queue show`.
+pub const EVENTS_HEADING: &str = "Events:";
+
+/// The line printed under [`EVENTS_HEADING`] when the item has no events, so
+/// an empty history reads as a stated fact rather than as nothing.
+pub const NO_EVENTS_LINE: &str = "  (no events)";
+
+/// One `work_item_*` event as a single line: when, what, the state it left the
+/// item in, the event id and why.
+#[must_use]
+pub fn event_line(event: &WorkItemEvent) -> String {
+    format!(
+        "  {}  {:<19}  {:<14}  {}  {}",
+        event.occurred_at, event.event_type, event.state, event.id, event.reason
+    )
+}
+
+/// An item's events under their heading, one line each in the order they
+/// arrived, or [`NO_EVENTS_LINE`] when there are none.
+#[must_use]
+pub fn events_section(events: &[WorkItemEvent]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{EVENTS_HEADING}");
+    if events.is_empty() {
+        let _ = writeln!(out, "{NO_EVENTS_LINE}");
+    }
+    for event in events {
+        let _ = writeln!(out, "{}", event_line(event));
+    }
+    out
+}
+
+/// `queue show`: one item's full durable record, a blank line, then its events.
+#[must_use]
+pub fn item_with_events_detail(item: &WorkItem, events: &[WorkItemEvent]) -> String {
+    format!("{}\n{}", item_detail(item), events_section(events))
+}
+
+/// JSON projection of one `work_item_*` event.
+#[derive(Serialize)]
+struct JsonEvent<'a> {
+    id: &'a str,
+    event_type: &'a str,
+    occurred_at: &'a str,
+    state: &'a str,
+    reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace_id: Option<&'a str>,
+}
+
+impl<'a> From<&'a WorkItemEvent> for JsonEvent<'a> {
+    fn from(event: &'a WorkItemEvent) -> Self {
+        Self {
+            id: &event.id,
+            event_type: &event.event_type,
+            occurred_at: &event.occurred_at,
+            state: &event.state,
+            reason: &event.reason,
+            trace_id: event.trace_id.as_deref(),
+        }
+    }
+}
+
+/// One item's record with every existing key unchanged, plus its `events`.
+#[derive(Serialize)]
+struct JsonItemWithEvents<'a> {
+    #[serde(flatten)]
+    item: JsonItem<'a>,
+    events: Vec<JsonEvent<'a>>,
+}
+
 /// JSON projection of one wire record.
 ///
 /// The prost-generated [`WorkItem`] carries no `Serialize`, so the JSON shape
@@ -342,10 +413,14 @@ pub fn open_json(items: &[WorkItem]) -> String {
     to_pretty(&projected)
 }
 
-/// One item as a JSON object.
+/// `queue show --json`: one item as a JSON object carrying every record key
+/// [`items_json`] gives it, plus an `events` array in the order it arrived.
 #[must_use]
-pub fn item_json(item: &WorkItem) -> String {
-    to_pretty(&JsonItem::from(item))
+pub fn item_with_events_json(item: &WorkItem, events: &[WorkItemEvent]) -> String {
+    to_pretty(&JsonItemWithEvents {
+        item: JsonItem::from(item),
+        events: events.iter().map(JsonEvent::from).collect(),
+    })
 }
 
 #[cfg(test)]
@@ -643,8 +718,8 @@ mod tests {
     fn json_omits_absent_optionals_rather_than_emitting_empty_or_false() {
         let mut running = item("wi_running", "running");
         running.started_at = None;
-        let parsed: serde_json::Value =
-            serde_json::from_str(&item_json(&running)).expect("item_json must parse");
+        let parsed: serde_json::Value = serde_json::from_str(&item_with_events_json(&running, &[]))
+            .expect("item_with_events_json must parse");
         let object = parsed.as_object().expect("an object");
 
         for absent in [
@@ -666,7 +741,8 @@ mod tests {
         let mut settled = item("wi_landed", "landed");
         settled.worktree = Some("/tmp/wt".to_string());
         settled.worktree_removed = Some(false);
-        let parsed: serde_json::Value = serde_json::from_str(&item_json(&settled)).expect("parse");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&item_with_events_json(&settled, &[])).expect("parse");
         assert_eq!(parsed["worktree_removed"], serde_json::json!(false));
     }
 
@@ -688,7 +764,7 @@ mod tests {
         for rendered in [
             items_json(&every_state()),
             open_json(&every_state()),
-            item_json(&item("wi_one", "running")),
+            item_with_events_json(&item("wi_one", "running"), &[]),
         ] {
             assert!(rendered.ends_with('\n'), "must end with a newline: {rendered}");
             assert!(!rendered.ends_with("\n\n"), "must not end with a blank line");
@@ -698,12 +774,12 @@ mod tests {
     // ── operator origin ───────────────────────────────────────────────────────
 
     #[test]
-    fn item_json_emits_the_origin_exactly_as_stored() {
+    fn show_json_emits_the_origin_exactly_as_stored() {
         let mut stored = item("wi_1", "running");
         stored.origin = "foundry task (host workbench: asked by Stacey)".to_string();
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&item_json(&stored)).expect("valid JSON");
+            serde_json::from_str(&item_with_events_json(&stored, &[])).expect("valid JSON");
 
         assert_eq!(parsed["origin"], "foundry task (host workbench: asked by Stacey)");
     }
@@ -716,5 +792,93 @@ mod tests {
         assert!(
             item_detail(&stored).contains("campaign tidy-cli cycle 4 (host workbench: by hand)")
         );
+    }
+
+    // ── item events ───────────────────────────────────────────────────────────
+
+    fn event(id: &str, event_type: &str, state: &str, second: u32) -> WorkItemEvent {
+        WorkItemEvent {
+            id: id.to_string(),
+            event_type: event_type.to_string(),
+            occurred_at: format!("2026-09-30T01:00:{second:02}+00:00"),
+            state: state.to_string(),
+            reason: format!("{state} because"),
+            trace_id: Some("b".repeat(32)),
+        }
+    }
+
+    fn three_events() -> Vec<WorkItemEvent> {
+        vec![
+            event("evt_1", "work_item_submitted", "submitted", 1),
+            event("evt_2", "work_item_started", "running", 2),
+            event("evt_3", "work_item_settled", "landed", 3),
+        ]
+    }
+
+    #[test]
+    fn an_event_line_carries_time_type_state_id_and_reason() {
+        assert_eq!(
+            event_line(&event("evt_1", "work_item_settled", "landed", 3)),
+            "  2026-09-30T01:00:03+00:00  work_item_settled    landed          evt_1  landed because"
+        );
+    }
+
+    #[test]
+    fn the_events_section_prints_one_line_per_event_in_the_order_given() {
+        let out = events_section(&three_events());
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "heading plus three events:\n{out}");
+        assert_eq!(lines[0], EVENTS_HEADING);
+        for (line, id) in lines[1..].iter().zip(["evt_1", "evt_2", "evt_3"]) {
+            assert!(line.contains(id), "'{id}' missing from '{line}'");
+        }
+        assert!(!out.contains(NO_EVENTS_LINE), "got:\n{out}");
+    }
+
+    #[test]
+    fn an_item_with_no_events_says_so_explicitly() {
+        assert_eq!(events_section(&[]), format!("{EVENTS_HEADING}\n{NO_EVENTS_LINE}\n"));
+    }
+
+    #[test]
+    fn show_detail_is_the_record_then_a_blank_line_then_the_events() {
+        let record = item("wi_landed", "landed");
+        let out = item_with_events_detail(&record, &three_events());
+        let expected = format!("{}\n{}", item_detail(&record), events_section(&three_events()));
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn show_json_keeps_every_record_key_unchanged_and_adds_events() {
+        let mut record = item("wi_landed", "landed");
+        record.worktree = Some("/tmp/wt".to_string());
+        record.worktree_removed = Some(false);
+        let listed: serde_json::Value =
+            serde_json::from_str(&items_json(std::slice::from_ref(&record))).expect("parses");
+        let without = &listed[0];
+        let with: serde_json::Value =
+            serde_json::from_str(&item_with_events_json(&record, &three_events()))
+                .expect("item_with_events_json parses");
+
+        let with_object = with.as_object().expect("object");
+        for (key, value) in without.as_object().expect("object") {
+            assert_eq!(with_object.get(key), Some(value), "key '{key}' changed");
+        }
+        assert_eq!(with_object.len(), without.as_object().expect("object").len() + 1);
+
+        let events = with["events"].as_array().expect("events array");
+        let ids: Vec<&str> = events.iter().map(|e| e["id"].as_str().expect("id")).collect();
+        assert_eq!(ids, vec!["evt_1", "evt_2", "evt_3"]);
+        assert_eq!(events[2]["event_type"], serde_json::json!("work_item_settled"));
+        assert_eq!(events[2]["state"], serde_json::json!("landed"));
+        assert_eq!(events[2]["trace_id"], serde_json::json!("b".repeat(32)));
+    }
+
+    #[test]
+    fn show_json_of_an_item_with_no_events_carries_an_empty_array() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&item_with_events_json(&item("wi_one", "running"), &[]))
+                .expect("parses");
+        assert_eq!(parsed["events"], serde_json::json!([]));
     }
 }

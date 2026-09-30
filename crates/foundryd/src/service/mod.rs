@@ -16,14 +16,15 @@ use crate::proto::{
     CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
     EmitResponse, GetCampaignRequest, GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse,
     HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
-    ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse,
-    RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
-    RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
-    RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
-    SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse,
-    SentinelListRequest, SentinelListResponse, SentinelShowRequest, SentinelShowResponse,
-    SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest, TraceResponse,
-    WatchRequest, WatchResponse, foundry_server::Foundry,
+    ListWorkItemEventsRequest, ListWorkItemEventsResponse, ListWorkItemsRequest,
+    ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
+    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
+    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
+    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
+    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest,
+    SentinelListResponse, SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse,
+    StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
+    foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -58,6 +59,9 @@ pub struct StoreConfig {
     pub campaigns_path: PathBuf,
     /// The durable work-item ledger the read RPCs load on every call.
     pub work_items_path: PathBuf,
+    /// The durable event log (`YYYY-MM.jsonl` files) `ListWorkItemEvents`
+    /// reads one item's `work_item_*` events from on every call.
+    pub events_dir: PathBuf,
     pub registry_path: PathBuf,
     pub sentinels: Arc<RwLock<SentinelStore>>,
     pub sentinels_path: PathBuf,
@@ -67,6 +71,7 @@ pub struct StoreConfig {
 pub struct FoundryService {
     campaigns_path: PathBuf,
     work_items_path: PathBuf,
+    events_dir: PathBuf,
     ctx: RuntimeContext,
     registry_path: PathBuf,
     sentinels: Arc<RwLock<SentinelStore>>,
@@ -79,6 +84,7 @@ impl FoundryService {
         Self {
             campaigns_path: stores.campaigns_path,
             work_items_path: stores.work_items_path,
+            events_dir: stores.events_dir,
             ctx,
             registry_path: stores.registry_path,
             sentinels: stores.sentinels,
@@ -295,6 +301,13 @@ impl Foundry for FoundryService {
         work_item_ops::get(&self.work_items_path, request)
     }
 
+    async fn list_work_item_events(
+        &self,
+        request: Request<ListWorkItemEventsRequest>,
+    ) -> Result<Response<ListWorkItemEventsResponse>, Status> {
+        work_item_ops::list_events(&self.work_items_path, &self.events_dir, request).await
+    }
+
     async fn advance_campaign(
         &self,
         request: Request<AdvanceCampaignRequest>,
@@ -385,6 +398,7 @@ mod tests {
         };
         let stores = StoreConfig {
             work_items_path: std::path::PathBuf::new(),
+            events_dir: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels,
@@ -1093,6 +1107,7 @@ mod tests {
         };
         let stores = StoreConfig {
             work_items_path: std::path::PathBuf::new(),
+            events_dir: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels: Arc::new(RwLock::new(sentinels)),
@@ -1329,6 +1344,7 @@ mod tests {
         };
         let stores = StoreConfig {
             work_items_path: std::path::PathBuf::new(),
+            events_dir: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels,
@@ -1526,6 +1542,7 @@ mod tests {
         let stores = StoreConfig {
             campaigns_path,
             work_items_path,
+            events_dir: std::path::PathBuf::new(),
             registry_path,
             sentinels,
             sentinels_path,

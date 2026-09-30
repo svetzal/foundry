@@ -187,9 +187,10 @@ The group order and the order within each group come from the daemon's
 ### `foundry queue show <id>`
 
 Prints one item's full durable record, one field per line, including every
-settlement field. An optional field the ledger never recorded produces **no
-line at all**, so you never have to tell a recorded empty string from an unset
-field. `worktree_removed` is the sharpest case: a recorded `false` prints
+settlement field, then a blank line and the item's own `work_item_*` events.
+An optional field the ledger never recorded produces **no line at all**, so you
+never have to tell a recorded empty string from an unset field.
+`worktree_removed` is the sharpest case: a recorded `false` prints
 `Worktree removed: no`, while "no worktree recorded" prints nothing.
 
 ```text
@@ -209,14 +210,30 @@ Verdict:          remainder
 Preservation ref: foundry/majors/serde
 Worktree:         /home/you/.foundry/worktrees/beta/x
 Worktree removed: no
+
+Events:
+  2026-09-29T02:00:00+00:00  work_item_submitted  submitted       evt_1a2b…  submitted
+  2026-09-29T02:00:01+00:00  work_item_started    running         evt_3c4d…  agent started
+  2026-09-29T03:10:00+00:00  work_item_settled    preserved       evt_5e6f…  gates red after the bump; work held on a branch
 ```
 
-`show` prints the record alone. It does not list the item's four
-`work_item_*` events: the item correlates with them by `trace_id`, and no
-existing read RPC accepts a trace id — `foundry trace` takes a root *event*
-id, span lookup takes a span id, and history is bounded to a date window, so it
-would report "no events" for any item older than that window. Use the `Trace`
-field with `foundry history` to locate the run by hand.
+Each event line shows when it occurred, its type, the state it left the item
+in, the event id and the one-line reason. The events are read from the durable
+event log (`FOUNDRY_EVENTS_DIR`, one `YYYY-MM.jsonl` file per month) through the
+daemon's `ListWorkItemEvents` RPC, and are:
+
+- **selected by the item's id in the event payload** — never by trace or
+  project. One maintenance run can hold a `maintenance`, a `remediation` and a
+  `release` item on the same trace and project; each shows only its own events.
+- **read from every monthly file**, however old, so an item from last year still
+  shows its history rather than a false "no events".
+- **in chronological order** — oldest first, ties in the order they were logged.
+
+An item with no events in the log (or no event log at all) prints
+`  (no events)` under the heading rather than nothing. A line in the log that is
+not valid JSON — or that holds two events run together — is skipped with a
+warning in the daemon log; the item's other events are still shown. A fault
+reading the log itself is an error, never an empty history.
 
 ### `foundry queue open`
 
@@ -231,7 +248,10 @@ data as the human form, so the two can never disagree about which items the
 daemon returned.
 
 - `foundry queue --json` and `foundry queue open --json` emit a JSON array.
-- `foundry queue show <id> --json` emits a single JSON object.
+- `foundry queue show <id> --json` emits a single JSON object: the record's
+  keys, unchanged, plus an `events` array. Each event carries `id`,
+  `event_type`, `occurred_at`, `state`, `reason` and, when it has one,
+  `trace_id`; an item with no events has `"events": []`.
 
 Optional fields are **absent** when unset rather than emitted as `null`, `""`
 or `false`, so the JSON round-trips the same facts the record carries:
@@ -269,13 +289,13 @@ rules.
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
 | `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` |
-| `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` |
+| `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem`, then `ListWorkItemEvents` |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
 
 **Online** is the default and is daemon-authoritative. All three commands render
 the daemon's response directly and never read, create or mutate the client-side
-ledger file: if `FOUNDRY_WORK_ITEMS_PATH` is absent, the online path leaves it
-absent, and an existing file is left byte-for-byte untouched. If `foundryd` is
+ledger or events files: if `FOUNDRY_WORK_ITEMS_PATH` or `FOUNDRY_EVENTS_DIR` is
+absent, the online path leaves it absent, and an existing file is left byte-for-byte untouched. If `foundryd` is
 not listening, the command fails with a stable actionable error naming the
 matching `--offline` recovery command. There is no silent fallback.
 
@@ -284,9 +304,10 @@ non-zero exit, not as an empty record.
 
 **`--offline`** is explicit recovery for when the daemon is stopped and you
 intentionally want direct file access. It reads `FOUNDRY_WORK_ITEMS_PATH`
-directly and never contacts the daemon, applying the same grouping order the
-`ListWorkItems` contract documents — `--offline` differs from the online path
-only in transport, never in reading order.
+(and, for `show`, `FOUNDRY_EVENTS_DIR`) directly and never contacts the daemon,
+applying the same grouping order the `ListWorkItems` contract documents and the
+same event selection and order `ListWorkItemEvents` documents — `--offline`
+differs from the online path only in transport, never in reading order.
 
 - A missing ledger file renders four empty groups and exits zero. Absence is
   the normal starting state, not a fault, and a read never creates the file.

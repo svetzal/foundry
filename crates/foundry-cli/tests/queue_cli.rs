@@ -2,7 +2,9 @@
 //!
 //! These stand up a real `FoundryService` over tonic against a temporary
 //! work-item ledger, so the online path is exercised end to end through the
-//! `ListWorkItems` / `GetWorkItem` RPCs rather than against a stub.
+//! `ListWorkItems` / `GetWorkItem` / `ListWorkItemEvents` RPCs rather than
+//! against a stub. The daemon's events directory is written by the real
+//! `EventWriter`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -13,8 +15,12 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
+use foundry_engine::event_writer::EventWriter;
+use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
+use foundry_sdk::throttle::Throttle;
 use foundry_sdk::work_item::{
     WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -148,12 +154,17 @@ fn seeded_ledger() -> WorkItemStore {
     }
 }
 
-fn make_service(work_items_path: std::path::PathBuf) -> (FoundryService, TempDir) {
+/// Build a service over `work_items_path`, keeping its trace files and its
+/// events directory (`state_dir/events`) under `state_dir`.
+fn make_service(
+    work_items_path: std::path::PathBuf,
+    state_dir: &std::path::Path,
+) -> FoundryService {
     let (event_tx, _rx) = broadcast::channel(64);
     let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
-    let tmp_traces = tempfile::tempdir().expect("tempdir for traces");
+    let traces = state_dir.join("traces");
     let trace_writer =
-        Arc::new(TraceWriter::new(tmp_traces.path().to_str().expect("trace dir must be UTF-8")));
+        Arc::new(TraceWriter::new(traces.to_str().expect("trace dir must be UTF-8")));
     let trace_store = Arc::new(TraceStore::with_trace_writer(
         Duration::from_secs(60),
         Arc::clone(&trace_writer),
@@ -174,6 +185,7 @@ fn make_service(work_items_path: std::path::PathBuf) -> (FoundryService, TempDir
     };
     let stores = StoreConfig {
         work_items_path,
+        events_dir: state_dir.join("events"),
         campaigns_path: std::path::PathBuf::new(),
         registry_path: std::path::PathBuf::new(),
         sentinels: Arc::new(RwLock::new(SentinelStore {
@@ -184,7 +196,7 @@ fn make_service(work_items_path: std::path::PathBuf) -> (FoundryService, TempDir
         scheduler_reload: Arc::new(Notify::new()),
     };
 
-    (FoundryService::new(ctx, stores), tmp_traces)
+    FoundryService::new(ctx, stores)
 }
 
 async fn start_server(service: FoundryService) -> String {
@@ -204,13 +216,76 @@ async fn start_server(service: FoundryService) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-/// Stand up a daemon over a ledger seeded with one item in every state.
+/// One `work_item_*` event for the seeded item `id`, as it stood in `state`.
+fn lifecycle_event(id: &str, event_type: EventType, state: WorkItemState, second: i64) -> Event {
+    let subject = seeded_ledger()
+        .items
+        .into_iter()
+        .find(|item| item.id == id)
+        .expect("the id is seeded");
+    let mut snapshot = subject.clone();
+    snapshot.state = state;
+    snapshot.reason = format!("{} for {id}", state.tag());
+    let mut event = Event::new(
+        event_type,
+        subject.project.clone(),
+        Throttle::Full,
+        Event::serialize_payload(&WorkItemEventPayload::from_item(&snapshot))
+            .expect("payload serializes"),
+    );
+    // A fixed id, so every call describes the very same logged event.
+    event.id = format!("evt_{id}_{}", event.event_type.as_str());
+    event.occurred_at = at(second);
+    event.recorded_at = at(second);
+    event.trace_id = subject.trace_id;
+    event
+}
+
+/// The seeded `work_item_*` events, in the order the log is written. Every
+/// seeded item shares one trace, so only the payload item id tells them apart.
+fn seeded_events() -> Vec<Event> {
+    vec![
+        lifecycle_event(
+            "wi_preserved",
+            EventType::WorkItemSettled,
+            WorkItemState::Preserved,
+            5_000,
+        ),
+        lifecycle_event("wi_running", EventType::WorkItemStarted, WorkItemState::Running, 1_001),
+        lifecycle_event(
+            "wi_preserved",
+            EventType::WorkItemSubmitted,
+            WorkItemState::Submitted,
+            1_000,
+        ),
+        lifecycle_event("wi_preserved", EventType::WorkItemStarted, WorkItemState::Running, 1_002),
+    ]
+}
+
+/// The seeded events of `wi_preserved`, in chronological order.
+fn preserved_events_in_order() -> Vec<Event> {
+    let events = seeded_events();
+    vec![events[2].clone(), events[3].clone(), events[0].clone()]
+}
+
+/// Write `events` into `events_dir` through the real `EventWriter`.
+fn write_events(events_dir: &std::path::Path, events: &[Event]) {
+    let writer = EventWriter::new(events_dir);
+    for event in events {
+        writer.write(event).expect("EventWriter writes the event");
+    }
+}
+
+/// Stand up a daemon over a ledger seeded with one item in every state and an
+/// events directory holding the seeded `work_item_*` events.
 async fn daemon_over_seeded_ledger() -> (String, NamedTempFile, TempDir) {
     let ledger = NamedTempFile::new().expect("tempfile for the daemon ledger");
     seeded_ledger().save(ledger.path()).expect("seed the daemon ledger");
-    let (service, traces) = make_service(ledger.path().to_path_buf());
+    let state = tempfile::tempdir().expect("tempdir for daemon state");
+    write_events(&state.path().join("events"), &seeded_events());
+    let service = make_service(ledger.path().to_path_buf(), state.path());
     let addr = start_server(service).await;
-    (addr, ledger, traces)
+    (addr, ledger, state)
 }
 
 fn run_foundry(
@@ -228,6 +303,66 @@ fn run_foundry(
         .env("FOUNDRY_WORK_ITEMS_PATH", work_items_path)
         .output()
         .expect("run foundry binary")
+}
+
+/// Run the CLI with an explicit client-side events directory.
+fn run_foundry_with_events(
+    home: &std::path::Path,
+    work_items_path: &std::path::Path,
+    events_dir: &std::path::Path,
+    addr: &str,
+    args: &[&str],
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .arg("--addr")
+        .arg(addr)
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("FOUNDRY_WORK_ITEMS_PATH", work_items_path)
+        .env("FOUNDRY_EVENTS_DIR", events_dir)
+        .output()
+        .expect("run foundry binary")
+}
+
+/// The `Events:` block of `queue show` output: every line after the heading.
+fn event_lines(out: &str) -> Vec<String> {
+    let start = out
+        .find("\nEvents:\n")
+        .unwrap_or_else(|| panic!("no Events heading in:\n{out}"));
+    out[start + "\nEvents:\n".len()..].lines().map(ToString::to_string).collect()
+}
+
+/// Assert each line carries the matching event's id and type, in order.
+fn assert_event_lines(out: &str, expected: &[Event]) {
+    let lines = event_lines(out);
+    assert_eq!(lines.len(), expected.len(), "one line per event in:\n{out}");
+    for (line, event) in lines.iter().zip(expected) {
+        assert!(line.contains(&event.id), "'{}' missing from '{line}'", event.id);
+        assert!(line.contains(&event.event_type.as_str()), "type missing from '{line}'");
+    }
+}
+
+/// The `(id, event_type)` pairs of a `--json` `events` array, in order.
+fn json_event_ids_and_types(parsed: &serde_json::Value) -> Vec<(String, String)> {
+    parsed["events"]
+        .as_array()
+        .expect("an events array")
+        .iter()
+        .map(|event| {
+            (
+                event["id"].as_str().expect("id").to_string(),
+                event["event_type"].as_str().expect("event_type").to_string(),
+            )
+        })
+        .collect()
+}
+
+fn ids_and_types(events: &[Event]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .map(|event| (event.id.clone(), event.event_type.as_str()))
+        .collect()
 }
 
 fn stdout_string(output: &std::process::Output) -> String {
@@ -569,6 +704,155 @@ fn offline_over_a_malformed_file_exits_non_zero_with_the_parse_error() {
     let err = stderr_string(&output);
     assert!(err.contains("could not read the work-item ledger"), "got: {err}");
     assert!(err.contains("malformed JSON"), "the parse error must be named: {err}");
+}
+
+// ── item events (queue show) ──────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_show_lists_the_items_own_events_in_order() {
+    let (addr, ledger, _state) = daemon_over_seeded_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+
+    let output = run_foundry(home.path(), ledger.path(), &addr, &["queue", "show", "wi_preserved"]);
+    assert_command_succeeded(&output);
+    let out = stdout_string(&output);
+
+    assert!(out.starts_with("Id:               wi_preserved\n"), "record first:\n{out}");
+    assert_event_lines(&out, &preserved_events_in_order());
+    let other = &seeded_events()[1];
+    assert!(
+        !out.contains(&other.id),
+        "another item's event on the same trace leaked:\n{out}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_show_of_an_item_with_no_events_says_so() {
+    let (addr, ledger, _state) = daemon_over_seeded_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+
+    let output = run_foundry(home.path(), ledger.path(), &addr, &["queue", "show", "wi_landed"]);
+    assert_command_succeeded(&output);
+    assert_eq!(event_lines(&stdout_string(&output)), vec!["  (no events)".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_show_json_adds_events_beside_the_unchanged_record_keys() {
+    let (addr, ledger, _state) = daemon_over_seeded_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+
+    let output = run_foundry(
+        home.path(),
+        ledger.path(),
+        &addr,
+        &["queue", "show", "wi_preserved", "--json"],
+    );
+    assert_command_succeeded(&output);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&output)).expect("--json output must parse");
+
+    let mut keys: Vec<&str> =
+        parsed.as_object().expect("object").keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut expected_keys = vec![
+        "events",
+        "id",
+        "kind",
+        "lane",
+        "objective",
+        "origin",
+        "preservation_ref",
+        "project",
+        "reason",
+        "settled_at",
+        "started_at",
+        "state",
+        "submitted_at",
+        "trace_id",
+        "verdict",
+        "worktree",
+        "worktree_removed",
+    ];
+    expected_keys.sort_unstable();
+    assert_eq!(keys, expected_keys);
+    assert_eq!(parsed["id"], serde_json::json!("wi_preserved"));
+    assert_eq!(parsed["verdict"], serde_json::json!("remainder"));
+    assert_eq!(parsed["worktree_removed"], serde_json::json!(false));
+    assert_eq!(json_event_ids_and_types(&parsed), ids_and_types(&preserved_events_in_order()));
+    assert_eq!(parsed["events"][2]["state"], serde_json::json!("preserved"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_show_leaves_absent_client_ledger_and_events_paths_absent() {
+    let (addr, _ledger, _state) = daemon_over_seeded_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+    let client_ledger = client_ledger_path(home.path());
+    let client_events = home.path().join(".foundry/events");
+
+    for args in [
+        vec!["queue", "show", "wi_preserved"],
+        vec!["queue", "show", "wi_preserved", "--json"],
+    ] {
+        let output =
+            run_foundry_with_events(home.path(), &client_ledger, &client_events, &addr, &args);
+        assert_command_succeeded(&output);
+        assert!(
+            stdout_string(&output).contains(&preserved_events_in_order()[0].id),
+            "the daemon's events must be rendered"
+        );
+        assert!(!client_ledger.exists(), "{args:?} must leave the client ledger absent");
+        assert!(!client_events.exists(), "{args:?} must leave the client events dir absent");
+    }
+}
+
+#[test]
+fn offline_queue_show_lists_the_same_events_in_the_same_order_from_files_alone() {
+    let home = tempfile::tempdir().expect("client home");
+    let ledger = NamedTempFile::new().expect("tempfile for the offline ledger");
+    seeded_ledger().save(ledger.path()).expect("seed the offline ledger");
+    let events_dir = home.path().join("events");
+    write_events(&events_dir, &seeded_events());
+
+    let human = run_foundry_with_events(
+        home.path(),
+        ledger.path(),
+        &events_dir,
+        DUMMY_ADDR,
+        &["--offline", "queue", "show", "wi_preserved"],
+    );
+    assert_command_succeeded(&human);
+    assert_event_lines(&stdout_string(&human), &preserved_events_in_order());
+
+    let json = run_foundry_with_events(
+        home.path(),
+        ledger.path(),
+        &events_dir,
+        DUMMY_ADDR,
+        &["--offline", "queue", "show", "wi_preserved", "--json"],
+    );
+    assert_command_succeeded(&json);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&json)).expect("--json output must parse");
+    assert_eq!(json_event_ids_and_types(&parsed), ids_and_types(&preserved_events_in_order()));
+}
+
+#[test]
+fn offline_queue_show_with_a_missing_events_dir_prints_no_events_and_creates_nothing() {
+    let home = tempfile::tempdir().expect("client home");
+    let ledger = NamedTempFile::new().expect("tempfile for the offline ledger");
+    seeded_ledger().save(ledger.path()).expect("seed the offline ledger");
+    let events_dir = home.path().join("absent-events");
+
+    let output = run_foundry_with_events(
+        home.path(),
+        ledger.path(),
+        &events_dir,
+        DUMMY_ADDR,
+        &["--offline", "queue", "show", "wi_preserved"],
+    );
+    assert_command_succeeded(&output);
+    assert_eq!(event_lines(&stdout_string(&output)), vec!["  (no events)".to_string()]);
+    assert!(!events_dir.exists(), "a read must not create the events directory");
 }
 
 // ── help surface ──────────────────────────────────────────────────────────────

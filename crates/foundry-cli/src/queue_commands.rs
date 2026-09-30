@@ -8,20 +8,25 @@
 //! recovery mode that reads `work-items.json` directly when `foundryd` is not
 //! running.
 //!
-//! `queue show` prints the record alone. The ledger correlates an item with its
-//! `work_item_*` events by `trace_id`, and no existing read RPC accepts a trace
-//! id — `Trace` takes a root event id, `Span` takes a span id, and `History` is
-//! bounded to a date window, so it would report "no events" for any item older
-//! than that window. Reporting a non-result as a clean result is worse than
-//! omitting it, and adding an RPC is out of scope for this slice.
+//! `queue show` prints the record followed by the item's own `work_item_*`
+//! events, one line each. Online, the events come from `ListWorkItemEvents`;
+//! `--offline` reads `FOUNDRY_EVENTS_DIR` directly through
+//! [`foundry_sdk::work_item_events::read_work_item_events`], the same selection
+//! the daemon applies — exact payload `item_id`, every monthly file whatever
+//! its age, chronological order — so the two differ only in transport. The
+//! online path never reads the client-side ledger or events files.
 
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
+use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
-use crate::proto::{GetWorkItemRequest, ListWorkItemsRequest, WorkItem as ProtoWorkItem};
+use crate::proto::{
+    GetWorkItemRequest, ListWorkItemEventsRequest, ListWorkItemsRequest, WorkItem as ProtoWorkItem,
+    WorkItemEvent as ProtoWorkItemEvent,
+};
 use crate::render;
 
 /// Which view a `foundry queue` invocation renders.
@@ -78,51 +83,79 @@ async fn fetch_online(addr: &str, view: View) -> Result<Vec<ProtoWorkItem>> {
     Ok(response.items)
 }
 
-/// Show one item's full durable record.
+/// Show one item's full durable record, followed by its `work_item_*` events.
+///
+/// The human and JSON forms render from the same fetched record and events.
 pub async fn show(
     work_items_path: &Path,
+    events_dir: &Path,
     addr: &str,
     offline: bool,
     id: &str,
     json: bool,
 ) -> Result<()> {
-    let item = if offline {
-        let items = load_offline(work_items_path)?;
-        items
-            .into_iter()
-            .find(|item| item.id == id)
-            .with_context(|| format!("work item '{id}' not found"))?
+    let (item, events) = if offline {
+        load_one_offline(work_items_path, events_dir, id)?
     } else {
         fetch_one_online(addr, id).await?
     };
 
     if json {
-        print!("{}", render::queue::item_json(&item));
+        print!("{}", render::queue::item_with_events_json(&item, &events));
     } else {
-        print!("{}", render::queue::item_detail(&item));
+        print!("{}", render::queue::item_with_events_detail(&item, &events));
     }
     Ok(())
 }
 
-/// Fetch one record from the daemon, surfacing `NOT_FOUND` as the id-not-found
-/// error rather than as an empty record.
-async fn fetch_one_online(addr: &str, id: &str) -> Result<ProtoWorkItem> {
+/// Read one record and its events straight from the client-side files.
+fn load_one_offline(
+    work_items_path: &Path,
+    events_dir: &Path,
+    id: &str,
+) -> Result<(ProtoWorkItem, Vec<ProtoWorkItemEvent>)> {
+    let item = load_offline(work_items_path)?
+        .into_iter()
+        .find(|item| item.id == id)
+        .with_context(|| format!("work item '{id}' not found"))?;
+    let events = read_work_item_events(events_dir, id)
+        .with_context(|| format!("could not read the events of work item '{id}'"))?
+        .iter()
+        .map(event_to_proto)
+        .collect();
+    Ok((item, events))
+}
+
+/// Fetch one record and its events from the daemon, surfacing `NOT_FOUND` as
+/// the id-not-found error rather than as an empty record.
+async fn fetch_one_online(
+    addr: &str,
+    id: &str,
+) -> Result<(ProtoWorkItem, Vec<ProtoWorkItemEvent>)> {
+    let not_found = |status: tonic::Status| {
+        if status.code() == tonic::Code::NotFound {
+            anyhow::anyhow!("work item '{id}' not found")
+        } else {
+            status_to_anyhow(status)
+        }
+    };
     let mut client = connect_daemon_required(addr, &offline_hint(&format!("show {id}"))).await?;
     let response = client
         .get_work_item(GetWorkItemRequest { id: id.to_string() })
         .await
-        .map_err(|status| {
-            if status.code() == tonic::Code::NotFound {
-                anyhow::anyhow!("work item '{id}' not found")
-            } else {
-                status_to_anyhow(status)
-            }
-        })?
+        .map_err(not_found)?
         .into_inner();
-
-    response
+    let item = response
         .item
-        .with_context(|| format!("daemon returned no record for work item '{id}'"))
+        .with_context(|| format!("daemon returned no record for work item '{id}'"))?;
+
+    let events = client
+        .list_work_item_events(ListWorkItemEventsRequest { id: id.to_string() })
+        .await
+        .map_err(not_found)?
+        .into_inner()
+        .events;
+    Ok((item, events))
 }
 
 /// The offline recovery command matching a failed online invocation.
@@ -208,6 +241,19 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         preservation_ref: disposition.and_then(|d| d.preservation_ref.clone()),
         worktree: disposition.and_then(|d| d.worktree.clone()),
         worktree_removed: disposition.and_then(|d| d.worktree_removed),
+    }
+}
+
+/// Wire form of one `work_item_*` event, matching what the daemon would have
+/// sent.
+fn event_to_proto(record: &WorkItemEventRecord) -> ProtoWorkItemEvent {
+    ProtoWorkItemEvent {
+        id: record.event_id.clone(),
+        event_type: record.event_type.as_str(),
+        occurred_at: record.occurred_at.to_rfc3339(),
+        state: record.payload.state.tag().to_string(),
+        reason: record.payload.reason.clone(),
+        trace_id: record.trace_id.clone(),
     }
 }
 
@@ -398,18 +444,50 @@ mod tests {
     #[tokio::test]
     async fn offline_show_finds_a_seeded_id_and_rejects_an_unknown_one() {
         let tmp = NamedTempFile::new().expect("tempfile");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
         store(vec![item("wi_running", "alpha", WorkItemState::Running, 0)])
             .save(tmp.path())
             .expect("save ledger");
 
-        show(tmp.path(), "http://127.0.0.1:0", true, "wi_running", false)
+        show(tmp.path(), &events_dir, "http://127.0.0.1:0", true, "wi_running", false)
             .await
             .expect("offline show should succeed");
 
-        let err = show(tmp.path(), "http://127.0.0.1:0", true, "wi_missing", false)
+        let err = show(tmp.path(), &events_dir, "http://127.0.0.1:0", true, "wi_missing", false)
             .await
             .expect_err("an unknown id must fail");
         assert!(err.to_string().contains("work item 'wi_missing' not found"), "got: {err}");
+    }
+
+    #[test]
+    fn offline_show_of_an_unreadable_events_log_is_an_error_not_no_events() {
+        let tmp = NamedTempFile::new().expect("tempfile");
+        store(vec![item("wi_running", "alpha", WorkItemState::Running, 0)])
+            .save(tmp.path())
+            .expect("save ledger");
+        // The ledger file itself stands where the events directory should be,
+        // so the events directory cannot be listed.
+        let err = load_one_offline(tmp.path(), tmp.path(), "wi_running")
+            .expect_err("an unreadable events log must fail");
+        assert!(
+            format!("{err:#}").contains("could not read the events of work item 'wi_running'"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn offline_show_of_a_missing_events_dir_is_the_record_with_no_events() {
+        let tmp = NamedTempFile::new().expect("tempfile");
+        store(vec![item("wi_running", "alpha", WorkItemState::Running, 0)])
+            .save(tmp.path())
+            .expect("save ledger");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (record, events) =
+            load_one_offline(tmp.path(), &dir.path().join("absent"), "wi_running")
+                .expect("a missing events dir is empty, not a fault");
+        assert_eq!(record.id, "wi_running");
+        assert!(events.is_empty());
     }
 
     // ── view plumbing ─────────────────────────────────────────────────────────

@@ -126,7 +126,9 @@ cancel emits nothing here — its cycle finishes and settles the usual way.
 
 Read the ledger with `foundry queue` (running, queued, open and the newest 20
 settled items), `foundry queue open` (only the three open states) and
-`foundry queue show <item_id>` (one item's full record). All three take `--json`
+`foundry queue show <item_id>` (one item's full record, followed by that item's
+own `work_item_*` events from the durable event log — selected by payload
+`item_id`, never by trace or project, oldest first). All three take `--json`
 and `--offline`, and all three are read-only.
 
 ### Campaign Formation

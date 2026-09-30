@@ -161,6 +161,7 @@ fn make_harness(work_items_path: Option<PathBuf>) -> Harness {
     };
     let stores = StoreConfig {
         work_items_path: work_items_path.clone(),
+        events_dir: std::path::PathBuf::new(),
         campaigns_path: campaigns_path.clone(),
         registry_path: tmp.path().join("registry.json"),
         sentinels: Arc::new(RwLock::new(SentinelStore::default_seed())),

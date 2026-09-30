@@ -371,7 +371,7 @@ foundry queue
 # Only the work that still needs a person
 foundry queue open
 
-# One item's full durable record
+# One item's full durable record, then its work_item_* events
 foundry queue show wi_0123456789abcdef01234567
 
 # Machine-readable
@@ -390,17 +390,21 @@ waiting on me?" — those three states are settled but unfinished.
 `show` prints every durable field, including `verdict`, `landed_commit`,
 `preservation_ref`, `worktree`, `worktree_removed` and `trace_id`. An optional
 field the ledger never recorded prints no line at all, so a recorded
-`worktree_removed: false` reads `no` while an unrecorded one is silent. Use the
-`Trace` field with `foundry history` to find the run's events — `show` prints
-the record alone.
+`worktree_removed: false` reads `no` while an unrecorded one is silent. After
+the record, `show` lists the item's own `work_item_*` events (submitted,
+started, settled, cancelled), oldest first, one line each — selected by the
+item id in the event payload, never by trace or project, from every monthly
+event log however old. An item with none prints `(no events)`; `--json` adds an
+`events` array beside the unchanged record keys.
 
 Without `--offline`, all three go through typed gRPC against daemon-owned state:
-the list forms render `ListWorkItems`, `show` renders `GetWorkItem`. The online
-path never reads, creates or mutates the client-side ledger file, and if
-`foundryd` is unreachable the command fails with an error naming the matching
-`--offline` command rather than falling back. Pass `--offline` only to read
-`~/.foundry/work-items.json` directly when the daemon is not running; a missing
-file renders empty groups and exits zero, a malformed one is an error.
+the list forms render `ListWorkItems`, `show` renders `GetWorkItem` then
+`ListWorkItemEvents`. The online path never reads, creates or mutates the
+client-side ledger or events files, and if `foundryd` is unreachable the
+command fails with an error naming the matching `--offline` command rather than
+falling back. Pass `--offline` only to read `~/.foundry/work-items.json` (and,
+for `show`, `~/.foundry/events/`) directly when the daemon is not running; a
+missing file renders empty groups and exits zero, a malformed one is an error.
 
 On every start `foundryd` settles each item still `running` as `failed` with the
 reason `daemon restarted`, so after a restart look in `foundry queue open` for

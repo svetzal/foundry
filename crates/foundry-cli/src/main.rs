@@ -262,8 +262,8 @@ enum Commands {
     ///
     /// `foundry queue` prints running, queued, open and recently settled work
     /// on one screen; `foundry queue show <id>` prints one item's full durable
-    /// record; `foundry queue open` prints only the items that still need a
-    /// person.
+    /// record followed by its `work_item_*` events; `foundry queue open` prints
+    /// only the items that still need a person.
     Queue {
         #[command(subcommand)]
         command: Option<QueueCommands>,
@@ -342,7 +342,7 @@ enum CampaignCommands {
 
 #[derive(Subcommand)]
 enum QueueCommands {
-    /// Show one work item's full durable record
+    /// Show one work item's full durable record and its lifecycle events
     Show {
         /// Work-item id (e.g. `wi_0123456789abcdef01234567`)
         id: String,
@@ -668,6 +668,7 @@ async fn handle_queue_command(
     command: Option<QueueCommands>,
     parent_json: bool,
     work_items_path: &std::path::Path,
+    events_dir: &std::path::Path,
     addr: &str,
     offline: bool,
 ) -> Result<()> {
@@ -693,7 +694,15 @@ async fn handle_queue_command(
             .await
         }
         Some(QueueCommands::Show { id, json }) => {
-            queue_commands::show(work_items_path, addr, offline, &id, json || parent_json).await
+            queue_commands::show(
+                work_items_path,
+                events_dir,
+                addr,
+                offline,
+                &id,
+                json || parent_json,
+            )
+            .await
         }
     }
 }
@@ -856,6 +865,7 @@ async fn main() -> Result<()> {
                 command,
                 json,
                 &foundry_sdk::paths::work_items_path(),
+                &foundry_sdk::paths::events_dir(),
                 &addr,
                 cli.offline,
             )

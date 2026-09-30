@@ -176,6 +176,7 @@ fn make_harness(block: Box<dyn TaskBlock>, store_path: &std::path::Path) -> Harn
     };
     let stores = StoreConfig {
         work_items_path: std::path::PathBuf::new(),
+        events_dir: std::path::PathBuf::new(),
         campaigns_path: store_path.to_path_buf(),
         registry_path: tmp.path().join("registry.json"),
         sentinels: Arc::new(RwLock::new(SentinelStore::default_seed())),
