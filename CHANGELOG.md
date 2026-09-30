@@ -114,6 +114,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A child agent that exits before draining its prompt from stdin is now
+  reported by its own exit code and stderr. The stdin writer treated the
+  resulting broken pipe as the run's error, so a `claude` process that died
+  early on a large prompt was settled `unavailable` with no exit code, no
+  stderr and no interpretation — the runner's `EPIPE` masked the child's real
+  failure. The write is now best-effort: it logs a warning and lets
+  `child.wait()` plus the drained stderr report the outcome as they do for any
+  other exit.
 - The Claude CLI now receives its prompt on stdin instead of as an argv element,
   so a large prompt no longer fails the spawn outright. Linux caps a single
   argv element at `MAX_ARG_STRLEN` (131072 bytes); campaign formations whose

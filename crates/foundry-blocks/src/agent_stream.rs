@@ -65,6 +65,40 @@ pub trait AgentStreamRunner: Send + Sync {
 /// `tokio::io::BufReader::lines`, and tees each line to the supplied file.
 pub struct ProcessAgentStreamRunner;
 
+/// Write `payload` to the child's stdin on its own task, then close the pipe.
+///
+/// Its own task because a payload larger than the pipe buffer (64KB on Linux)
+/// blocks until the child drains it, so writing inline would stall before
+/// stdout is being read.
+///
+/// The write is best-effort: a child that exits before draining the prompt
+/// breaks the pipe (`EPIPE`), and that is the child’s exit, not a runner
+/// fault. Failing the run here would hide the real outcome behind
+/// "failed to write prompt to child stdin" — no exit code, no stderr, no
+/// interpretation. The caller’s `child.wait()` and drained stderr report the
+/// outcome as they do for any other exit.
+fn spawn_stdin_writer(
+    mut pipe: tokio::process::ChildStdin,
+    payload: Vec<u8>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let write = async {
+            pipe.write_all(&payload).await?;
+            pipe.shutdown().await
+        };
+        if let Err(e) = write.await {
+            // Best-effort: see this function’s docs — the child’s own exit code
+            // and stderr are the outcome worth reporting, not this `EPIPE`.
+            tracing::warn!(
+                error = %e,
+                "failed to write prompt to child stdin; reporting the child’s own exit instead"
+            );
+        }
+        // Drop closes the pipe, so the child sees EOF.
+        drop(pipe);
+    })
+}
+
 impl AgentStreamRunner for ProcessAgentStreamRunner {
     fn run<'a>(
         &'a self,
@@ -137,17 +171,10 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
             // (64KB on Linux) blocks until the child drains it, so writing inline
             // would stall before stdout is being read.
             let stdin_handle = match stdin {
-                Some(bytes) => {
-                    let mut pipe = child.stdin.take().context("missing stdin pipe")?;
-                    let owned = bytes.to_vec();
-                    Some(tokio::spawn(async move {
-                        pipe.write_all(&owned).await?;
-                        pipe.shutdown().await?;
-                        // Drop closes the pipe, so the child sees EOF.
-                        drop(pipe);
-                        Ok::<(), anyhow::Error>(())
-                    }))
-                }
+                Some(bytes) => Some(spawn_stdin_writer(
+                    child.stdin.take().context("missing stdin pipe")?,
+                    bytes.to_vec(),
+                )),
                 None => None,
             };
 
@@ -184,7 +211,7 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 }
                 log_writer.flush().await?;
                 if let Some(handle) = stdin_handle {
-                    handle.await?.context("failed to write prompt to child stdin")?;
+                    handle.await.context("stdin writer task failed to join")?;
                 }
                 let exit = child.wait().await?;
                 let stderr_text = stderr_handle.await??;
@@ -284,6 +311,28 @@ mod tests {
             .parse()
             .expect("wc output should be a number");
         assert_eq!(counted, payload.len());
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    /// A child that exits without reading a prompt too large for the pipe buffer
+    /// breaks the stdin pipe. That `EPIPE` must not become the run's error — the
+    /// child's own exit code and stderr are the outcome worth reporting.
+    #[tokio::test]
+    async fn reports_the_child_exit_when_it_dies_before_draining_stdin() {
+        const MAX_ARG_STRLEN: usize = 131_072;
+        let payload = "x".repeat(MAX_ARG_STRLEN + 4096);
+
+        let log = tmp_log();
+        let dir = std::env::temp_dir();
+        let runner = ProcessAgentStreamRunner;
+        let mut run = sh_run(dir.as_path(), &["-c", "echo 'boom' >&2; exit 17"], log.as_path());
+        run.stdin = Some(payload.as_bytes());
+        let outcome = runner.run(run).await.expect("broken stdin pipe must not fail the run");
+
+        assert!(!outcome.success, "outcome: {outcome:?}");
+        assert_eq!(outcome.exit_code, 17);
+        assert!(outcome.stderr.contains("boom"), "stderr: {}", outcome.stderr);
 
         let _ = tokio::fs::remove_file(&log).await;
     }
