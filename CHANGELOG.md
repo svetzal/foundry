@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A second `foundryd` can no longer change shared state. On 2026-09-30 an agent
+  ran `foundryd --version` beside a live daemon; `foundryd` had no such flag, so
+  the command started a second daemon whose start-up restart sweep settled a
+  still-running task `failed` with the reason `daemon restarted` before the
+  process failed to bind and exited. `foundryd` now binds its listen address and
+  takes an exclusive advisory lock on `~/.foundry/foundryd.lock` (override:
+  `FOUNDRYD_LOCK_PATH`), recording its pid there, before it runs any recovery
+  sweep, seeds or merges any store, starts the scheduler or emits any event. If
+  the address is in use or the lock is held it prints one line naming the
+  running daemon's pid when known, exits non-zero and changes nothing on disk.
+  What the sweeps do when they legitimately run is unchanged.
+- `foundryd --version` (`-V`) and `foundryd --help` (`-h`) now print and exit 0
+  without taking the lock, binding, touching any store or starting anything.
+  Unknown flags and arguments are rejected with a usage error instead of being
+  ignored.
+
 ## [0.40.2] - 2026-09-30
 
 ### Added

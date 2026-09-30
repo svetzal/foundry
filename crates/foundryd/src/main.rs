@@ -4,13 +4,16 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::Parser;
 use tokio::sync::Notify;
 use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
 use tracing_subscriber::EnvFilter;
 
 use foundry_sdk::agent_config::AgentConfigStore;
 use foundry_sdk::sentinel::{SentinelStore, merge_default_seed_into};
 
+mod instance_lock;
 mod legacy_event_check;
 mod orchestrator;
 mod scheduler;
@@ -42,11 +45,139 @@ fn resolve_listen_addr(configured: Option<&str>) -> Result<std::net::SocketAddr>
         .map_err(Into::into)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Foundry daemon — event-driven workflow engine for engineering automation.
+///
+/// `foundryd` takes no arguments. It is configured through environment
+/// variables (`FOUNDRYD_LISTEN_ADDR`, `FOUNDRYD_LOCK_PATH`, `FOUNDRY_*`).
+/// Only one daemon may run per Foundry home: a second start is refused before
+/// it changes anything on disk.
+#[derive(Debug, Parser)]
+#[command(name = "foundryd", version, about, long_about = None)]
+struct Cli {}
+
+/// Why this process must not become the daemon. Rendered as one line on
+/// stderr; the process then exits non-zero having changed nothing.
+#[derive(Debug)]
+enum StartRefusal {
+    AlreadyRunning {
+        lock_path: std::path::PathBuf,
+        pid: Option<u32>,
+    },
+    LockUnavailable {
+        lock_path: std::path::PathBuf,
+        error: std::io::Error,
+    },
+    AddressInUse {
+        addr: std::net::SocketAddr,
+        holder_pid: Option<u32>,
+    },
+    CannotListen {
+        addr: std::net::SocketAddr,
+        error: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for StartRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning { lock_path, pid } => {
+                let who = pid.map_or_else(|| "pid unknown".to_string(), |pid| format!("pid {pid}"));
+                write!(
+                    f,
+                    "foundryd: another foundryd is already running ({who}; lock {}); refusing to start, nothing was changed",
+                    lock_path.display()
+                )
+            }
+            Self::LockUnavailable { lock_path, error } => write!(
+                f,
+                "foundryd: cannot take the instance lock {}: {error}; refusing to start, nothing was changed",
+                lock_path.display()
+            ),
+            Self::AddressInUse { addr, holder_pid } => {
+                let who = holder_pid.map_or_else(
+                    || "another process is bound to it".to_string(),
+                    |pid| format!("foundryd pid {pid} is running"),
+                );
+                write!(
+                    f,
+                    "foundryd: cannot listen on {addr}: address already in use ({who}); refusing to start, nothing was changed"
+                )
+            }
+            Self::CannotListen { addr, error } => write!(
+                f,
+                "foundryd: cannot listen on {addr}: {error}; refusing to start, nothing was changed"
+            ),
+        }
+    }
+}
+
+/// Become the one daemon for this Foundry home: bind the listen address, then
+/// take the single-instance lock.
+///
+/// This runs before any recovery sweep, store write, scheduler start or event
+/// emission. Binding first means an address clash writes nothing at all; the
+/// lock is only rewritten (with this pid) once it is held.
+fn claim_instance(
+    addr: std::net::SocketAddr,
+    lock_path: &std::path::Path,
+) -> Result<(TcpIncoming, instance_lock::InstanceLock), StartRefusal> {
+    let incoming = TcpIncoming::bind(addr).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AddrInUse {
+            StartRefusal::AddressInUse {
+                addr,
+                holder_pid: instance_lock::running_holder(lock_path),
+            }
+        } else {
+            StartRefusal::CannotListen { addr, error }
+        }
+    })?;
+    let lock = instance_lock::acquire(lock_path).map_err(|error| match error {
+        instance_lock::LockError::Held { pid } => StartRefusal::AlreadyRunning {
+            lock_path: lock_path.to_path_buf(),
+            pid,
+        },
+        instance_lock::LockError::Io(error) => StartRefusal::LockUnavailable {
+            lock_path: lock_path.to_path_buf(),
+            error,
+        },
+    })?;
+    Ok((incoming, lock))
+}
+
+fn init_tracing() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("foundryd=info".parse()?))
         .init();
+    Ok(())
+}
+
+/// [`claim_instance`] for the configured address and lock path, or print the one-line
+/// refusal and exit non-zero with nothing on disk changed.
+fn claim_instance_or_exit()
+-> Result<(std::net::SocketAddr, TcpIncoming, instance_lock::InstanceLock)> {
+    let addr = resolve_listen_addr(foundry_sdk::paths::daemon_listen_addr().as_deref())?;
+    match claim_instance(addr, &foundry_sdk::paths::daemon_lock_path()) {
+        Ok((incoming, lock)) => {
+            tracing::info!(
+                lock = %lock.path().display(),
+                pid = std::process::id(),
+                "foundryd instance lock held"
+            );
+            Ok((addr, incoming, lock))
+        }
+        Err(refusal) => {
+            eprintln!("{refusal}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // `--help`, `--version`, bad arguments: handled before anything else.
+    Cli::parse();
+    init_tracing()?;
+    let (addr, incoming, instance_lock) = claim_instance_or_exit()?;
 
     let events_dir = foundry_sdk::paths::events_dir();
     if let Some(legacy) = legacy_event_check::detect_legacy_event_names(&events_dir) {
@@ -155,20 +286,22 @@ async fn main() -> Result<()> {
         },
     );
 
-    let addr = resolve_listen_addr(foundry_sdk::paths::daemon_listen_addr().as_deref())?;
     tracing::info!("foundryd listening on {addr}");
 
     Server::builder()
         .add_service(proto::foundry_server::FoundryServer::new(service))
-        .serve(addr)
+        .serve_with_incoming(incoming)
         .await?;
 
+    // Held until the server stops, so no second daemon can start meanwhile.
+    drop(instance_lock);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_listen_addr;
+    use super::{Cli, StartRefusal, claim_instance, resolve_listen_addr};
+    use clap::Parser as _;
 
     #[test]
     fn resolve_listen_addr_uses_historical_loopback_default() {
@@ -181,6 +314,99 @@ mod tests {
         let addr = resolve_listen_addr(Some("127.0.0.1:55123"))
             .expect("configured listen addr must parse");
         assert_eq!(addr.to_string(), "127.0.0.1:55123");
+    }
+
+    #[test]
+    fn cli_accepts_no_arguments() {
+        assert!(Cli::try_parse_from(["foundryd"]).is_ok());
+    }
+
+    #[test]
+    fn cli_version_and_help_are_informational_exits() {
+        use clap::error::ErrorKind;
+        for (arg, kind) in [
+            ("--version", ErrorKind::DisplayVersion),
+            ("-V", ErrorKind::DisplayVersion),
+            ("--help", ErrorKind::DisplayHelp),
+            ("-h", ErrorKind::DisplayHelp),
+        ] {
+            let err = Cli::try_parse_from(["foundryd", arg]).unwrap_err();
+            assert_eq!(err.kind(), kind, "{arg}");
+            assert_eq!(err.exit_code(), 0, "{arg}");
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unknown_flags_and_arguments() {
+        for arg in ["--verison", "--foreground", "start"] {
+            let err = Cli::try_parse_from(["foundryd", arg]).unwrap_err();
+            assert_ne!(err.exit_code(), 0, "{arg} must be a usage error");
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_instance_refuses_a_held_lock_and_names_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("foundryd.lock");
+        let _held = super::instance_lock::acquire(&lock_path).unwrap();
+
+        let refusal = claim_instance("127.0.0.1:0".parse().unwrap(), &lock_path).unwrap_err();
+
+        assert!(matches!(refusal, StartRefusal::AlreadyRunning { pid: Some(_), .. }));
+        let line = refusal.to_string();
+        assert!(line.contains(&format!("pid {}", std::process::id())), "{line}");
+        assert!(!line.contains('\n'), "one line: {line}");
+    }
+
+    #[tokio::test]
+    async fn claim_instance_refuses_a_bound_address_without_creating_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("foundryd.lock");
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = taken.local_addr().unwrap();
+
+        let refusal = claim_instance(addr, &lock_path).unwrap_err();
+
+        assert!(matches!(
+            refusal,
+            StartRefusal::AddressInUse {
+                holder_pid: None,
+                ..
+            }
+        ));
+        assert!(refusal.to_string().contains("address already in use"));
+        assert!(!lock_path.exists(), "an address clash writes nothing");
+    }
+
+    #[tokio::test]
+    async fn claim_instance_names_the_running_daemon_when_its_address_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("foundryd.lock");
+        let _held = super::instance_lock::acquire(&lock_path).unwrap();
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+
+        let refusal = claim_instance(taken.local_addr().unwrap(), &lock_path).unwrap_err();
+
+        assert!(
+            refusal
+                .to_string()
+                .contains(&format!("foundryd pid {} is running", std::process::id())),
+            "{refusal}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_instance_holds_the_lock_and_the_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("foundryd.lock");
+
+        let (_incoming, lock) = claim_instance("127.0.0.1:0".parse().unwrap(), &lock_path).unwrap();
+
+        assert_eq!(lock.path(), lock_path);
+        assert!(matches!(
+            super::instance_lock::acquire(&lock_path),
+            Err(super::instance_lock::LockError::Held { .. })
+        ));
     }
 }
 

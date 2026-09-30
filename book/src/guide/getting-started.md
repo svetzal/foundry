@@ -62,6 +62,42 @@ The CLI resolves its daemon URL by precedence: explicit `--addr`, then
 [Trusted-LAN Control Plane](trusted-lan-control-plane.md) for the plaintext
 networking model and the Mac-to-`mojility-ops-01` migration runbook.
 
+### One daemon per Foundry home
+
+Only one `foundryd` can run against a Foundry home. When the daemon starts, it
+does these two steps before it does anything else:
+
+1. It binds its listen address.
+2. It takes an exclusive advisory lock on `~/.foundry/foundryd.lock` and writes
+   its pid into that file. Set `FOUNDRYD_LOCK_PATH` to use a different lock
+   file.
+
+The daemon holds the lock until it exits. The operating system releases the
+lock when the process stops, also after a crash, so you never delete a stale
+lock by hand.
+
+The daemon does these two steps before it runs the start-up recovery sweeps.
+These sweeps settle work items that are still `running` as `failed` with the
+reason `daemon restarted`, and close interrupted maintenance cycles. The steps
+also come before the daemon seeds or merges a store, starts the sentinel
+scheduler, or emits an event. The sweeps assume that no other daemon is alive.
+If a second daemon ran them beside a live daemon, it would record live work as
+failed, and no RPC can undo that record.
+
+If the address is in use or another process holds the lock, `foundryd` does
+not start. It prints one line that names the running daemon's pid when it is
+known, exits non-zero, and changes nothing on disk:
+
+```text
+foundryd: cannot listen on 127.0.0.1:50051: address already in use (foundryd pid 1519730 is running); refusing to start, nothing was changed
+```
+
+`foundryd` takes no arguments. `foundryd --version` (`-V`) and
+`foundryd --help` (`-h`) print their output and exit 0. They do not take the
+lock, bind the address, read or write a store, or start anything, so you can
+run them safely beside a live daemon. `foundryd` rejects any other flag or
+argument with a usage error and a non-zero exit code.
+
 The repository also includes service definitions for unattended operation:
 
 - macOS: [`launchd/README.md`](../../../launchd/README.md)

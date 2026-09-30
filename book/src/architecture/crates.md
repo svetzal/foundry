@@ -33,7 +33,11 @@ that the rest of the system speaks.
 ## foundryd
 
 The daemon process. Listens on gRPC (`127.0.0.1:50051` by default, override
-with `FOUNDRYD_LISTEN_ADDR`) and runs the workflow engine.
+with `FOUNDRYD_LISTEN_ADDR`) and runs the workflow engine. Only one daemon
+runs per Foundry home: `instance_lock.rs` holds an exclusive lock on
+`~/.foundry/foundryd.lock` (override with `FOUNDRYD_LOCK_PATH`), taken after the
+listen address is bound and before any start-up recovery sweep. See
+[Getting Started](../guide/getting-started.md#one-daemon-per-foundry-home).
 
 ### Core engine
 

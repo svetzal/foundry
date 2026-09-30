@@ -33,6 +33,21 @@ pub fn daemon_listen_addr() -> Option<String> {
     env::var("FOUNDRYD_LISTEN_ADDR").ok()
 }
 
+/// Returns the path of the `foundryd` single-instance lock file.
+///
+/// `foundryd` holds an exclusive advisory lock on this file for its whole
+/// lifetime and records its pid in it, so a second daemon started against the
+/// same Foundry home refuses to start before it touches any shared state.
+///
+/// Override with `FOUNDRYD_LOCK_PATH`.
+pub fn daemon_lock_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRYD_LOCK_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("foundryd.lock")
+    }
+}
+
 /// Returns the configured foundry CLI daemon URL, if any.
 ///
 /// Override with `FOUNDRY_DAEMON_ADDR`. The value must be a tonic-compatible
@@ -269,6 +284,16 @@ pub fn supply_chain_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_lock_path_defaults_under_foundry_home_when_env_unset() {
+        if env::var("FOUNDRYD_LOCK_PATH").is_ok() {
+            return;
+        }
+        let path = daemon_lock_path();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with(".foundry/foundryd.lock"), "got: {s}");
+    }
 
     #[test]
     fn triage_dir_defaults_under_foundry_home_when_env_unset() {

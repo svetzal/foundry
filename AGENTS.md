@@ -62,6 +62,22 @@ Start the daemon:
 foundryd
 ```
 
+Only one `foundryd` runs per Foundry home. Before any recovery sweep, store
+seed/merge, scheduler start or event emission, the daemon binds its listen
+address and takes an exclusive advisory lock (`flock`) on
+`~/.foundry/foundryd.lock` (override: `FOUNDRYD_LOCK_PATH`), writing its pid
+into it. If the address is in use or the lock is held, it prints one line naming
+the running daemon's pid when known, exits non-zero, and changes nothing on
+disk. The start-up sweeps (settle `running` items `failed` / `daemon restarted`,
+close interrupted maintenance cycles) assume no other daemon is alive, so they
+must never run in a second process.
+
+`foundryd` takes no arguments. `foundryd --version` / `-V` and `--help` / `-h`
+print and exit 0 without taking the lock, binding, touching any store or
+starting anything — they are safe beside a live daemon. Any other flag or
+argument is a usage error (non-zero exit). To check the installed version,
+`foundryd --version` and `foundry --version` are both harmless.
+
 ### Linux daemon setup
 
 For Linux infrastructure, install the release tarball binaries to
@@ -544,6 +560,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `FOUNDRYD_LOCK_PATH` | `~/.foundry/foundryd.lock` | `foundryd` single-instance lock file (holds the running daemon's pid) |
 | `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
 | `FOUNDRY_CAMPAIGNS_PATH` | `~/.foundry/campaigns.json` | Durable campaign store |
 | `FOUNDRY_WORKTREES_DIR` | `~/.foundry/worktrees` | Isolated task worktrees |
