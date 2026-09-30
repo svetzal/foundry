@@ -5,6 +5,47 @@ not being addressed in the current workflow. Entries require concrete runtime
 evidence and a verifiable completion boundary. Remove an entry when it lands;
 Git history is the archive.
 
+## P1 — A formation agent that fails to spawn should pause the campaign, not escalate it
+
+**Observed:** 2026-09-30
+
+Campaign `foundry-work-ledger-v1` on mojility-ops-01 had five landed cycles
+and a full budget left. Its sixth formation failed three times in fifteen
+seconds with `failed to spawn claude` and the campaign was escalated with
+reason "campaign decision agent did not answer in 3 attempts". A `resume`
+and a second advance failed the same way. The actual cause was
+`E2BIG`: the formation prompt is passed as one argv element and had grown
+past Linux's 131,072-byte per-argument limit (the five successful prompts
+were 111 KB to 122 KB; the two failures 134 KB and 133 KB). That fix is
+dispatched separately. Two behaviours remain wrong:
+
+- The `std::io::Error` from `Command::spawn` is not recorded. The event
+  says `failed to spawn claude` and nothing else, so an argument-length
+  error, a missing binary and a resource limit all look like a provider
+  outage.
+- A formation agent that never starts escalates the campaign, which needs an
+  owner `resume`. The lifecycle documents provider unavailability as a
+  `paused` state for task runs; the formation should take the same path.
+
+Evidence: `campaign_advance_completed` and `campaign_escalated` at
+2026-09-30T06:16:37Z and 07:56:22Z on ops-01, `agent_session_ended`
+`unavailable` records at 06:16:22, 06:16:27, 06:16:37, 07:56:1x and
+07:56:22, and the `prompt` field of each `campaign_advance_completed`.
+
+Completion evidence:
+
+- `agent_session_ended` for a spawn failure carries the OS error text (for
+  example `Argument list too long (os error 7)`), and the escalation or
+  pause reason repeats it.
+- A formation decision agent that cannot be spawned, or returns no output,
+  moves the campaign to `paused` with a typed provider-unavailable reason and
+  a retry-after, does not consume a cycle, and is retried by the daemon
+  without an owner `resume`. The ops digest carries the pause only if it
+  persists past one retry window.
+- Retries are spaced by a backoff, not fifteen seconds.
+- Tests cover spawn failure with error text, empty output, and a successful
+  retry.
+
 ## P0 — Classify temporary provider limits without opening a lifetime breaker
 
 **Observed:** 2026-07-20
