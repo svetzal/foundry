@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
         ctx,
         service::StoreConfig {
             campaigns_path: foundry_sdk::paths::campaigns_path(),
+            work_items_path: foundry_sdk::paths::work_items_path(),
             registry_path,
             sentinels,
             sentinels_path,

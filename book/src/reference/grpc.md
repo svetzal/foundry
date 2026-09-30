@@ -666,6 +666,74 @@ store is malformed; `INTERNAL` when the campaign store is unreadable.
 renders the returned `CampaignDetail` directly, without re-reading
 `FOUNDRY_CAMPAIGNS_PATH`.
 
+### `ListWorkItems(ListWorkItemsRequest) → ListWorkItemsResponse`
+
+List records from the daemon-owned work-item ledger
+(`FOUNDRY_WORK_ITEMS_PATH`). The store is loaded from disk on every call and
+nothing is cached between requests, so a caller always sees the ledger as it
+stands. This RPC never writes and never takes the ledger write gate.
+
+**Request:**
+
+| Field     | Type   | Description                                                                                      |
+| --------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `project` | string | Exact-match project filter. Empty means every project; `alpha` does not match `alpha-2`          |
+| `state`   | string | Exact-match state filter, given as the item state's serialized tag. Empty means every state      |
+
+**Response:**
+
+| Field   | Type              | Description                       |
+| ------- | ----------------- | --------------------------------- |
+| `items` | repeated WorkItem | The selected records, in order    |
+
+**Ordering** is deterministic and independent of the store's contents order and
+insertion order:
+
+1. `running` items, by `started_at` ascending
+2. `submitted` and `queued` items, by `submitted_at` ascending
+3. Open items (`preserved`, `needs_decision`, `failed`), by `settled_at` descending
+4. Terminal items (`landed`, `cancelled`), by `settled_at` descending
+
+Ties within a group break by `id` ascending. A state filter returns the matching
+items in the same relative order as the unfiltered list.
+
+**Errors:** `INVALID_ARGUMENT` when `state` is a non-empty tag that is not one
+of `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`,
+`failed`, `cancelled`; `FAILED_PRECONDITION` when the ledger contains malformed
+JSON; `INTERNAL` when the ledger path is unreadable. A missing ledger file, or
+one holding `{"version":1,"items":[]}`, is an empty list rather than an error.
+
+**CLI:** online callers render this response directly and never read the
+client-side ledger file; if `FOUNDRY_WORK_ITEMS_PATH` is absent, the online path
+leaves it absent.
+
+### `GetWorkItem(GetWorkItemRequest) → GetWorkItemResponse`
+
+Retrieve one work-item ledger record by exact id. The store is loaded from disk
+on every call and nothing is cached between requests. This RPC never writes and
+never takes the ledger write gate.
+
+**Request:**
+
+| Field | Type   | Description                     |
+| ----- | ------ | ------------------------------- |
+| `id`  | string | Exact work-item id to look up   |
+
+**Response:**
+
+| Field  | Type     | Description                     |
+| ------ | -------- | ------------------------------- |
+| `item` | WorkItem | The full durable ledger record  |
+
+**Errors:** `NOT_FOUND` when no item with that id exists, including when the
+ledger holds other items and when the ledger file is missing or empty;
+`FAILED_PRECONDITION` when the ledger contains malformed JSON; `INTERNAL` when
+the ledger path is unreadable.
+
+**CLI:** online callers render this response directly and never read the
+client-side ledger file; if `FOUNDRY_WORK_ITEMS_PATH` is absent, the online path
+leaves it absent.
+
 ### `History(HistoryRequest) → HistoryResponse`
 
 List durable trace history from the daemon-owned trace store.
@@ -781,6 +849,32 @@ and an empty `trace_id`.
 | `project`     | string        | Target project                 |
 | `occurred_at` | string        | ISO 8601 timestamp             |
 | `throttle`    | Throttle enum | Throttle level for this event  |
+
+### `WorkItem`
+
+One durable work-item ledger record, as returned by `ListWorkItems` and
+`GetWorkItem`. The fields only a settled item has are proto3 `optional`, so a
+caller can tell "not recorded" from a recorded empty string or `false`.
+
+| Field              | Type            | Description                                                                                                  |
+| ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------ |
+| `id`               | string          | Stable identity minted at submission (`wi_` plus 24 hex characters)                                          |
+| `project`          | string          | Registry project name                                                                                        |
+| `objective`        | string          | The task description or campaign objective the work serves                                                   |
+| `kind`             | string          | `task`, `campaign_cycle`, `maintenance`, `major_upgrade`, `release`, or `remediation`                         |
+| `lane`             | string          | `interactive`, `campaign`, or `maintenance`                                                                  |
+| `origin`           | string          | Opaque submitter text; Foundry never interprets it                                                           |
+| `submitted_at`     | string          | ISO 8601 timestamp the item entered the ledger                                                               |
+| `started_at`       | optional string | ISO 8601 timestamp an agent started on it; absent when it never started                                      |
+| `settled_at`       | optional string | ISO 8601 timestamp it settled; absent while unsettled                                                        |
+| `state`            | string          | `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, or `cancelled`           |
+| `reason`           | string          | Why it is in that state, in one line                                                                         |
+| `trace_id`         | optional string | The workflow trace the item belongs to; absent when it carries none                                          |
+| `verdict`          | optional string | Settlement: the reviewer's typed verdict tag                                                                 |
+| `landed_commit`    | optional string | Settlement: the trunk commit the work landed as; absent unless it landed                                     |
+| `preservation_ref` | optional string | Settlement: the durable ref (branch or `bundle:<path>`) holding unlanded work                                |
+| `worktree`         | optional string | Settlement: the isolated worktree the work ran in                                                            |
+| `worktree_removed` | optional bool   | Settlement: whether that worktree was gone by settlement time; absent when the item records no worktree       |
 
 ### `Campaign`
 

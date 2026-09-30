@@ -92,6 +92,68 @@ impl WorkItemState {
     pub fn is_open(self) -> bool {
         matches!(self, Self::Preserved | Self::NeedsDecision | Self::Failed)
     }
+
+    /// The serialized tag this state is written to disk and to the wire as.
+    ///
+    /// Kept in lockstep with the `snake_case` serde renaming above so a caller
+    /// filtering on a state never has to round-trip through `serde_json`.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Submitted => "submitted",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Landed => "landed",
+            Self::Preserved => "preserved",
+            Self::NeedsDecision => "needs_decision",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parse a serialized state tag, returning `None` for anything unknown.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        [
+            Self::Submitted,
+            Self::Queued,
+            Self::Running,
+            Self::Landed,
+            Self::Preserved,
+            Self::NeedsDecision,
+            Self::Failed,
+            Self::Cancelled,
+        ]
+        .into_iter()
+        .find(|state| state.tag() == tag)
+    }
+}
+
+impl WorkItemKind {
+    /// The serialized tag this kind is written to disk and to the wire as.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::CampaignCycle => "campaign_cycle",
+            Self::Maintenance => "maintenance",
+            Self::MajorUpgrade => "major_upgrade",
+            Self::Release => "release",
+            Self::Remediation => "remediation",
+        }
+    }
+}
+
+impl WorkLane {
+    /// The serialized tag this lane is written to disk and to the wire as.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Campaign => "campaign",
+            Self::Maintenance => "maintenance",
+        }
+    }
 }
 
 /// How a settled [`WorkItem`] ended.
@@ -700,6 +762,48 @@ mod tests {
     #[test]
     fn minted_ids_are_distinct() {
         assert_ne!(mint_work_item_id(), mint_work_item_id());
+    }
+
+    #[test]
+    fn every_state_kind_and_lane_tag_matches_its_serde_representation() {
+        for state in [
+            WorkItemState::Submitted,
+            WorkItemState::Queued,
+            WorkItemState::Running,
+            WorkItemState::Landed,
+            WorkItemState::Preserved,
+            WorkItemState::NeedsDecision,
+            WorkItemState::Failed,
+            WorkItemState::Cancelled,
+        ] {
+            let serialized = serde_json::to_value(state).unwrap();
+            assert_eq!(serialized, state.tag(), "tag must match serde for {state:?}");
+            assert_eq!(WorkItemState::from_tag(state.tag()), Some(state));
+        }
+        for kind in [
+            WorkItemKind::Task,
+            WorkItemKind::CampaignCycle,
+            WorkItemKind::Maintenance,
+            WorkItemKind::MajorUpgrade,
+            WorkItemKind::Release,
+            WorkItemKind::Remediation,
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.tag());
+        }
+        for lane in [
+            WorkLane::Interactive,
+            WorkLane::Campaign,
+            WorkLane::Maintenance,
+        ] {
+            assert_eq!(serde_json::to_value(lane).unwrap(), lane.tag());
+        }
+    }
+
+    #[test]
+    fn an_unknown_state_tag_does_not_parse() {
+        assert_eq!(WorkItemState::from_tag("nonsense"), None);
+        assert_eq!(WorkItemState::from_tag(""), None);
+        assert_eq!(WorkItemState::from_tag("Running"), None);
     }
 
     #[test]

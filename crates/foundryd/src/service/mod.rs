@@ -14,8 +14,9 @@ use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
     CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
     CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
-    EmitResponse, GetCampaignRequest, GetCampaignResponse, HistoryRequest, HistoryResponse,
-    ListCampaignsRequest, ListCampaignsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse,
+    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
+    ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse,
     RegistryAddRequest, RegistryAddResponse, RegistryEditRequest, RegistryEditResponse,
     RegistryListRequest, RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse,
     RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse,
@@ -35,6 +36,7 @@ mod recovery;
 mod registry_ops;
 mod sentinel_ops;
 mod tracing_ops;
+mod work_item_ops;
 mod work_ledger;
 
 /// The Arc cluster shared between `spawn_workflow`, `spawn_scheduler`, and
@@ -54,6 +56,8 @@ pub struct RuntimeContext {
 /// runtime event-processing cluster.
 pub struct StoreConfig {
     pub campaigns_path: PathBuf,
+    /// The durable work-item ledger the read RPCs load on every call.
+    pub work_items_path: PathBuf,
     pub registry_path: PathBuf,
     pub sentinels: Arc<RwLock<SentinelStore>>,
     pub sentinels_path: PathBuf,
@@ -62,6 +66,7 @@ pub struct StoreConfig {
 
 pub struct FoundryService {
     campaigns_path: PathBuf,
+    work_items_path: PathBuf,
     ctx: RuntimeContext,
     registry_path: PathBuf,
     sentinels: Arc<RwLock<SentinelStore>>,
@@ -73,6 +78,7 @@ impl FoundryService {
     pub fn new(ctx: RuntimeContext, stores: StoreConfig) -> Self {
         Self {
             campaigns_path: stores.campaigns_path,
+            work_items_path: stores.work_items_path,
             ctx,
             registry_path: stores.registry_path,
             sentinels: stores.sentinels,
@@ -275,6 +281,20 @@ impl Foundry for FoundryService {
         campaign_ops::cancel(&self.campaigns_path, &self.ctx, request).await
     }
 
+    async fn list_work_items(
+        &self,
+        request: Request<ListWorkItemsRequest>,
+    ) -> Result<Response<ListWorkItemsResponse>, Status> {
+        work_item_ops::list(&self.work_items_path, request)
+    }
+
+    async fn get_work_item(
+        &self,
+        request: Request<GetWorkItemRequest>,
+    ) -> Result<Response<GetWorkItemResponse>, Status> {
+        work_item_ops::get(&self.work_items_path, request)
+    }
+
     async fn advance_campaign(
         &self,
         request: Request<AdvanceCampaignRequest>,
@@ -364,6 +384,7 @@ mod tests {
             registry,
         };
         let stores = StoreConfig {
+            work_items_path: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels,
@@ -1071,6 +1092,7 @@ mod tests {
             registry,
         };
         let stores = StoreConfig {
+            work_items_path: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels: Arc::new(RwLock::new(sentinels)),
@@ -1306,6 +1328,7 @@ mod tests {
             registry,
         };
         let stores = StoreConfig {
+            work_items_path: std::path::PathBuf::new(),
             campaigns_path,
             registry_path,
             sentinels,
@@ -1465,5 +1488,499 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Internal);
+    }
+    // ── work-item ledger read RPCs ───────────────────────────────────────────
+
+    /// Build a service backed by a specific work-item ledger path.
+    ///
+    /// Everything else is a throwaway: these tests exercise only the two read
+    /// RPCs, and they must observe the ledger through the service rather than
+    /// through `WorkItemStore` directly.
+    fn test_service_with_work_items_path(work_items_path: std::path::PathBuf) -> FoundryService {
+        let (event_tx, _rx) = broadcast::channel(64);
+        let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+        let trace_store = Arc::new(TraceStore::new(Duration::from_secs(60)));
+        let workflow_tracker = Arc::new(WorkflowTracker::new());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trace_writer = Arc::new(TraceWriter::new(tmp.path().to_str().unwrap()));
+        let registry = Arc::new(RwLock::new(Registry {
+            version: 2,
+            projects: vec![],
+        }));
+        let tmp_registry = tempfile::NamedTempFile::new().expect("tempfile");
+        let registry_path = tmp_registry.path().to_path_buf();
+        let tmp_campaigns = tempfile::NamedTempFile::new().expect("tempfile");
+        let campaigns_path = tmp_campaigns.path().to_path_buf();
+        let sentinels = Arc::new(RwLock::new(SentinelStore::default_seed()));
+        let tmp_sentinels = tempfile::NamedTempFile::new().expect("tempfile");
+        let sentinels_path = tmp_sentinels.path().to_path_buf();
+        let scheduler_reload = Arc::new(Notify::new());
+        let ctx = RuntimeContext {
+            engine,
+            trace_store,
+            workflow_tracker,
+            trace_writer,
+            event_tx,
+            registry,
+        };
+        let stores = StoreConfig {
+            campaigns_path,
+            work_items_path,
+            registry_path,
+            sentinels,
+            sentinels_path,
+            scheduler_reload,
+        };
+        FoundryService::new(ctx, stores)
+    }
+
+    fn work_item_at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+    }
+
+    /// One ledger record with every field set explicitly, so a test can choose
+    /// timestamps that disagree with insertion order.
+    fn ledger_item(
+        id: &str,
+        project: &str,
+        state: foundry_sdk::work_item::WorkItemState,
+        submitted: i64,
+        started: Option<i64>,
+        settled: Option<i64>,
+    ) -> foundry_sdk::work_item::WorkItem {
+        foundry_sdk::work_item::WorkItem {
+            id: id.to_string(),
+            project: project.to_string(),
+            objective: format!("objective for {id}"),
+            kind: foundry_sdk::work_item::WorkItemKind::Task,
+            lane: foundry_sdk::work_item::WorkLane::Interactive,
+            origin: "service test".to_string(),
+            submitted_at: work_item_at(submitted),
+            started_at: started.map(work_item_at),
+            settled_at: settled.map(work_item_at),
+            state,
+            reason: format!("reason for {id}"),
+            trace_id: None,
+            disposition: None,
+        }
+    }
+
+    /// Write a ledger file directly, so the service is the only reader.
+    fn write_ledger(path: &std::path::Path, items: Vec<foundry_sdk::work_item::WorkItem>) {
+        let store = foundry_sdk::work_item::WorkItemStore {
+            version: foundry_sdk::work_item::WORK_ITEM_STORE_VERSION,
+            items,
+        };
+        std::fs::write(path, serde_json::to_string_pretty(&store).expect("serialize"))
+            .expect("write");
+    }
+
+    async fn listed_ids(service: &FoundryService, project: &str, state: &str) -> Vec<String> {
+        service
+            .list_work_items(Request::new(ListWorkItemsRequest {
+                project: project.to_string(),
+                state: state.to_string(),
+            }))
+            .await
+            .expect("list_work_items should succeed")
+            .into_inner()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect()
+    }
+
+    /// Eight items spanning every state, with timestamps chosen so that
+    /// insertion order, `submitted_at` order and `settled_at` order all disagree:
+    /// the file is written newest-submitted-first, running items were started
+    /// in the reverse of their submission, and the settled items' `settled_at`
+    /// order is the opposite of their `submitted_at` order.
+    fn scrambled_ledger() -> Vec<foundry_sdk::work_item::WorkItem> {
+        use foundry_sdk::work_item::WorkItemState as S;
+        vec![
+            // Insertion order deliberately mixes groups.
+            ledger_item("wi_landed_old", "alpha", S::Landed, 800, Some(810), Some(820)),
+            ledger_item("wi_running_late", "alpha", S::Running, 100, Some(700), None),
+            ledger_item("wi_failed", "alpha", S::Failed, 700, Some(710), Some(990)),
+            ledger_item("wi_queued", "alpha", S::Queued, 600, None, None),
+            ledger_item("wi_cancelled", "alpha", S::Cancelled, 200, Some(210), Some(980)),
+            ledger_item("wi_running_early", "alpha", S::Running, 900, Some(300), None),
+            ledger_item("wi_preserved", "alpha", S::Preserved, 400, Some(410), Some(950)),
+            ledger_item("wi_submitted", "alpha", S::Submitted, 50, None, None),
+            ledger_item("wi_needs", "alpha", S::NeedsDecision, 300, Some(310), Some(970)),
+        ]
+    }
+
+    #[tokio::test]
+    async fn list_work_items_orders_by_group_then_timestamp_regardless_of_store_order() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(tmp.path(), scrambled_ledger());
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+
+        assert_eq!(
+            listed_ids(&service, "", "").await,
+            vec![
+                // running, started_at ascending (300 then 700) — note this is
+                // the reverse of both insertion and submitted_at order.
+                "wi_running_early",
+                "wi_running_late",
+                // submitted/queued, submitted_at ascending (50 then 600).
+                "wi_submitted",
+                "wi_queued",
+                // open, settled_at descending (990, 970, 950).
+                "wi_failed",
+                "wi_needs",
+                "wi_preserved",
+                // terminal, settled_at descending (980 then 820).
+                "wi_cancelled",
+                "wi_landed_old",
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn list_work_items_breaks_equal_timestamps_by_id_ascending() {
+        use foundry_sdk::work_item::WorkItemState as S;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![
+                ledger_item("wi_zeta", "alpha", S::Preserved, 10, Some(20), Some(30)),
+                ledger_item("wi_alpha", "alpha", S::Preserved, 11, Some(21), Some(30)),
+            ],
+        );
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        assert_eq!(listed_ids(&service, "", "").await, vec!["wi_alpha", "wi_zeta"]);
+    }
+
+    #[tokio::test]
+    async fn list_work_items_project_filter_matches_exactly_and_not_by_prefix() {
+        use foundry_sdk::work_item::WorkItemState as S;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![
+                ledger_item("wi_on_alpha", "alpha", S::Running, 10, Some(20), None),
+                ledger_item("wi_on_alpha_2", "alpha-2", S::Running, 11, Some(21), None),
+            ],
+        );
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        assert_eq!(listed_ids(&service, "alpha", "").await, vec!["wi_on_alpha"]);
+        assert_eq!(listed_ids(&service, "alpha-2", "").await, vec!["wi_on_alpha_2"]);
+    }
+
+    #[tokio::test]
+    async fn list_work_items_state_filter_preserves_the_unfiltered_relative_order() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut items = scrambled_ledger();
+        items.push(ledger_item(
+            "wi_preserved_newer",
+            "alpha",
+            foundry_sdk::work_item::WorkItemState::Preserved,
+            500,
+            Some(510),
+            Some(960),
+        ));
+        write_ledger(tmp.path(), items);
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+
+        let all = listed_ids(&service, "", "").await;
+        let preserved = listed_ids(&service, "", "preserved").await;
+        assert_eq!(preserved, vec!["wi_preserved_newer", "wi_preserved"]);
+        let relative: Vec<String> = all.into_iter().filter(|id| preserved.contains(id)).collect();
+        assert_eq!(relative, preserved, "filtering must not reorder");
+    }
+
+    #[tokio::test]
+    async fn list_work_items_applies_project_and_state_filters_together() {
+        use foundry_sdk::work_item::WorkItemState as S;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![
+                ledger_item("wi_a_failed", "alpha", S::Failed, 10, Some(20), Some(30)),
+                ledger_item("wi_a_landed", "alpha", S::Landed, 11, Some(21), Some(31)),
+                ledger_item("wi_b_failed", "beta", S::Failed, 12, Some(22), Some(32)),
+            ],
+        );
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        assert_eq!(listed_ids(&service, "alpha", "failed").await, vec!["wi_a_failed"]);
+    }
+
+    #[tokio::test]
+    async fn list_work_items_rejects_an_unknown_state_tag() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(tmp.path(), scrambled_ledger());
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        let err = service
+            .list_work_items(Request::new(ListWorkItemsRequest {
+                project: String::new(),
+                state: "in_progress".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_missing_ledger_lists_nothing_and_finds_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = test_service_with_work_items_path(dir.path().join("absent.json"));
+        assert!(listed_ids(&service, "", "").await.is_empty());
+        let err = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_anything".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn an_empty_ledger_lists_nothing_and_finds_nothing() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), br#"{"version":1,"items":[]}"#).expect("write");
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        assert!(listed_ids(&service, "", "").await.is_empty());
+        let err = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_anything".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn an_absent_id_in_a_non_empty_ledger_is_not_found() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(tmp.path(), scrambled_ledger());
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        let err = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_not_here".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_ledger_is_a_failed_precondition_on_both_read_rpcs() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), b"}{not json}").expect("write");
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        let list_err = service
+            .list_work_items(Request::new(ListWorkItemsRequest {
+                project: String::new(),
+                state: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(list_err.code(), tonic::Code::FailedPrecondition);
+        let get_err = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_any".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(get_err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_ledger_path_is_internal_on_both_read_rpcs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A directory exists but cannot be read as a file — an Io fault.
+        let service = test_service_with_work_items_path(dir.path().to_path_buf());
+        let list_err = service
+            .list_work_items(Request::new(ListWorkItemsRequest {
+                project: String::new(),
+                state: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(list_err.code(), tonic::Code::Internal);
+        let get_err = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_any".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(get_err.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn the_ledger_is_loaded_at_request_time_and_never_cached() {
+        use foundry_sdk::work_item::WorkItemState as S;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![ledger_item(
+                "wi_first",
+                "alpha",
+                S::Running,
+                10,
+                Some(20),
+                None,
+            )],
+        );
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        assert_eq!(listed_ids(&service, "", "").await, vec!["wi_first"]);
+
+        // Another writer adds an item behind the service's back.
+        write_ledger(
+            tmp.path(),
+            vec![
+                ledger_item("wi_first", "alpha", S::Running, 10, Some(20), None),
+                ledger_item("wi_second", "alpha", S::Running, 11, Some(21), None),
+            ],
+        );
+        assert_eq!(
+            listed_ids(&service, "", "").await,
+            vec!["wi_first", "wi_second"],
+            "the same instance must see the new item, proving nothing is cached"
+        );
+        let found = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_second".to_string(),
+            }))
+            .await
+            .expect("get_work_item should find the newly written item");
+        assert_eq!(found.into_inner().item.expect("item").id, "wi_second");
+    }
+
+    #[tokio::test]
+    async fn get_work_item_reports_every_durable_field_of_a_settled_item() {
+        use foundry_sdk::work_item::{WorkDisposition, WorkItemKind, WorkItemState, WorkLane};
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let settled = foundry_sdk::work_item::WorkItem {
+            id: "wi_settled".to_string(),
+            project: "alpha".to_string(),
+            objective: "Add a --quiet flag.".to_string(),
+            kind: WorkItemKind::CampaignCycle,
+            lane: WorkLane::Campaign,
+            origin: "campaign tidy-cli cycle 3".to_string(),
+            submitted_at: work_item_at(1_000),
+            started_at: Some(work_item_at(1_100)),
+            settled_at: Some(work_item_at(1_200)),
+            state: WorkItemState::Preserved,
+            reason: "review found a remainder".to_string(),
+            trace_id: Some("a".repeat(32)),
+            disposition: Some(WorkDisposition {
+                verdict: Some("remainder".to_string()),
+                landed_commit: None,
+                preservation_ref: Some("foundry/task/tidy-cli-3".to_string()),
+                worktree: Some("/tmp/worktrees/tidy-cli-3".to_string()),
+                worktree_removed: Some(false),
+            }),
+        };
+        write_ledger(tmp.path(), vec![settled.clone()]);
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+
+        let item = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_settled".to_string(),
+            }))
+            .await
+            .expect("get_work_item should succeed")
+            .into_inner()
+            .item
+            .expect("item present");
+
+        assert_eq!(item.id, settled.id);
+        assert_eq!(item.project, "alpha");
+        assert_eq!(item.objective, "Add a --quiet flag.");
+        assert_eq!(item.kind, "campaign_cycle");
+        assert_eq!(item.lane, "campaign");
+        assert_eq!(item.origin, "campaign tidy-cli cycle 3");
+        assert_eq!(item.submitted_at, work_item_at(1_000).to_rfc3339());
+        assert_eq!(item.started_at.as_deref(), Some(work_item_at(1_100).to_rfc3339().as_str()));
+        assert_eq!(item.settled_at.as_deref(), Some(work_item_at(1_200).to_rfc3339().as_str()));
+        assert_eq!(item.state, "preserved");
+        assert_eq!(item.reason, "review found a remainder");
+        assert_eq!(item.trace_id.as_deref(), Some("a".repeat(32).as_str()));
+        assert_eq!(item.verdict.as_deref(), Some("remainder"));
+        assert_eq!(item.landed_commit, None);
+        assert_eq!(item.preservation_ref.as_deref(), Some("foundry/task/tidy-cli-3"));
+        assert_eq!(item.worktree.as_deref(), Some("/tmp/worktrees/tidy-cli-3"));
+        assert_eq!(
+            item.worktree_removed,
+            Some(false),
+            "a recorded false must be distinguishable from 'not recorded'"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_work_item_reports_a_landed_commit_and_an_absent_preservation_ref() {
+        use foundry_sdk::work_item::{WorkDisposition, WorkItemState};
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut landed = ledger_item(
+            "wi_landed",
+            "alpha",
+            WorkItemState::Landed,
+            2_000,
+            Some(2_100),
+            Some(2_200),
+        );
+        landed.disposition = Some(WorkDisposition {
+            verdict: Some("complete".to_string()),
+            landed_commit: Some("deadbeef".to_string()),
+            preservation_ref: None,
+            worktree: Some("/tmp/worktrees/landed".to_string()),
+            worktree_removed: Some(true),
+        });
+        write_ledger(tmp.path(), vec![landed]);
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+
+        let item = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_landed".to_string(),
+            }))
+            .await
+            .expect("get_work_item should succeed")
+            .into_inner()
+            .item
+            .expect("item present");
+        assert_eq!(item.verdict.as_deref(), Some("complete"));
+        assert_eq!(item.landed_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(item.preservation_ref, None);
+        assert_eq!(item.worktree_removed, Some(true));
+    }
+
+    #[tokio::test]
+    async fn get_work_item_reports_an_unsettled_item_with_absent_settlement_fields() {
+        use foundry_sdk::work_item::WorkItemState;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![ledger_item(
+                "wi_running",
+                "alpha",
+                WorkItemState::Running,
+                3_000,
+                Some(3_100),
+                None,
+            )],
+        );
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+
+        let item = service
+            .get_work_item(Request::new(GetWorkItemRequest {
+                id: "wi_running".to_string(),
+            }))
+            .await
+            .expect("get_work_item should succeed")
+            .into_inner()
+            .item
+            .expect("item present");
+        assert_eq!(item.state, "running");
+        assert_eq!(item.started_at.as_deref(), Some(work_item_at(3_100).to_rfc3339().as_str()));
+        assert_eq!(item.settled_at, None, "an unsettled item reports no settled_at");
+        assert_eq!(item.trace_id, None);
+        assert_eq!(item.verdict, None);
+        assert_eq!(item.landed_commit, None);
+        assert_eq!(item.preservation_ref, None);
+        assert_eq!(item.worktree, None);
+        assert_eq!(item.worktree_removed, None, "not recorded must be absent, not false");
     }
 }

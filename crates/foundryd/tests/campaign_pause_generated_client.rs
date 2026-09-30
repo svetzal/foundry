@@ -93,6 +93,7 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
         registry,
     };
     let stores = StoreConfig {
+        work_items_path: std::path::PathBuf::new(),
         campaigns_path,
         registry_path,
         sentinels,
@@ -144,6 +145,7 @@ fn make_service_with_campaigns_path(
         registry,
     };
     let stores = StoreConfig {
+        work_items_path: std::path::PathBuf::new(),
         campaigns_path,
         registry_path,
         sentinels,

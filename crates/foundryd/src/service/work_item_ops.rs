@@ -1,0 +1,222 @@
+//! Reads of the daemon-owned work-item ledger.
+//!
+//! Both operations here load the store from disk on every call and cache
+//! nothing: the ledger is authoritative on disk, and a reader that cached it
+//! would report work as running after another process settled it. Neither
+//! operation writes, so neither takes the ledger write gate — the gate
+//! serializes load→modify→save sequences, and a read has nothing to lose.
+
+use std::path::Path;
+
+use tonic::{Request, Response, Status};
+
+use foundry_sdk::error::StoreError;
+use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
+
+use crate::proto::{
+    GetWorkItemRequest, GetWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse,
+    WorkItem as ProtoWorkItem,
+};
+
+/// Map a ledger load failure to its gRPC status, matching the campaign-store
+/// conventions: malformed content is the caller's precondition to fix, an I/O
+/// fault is the daemon's problem.
+fn map_store_error(error: StoreError) -> Status {
+    match error {
+        StoreError::Parse { source, .. } => {
+            Status::failed_precondition(format!("work-item ledger is malformed: {source}"))
+        }
+        StoreError::Io { source, .. } => {
+            Status::internal(format!("work-item ledger is unreadable: {source}"))
+        }
+        StoreError::NotFound { .. } => {
+            Status::internal("work-item ledger load reported NotFound, which it never does")
+        }
+    }
+}
+
+fn load_store(path: &Path) -> Result<WorkItemStore, Status> {
+    WorkItemStore::load(path).map_err(map_store_error)
+}
+
+/// Which ordering group an item's state puts it in.
+///
+/// The groups are the reading order an operator wants: what is under way, what
+/// is waiting, what still needs a person, and finally what is done with.
+fn order_group(state: WorkItemState) -> u8 {
+    match state {
+        WorkItemState::Running => 0,
+        WorkItemState::Submitted | WorkItemState::Queued => 1,
+        WorkItemState::Preserved | WorkItemState::NeedsDecision | WorkItemState::Failed => 2,
+        WorkItemState::Landed | WorkItemState::Cancelled => 3,
+    }
+}
+
+/// The sort key for one item, as a tuple ordered exactly as the RPC contract
+/// describes.
+///
+/// Each group sorts on the timestamp that means something for it, and the
+/// descending groups are expressed by negating the timestamp rather than by
+/// reversing a comparator, so one key function covers every group. A missing
+/// timestamp sorts as `0`, which keeps the ordering total even for a record
+/// written by hand without one.
+fn sort_key(item: &WorkItem) -> (u8, i64, &str) {
+    let group = order_group(item.state);
+    let stamp = match item.state {
+        WorkItemState::Running => item.started_at.map_or(0, |at| at.timestamp_micros()),
+        WorkItemState::Submitted | WorkItemState::Queued => item.submitted_at.timestamp_micros(),
+        WorkItemState::Preserved
+        | WorkItemState::NeedsDecision
+        | WorkItemState::Failed
+        | WorkItemState::Landed
+        | WorkItemState::Cancelled => -item.settled_at.map_or(0, |at| at.timestamp_micros()),
+    };
+    (group, stamp, item.id.as_str())
+}
+
+/// Every item the request selects, in the RPC's deterministic order.
+///
+/// Pure over the loaded store, so the ordering and filtering rules are
+/// testable without a service or a filesystem.
+fn selected(store: &WorkItemStore, project: &str, state: Option<WorkItemState>) -> Vec<WorkItem> {
+    let mut items: Vec<WorkItem> = store
+        .items
+        .iter()
+        .filter(|item| project.is_empty() || item.project == project)
+        .filter(|item| state.is_none_or(|wanted| item.state == wanted))
+        .cloned()
+        .collect();
+    items.sort_by(|left, right| sort_key(left).cmp(&sort_key(right)));
+    items
+}
+
+/// Wire form of one ledger record.
+fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
+    let disposition = item.disposition.as_ref();
+    ProtoWorkItem {
+        id: item.id.clone(),
+        project: item.project.clone(),
+        objective: item.objective.clone(),
+        kind: item.kind.tag().to_string(),
+        lane: item.lane.tag().to_string(),
+        origin: item.origin.clone(),
+        submitted_at: item.submitted_at.to_rfc3339(),
+        started_at: item.started_at.map(|at| at.to_rfc3339()),
+        settled_at: item.settled_at.map(|at| at.to_rfc3339()),
+        state: item.state.tag().to_string(),
+        reason: item.reason.clone(),
+        trace_id: item.trace_id.clone(),
+        verdict: disposition.and_then(|d| d.verdict.clone()),
+        landed_commit: disposition.and_then(|d| d.landed_commit.clone()),
+        preservation_ref: disposition.and_then(|d| d.preservation_ref.clone()),
+        worktree: disposition.and_then(|d| d.worktree.clone()),
+        worktree_removed: disposition.and_then(|d| d.worktree_removed),
+    }
+}
+
+/// Parse the request's state filter. An empty tag means "every state"; an
+/// unknown one is the caller's mistake.
+fn parse_state_filter(tag: &str) -> Result<Option<WorkItemState>, Status> {
+    if tag.is_empty() {
+        return Ok(None);
+    }
+    WorkItemState::from_tag(tag).map(Some).ok_or_else(|| {
+        Status::invalid_argument(format!(
+            "unknown work-item state '{tag}'; expected one of submitted, queued, running, landed, preserved, needs_decision, failed, cancelled"
+        ))
+    })
+}
+
+pub(super) fn list(
+    work_items_path: &Path,
+    request: Request<ListWorkItemsRequest>,
+) -> Result<Response<ListWorkItemsResponse>, Status> {
+    let request = request.into_inner();
+    let state = parse_state_filter(&request.state)?;
+    let store = load_store(work_items_path)?;
+    let items = selected(&store, &request.project, state).iter().map(item_to_proto).collect();
+    Ok(Response::new(ListWorkItemsResponse { items }))
+}
+
+pub(super) fn get(
+    work_items_path: &Path,
+    request: Request<GetWorkItemRequest>,
+) -> Result<Response<GetWorkItemResponse>, Status> {
+    let id = request.into_inner().id;
+    let store = load_store(work_items_path)?;
+    match store.find(&id) {
+        Some(item) => Ok(Response::new(GetWorkItemResponse {
+            item: Some(item_to_proto(item)),
+        })),
+        None => Err(Status::not_found(format!("work item '{id}' not found"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use super::{order_group, parse_state_filter, selected};
+    use foundry_sdk::work_item::{
+        WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+    };
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+    }
+
+    fn item(id: &str, project: &str, state: WorkItemState) -> WorkItem {
+        let mut item = WorkItem::submitted(
+            WorkItemSpec {
+                project: project.to_string(),
+                objective: "o".to_string(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "test".to_string(),
+                trace_id: None,
+            },
+            at(0),
+        );
+        item.id = id.to_string();
+        item.state = state;
+        item
+    }
+
+    #[test]
+    fn every_state_lands_in_exactly_one_ordering_group() {
+        assert_eq!(order_group(WorkItemState::Running), 0);
+        assert_eq!(order_group(WorkItemState::Submitted), 1);
+        assert_eq!(order_group(WorkItemState::Queued), 1);
+        assert_eq!(order_group(WorkItemState::Preserved), 2);
+        assert_eq!(order_group(WorkItemState::NeedsDecision), 2);
+        assert_eq!(order_group(WorkItemState::Failed), 2);
+        assert_eq!(order_group(WorkItemState::Landed), 3);
+        assert_eq!(order_group(WorkItemState::Cancelled), 3);
+    }
+
+    #[test]
+    fn an_unknown_state_filter_is_rejected_and_an_empty_one_means_every_state() {
+        assert!(parse_state_filter("").expect("empty is every state").is_none());
+        assert_eq!(
+            parse_state_filter("preserved").expect("known tag"),
+            Some(WorkItemState::Preserved)
+        );
+        let status = parse_state_filter("in_progress").expect_err("unknown tag");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn an_item_with_no_timestamp_still_sorts_deterministically() {
+        // A hand-written record can carry no started_at even while running.
+        let store = WorkItemStore {
+            version: 1,
+            items: vec![
+                item("wi_b", "alpha", WorkItemState::Running),
+                item("wi_a", "alpha", WorkItemState::Running),
+            ],
+        };
+        let ordered = selected(&store, "", None);
+        let ids: Vec<&str> = ordered.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["wi_a", "wi_b"], "equal keys break by id ascending");
+    }
+}

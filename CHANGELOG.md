@@ -42,6 +42,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   No dispatch is delayed, reordered, merged or deduplicated, and a ledger
   fault never fails, delays or alters a dispatch.
 
+- Two typed gRPC read RPCs serve the work-item ledger from `foundryd`:
+  `ListWorkItems` and `GetWorkItem`. Both load `FOUNDRY_WORK_ITEMS_PATH` on
+  every call and cache nothing, so a caller always sees the ledger as it
+  stands; neither writes, and neither takes the ledger write gate.
+  `ListWorkItems` takes optional exact-match `project` and `state` filters
+  (`alpha` does not match `alpha-2`; an unknown state tag is
+  `INVALID_ARGUMENT`) and returns a deterministic order independent of the
+  store's contents and insertion order: `running` by `started_at` ascending,
+  then `submitted`/`queued` by `submitted_at` ascending, then open items
+  (`preserved`, `needs_decision`, `failed`) by `settled_at` descending, then
+  terminal items (`landed`, `cancelled`) by `settled_at` descending, with ties
+  broken by id ascending. `GetWorkItem` returns the full record, with the
+  settlement fields absent rather than empty when the item is unsettled, and
+  `NOT_FOUND` for an unknown id. A missing or empty ledger is an empty list; a
+  malformed one is `FAILED_PRECONDITION` and an unreadable path is `INTERNAL`.
+  No dispatch or ledger-write behaviour changes, and no CLI command is added
+  yet.
+
 ### Fixed
 
 - The ledger now records a task dispatch from the workflow's **root**

@@ -546,6 +546,97 @@ message SentinelShowResponse {
     Sentinel sentinel = 1;
 }
 
+// Wire form of one durable work-item ledger record — a unit of work Foundry
+// dispatched. Carries every durable field of the on-disk item; the fields that
+// only a settled item has are `optional`, so a caller can tell "not recorded"
+// from a recorded empty string or `false`.
+message WorkItem {
+    // Stable identity, minted at submission (e.g. "wi_" + 24 hex characters).
+    string id = 1;
+    // Registry project name.
+    string project = 2;
+    // The task description or campaign objective the work serves.
+    string objective = 3;
+    // What sort of work this is: task | campaign_cycle | maintenance |
+    // major_upgrade | release | remediation.
+    string kind = 4;
+    // Which queue it belongs to: interactive | campaign | maintenance.
+    string lane = 5;
+    // Opaque submitter text. Foundry never interprets it.
+    string origin = 6;
+    // When the item entered the ledger (ISO 8601).
+    string submitted_at = 7;
+    // When an agent started on it (ISO 8601). Absent when it never started.
+    optional string started_at = 8;
+    // When it settled (ISO 8601). Absent while it is still unsettled.
+    optional string settled_at = 9;
+    // Where it stands: submitted | queued | running | landed | preserved |
+    // needs_decision | failed | cancelled.
+    string state = 10;
+    // Why it is in that state, in one line.
+    string reason = 11;
+    // The workflow trace the item belongs to. Absent when it carries none.
+    optional string trace_id = 12;
+    // Settlement: the reviewer's typed verdict tag. Absent until it settles.
+    optional string verdict = 13;
+    // Settlement: the trunk commit the work landed as. Absent unless it landed.
+    optional string landed_commit = 14;
+    // Settlement: the durable ref (a branch name, or "bundle:" followed by a
+    // path) holding unlanded work. Absent unless work was preserved.
+    optional string preservation_ref = 15;
+    // Settlement: the isolated worktree the work ran in. Absent when none was
+    // recorded.
+    optional string worktree = 16;
+    // Settlement: whether that worktree was gone by settlement time. Absent
+    // when the item records no worktree, which is why this is `optional` — a
+    // recorded `false` and "not recorded" are different facts.
+    optional bool worktree_removed = 17;
+}
+
+// List records from the daemon-owned work-item ledger.
+//
+// Online CLI callers render this response directly and never read the
+// client-side ledger file; if the client-side path is absent, the online path
+// leaves it absent. The store is loaded from disk on every call and nothing is
+// cached between requests. A missing or empty store is an empty list; a
+// malformed store is a gRPC error (FAILED_PRECONDITION), and an unreadable
+// path is INTERNAL. This RPC never writes and never takes the ledger write
+// gate.
+//
+// Ordering is deterministic and independent of store order: `running` items
+// first by started_at ascending; then submitted/queued by submitted_at
+// ascending; then open items (preserved, needs_decision, failed) by settled_at
+// descending; then terminal items (landed, cancelled) by settled_at
+// descending. Ties within a group break by id ascending.
+message ListWorkItemsRequest {
+    // Exact-match project filter. Empty means every project.
+    string project = 1;
+    // Exact-match state filter, given as the item state's serialized tag.
+    // Empty means every state; an unknown tag is INVALID_ARGUMENT.
+    string state = 2;
+}
+
+message ListWorkItemsResponse {
+    repeated WorkItem items = 1;
+}
+
+// Retrieve one work-item ledger record by exact id.
+//
+// Online CLI callers render this response directly and never read the
+// client-side ledger file; if the client-side path is absent, the online path
+// leaves it absent. The store is loaded from disk on every call and nothing is
+// cached between requests. A missing or empty store yields NOT_FOUND, as does
+// any id absent from a non-empty store; a malformed store is
+// FAILED_PRECONDITION and an unreadable path is INTERNAL. This RPC never
+// writes and never takes the ledger write gate.
+message GetWorkItemRequest {
+    string id = 1;
+}
+
+message GetWorkItemResponse {
+    WorkItem item = 1;
+}
+
 // The Foundry service.
 service Foundry {
     // Emit an event into the system. May trigger a workflow.
@@ -616,6 +707,14 @@ service Foundry {
 
     // Retrieve one daemon-owned sentinel by exact name.
     rpc SentinelShow(SentinelShowRequest) returns (SentinelShowResponse);
+
+    // List records from the daemon-owned work-item ledger, loaded at request
+    // time. Optional exact-match project and state filters; deterministic
+    // order.
+    rpc ListWorkItems(ListWorkItemsRequest) returns (ListWorkItemsResponse);
+
+    // Retrieve one work-item ledger record by exact id, loaded at request time.
+    rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
 
     // Retrieve every event and block execution within a single span.
     rpc Span(SpanRequest) returns (SpanResponse);

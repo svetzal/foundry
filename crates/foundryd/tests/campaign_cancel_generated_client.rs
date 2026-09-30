@@ -79,6 +79,7 @@ fn make_service() -> (FoundryService, NamedTempFile, broadcast::Receiver<Event>,
         registry,
     };
     let stores = StoreConfig {
+        work_items_path: std::path::PathBuf::new(),
         campaigns_path,
         registry_path,
         sentinels,
