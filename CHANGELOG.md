@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Campaign formation uses balanced/medium reasoning and smaller prompts.
+  Source, protobuf, agent guidance and reference guides are listed by path;
+  mission briefs and design requirements remain inline. Passing gate logs are
+  omitted, failure diagnostics are bounded, and the last task result no longer
+  repeats its prompt and gate logs. Full gate evidence remains in the durable
+  advance event. Independent task review remains deep/high.
+
+### Fixed
+
+- Campaign formation reports structured provider failure messages and stops
+  after one unsupported-model rejection instead of retrying it three times.
+
 ## [0.40.4] - 2026-09-30
 
 ### Fixed

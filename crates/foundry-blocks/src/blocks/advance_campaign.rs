@@ -93,10 +93,11 @@ fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
     if !orienting.is_empty() {
         sections.push(format!(
             "## Declared source context — READ THESE YOURSELF\n\
-             These are listed, not inlined. You have Read, Glob, and Grep over this checkout: \
+             Source and reference guides are listed, not inlined. Agent guidance still applies. \
+             You have Read, Glob, and Grep over this checkout: \
              open the ones the decision actually turns on, and read the relevant part rather \
-             than the whole file. Their content is current state to be inspected, not binding \
-             wording to be quoted.\n{}",
+             than the whole file. Read agent guidance before deciding unless it is already \
+             loaded. Listing a path never relaxes its requirements or owner policy.\n{}",
             orienting.join("\n")
         ));
     }
@@ -318,7 +319,7 @@ fn decision_prompt(
         clippy::expect_used,
         reason = "GateResult contains no non-string map keys or non-finite floats"
     )]
-    let gates = serde_json::to_string_pretty(gate_results)
+    let gates = serde_json::to_string_pretty(&formation_gate_results(gate_results))
         .expect("gate results are infallibly serializable");
     let last_result = request.run_result.as_ref().map_or_else(
         || "none (initial/manual advance)".to_string(),
@@ -328,8 +329,15 @@ fn decision_prompt(
                 reason = "TaskRunCompletedPayload contains only strings, bools, and typed \
                           sub-structs — no non-string map keys or non-finite floats"
             )]
-            serde_json::to_string_pretty(result)
-                .expect("task run result is infallibly serializable")
+            serde_json::to_string_pretty(&serde_json::json!({
+                "summary": result.summary,
+                "verdict": result.verdict,
+                "landed": result.landed,
+                "preservation_ref": result.preservation_ref,
+                "land_blocked": result.land_blocked,
+                "trunk_arrivals": result.trunk_arrivals,
+            }))
+            .expect("task run result is infallibly serializable")
         },
     );
     let history = objective_history(campaign);
@@ -359,6 +367,39 @@ fn decision_prompt(
         accumulated,
         context,
     ))
+}
+
+/// Keep every gate's identity and truth, but spend diagnostic space only on
+/// failures. Full results remain in the durable advance event.
+fn formation_gate_results(
+    results: &[foundry_sdk::gates::GateResult],
+) -> Vec<foundry_sdk::gates::GateResult> {
+    let mut remaining = 16 * 1024;
+    results
+        .iter()
+        .map(|gate| {
+            let mut compact = gate.clone();
+            compact.output = if gate.passed {
+                String::new()
+            } else {
+                let limit = remaining.min(4 * 1024);
+                let mut start = gate.output.len().saturating_sub(limit);
+                while !gate.output.is_char_boundary(start) {
+                    start += 1;
+                }
+                let tail = &gate.output[start..];
+                remaining -= tail.len();
+                if start == 0 {
+                    tail.to_string()
+                } else {
+                    format!(
+                        "[{start} diagnostic bytes omitted; full output in advance event]\n{tail}"
+                    )
+                }
+            };
+            compact
+        })
+        .collect()
 }
 
 fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
@@ -452,8 +493,8 @@ impl DecisionRequest {
             prompt: self.prompt.clone(),
             working_dir: self.working_dir.clone(),
             access: AgentAccess::ReadOnly,
-            tier: ModelTier::Deep,
-            effort: ReasoningEffort::High,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
             agent_file: self.agent_file.clone(),
             provider: self.provider,
             env: Vec::new(),
@@ -519,7 +560,18 @@ async fn ask_decision_agent(
                     if let Some(reason) = provider_outage_reason(failure.as_ref()) {
                         return Ok(AdvanceOutcome::Pause { reason });
                     }
-                    ("failed", stderr)
+                    let detail = failure
+                        .as_ref()
+                        .and_then(|metadata| metadata.message.as_ref())
+                        .filter(|message| !message.trim().is_empty())
+                        .cloned()
+                        .unwrap_or(stderr);
+                    if detail.to_ascii_lowercase().contains("model is not supported") {
+                        return Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
+                            reason: format!("campaign model configuration rejected: {detail}"),
+                        }));
+                    }
+                    ("failed", detail)
                 }
                 AgentOutcome::Unavailable { error } => ("unavailable", error),
             };
@@ -1231,8 +1283,51 @@ mod tests {
 
     use super::{
         AdvanceCampaign, DECISION_ATTEMPTS, enforce_campaign_budget, enforce_done_gate_truth,
-        outcome_label, parse_decision, run_done_gates,
+        formation_gate_results, outcome_label, parse_decision, run_done_gates,
     };
+
+    #[test]
+    fn formation_keeps_gate_truth_and_failure_tails_without_passing_noise() {
+        let mut gates = vec![failing_clippy_gate(); 8];
+        for (index, gate) in gates.iter_mut().enumerate() {
+            gate.name = format!("gate-{index}");
+            gate.required = index % 2 == 0;
+            gate.output = format!("{}FINAL ERROR", "é".repeat(20_000));
+        }
+        gates[0].passed = true;
+        let compact = formation_gate_results(&gates);
+        assert!(compact[0].output.is_empty());
+        assert!(compact[1].output.ends_with("FINAL ERROR"));
+        assert!(compact[1].output.contains("full output in advance event"));
+        assert!(compact.iter().map(|g| g.output.len()).sum::<usize>() < 17 * 1024);
+        for (original, compact) in gates.iter().zip(&compact) {
+            let mut expected = original.clone();
+            expected.output.clone_from(&compact.output);
+            assert_eq!(
+                serde_json::to_value(&expected).unwrap(),
+                serde_json::to_value(compact).unwrap(),
+                "only diagnostics may change"
+            );
+        }
+        assert_eq!(gates[0].output.len(), 40_011, "original audit evidence is intact");
+    }
+
+    #[tokio::test]
+    async fn rejected_model_escalates_once_with_the_provider_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let message = "The 'configured-model' model is not supported when using Codex with a ChatGPT account.";
+        let agent = FakeAgentGateway::always(AgentResponse::failure_with_metadata(
+            "",
+            1,
+            crate::gateway::AgentFailureMetadata::new(AgentProvider::Codex).with_message(message),
+        ));
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+        assert_eq!(agent.invocations().len(), 1);
+        assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains(message));
+    }
 
     /// The decision agent must read an unlanded complete as preserved work
     /// carried forward, not as finished-and-integrated.
@@ -2063,6 +2158,8 @@ mod tests {
         block.execute(&manual_advance_trigger()).await.unwrap();
 
         let prompt = &agent.invocations()[0].prompt;
+        assert_eq!(agent.invocations()[0].tier, crate::gateway::ModelTier::Balanced);
+        assert_eq!(agent.invocations()[0].effort, crate::gateway::ReasoningEffort::Medium);
         assert!(prompt.contains("OBJECTIVE HISTORY"));
         assert!(
             prompt.contains(
@@ -2229,12 +2326,22 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let noise = "PASSING-GATE-NOISE".repeat(1_000);
+        let shell = FakeShellGateway::sequence(vec![
+            crate::gateway::CommandResult {
+                stdout: noise.clone(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+            crate::gateway::CommandResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            },
+        ]);
+        let block = AdvanceCampaign::new(agent.clone(), shell, registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -2261,6 +2368,8 @@ mod tests {
         );
         assert_eq!(payload.gate_results[0].command, "cargo test --workspace");
         assert!(payload.gate_results[0].required);
+        assert!(payload.gate_results[0].output.contains(&noise));
+        assert!(!prompt.contains("PASSING-GATE-NOISE"));
     }
 
     /// Source context reaches formation as a path, not as its contents.
@@ -2275,9 +2384,22 @@ mod tests {
         let repo = dir.path();
         std::fs::write(repo.join("CHARTER.md"), "BINDING-CHARTER-WORDING").unwrap();
         std::fs::write(repo.join("big.rs"), "fn f() { /* SOURCE-BODY */ }").unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "AGENT-GUIDANCE-BODY").unwrap();
+        std::fs::write(repo.join("api.proto"), "PROTO-BODY").unwrap();
+        std::fs::create_dir_all(repo.join("book/src/guide")).unwrap();
+        std::fs::write(repo.join("book/src/guide/api.md"), "REFERENCE-GUIDE-BODY").unwrap();
         let store_path = repo.join("campaigns.json");
         let mut campaign = campaign_for_accumulation_test();
-        campaign.context_paths = vec!["CHARTER.md".to_string(), "big.rs".to_string()];
+        campaign.context_paths = [
+            "CHARTER.md",
+            "big.rs",
+            "AGENTS.md",
+            "api.proto",
+            "book/src/guide/api.md",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         let mut store = CampaignStore::default();
         store.add(campaign).unwrap();
         store.save(&store_path).unwrap();
@@ -2305,6 +2427,14 @@ mod tests {
             "source context must not be inlined into the prompt"
         );
         assert!(prompt.contains("big.rs"), "source context must still be listed by path");
+        for (path, body) in [
+            ("AGENTS.md", "AGENT-GUIDANCE-BODY"),
+            ("api.proto", "PROTO-BODY"),
+            ("book/src/guide/api.md", "REFERENCE-GUIDE-BODY"),
+        ] {
+            assert!(prompt.contains(path));
+            assert!(!prompt.contains(body));
+        }
         assert!(
             prompt.contains("READ THESE YOURSELF"),
             "the agent must be told the listed paths are its to open"

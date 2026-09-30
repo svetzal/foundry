@@ -210,6 +210,22 @@ checkout. Absolute paths, parent traversal, missing files, and symlink escapes
 are rejected before the definition is saved. Foundry reads these neutral
 artifacts but never invokes the tool that produced them.
 
+Formation uses the balanced model tier with medium reasoning effort. The
+independent task reviewer continues to use the deep tier with high effort.
+Charters, campaign briefs, design requirements and intent projections are
+inlined. Source files (including protobuf), `AGENTS.md`, files under `book/`
+and `docs/configuration/` are listed by path for reading as needed. Agent
+guidance still applies. Keep binding context focused on the mission's
+requirements.
+
+Formation receives every gate's command, required flag, exit code and result.
+Passing output is omitted. Failed output keeps up to 4 KiB from its tail,
+with 16 KiB of diagnostic content across all gates. Truncation is marked;
+the full gate results remain in `CampaignAdvanceCompleted`. The latest task
+result includes its summary, verdict, landing status and preservation
+information without repeating its execution prompt and gate logs. Completion rules and
+cycle budgets are unchanged.
+
 ### Designing done evidence
 
 Use a `gate` for a deterministic command that can run against the delivered

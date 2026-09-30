@@ -233,12 +233,11 @@ pub enum ContextRole {
 
 /// Extensions treated as orienting rather than binding.
 ///
-/// Source is the clear case: it is read to understand current state, never
-/// quoted as normative wording. Prose and data formats stay binding, which is
-/// what `context_paths` was designed for — charters and intent projections.
+/// Source is read to understand current state. Charters and intent projections
+/// stay binding; agent guidance and reference guides are recognized by path.
 const ORIENTING_EXTENSIONS: &[&str] = &[
     "rs", "ex", "exs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "swift", "c", "h",
-    "cpp", "hpp", "cs", "sh", "sql",
+    "cpp", "hpp", "cs", "sh", "sql", "proto",
 ];
 
 /// Total bytes of *inlined* context a campaign may carry.
@@ -309,6 +308,16 @@ pub fn check_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<(
 /// Whether a context path is inlined verbatim or listed for on-demand reading.
 #[must_use]
 pub fn context_role(path: &str) -> ContextRole {
+    let normalized = path.replace('\\', "/");
+    let name = normalized.rsplit('/').next().unwrap_or_default();
+    // Guidance is read from the checkout. Reference guides describe current
+    // behavior; neither needs to be copied into every formation prompt.
+    if name == "AGENTS.md"
+        || normalized.starts_with("book/")
+        || normalized.starts_with("docs/configuration/")
+    {
+        return ContextRole::Orienting;
+    }
     let extension = std::path::Path::new(path)
         .extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -979,8 +988,8 @@ mod context_role_tests {
     use super::{ContextRole, MAX_INLINE_CONTEXT_BYTES, context_role};
 
     /// Source is read to understand current state; the agent has Read/Glob/Grep
-    /// and only needs the path. Prose and data are normative wording and must
-    /// reach the prompt verbatim.
+    /// and only needs the path. Reference guides and agent guidance are also
+    /// listed; mission requirements still reach the prompt verbatim.
     #[test]
     fn source_orients_while_prose_and_data_bind() {
         for path in [
@@ -988,12 +997,15 @@ mod context_role_tests {
             "lib/ops_visualizer_web/live/foundry_live.ex",
             "src/apis/assessments.ts",
             "scripts/deploy.sh",
+            "proto/foundry.proto",
+            "AGENTS.md",
+            "book/src/guide/campaigns.md",
+            "docs/configuration/worker.md",
         ] {
             assert_eq!(context_role(path), ContextRole::Orienting, "should orient: {path}");
         }
         for path in [
             "CHARTER.md",
-            "AGENTS.md",
             ".alloy/projections/AGENTS.generated.md",
             "campaigns/thing-v1.json",
             "docs/design.txt",
