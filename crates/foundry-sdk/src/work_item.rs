@@ -431,21 +431,26 @@ impl WorkItemStore {
 
     /// The `running` item a task run's terminal result settles.
     ///
-    /// A run's events all carry its `trace_id`, so that is the correlation.
-    /// When the run carries no trace, the most recently started running item
-    /// for the project is the only candidate left, and taking it is better
-    /// than leaving the item running until the next restart.
+    /// A run's events all carry its `trace_id`, so that is the correlation, and
+    /// it is the *only* correlation whenever the result has one: a result that
+    /// names a trace no running item carries settles nothing. Falling back to
+    /// the project's newest running item there would settle a concurrent
+    /// workflow's item with another run's verdict, which is worse than leaving
+    /// the item running until the next restart closes it.
+    ///
+    /// The project-newest-running fallback therefore applies only to a result
+    /// that carries no trace at all — a run that predates trace stamping, where
+    /// the project is the only correlation left.
     pub fn running_for_settlement(
         &mut self,
         trace_id: Option<&str>,
         project: &str,
     ) -> Option<&mut WorkItem> {
-        if let Some(trace) = trace_id
-            && let Some(index) = self
+        if let Some(trace) = trace_id {
+            let index = self
                 .items
                 .iter()
-                .position(|item| item.is_running() && item.trace_id.as_deref() == Some(trace))
-        {
+                .position(|item| item.is_running() && item.trace_id.as_deref() == Some(trace))?;
             return self.items.get_mut(index);
         }
         let index = self
@@ -457,6 +462,25 @@ impl WorkItemStore {
             .map(|(index, _)| index)?;
         self.items.get_mut(index)
     }
+}
+
+/// The process-wide lock that orders read-modify-write sequences against the
+/// ledger file.
+///
+/// The file stays the single source of truth — this lock holds no ledger state
+/// and caches nothing. It exists because a `load` → apply → `save` is not
+/// atomic: two concurrent workflows, one recording a dispatch and another
+/// settling a different one, would otherwise both load the same bytes and the
+/// later save would silently drop the earlier change. One gate per mutation
+/// site is not enough; every mutation in the process has to take the *same*
+/// gate, so it lives here beside the store rather than inside any one caller.
+///
+/// Callers must absorb a poisoned lock rather than unwrap it: `foundryd` is
+/// long-lived state, and losing the ledger must never take the daemon down.
+#[must_use]
+pub fn ledger_write_gate() -> &'static std::sync::Mutex<()> {
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &GATE
 }
 
 #[cfg(test)]
@@ -608,15 +632,41 @@ mod tests {
     }
 
     #[test]
-    fn settlement_without_a_trace_falls_back_to_the_projects_running_item() {
+    fn settlement_without_a_trace_falls_back_to_the_projects_newest_running_item() {
         let mut store = WorkItemStore::default();
         let mut traceless = spec();
         traceless.trace_id = None;
-        let item = WorkItem::dispatched(traceless, now());
-        let id = item.id.clone();
-        store.upsert(item);
-        assert_eq!(store.running_for_settlement(None, "alpha").unwrap().id, id);
+        let older = WorkItem::dispatched(traceless.clone(), now() - chrono::Duration::minutes(5));
+        let newer = WorkItem::dispatched(traceless, now());
+        let newest_id = newer.id.clone();
+        store.upsert(older);
+        store.upsert(newer);
+
+        assert_eq!(
+            store.running_for_settlement(None, "alpha").unwrap().id,
+            newest_id,
+            "with no trace to correlate by, the project's newest running item is the candidate"
+        );
         assert!(store.running_for_settlement(None, "beta").is_none());
+    }
+
+    #[test]
+    fn an_unmatched_trace_settles_nothing_and_leaves_every_item_running() {
+        let mut store = WorkItemStore::default();
+        let mut under_b = spec();
+        under_b.trace_id = Some("b".repeat(32));
+        store.upsert(WorkItem::dispatched(spec(), now()));
+        store.upsert(WorkItem::dispatched(under_b, now()));
+
+        assert!(
+            store.running_for_settlement(Some(&"c".repeat(32)), "alpha").is_none(),
+            "a result from a third trace belongs to neither running item"
+        );
+        assert_eq!(
+            store.running().count(),
+            2,
+            "both concurrent runs must still be running afterwards"
+        );
     }
 
     #[test]
@@ -663,51 +713,105 @@ mod tests {
     }
 
     // --- settlement mapping, one test per row ------------------------------
+    //
+    // Each row asserts the whole settled record, not just the state: the
+    // reason, whether the ref was recorded as a landed commit or as
+    // preserved work, the worktree, whether that worktree was gone, and the
+    // trace the item stays correlated by. A row that only checked `state`
+    // would pass while the disposition said something wrong.
+
+    /// Every field a settlement row has to pin down, read off the item.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Settled {
+        state: WorkItemState,
+        reason: String,
+        landed_commit: Option<String>,
+        preservation_ref: Option<String>,
+        worktree: Option<String>,
+        worktree_removed: Option<bool>,
+        trace_id: Option<String>,
+    }
+
+    fn settled(item: &WorkItem) -> Settled {
+        let d = item.disposition.clone().expect("a settled item has a disposition");
+        Settled {
+            state: item.state,
+            reason: item.reason.clone(),
+            landed_commit: d.landed_commit,
+            preservation_ref: d.preservation_ref,
+            worktree: d.worktree,
+            worktree_removed: d.worktree_removed,
+            trace_id: item.trace_id.clone(),
+        }
+    }
+
+    const TRACE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const WORKTREE: &str = "/tmp/worktrees/alpha/abc";
 
     #[test]
-    fn complete_settles_landed() {
+    fn complete_and_landed_settles_landed_against_its_commit() {
         let mut item = WorkItem::dispatched(spec(), now());
         item.settle_from_task_run(&run_result(TaskVerdict::Complete, true), Some(true), now());
 
-        assert_eq!(item.state, WorkItemState::Landed);
-        assert_eq!(item.reason, "task summary");
-        let d = item.disposition.unwrap();
-        assert_eq!(d.verdict.as_deref(), Some("complete"));
-        assert_eq!(d.landed_commit.as_deref(), Some("ref-or-commit"));
-        assert_eq!(d.preservation_ref, None);
-        assert_eq!(d.worktree.as_deref(), Some("/tmp/worktrees/alpha/abc"));
-        assert_eq!(d.worktree_removed, Some(true));
-        assert_eq!(item.trace_id.as_deref(), Some("a".repeat(32).as_str()));
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Landed,
+                reason: "task summary".to_string(),
+                landed_commit: Some("ref-or-commit".to_string()),
+                preservation_ref: None,
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("complete"));
     }
 
     #[test]
-    fn a_landing_remainder_settles_landed() {
+    fn a_landing_remainder_settles_landed_against_its_commit() {
         let mut item = WorkItem::dispatched(spec(), now());
         let verdict = TaskVerdict::Remainder {
             gaps: vec!["docs".to_string()],
         };
         item.settle_from_task_run(&run_result(verdict, true), Some(true), now());
 
-        assert_eq!(item.state, WorkItemState::Landed);
-        let d = item.disposition.unwrap();
-        assert_eq!(d.verdict.as_deref(), Some("remainder"));
-        assert_eq!(d.landed_commit.as_deref(), Some("ref-or-commit"));
-        assert_eq!(d.preservation_ref, None);
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Landed,
+                reason: "task summary".to_string(),
+                landed_commit: Some("ref-or-commit".to_string()),
+                preservation_ref: None,
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("remainder"));
     }
 
     #[test]
-    fn a_non_landing_remainder_settles_preserved_with_its_ref() {
+    fn a_non_landing_remainder_settles_preserved_against_its_ref() {
         let mut item = WorkItem::dispatched(spec(), now());
         let verdict = TaskVerdict::Remainder {
             gaps: vec!["docs".to_string()],
         };
         item.settle_from_task_run(&run_result(verdict, false), Some(false), now());
 
-        assert_eq!(item.state, WorkItemState::Preserved);
-        let d = item.disposition.unwrap();
-        assert_eq!(d.preservation_ref.as_deref(), Some("ref-or-commit"));
-        assert_eq!(d.landed_commit, None);
-        assert_eq!(d.worktree_removed, Some(false));
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Preserved,
+                reason: "task summary".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("ref-or-commit".to_string()),
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(false),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("remainder"));
     }
 
     #[test]
@@ -718,24 +822,43 @@ mod tests {
         };
         item.settle_from_task_run(&run_result(verdict, false), Some(false), now());
 
-        assert_eq!(item.state, WorkItemState::Preserved);
-        assert_eq!(item.reason, "gates went red and stayed red", "the reason must be one line");
-        let d = item.disposition.unwrap();
-        assert_eq!(d.verdict.as_deref(), Some("defect"));
-        assert_eq!(d.preservation_ref.as_deref(), Some("ref-or-commit"));
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Preserved,
+                reason: "gates went red and stayed red".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("ref-or-commit".to_string()),
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(false),
+                trace_id: Some(TRACE.to_string()),
+            },
+            "the reason must be the diagnosis, on one line"
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("defect"));
     }
 
     #[test]
-    fn blocked_on_decision_settles_needs_decision() {
+    fn blocked_on_decision_settles_needs_decision_with_its_finding() {
         let mut item = WorkItem::dispatched(spec(), now());
         let verdict = TaskVerdict::BlockedOnDecision {
             finding: "two schemas disagree".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
         };
-        item.settle_from_task_run(&run_result(verdict, false), Some(false), now());
+        item.settle_from_task_run(&run_result(verdict, false), Some(true), now());
 
-        assert_eq!(item.state, WorkItemState::NeedsDecision);
-        assert_eq!(item.reason, "two schemas disagree");
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::NeedsDecision,
+                reason: "two schemas disagree".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("ref-or-commit".to_string()),
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
         assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("blocked_on_decision"));
     }
 
@@ -745,13 +868,24 @@ mod tests {
         let verdict = TaskVerdict::RunnerError {
             detail: "task worktree already exists".to_string(),
         };
-        item.settle_from_task_run(&run_result(verdict, false), None, now());
+        let mut result = run_result(verdict, false);
+        result.context.task_worktree = None;
+        item.settle_from_task_run(&result, None, now());
 
-        assert_eq!(item.state, WorkItemState::Failed);
-        assert_eq!(item.reason, "task worktree already exists");
-        let d = item.disposition.unwrap();
-        assert_eq!(d.verdict.as_deref(), Some("runner_error"));
-        assert_eq!(d.worktree_removed, None);
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Failed,
+                reason: "task worktree already exists".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("ref-or-commit".to_string()),
+                worktree: None,
+                worktree_removed: None,
+                trace_id: Some(TRACE.to_string()),
+            },
+            "a fault before the worktree existed records no worktree and no removal flag"
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("runner_error"));
     }
 
     #[test]

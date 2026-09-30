@@ -4,6 +4,11 @@
 //! state `running`, *before* the coding agent is invoked. A count taken after
 //! the chain has finished cannot show that, so the agent gateway itself reads
 //! the ledger on its first invocation and the test asserts on what it saw.
+//!
+//! The second claim is completeness: a dispatch that stops before the agent
+//! starts still enters *and leaves* the ledger. Those tests assert the agent
+//! recorded zero invocations, so "it was settled" cannot be confused with
+//! "it ran and failed".
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -106,8 +111,8 @@ fn task_project(dir: &Path) -> PathBuf {
     checkout
 }
 
-/// The real task chain, with the ledger blocks registered exactly as
-/// `foundryd` registers them: `RecordWorkItem` ahead of `DirectPrompt`.
+/// The real task chain, with the three ledger blocks registered exactly as
+/// `foundryd` registers them.
 fn task_engine(
     agent: Arc<dyn AgentGateway>,
     registry: Arc<RwLock<Registry>>,
@@ -117,11 +122,8 @@ fn task_engine(
     let mut engine = Engine::new();
     engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
     test_helpers::register_gate_scaffold(&mut engine, shell, registry.clone());
-    engine
-        .register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(store_path.to_path_buf())));
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
-    engine
-        .register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(store_path.to_path_buf())));
+    register_ledger_blocks(&mut engine, store_path, &registry);
     engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::new(
         agent.clone(),
         registry.clone(),
@@ -129,6 +131,23 @@ fn task_engine(
     engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(agent, registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry)));
     engine
+}
+
+/// The ledger blocks that bracket the task chain.
+fn register_ledger_blocks(
+    engine: &mut Engine,
+    store_path: &Path,
+    registry: &Arc<RwLock<Registry>>,
+) {
+    engine.register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(
+        store_path.to_path_buf(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
+        store_path.to_path_buf(),
+    )));
+    engine
+        .register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(store_path.to_path_buf())));
 }
 
 /// A `foundry task`-shaped dispatch, optionally carrying campaign context.
@@ -367,4 +386,224 @@ async fn one_dispatch_broadcasts_and_logs_its_three_work_item_events() {
         assert!(logged.contains(wanted), "{wanted} missing from the JSONL event log");
     }
     assert!(logged.contains(&item_id), "the item id must reach the durable log");
+}
+
+// --- dispatches that stop before the agent starts --------------------------
+
+/// Stands in for a task-workflow preflight that ran gates and failed one.
+///
+/// `RunPreflightGates` skips preflight for the task workflow and emits
+/// `PreflightCompleted { all_passed: true, skipped: true }`, so the only way to
+/// drive a *failing* task preflight through the real chain is to emit the event
+/// the gate runner would emit. Everything downstream of it — `DirectPrompt`
+/// rejecting a failed preflight, `SettleFailedDispatch` closing the item — is
+/// the production block, unchanged.
+struct FailingTaskPreflight;
+
+impl foundry_sdk::task_block::TaskBlock for FailingTaskPreflight {
+    fn name(&self) -> &'static str {
+        "Failing Task Preflight"
+    }
+
+    fn kind(&self) -> foundry_sdk::task_block::BlockKind {
+        foundry_sdk::task_block::BlockKind::Observer
+    }
+
+    fn sinks_on(&self) -> &[EventType] {
+        &[EventType::CharterCheckCompleted]
+    }
+
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+        let project = trigger.project.clone();
+        let prompt = trigger.payload["prompt"].clone();
+        let throttle = trigger.throttle;
+        Box::pin(async move {
+            let payload = serde_json::json!({
+                "project": project,
+                "workflow": "task",
+                "all_passed": false,
+                "required_passed": false,
+                "results": [{
+                    "name": "clippy",
+                    "command": "cargo clippy",
+                    "passed": false,
+                    "required": true,
+                    "output": "",
+                    "exit_code": 101,
+                }],
+                "prompt": prompt,
+            });
+            Ok(foundry_sdk::task_block::TaskBlockResult::success(
+                format!("{project}: preflight failed"),
+                vec![Event::new(
+                    EventType::PreflightCompleted,
+                    project,
+                    throttle,
+                    payload,
+                )],
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_charter_failed_dispatch_settles_failed_without_ever_invoking_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    // The one thing that makes the charter check fail: no intent documentation.
+    std::fs::remove_file(checkout.join("CHARTER.md")).unwrap();
+
+    let store_path = dir.path().join("work-items.json");
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
+    let engine = task_engine(agent.clone(), registry, &store_path);
+
+    let result = engine
+        .process(task_dispatch(
+            "test-project",
+            "Add a --quiet flag to the CLI.",
+            &serde_json::json!({}),
+        ))
+        .await;
+
+    assert!(
+        result.events.iter().any(|e| {
+            e.event_type == EventType::CharterCheckCompleted && e.payload["success"] == false
+        }),
+        "the charter check must have failed"
+    );
+    assert!(
+        !result.events.iter().any(|e| e.event_type == EventType::PreflightCompleted),
+        "the chain must stop before preflight"
+    );
+    assert_eq!(
+        agent.observed.lock().unwrap().len(),
+        0,
+        "the agent must never be invoked for a project with no charter"
+    );
+
+    let store = WorkItemStore::load(&store_path).unwrap();
+    assert_eq!(store.items.len(), 1, "exactly one item, entered and left");
+    assert_eq!(store.items[0].state, WorkItemState::Failed);
+    assert!(store.items[0].settled_at.is_some());
+    assert!(
+        store.items[0].reason.contains("charter"),
+        "the reason must carry the charter guidance, got: {}",
+        store.items[0].reason
+    );
+    assert_eq!(store.items[0].kind, WorkItemKind::Task);
+    assert_eq!(store.items[0].lane, WorkLane::Interactive);
+}
+
+#[tokio::test]
+async fn a_preflight_failed_dispatch_settles_failed_naming_the_gate_without_invoking_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    let store_path = dir.path().join("work-items.json");
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
+
+    let mut engine = Engine::new();
+    engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
+    engine.register(Box::new(FailingTaskPreflight));
+    engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    register_ledger_blocks(&mut engine, &store_path, &registry);
+    engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry)));
+
+    let result = engine
+        .process(task_dispatch(
+            "test-project",
+            "Add a --quiet flag to the CLI.",
+            &serde_json::json!({}),
+        ))
+        .await;
+
+    assert!(
+        !result.events.iter().any(|e| e.event_type == EventType::PlanCompleted),
+        "a failed preflight must not forward the prompt to execution"
+    );
+    assert_eq!(
+        agent.observed.lock().unwrap().len(),
+        0,
+        "the agent must never be invoked when preflight fails"
+    );
+
+    let store = WorkItemStore::load(&store_path).unwrap();
+    assert_eq!(store.items.len(), 1, "exactly one item, entered and left");
+    assert_eq!(store.items[0].state, WorkItemState::Failed);
+    assert_eq!(store.items[0].reason, "preflight gates failed: clippy");
+}
+
+/// The ledger's events are engine events like any other even when the dispatch
+/// never reaches an agent: the whole record still reaches the broadcast.
+#[tokio::test]
+async fn a_charter_failed_dispatch_broadcasts_its_three_work_item_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    std::fs::remove_file(checkout.join("CHARTER.md")).unwrap();
+    let store_path = dir.path().join("work-items.json");
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel(256);
+    let engine = task_engine(agent, registry, &store_path).with_event_broadcaster(tx);
+
+    engine
+        .process(task_dispatch(
+            "test-project",
+            "Add a --quiet flag to the CLI.",
+            &serde_json::json!({}),
+        ))
+        .await;
+
+    let mut broadcast = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        broadcast.push(event);
+    }
+    let ledger_events: Vec<&Event> = broadcast
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.event_type,
+                EventType::WorkItemSubmitted
+                    | EventType::WorkItemStarted
+                    | EventType::WorkItemSettled
+            )
+        })
+        .collect();
+    let types: Vec<String> = ledger_events.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(
+        types,
+        vec![
+            "work_item_submitted",
+            "work_item_started",
+            "work_item_settled"
+        ],
+        "in {:?}",
+        broadcast.iter().map(|e| e.event_type.as_str()).collect::<Vec<String>>()
+    );
+
+    let item_id = ledger_events[0].payload["item_id"].as_str().unwrap().to_string();
+    for event in &ledger_events {
+        assert_eq!(event.payload["item_id"], item_id.as_str());
+        assert_eq!(event.payload["project"], "test-project");
+        assert_eq!(event.payload["kind"], "task");
+        assert_eq!(event.payload["lane"], "interactive");
+        assert_eq!(event.payload["origin"], "foundry task");
+        assert!(!event.payload["reason"].as_str().unwrap().is_empty());
+    }
+    let settled = ledger_events[2];
+    assert_eq!(settled.payload["state"], "failed");
+    assert!(
+        settled.payload["reason"].as_str().unwrap().contains("charter"),
+        "the settlement reason must name why the dispatch stopped"
+    );
 }

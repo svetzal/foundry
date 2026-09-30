@@ -1,33 +1,45 @@
-//! The two blocks that keep the work-item ledger in step with a task dispatch.
+//! The blocks that keep the work-item ledger in step with a task dispatch.
 //!
-//! [`RecordWorkItem`] opens the record when a task workflow clears preflight —
-//! before the coding agent is ever invoked — and [`SettleWorkItem`] closes it
-//! from the task runner's typed terminal result.
+//! [`RecordWorkItem`] opens the record from the task-workflow root event — the
+//! `ExecutionRequested` that `foundry task`, a campaign cycle and the nightly
+//! majors lane all emit — so a dispatch is in the ledger before anything in the
+//! chain can fail. [`SettleFailedDispatch`] closes it when the chain stops
+//! before the coding agent starts, and [`SettleWorkItem`] closes it from the
+//! task runner's typed terminal result.
 //!
-//! Neither block changes a dispatch. They observe the chain that already
-//! exists and write a record beside it, and a ledger fault is absorbed rather
-//! than propagated: an unwritable ledger must never be the reason a task does
-//! not run.
+//! None of them changes a dispatch. They observe the chain that already exists
+//! and write a record beside it, and a ledger fault is absorbed rather than
+//! propagated: an unwritable ledger must never be the reason a task does not
+//! run.
+//!
+//! Every mutation here is a `load` → apply → `save` against the file, which
+//! stays the single source of truth, and every one of them takes the same
+//! process-wide gate ([`foundry_sdk::work_item::ledger_write_gate`]) so a
+//! record in one spawned workflow cannot interleave with a settle in another.
 
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    PreflightCompletedPayload, TaskRunCompletedPayload, WorkItemEventPayload,
+    CharterCheckCompletedPayload, ExecutionRequestedPayload, PreflightCompletedPayload,
+    TaskRunCompletedPayload, WorkItemEventPayload,
 };
+use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane};
+use foundry_sdk::work_item::{
+    WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
+};
 use foundry_sdk::workflow::WorkflowType;
 
 use super::SimulatedSuccess;
 
 /// How a task dispatch reached the engine, as the ledger records it.
 ///
-/// Every task-kind dispatch funnels through the same `ExecutionRequested` →
-/// preflight → `PlanCompleted` chain, so the lane is read off the context the
-/// dispatch already carries rather than from a new marker field.
+/// Every task-kind dispatch funnels through the same `ExecutionRequested` root
+/// event, so the lane is read off the context that dispatch already carries
+/// rather than from a new marker field.
 fn classify(
     objective: &str,
     campaign: Option<&str>,
@@ -54,21 +66,14 @@ fn classify(
     (WorkItemKind::Task, WorkLane::Interactive, "foundry task".to_string())
 }
 
-/// The item a preflight-cleared task dispatch opens.
-fn item_from_preflight(trigger: &Event, payload: &PreflightCompletedPayload) -> WorkItem {
-    let objective = payload
-        .chain
-        .prompt
-        .as_ref()
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+/// The item a task dispatch opens, read off its root `ExecutionRequested`.
+fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
     let (kind, lane, origin) =
-        classify(&objective, payload.chain.campaign.as_deref(), payload.chain.campaign_cycle);
+        classify(&payload.prompt, payload.chain.campaign.as_deref(), payload.chain.campaign_cycle);
     WorkItem::dispatched(
         WorkItemSpec {
             project: trigger.project.clone(),
-            objective,
+            objective: payload.prompt.clone(),
             kind,
             lane,
             origin,
@@ -78,11 +83,11 @@ fn item_from_preflight(trigger: &Event, payload: &PreflightCompletedPayload) -> 
     )
 }
 
-/// Whether a preflight completion is the start of a real task dispatch.
+/// Whether `trigger` is the root event of a real task dispatch.
 ///
-/// Mirrors `DirectPrompt`: the same events that forward a prompt to execution
-/// are the ones the ledger records, so the ledger cannot hold an item for work
-/// that was never dispatched.
+/// The task workflow is the one that runs a coding agent against an isolated
+/// worktree and reports a typed verdict, so it is the one the ledger records. A
+/// dry run dispatches nothing, so it records nothing.
 fn accepts_dispatch(trigger: &Event) -> bool {
     if !trigger.throttle.permits_mutation() {
         return false;
@@ -90,42 +95,60 @@ fn accepts_dispatch(trigger: &Event) -> bool {
     if WorkflowType::from_payload(&trigger.payload) != WorkflowType::Task {
         return false;
     }
-    trigger.parse_payload::<PreflightCompletedPayload>().ok().is_some_and(|p| {
-        p.all_passed
-            && p.chain
-                .prompt
-                .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|prompt| !prompt.is_empty())
-    })
+    trigger
+        .parse_payload::<ExecutionRequestedPayload>()
+        .ok()
+        .is_some_and(|p| !p.prompt.is_empty())
 }
 
-/// Records a dispatched unit of work in the ledger, `running`, before the
-/// coding agent is invoked.
+/// Records a dispatched unit of work in the ledger, `running`, from the root
+/// event of its task workflow.
 ///
-/// Mutator — sinks on `PreflightCompleted`, and only on the task-workflow
-/// events `DirectPrompt` forwards to execution.
+/// Mutator — sinks on `ExecutionRequested`, and only on the task-workflow
+/// dispatches that run a coding agent.
 ///
-/// **Registration order matters**: this block must be registered before
-/// `DirectPrompt`, because the engine runs the blocks matching one event in
-/// registration order. That is what puts the item in the store in state
-/// `running` before `DirectPrompt` emits `PlanCompleted` and `ExecutePlan`
-/// invokes the agent.
+/// Recording at the root rather than at `PreflightCompleted` is what makes the
+/// ledger complete: a dispatch that fails its charter check, or fails preflight,
+/// never reaches preflight's success event, and an unrecorded dispatch is
+/// invisible to anyone reading the ledger for what still needs a person.
 pub struct RecordWorkItem {
     store_path: PathBuf,
-    /// Serialises this block's read-modify-write of the ledger file. The file
-    /// stays authoritative — the lock holds no state, it only keeps two
-    /// concurrent workflows from clobbering each other's save.
-    gate: Mutex<()>,
+    /// Read only to answer "is this project one Foundry runs?" — a dispatch the
+    /// engine refuses outright is not work, and must not leave an item the
+    /// ledger can never settle.
+    registry: Arc<RwLock<Registry>>,
 }
 
 impl RecordWorkItem {
     /// Record dispatches in the ledger at `store_path`.
     #[must_use]
-    pub fn new(store_path: PathBuf) -> Self {
+    pub fn new(store_path: PathBuf, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             store_path,
-            gate: Mutex::new(()),
+            registry,
+        }
+    }
+
+    /// Whether the dispatch names a project in the registry.
+    ///
+    /// The task chain's first block fails a dispatch for an unknown project
+    /// without emitting any domain event, so nothing downstream could ever
+    /// settle an item recorded for one: it would sit `running` until a restart
+    /// closed it with the wrong reason. Recording is therefore declined here
+    /// rather than settled later.
+    fn project_is_registered(&self, project: &str) -> bool {
+        match super::read_registry(&self.registry) {
+            Ok(guard) => guard.find_project(project).is_some(),
+            Err(error) => {
+                // Best-effort: a poisoned registry lock is not the ledger's
+                // fault, and declining every record would hide real work. Record
+                // and let the restart sweep be the backstop.
+                tracing::warn!(
+                    error = %error,
+                    "could not read the registry to check a dispatch; recording it anyway"
+                );
+                true
+            }
         }
     }
 }
@@ -137,7 +160,7 @@ impl SimulatedSuccess for RecordWorkItem {
         // accepts() has already filtered everything but a real task dispatch,
         // so a parse failure here is not reachable; an empty objective is the
         // honest synthetic stand-in if it ever were.
-        let payload = trigger.parse_payload::<PreflightCompletedPayload>().ok();
+        let payload = trigger.parse_payload::<ExecutionRequestedPayload>().ok();
         payload.map_or_else(
             || {
                 WorkItem::dispatched(
@@ -152,7 +175,7 @@ impl SimulatedSuccess for RecordWorkItem {
                     Utc::now(),
                 )
             },
-            |payload| item_from_preflight(trigger, &payload),
+            |payload| item_from_dispatch(trigger, &payload),
         )
     }
 
@@ -171,18 +194,18 @@ impl TaskBlock for RecordWorkItem {
     task_block_meta! {
         name: "Record Work Item",
         kind: Mutator,
-        sinks_on: [PreflightCompleted],
+        sinks_on: [ExecutionRequested],
     }
 
     dry_run_via_simulation!();
 
     fn accepts(&self, trigger: &Event) -> bool {
-        accepts_dispatch(trigger)
+        accepts_dispatch(trigger) && self.project_is_registered(&trigger.project)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let payload = parse_payload!(trigger, PreflightCompletedPayload);
-        let item = item_from_preflight(trigger, &payload);
+        let payload = parse_payload!(trigger, ExecutionRequestedPayload);
+        let item = item_from_dispatch(trigger, &payload);
         let stored = self.write(&item);
         let events = if stored {
             self.success_events(trigger, &item)
@@ -201,7 +224,7 @@ impl TaskBlock for RecordWorkItem {
 impl RecordWorkItem {
     /// Add `item` to the ledger. Returns whether it reached the file.
     fn write(&self, item: &WorkItem) -> bool {
-        let Some(_guard) = lock(&self.gate, "work-item ledger") else {
+        let Some(_guard) = lock() else {
             return false;
         };
         let Some(mut store) = load(&self.store_path) else {
@@ -212,6 +235,128 @@ impl RecordWorkItem {
     }
 }
 
+/// Why a task dispatch stopped before its coding agent started, read off the
+/// event that stopped it.
+///
+/// `None` when the event is not a task-workflow failure — the same condition
+/// [`SettleFailedDispatch::accepts`] filters on.
+fn pre_agent_failure(trigger: &Event) -> Option<String> {
+    if WorkflowType::from_payload(&trigger.payload) != WorkflowType::Task {
+        return None;
+    }
+    match trigger.event_type {
+        EventType::CharterCheckCompleted => {
+            let p = trigger.parse_payload::<CharterCheckCompletedPayload>().ok()?;
+            (!p.success).then(|| format!("charter check failed: {}", p.guidance))
+        }
+        EventType::PreflightCompleted => {
+            let p = trigger.parse_payload::<PreflightCompletedPayload>().ok()?;
+            if p.all_passed {
+                return None;
+            }
+            let failed: Vec<&str> = p
+                .results
+                .iter()
+                .filter(|result| !result.passed)
+                .map(|result| result.name.as_str())
+                .collect();
+            Some(if failed.is_empty() {
+                "preflight gates failed".to_string()
+            } else {
+                format!("preflight gates failed: {}", failed.join(", "))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Settles a ledger item for a dispatch that stopped before the coding agent
+/// started.
+///
+/// Mutator — sinks on the two task-workflow events that stop a chain ahead of
+/// execution: a failed charter check and a failed preflight. Without this, such
+/// a dispatch would stay `running` in the ledger until the next daemon restart
+/// settled it with the wrong reason.
+pub struct SettleFailedDispatch {
+    store_path: PathBuf,
+}
+
+impl SettleFailedDispatch {
+    /// Settle abandoned dispatches in the ledger at `store_path`.
+    #[must_use]
+    pub fn new(store_path: PathBuf) -> Self {
+        Self { store_path }
+    }
+}
+
+impl SimulatedSuccess for SettleFailedDispatch {
+    type Outcome = Option<WorkItem>;
+
+    fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
+        let reason = pre_agent_failure(trigger)?;
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: trigger.project.clone(),
+                objective: String::new(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "foundry task".to_string(),
+                trace_id: trigger.trace_id.clone(),
+            },
+            Utc::now(),
+        );
+        item.settle_failed(&reason, Utc::now());
+        Some(item)
+    }
+
+    fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
+        outcome
+            .as_ref()
+            .map(|item| vec![work_item_event(EventType::WorkItemSettled, trigger, item)])
+            .unwrap_or_default()
+    }
+}
+
+impl TaskBlock for SettleFailedDispatch {
+    task_block_meta! {
+        name: "Settle Failed Dispatch",
+        kind: Mutator,
+        sinks_on: [CharterCheckCompleted, PreflightCompleted],
+    }
+
+    dry_run_via_simulation!();
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        trigger.throttle.permits_mutation() && pre_agent_failure(trigger).is_some()
+    }
+
+    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+        // Defensive: accepts() filters every event that is not a task-workflow
+        // failure before dispatch.
+        let Some(reason) = pre_agent_failure(trigger) else {
+            let summary = format!("{}: no failed dispatch to settle", trigger.project);
+            return skip!(summary);
+        };
+        let settled = settle_failed_in_ledger(&self.store_path, trigger, &reason);
+        let events = self.success_events(trigger, &settled);
+        let summary = match &settled {
+            Some(item) => format!("{}: work item {} settled failed", trigger.project, item.id),
+            None => format!("{}: no ledger item to settle", trigger.project),
+        };
+        Box::pin(async move { Ok(TaskBlockResult::success(summary, events)) })
+    }
+}
+
+/// Settle this run's `running` item `failed` with `reason`, and return it.
+fn settle_failed_in_ledger(path: &Path, trigger: &Event, reason: &str) -> Option<WorkItem> {
+    let _guard = lock()?;
+    let mut store = load(path)?;
+    let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
+    item.settle_failed(reason, Utc::now());
+    let settled = item.clone();
+    save(&store, path).then_some(settled)
+}
+
 /// Settles a ledger item from the task runner's typed terminal result.
 ///
 /// Mutator — sinks on `TaskRunCompleted`. The mapping from verdict to settled
@@ -219,17 +364,13 @@ impl RecordWorkItem {
 /// decides *which* item settles and what the worktree looked like afterwards.
 pub struct SettleWorkItem {
     store_path: PathBuf,
-    gate: Mutex<()>,
 }
 
 impl SettleWorkItem {
     /// Settle items in the ledger at `store_path`.
     #[must_use]
     pub fn new(store_path: PathBuf) -> Self {
-        Self {
-            store_path,
-            gate: Mutex::new(()),
-        }
+        Self { store_path }
     }
 
     /// Settle the running item this result belongs to, and return it.
@@ -238,17 +379,13 @@ impl SettleWorkItem {
     /// started before the ledger existed, for one — or when the ledger cannot
     /// be read or written.
     fn settle(&self, trigger: &Event, result: &TaskRunCompletedPayload) -> Option<WorkItem> {
-        let _guard = lock(&self.gate, "work-item ledger")?;
+        let _guard = lock()?;
         let mut store = load(&self.store_path)?;
         let removed = worktree_removed(result);
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
         item.settle_from_task_run(result, removed, Utc::now());
         let settled = item.clone();
-        if save(&store, &self.store_path) {
-            Some(settled)
-        } else {
-            None
-        }
+        save(&store, &self.store_path).then_some(settled)
     }
 }
 
@@ -258,11 +395,7 @@ impl SettleWorkItem {
 /// honest reading is to look: the path is either still there or it is not.
 /// `None` when the run recorded no worktree at all.
 fn worktree_removed(result: &TaskRunCompletedPayload) -> Option<bool> {
-    result
-        .context
-        .task_worktree
-        .as_deref()
-        .map(|path| !std::path::Path::new(path).exists())
+    result.context.task_worktree.as_deref().map(|path| !Path::new(path).exists())
 }
 
 impl SimulatedSuccess for SettleWorkItem {
@@ -335,24 +468,27 @@ fn work_item_event(event_type: EventType, trigger: &Event, item: &WorkItem) -> E
     )
 }
 
-/// Acquire `gate`, absorbing a poisoned lock rather than panicking.
+/// Acquire the process-wide ledger write gate, absorbing a poisoned lock rather
+/// than panicking.
 ///
 /// `foundryd` is long-lived state: a poisoned ledger lock must degrade to "the
 /// dispatch went unrecorded", never to a dead daemon.
-fn lock<'a>(gate: &'a Mutex<()>, what: &str) -> Option<std::sync::MutexGuard<'a, ()>> {
-    if let Ok(guard) = gate.lock() {
-        return Some(guard);
+fn lock() -> Option<std::sync::MutexGuard<'static, ()>> {
+    match ledger_write_gate().lock() {
+        Ok(guard) => Some(guard),
+        Err(_poisoned) => {
+            // Best-effort: the ledger is advisory to a dispatch that is already
+            // under way, and there is no caller who can act on this — but a
+            // poisoned lock means every later mutation is skipped too, so it
+            // must be visible in the log.
+            tracing::warn!("work-item ledger lock poisoned; dispatch left unrecorded");
+            None
+        }
     }
-    // Best-effort: the ledger is advisory to a dispatch that is already under
-    // way, and there is no caller who can act on this — but a poisoned lock
-    // means every later dispatch goes unrecorded too, so it must be visible in
-    // the log.
-    tracing::warn!("{what} lock poisoned; dispatch left unrecorded");
-    None
 }
 
 /// Load the ledger, absorbing a read fault.
-fn load(path: &std::path::Path) -> Option<WorkItemStore> {
+fn load(path: &Path) -> Option<WorkItemStore> {
     match WorkItemStore::load(path) {
         Ok(store) => Some(store),
         Err(error) => {
@@ -370,7 +506,7 @@ fn load(path: &std::path::Path) -> Option<WorkItemStore> {
 }
 
 /// Save the ledger, absorbing a write fault. Returns whether it was written.
-fn save(store: &WorkItemStore, path: &std::path::Path) -> bool {
+fn save(store: &WorkItemStore, path: &Path) -> bool {
     match store.save(path) {
         Ok(()) => true,
         Err(error) => {
@@ -388,22 +524,35 @@ fn save(store: &WorkItemStore, path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::payload::{LoopContext, TaskRunCompletedPayload, TaskVerdict};
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
-    use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkItemStore, WorkLane};
+    use foundry_sdk::work_item::{
+        WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+    };
 
-    use super::{RecordWorkItem, SettleWorkItem};
+    use super::super::test_helpers;
+    use super::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem};
+
+    /// A recorder over `path`, with "alpha" the one project in the registry.
+    fn recorder(path: &str) -> RecordWorkItem {
+        RecordWorkItem::new(
+            std::path::PathBuf::from(path),
+            test_helpers::registry_with_project("alpha", "/tmp/alpha"),
+        )
+    }
 
     assert_block_meta!(
-        RecordWorkItem::new(std::path::PathBuf::from("/tmp/work-items.json")),
+        recorder("/tmp/work-items.json"),
         kind: Mutator,
-        sinks_on: [PreflightCompleted],
+        sinks_on: [ExecutionRequested],
     );
 
-    /// `assert_block_meta!` may only be invoked once per module, so the
-    /// second block's metadata is asserted by hand.
+    /// `assert_block_meta!` may only be invoked once per module, so the other
+    /// blocks' metadata is asserted by hand.
     #[test]
     fn settle_work_item_is_a_mutator_sinking_on_the_terminal_task_result() {
         let block = SettleWorkItem::new(std::path::PathBuf::from("/tmp/work-items.json"));
@@ -412,13 +561,27 @@ mod tests {
         assert_eq!(block.sinks_on(), &[EventType::TaskRunCompleted]);
     }
 
-    fn preflight(extra: &serde_json::Value) -> Event {
+    #[test]
+    fn settle_failed_dispatch_is_a_mutator_sinking_on_the_two_pre_agent_stops() {
+        let block = SettleFailedDispatch::new(std::path::PathBuf::from("/tmp/work-items.json"));
+        assert_eq!(block.name(), "Settle Failed Dispatch");
+        assert_eq!(block.kind(), foundry_sdk::task_block::BlockKind::Mutator);
+        assert_eq!(
+            block.sinks_on(),
+            &[
+                EventType::CharterCheckCompleted,
+                EventType::PreflightCompleted
+            ]
+        );
+    }
+
+    const TRACE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// A task-workflow root dispatch, the event `RecordWorkItem` records from.
+    fn dispatch(extra: &serde_json::Value) -> Event {
         let mut payload = serde_json::json!({
             "project": "alpha",
             "workflow": "task",
-            "all_passed": true,
-            "required_passed": true,
-            "results": [],
             "prompt": "Add a --quiet flag.",
         });
         if let (Some(target), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
@@ -426,8 +589,49 @@ mod tests {
                 target.insert(key.clone(), value.clone());
             }
         }
-        Event::new(EventType::PreflightCompleted, "alpha".to_string(), Throttle::Full, payload)
-            .with_trace_id(Some("a".repeat(32)))
+        Event::new(EventType::ExecutionRequested, "alpha".to_string(), Throttle::Full, payload)
+            .with_trace_id(Some(TRACE.to_string()))
+    }
+
+    /// A failed charter check in the task workflow.
+    fn charter_failed(success: bool) -> Event {
+        Event::new(
+            EventType::CharterCheckCompleted,
+            "alpha".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "alpha",
+                "success": success,
+                "sources": [],
+                "guidance": "Add a CHARTER.md describing the project's intent.",
+                "workflow": "task",
+                "prompt": "Add a --quiet flag.",
+            }),
+        )
+        .with_trace_id(Some(TRACE.to_string()))
+    }
+
+    /// A failed preflight in the task workflow, naming one failing gate.
+    fn preflight_failed(workflow: &str) -> Event {
+        Event::new(
+            EventType::PreflightCompleted,
+            "alpha".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "alpha",
+                "workflow": workflow,
+                "all_passed": false,
+                "required_passed": false,
+                "results": [
+                    {"name": "clippy", "command": "cargo clippy", "passed": false,
+                     "required": true, "output": "", "exit_code": 101},
+                    {"name": "fmt", "command": "cargo fmt", "passed": true,
+                     "required": true, "output": "", "exit_code": 0}
+                ],
+                "prompt": "Add a --quiet flag.",
+            }),
+        )
+        .with_trace_id(Some(TRACE.to_string()))
     }
 
     fn completion(verdict: TaskVerdict, landed: bool, worktree: Option<&str>) -> Event {
@@ -449,43 +653,49 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&payload).unwrap(),
         )
-        .with_trace_id(Some("a".repeat(32)))
+        .with_trace_id(Some(TRACE.to_string()))
     }
 
     // --- routing -----------------------------------------------------------
 
     #[test]
-    fn accepts_returns_true_for_a_task_dispatch_that_cleared_preflight() {
-        assert!(
-            RecordWorkItem::new("/tmp/x.json".into()).accepts(&preflight(&serde_json::json!({})))
-        );
+    fn accepts_returns_true_for_a_task_workflow_dispatch() {
+        assert!(recorder("/tmp/x.json").accepts(&dispatch(&serde_json::json!({}))));
     }
 
     #[test]
     fn accepts_returns_false_for_a_non_task_workflow() {
-        let trigger = preflight(&serde_json::json!({"workflow": "iterate"}));
-        assert!(!RecordWorkItem::new("/tmp/x.json".into()).accepts(&trigger));
-    }
-
-    #[test]
-    fn accepts_returns_false_when_preflight_failed() {
-        let trigger = preflight(&serde_json::json!({"all_passed": false}));
-        assert!(!RecordWorkItem::new("/tmp/x.json".into()).accepts(&trigger));
+        let trigger = dispatch(&serde_json::json!({"workflow": "prompt"}));
+        assert!(
+            !recorder("/tmp/x.json").accepts(&trigger),
+            "only the task workflow runs a coding agent and reports a verdict"
+        );
     }
 
     #[test]
     fn accepts_returns_false_when_there_is_no_prompt_to_dispatch() {
-        let mut trigger = preflight(&serde_json::json!({}));
+        let mut trigger = dispatch(&serde_json::json!({}));
         trigger.payload.as_object_mut().unwrap().remove("prompt");
-        assert!(!RecordWorkItem::new("/tmp/x.json".into()).accepts(&trigger));
+        assert!(!recorder("/tmp/x.json").accepts(&trigger));
+    }
+
+    #[test]
+    fn accepts_returns_false_for_a_project_the_registry_does_not_know() {
+        let mut trigger = dispatch(&serde_json::json!({}));
+        trigger.project = "not-registered".to_string();
+        trigger.payload["project"] = serde_json::json!("not-registered");
+        assert!(
+            !recorder("/tmp/x.json").accepts(&trigger),
+            "the chain refuses an unknown project without emitting anything that could settle an item"
+        );
     }
 
     #[test]
     fn accepts_returns_false_for_a_dry_run() {
-        let mut trigger = preflight(&serde_json::json!({}));
+        let mut trigger = dispatch(&serde_json::json!({}));
         trigger.throttle = Throttle::DryRun;
         assert!(
-            !RecordWorkItem::new("/tmp/x.json".into()).accepts(&trigger),
+            !recorder("/tmp/x.json").accepts(&trigger),
             "a dry run dispatches nothing, so the ledger must hold nothing"
         );
     }
@@ -493,12 +703,54 @@ mod tests {
     #[test]
     fn accepts_returns_false_for_a_malformed_payload() {
         let trigger = Event::new(
-            EventType::PreflightCompleted,
+            EventType::ExecutionRequested,
             "alpha".to_string(),
             Throttle::Full,
             serde_json::json!({"workflow": "task", "nonsense": true}),
         );
-        assert!(!RecordWorkItem::new("/tmp/x.json".into()).accepts(&trigger));
+        assert!(!recorder("/tmp/x.json").accepts(&trigger));
+    }
+
+    #[test]
+    fn accepts_returns_true_for_a_task_charter_failure_and_false_for_a_pass() {
+        let block = SettleFailedDispatch::new("/tmp/x.json".into());
+        assert!(block.accepts(&charter_failed(false)));
+        assert!(!block.accepts(&charter_failed(true)), "a passing charter stops nothing");
+    }
+
+    #[test]
+    fn accepts_returns_false_for_a_charter_failure_outside_the_task_workflow() {
+        let mut trigger = charter_failed(false);
+        trigger.payload["workflow"] = serde_json::json!("iterate");
+        assert!(
+            !SettleFailedDispatch::new("/tmp/x.json".into()).accepts(&trigger),
+            "the ledger holds no item for an iterate run, so there is nothing to settle"
+        );
+    }
+
+    #[test]
+    fn accepts_returns_true_for_a_failed_task_preflight_and_false_for_a_passing_one() {
+        let block = SettleFailedDispatch::new("/tmp/x.json".into());
+        assert!(block.accepts(&preflight_failed("task")));
+        assert!(!block.accepts(&preflight_failed("iterate")));
+
+        let mut passed = preflight_failed("task");
+        passed.payload["all_passed"] = serde_json::json!(true);
+        passed.payload["required_passed"] = serde_json::json!(true);
+        assert!(!block.accepts(&passed), "a cleared preflight is not a failed dispatch");
+    }
+
+    #[test]
+    fn dry_run_and_accepts_agree_on_skip_for_a_cleared_preflight() {
+        let block = SettleFailedDispatch::new("/tmp/x.json".into());
+        let mut passed = preflight_failed("task");
+        passed.payload["all_passed"] = serde_json::json!(true);
+        assert!(!block.accepts(&passed));
+        assert!(
+            block.dry_run_events(&passed).is_empty(),
+            "simulate() must skip on the same condition accepts() rejects"
+        );
+        assert_eq!(block.dry_run_events(&preflight_failed("task")).len(), 1);
     }
 
     // --- recording ---------------------------------------------------------
@@ -507,9 +759,9 @@ mod tests {
     async fn a_task_dispatch_is_recorded_running_and_announced() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        let block = RecordWorkItem::new(path.clone());
+        let block = recorder(path.to_str().unwrap());
 
-        let result = block.execute(&preflight(&serde_json::json!({}))).await.unwrap();
+        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
 
         let store = WorkItemStore::load(&path).unwrap();
         assert_eq!(store.items.len(), 1);
@@ -519,7 +771,7 @@ mod tests {
         assert_eq!(item.lane, WorkLane::Interactive);
         assert_eq!(item.origin, "foundry task");
         assert_eq!(item.objective, "Add a --quiet flag.");
-        assert_eq!(item.trace_id.as_deref(), Some("a".repeat(32).as_str()));
+        assert_eq!(item.trace_id.as_deref(), Some(TRACE));
 
         let types: Vec<&EventType> = result.events.iter().map(|e| &e.event_type).collect();
         assert_eq!(types, vec![&EventType::WorkItemSubmitted, &EventType::WorkItemStarted]);
@@ -535,10 +787,10 @@ mod tests {
     async fn a_campaign_cycle_records_its_campaign_and_cycle_as_the_origin() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        let block = RecordWorkItem::new(path.clone());
+        let block = recorder(path.to_str().unwrap());
 
         block
-            .execute(&preflight(&serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3})))
+            .execute(&dispatch(&serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3})))
             .await
             .unwrap();
 
@@ -567,10 +819,10 @@ mod tests {
                 beyond_hold: false,
             },
         );
-        let block = RecordWorkItem::new(path.clone());
+        let block = recorder(path.to_str().unwrap());
 
         block
-            .execute(&preflight(&serde_json::json!({"prompt": objective})))
+            .execute(&dispatch(&serde_json::json!({"prompt": objective})))
             .await
             .unwrap();
 
@@ -582,11 +834,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unwritable_ledger_neither_fails_the_dispatch_nor_announces_an_item() {
-        let block = RecordWorkItem::new(std::path::PathBuf::from(
-            "/proc/foundry-does-not-exist/work-items.json",
-        ));
+        let block = recorder("/proc/foundry-does-not-exist/work-items.json");
 
-        let result = block.execute(&preflight(&serde_json::json!({}))).await.unwrap();
+        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
 
         assert!(result.success, "a ledger fault must not fail the dispatch");
         assert!(result.events.is_empty(), "nothing was recorded, so nothing is announced");
@@ -597,9 +847,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
         std::fs::write(&path, "{ not json").unwrap();
-        let block = RecordWorkItem::new(path.clone());
+        let block = recorder(path.to_str().unwrap());
 
-        let result = block.execute(&preflight(&serde_json::json!({}))).await.unwrap();
+        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
 
         assert!(result.success);
         assert!(result.events.is_empty());
@@ -608,20 +858,82 @@ mod tests {
 
     #[test]
     fn dry_run_announces_the_item_the_dispatch_would_open() {
-        let block = RecordWorkItem::new("/tmp/never-written.json".into());
-        let events = block.dry_run_events(&preflight(&serde_json::json!({})));
+        let block = recorder("/tmp/never-written.json");
+        let events = block.dry_run_events(&dispatch(&serde_json::json!({})));
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::WorkItemSubmitted);
         assert_eq!(events[1].payload["state"], "running");
     }
 
-    // --- settling ----------------------------------------------------------
+    // --- settling a dispatch that stopped before the agent -----------------
+
+    /// Record a dispatch, then hand `trigger` to `SettleFailedDispatch`.
+    async fn record_then_abandon(trigger: Event) -> (WorkItemStore, Vec<Event>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
+            .await
+            .unwrap();
+        let result = SettleFailedDispatch::new(path.clone()).execute(&trigger).await.unwrap();
+        (WorkItemStore::load(&path).unwrap(), result.events)
+    }
+
+    #[tokio::test]
+    async fn a_failed_charter_check_settles_the_item_failed_with_its_guidance() {
+        let (store, events) = record_then_abandon(charter_failed(false)).await;
+
+        assert_eq!(store.items.len(), 1, "no second item is created");
+        assert_eq!(store.items[0].state, WorkItemState::Failed);
+        assert_eq!(
+            store.items[0].reason,
+            "charter check failed: Add a CHARTER.md describing the project's intent."
+        );
+        assert!(store.items[0].settled_at.is_some());
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::WorkItemSettled);
+        assert_eq!(events[0].payload["state"], "failed");
+        assert_eq!(events[0].payload["item_id"], store.items[0].id.as_str());
+    }
+
+    #[tokio::test]
+    async fn a_failed_preflight_settles_the_item_failed_naming_the_failing_gate() {
+        let (store, events) = record_then_abandon(preflight_failed("task")).await;
+
+        assert_eq!(store.items[0].state, WorkItemState::Failed);
+        assert_eq!(store.items[0].reason, "preflight gates failed: clippy");
+        assert_eq!(events[0].payload["reason"], "preflight gates failed: clippy");
+    }
+
+    #[tokio::test]
+    async fn a_failed_dispatch_on_another_trace_settles_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
+            .await
+            .unwrap();
+        let mut elsewhere = charter_failed(false);
+        elsewhere.trace_id = Some("b".repeat(32));
+
+        let result = SettleFailedDispatch::new(path.clone()).execute(&elsewhere).await.unwrap();
+
+        assert!(result.events.is_empty());
+        assert_eq!(
+            WorkItemStore::load(&path).unwrap().items[0].state,
+            WorkItemState::Running,
+            "another workflow's failure must not settle this run's item"
+        );
+    }
+
+    // --- settling from the terminal task result ----------------------------
 
     async fn record_then_settle(trigger: Event) -> (WorkItemStore, Vec<Event>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        RecordWorkItem::new(path.clone())
-            .execute(&preflight(&serde_json::json!({})))
+        recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
         let result = SettleWorkItem::new(path.clone()).execute(&trigger).await.unwrap();
@@ -685,8 +997,8 @@ mod tests {
     async fn settling_twice_leaves_the_first_settlement_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        RecordWorkItem::new(path.clone())
-            .execute(&preflight(&serde_json::json!({})))
+        recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
         let settle = SettleWorkItem::new(path.clone());
@@ -707,5 +1019,73 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::WorkItemSettled);
         assert_eq!(events[0].payload["state"], "landed");
+    }
+
+    // --- one write serialiser for every mutation ---------------------------
+
+    /// A record in one workflow and a settle in another, run concurrently
+    /// against the same file, repeatedly.
+    ///
+    /// Each iteration seeds a `running` item on its own trace, then drives a
+    /// record of a *new* dispatch and a settle of the seeded one at the same
+    /// time. Both mutations are a `load` → apply → `save`, so with a private
+    /// lock per block they interleave and whichever saves last drops the
+    /// other's change. Every iteration must afterwards show both: the new item
+    /// present *and* the seeded one settled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_concurrent_record_and_settle_both_reach_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let record = Arc::new(recorder(path.to_str().unwrap()));
+        let settle = Arc::new(SettleWorkItem::new(path.clone()));
+
+        for iteration in 0..64u32 {
+            let seeded_trace = format!("{iteration:032x}");
+            let new_trace = format!("{:032x}", iteration + 1_000_000);
+
+            let mut store = WorkItemStore::load(&path).unwrap();
+            let seeded = WorkItem::dispatched(
+                WorkItemSpec {
+                    project: "alpha".to_string(),
+                    objective: "seeded run".to_string(),
+                    kind: WorkItemKind::Task,
+                    lane: WorkLane::Interactive,
+                    origin: "foundry task".to_string(),
+                    trace_id: Some(seeded_trace.clone()),
+                },
+                chrono::Utc::now(),
+            );
+            let seeded_id = seeded.id.clone();
+            store.upsert(seeded);
+            store.save(&path).unwrap();
+
+            let mut dispatched = dispatch(&serde_json::json!({}));
+            dispatched.trace_id = Some(new_trace.clone());
+            let mut done = completion(TaskVerdict::Complete, true, None);
+            done.trace_id = Some(seeded_trace);
+
+            let recorder = Arc::clone(&record);
+            let settler = Arc::clone(&settle);
+            let recording = tokio::spawn(async move { recorder.execute(&dispatched).await });
+            let settling = tokio::spawn(async move { settler.execute(&done).await });
+            recording.await.unwrap().unwrap();
+            settling.await.unwrap().unwrap();
+
+            let store = WorkItemStore::load(&path).unwrap();
+            let fresh_item = store
+                .items
+                .iter()
+                .find(|item| item.trace_id.as_deref() == Some(new_trace.as_str()))
+                .unwrap_or_else(|| panic!("iteration {iteration}: the record was lost"));
+            assert_eq!(fresh_item.state, WorkItemState::Running);
+            let settled = store
+                .find(&seeded_id)
+                .unwrap_or_else(|| panic!("iteration {iteration}: the seeded item was lost"));
+            assert_eq!(
+                settled.state,
+                WorkItemState::Landed,
+                "iteration {iteration}: the settle was lost"
+            );
+        }
     }
 }

@@ -42,6 +42,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
   No dispatch is delayed, reordered, merged or deduplicated, and a ledger
   fault never fails, delays or alters a dispatch.
 
+### Fixed
+
+- The ledger now records a task dispatch from the workflow's **root**
+  `ExecutionRequested` event rather than from `PreflightCompleted`, so a
+  dispatch that stops before the coding agent starts is no longer missing from
+  the ledger entirely. A dispatch that fails its charter check, or fails
+  preflight, is now recorded `running` and then settled `failed` with that
+  stopping event's own reason — the charter guidance, or the names of the gates
+  that failed. The chain itself is untouched: the same blocks run at the same
+  points, and the existing settlement from `task_run_completed` is unchanged.
+  A dispatch naming a project the registry does not know is declined rather
+  than recorded — the chain refuses it without emitting anything that could
+  settle an item, so recording one would leave work visibly `running` forever.
+- Every ledger mutation in the daemon process now takes one shared write gate
+  instead of each mutation site owning a private lock. A record in one spawned
+  workflow and a settle in another could previously interleave their
+  load-modify-save of `work-items.json` and silently drop the earlier write.
+  The file stays the single source of truth; the gate only orders
+  read-modify-write sequences, and a poisoned gate is absorbed — never a panic
+  in `foundryd`.
+- A settlement can no longer close the wrong item. When a run's result names a
+  trace no running item carries, nothing is settled; the project's
+  newest-running fallback now applies only to a result that carries no trace at
+  all. Two concurrent runs on one project previously risked one run's verdict
+  settling the other run's item.
+
 ## [0.39.9] - 2026-09-29
 
 ### Fixed

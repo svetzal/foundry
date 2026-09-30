@@ -598,14 +598,19 @@ fn register_iterate_blocks(
         agent.clone(),
         registry.clone(),
     )));
-    // Registration order is load-bearing: the engine runs the blocks matching
-    // one event in registration order, so recording the work item before
-    // `DirectPrompt` is what puts the item in the ledger, `running`, before
-    // `DirectPrompt` hands the prompt to `ExecutePlan` and the agent runs.
+    engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    // The ledger blocks bracket the task chain: `RecordWorkItem` opens the item
+    // from the workflow's root `ExecutionRequested`, so it is in the file
+    // `running` before any later event can fail, `SettleFailedDispatch` closes
+    // it when the chain stops ahead of the coding agent, and `SettleWorkItem`
+    // closes it from the terminal task result.
     engine.register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(
         foundry_sdk::paths::work_items_path(),
+        registry.clone(),
     )));
-    engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
+        foundry_sdk::paths::work_items_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(
         foundry_sdk::paths::work_items_path(),
     )));

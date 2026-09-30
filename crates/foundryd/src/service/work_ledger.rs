@@ -13,7 +13,7 @@ use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::throttle::Throttle;
-use foundry_sdk::work_item::{WorkItem, WorkItemStore};
+use foundry_sdk::work_item::{WorkItem, WorkItemStore, ledger_write_gate};
 
 use super::RuntimeContext;
 
@@ -49,12 +49,21 @@ pub(crate) fn settled_event(item: &WorkItem) -> Event {
         .with_trace_id(item.trace_id.clone())
 }
 
-/// Settle every `running` item in the ledger at `path` and record an event for
-/// each.
+/// The `load` → settle → `save` half of the restart sweep, under the shared
+/// ledger write gate.
 ///
-/// Called on daemon start, before any new dispatch. A ledger fault is absorbed:
-/// an unreadable or unwritable ledger must not keep the daemon from starting.
-pub(crate) async fn settle_running_items_on_start(ctx: &RuntimeContext, path: &Path) {
+/// Kept synchronous and separate from the event recording so the gate is
+/// released before the first `.await`: the same gate orders every other ledger
+/// mutation in the process, and holding it across an engine round trip would
+/// stall them.
+fn settle_running_in_file(path: &Path) -> Vec<WorkItem> {
+    let Ok(_guard) = ledger_write_gate().lock() else {
+        // Best-effort: a poisoned gate means some other mutation panicked
+        // mid-sequence. The daemon must still start; the items stay running
+        // until an operator or a later restart closes them.
+        tracing::warn!("work-item ledger lock poisoned on start; items left as they are");
+        return Vec::new();
+    };
     let mut store = match WorkItemStore::load(path) {
         Ok(store) => store,
         Err(error) => {
@@ -66,13 +75,13 @@ pub(crate) async fn settle_running_items_on_start(ctx: &RuntimeContext, path: &P
                 error = %error,
                 "could not read the work-item ledger on start; items left as they are"
             );
-            return;
+            return Vec::new();
         }
     };
 
     let settled = settle_running(&mut store);
     if settled.is_empty() {
-        return;
+        return settled;
     }
     if let Err(error) = store.save(path) {
         // Best-effort: see above. Nothing was written, so no event is recorded
@@ -83,8 +92,18 @@ pub(crate) async fn settle_running_items_on_start(ctx: &RuntimeContext, path: &P
             count = settled.len(),
             "could not write the work-item ledger on start; items left running"
         );
-        return;
+        return Vec::new();
     }
+    settled
+}
+
+/// Settle every `running` item in the ledger at `path` and record an event for
+/// each.
+///
+/// Called on daemon start, before any new dispatch. A ledger fault is absorbed:
+/// an unreadable or unwritable ledger must not keep the daemon from starting.
+pub(crate) async fn settle_running_items_on_start(ctx: &RuntimeContext, path: &Path) {
+    let settled = settle_running_in_file(path);
 
     for item in &settled {
         tracing::warn!(
