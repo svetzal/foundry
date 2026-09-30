@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.40.4] - 2026-09-30
+
 ### Fixed
 
 - The codex gateway now passes the prompt on stdin, so a large prompt no longer
