@@ -258,12 +258,13 @@ enum Commands {
         init: bool,
     },
 
-    /// Inspect the work-item ledger (queue, queue show, queue open)
+    /// Inspect or control work items (queue, queue show, queue open, queue close, queue cancel)
     ///
     /// `foundry queue` prints running, queued, open and recently settled work
     /// on one screen; `foundry queue show <id>` prints one item's full durable
     /// record followed by its `work_item_*` events; `foundry queue open` prints
-    /// only the items that still need a person.
+    /// only the items that still need a person. `close` discharges an open
+    /// obligation; `cancel` withdraws submitted or queued work.
     Queue {
         #[command(subcommand)]
         command: Option<QueueCommands>,
@@ -342,6 +343,23 @@ enum CampaignCommands {
 
 #[derive(Subcommand)]
 enum QueueCommands {
+    /// Close an open obligation without disposing of preserved work
+    Close {
+        id: String,
+        /// Why the owner is discharging this obligation (must be nonblank)
+        #[arg(long)]
+        reason: String,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
+    /// Cancel submitted or queued work before it starts
+    Cancel {
+        id: String,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
     /// Show one work item's full durable record and its lifecycle events
     Show {
         /// Work-item id (e.g. `wi_0123456789abcdef01234567`)
@@ -682,6 +700,12 @@ async fn handle_queue_command(
                 parent_json,
             )
             .await
+        }
+        Some(QueueCommands::Close { id, reason, origin }) => {
+            queue_commands::cancel_item(addr, offline, &id, Some(&reason), origin.as_deref()).await
+        }
+        Some(QueueCommands::Cancel { id, origin }) => {
+            queue_commands::cancel_item(addr, offline, &id, None, origin.as_deref()).await
         }
         Some(QueueCommands::Open { json }) => {
             queue_commands::list(

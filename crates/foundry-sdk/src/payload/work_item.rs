@@ -30,6 +30,9 @@ pub struct WorkItemEventPayload {
     /// How the item ended. Present only on a settlement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
+    /// Owner action, without replacing the original submission origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_action: Option<crate::work_item::WorkItemOperatorAction>,
 }
 
 impl WorkItemEventPayload {
@@ -46,6 +49,7 @@ impl WorkItemEventPayload {
             reason: item.reason.clone(),
             origin: item.origin.clone(),
             disposition: item.disposition.clone(),
+            operator_action: item.operator_action.clone(),
         }
     }
 }

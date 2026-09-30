@@ -1,7 +1,7 @@
 //! CLI handlers for the `foundry queue` subcommands — reads of the work-item
 //! ledger.
 //!
-//! All three commands are read-only. The default online path is
+//! The three read commands are read-only. Owner controls require the daemon. The default online path is
 //! daemon-authoritative: it renders `ListWorkItems` / `GetWorkItem` directly
 //! and never reads, creates or mutates the client-side ledger file, so an
 //! absent `FOUNDRY_WORK_ITEMS_PATH` stays absent. `--offline` is an explicit
@@ -241,6 +241,15 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         preservation_ref: disposition.and_then(|d| d.preservation_ref.clone()),
         worktree: disposition.and_then(|d| d.worktree.clone()),
         worktree_removed: disposition.and_then(|d| d.worktree_removed),
+        operator_action: item.operator_action.as_ref().map(|action| {
+            crate::proto::WorkItemOperatorAction {
+                command: action.command.clone(),
+                origin: action.origin.clone(),
+                previous_state: action.previous_state.tag().to_string(),
+                previous_reason: action.previous_reason.clone(),
+                previous_settled_at: action.previous_settled_at.map(|at| at.to_rfc3339()),
+            }
+        }),
     }
 }
 
@@ -255,6 +264,44 @@ fn event_to_proto(record: &WorkItemEventRecord) -> ProtoWorkItemEvent {
         reason: record.payload.reason.clone(),
         trace_id: record.trace_id.clone(),
     }
+}
+
+/// Ask the daemon to settle exactly one item; owner controls have no offline path.
+pub async fn cancel_item(
+    addr: &str,
+    offline: bool,
+    id: &str,
+    reason: Option<&str>,
+    origin: Option<&str>,
+) -> Result<()> {
+    anyhow::ensure!(!offline, "queue close/cancel require foundryd; --offline is not supported");
+    let mut client = crate::daemon::connect_daemon_online(addr).await?;
+    let operator_origin = crate::origin::local_operator_origin(origin);
+    let item = if let Some(reason) = reason {
+        client
+            .close_work_item(crate::proto::CloseWorkItemRequest {
+                id: id.to_string(),
+                reason: reason.to_string(),
+                operator_origin,
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .item
+    } else {
+        client
+            .cancel_work_item(crate::proto::CancelWorkItemRequest {
+                id: id.to_string(),
+                operator_origin,
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .item
+    }
+    .context("daemon returned no cancelled work item")?;
+    print!("{}", render::queue::cancellation_notice(&item));
+    Ok(())
 }
 
 #[cfg(test)]

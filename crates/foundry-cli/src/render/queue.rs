@@ -21,6 +21,11 @@ use crate::proto::{WorkItem, WorkItemEvent};
 /// first, so this is a prefix rather than a selection.
 pub const SETTLED_SHOWN: usize = 20;
 
+/// Confirmation of one daemon-authoritative owner settlement.
+pub fn cancellation_notice(item: &WorkItem) -> String {
+    format!("{}: {} — {}\n", item.id, item.state, item.reason)
+}
+
 /// Which of the four reading groups an item belongs to.
 ///
 /// This mirrors the ordering groups the `ListWorkItems` contract documents, so
@@ -247,6 +252,15 @@ pub fn item_detail(item: &WorkItem) -> String {
         "Worktree removed:",
         item.worktree_removed.map(|removed| if removed { "yes" } else { "no" }),
     );
+    if let Some(action) = &item.operator_action {
+        let _ = writeln!(out, "{:<18}{} ({})", "Operator action:", action.command, action.origin);
+        let _ = writeln!(
+            out,
+            "{:<18}{} — {}",
+            "Previous state:", action.previous_state, action.previous_reason
+        );
+        optional_field(&mut out, "Prior settlement:", action.previous_settled_at.as_deref());
+    }
     out
 }
 
@@ -354,6 +368,30 @@ struct JsonItem<'a> {
     worktree: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     worktree_removed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operator_action: Option<JsonOperatorAction<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonOperatorAction<'a> {
+    command: &'a str,
+    origin: &'a str,
+    previous_state: &'a str,
+    previous_reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_settled_at: Option<&'a str>,
+}
+
+impl<'a> From<&'a crate::proto::WorkItemOperatorAction> for JsonOperatorAction<'a> {
+    fn from(action: &'a crate::proto::WorkItemOperatorAction) -> Self {
+        Self {
+            command: &action.command,
+            origin: &action.origin,
+            previous_state: &action.previous_state,
+            previous_reason: &action.previous_reason,
+            previous_settled_at: action.previous_settled_at.as_deref(),
+        }
+    }
 }
 
 impl<'a> From<&'a WorkItem> for JsonItem<'a> {
@@ -376,6 +414,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
             preservation_ref: item.preservation_ref.as_deref(),
             worktree: item.worktree.as_deref(),
             worktree_removed: item.worktree_removed,
+            operator_action: item.operator_action.as_ref().map(JsonOperatorAction::from),
         }
     }
 }
@@ -449,7 +488,18 @@ mod tests {
             preservation_ref: None,
             worktree: None,
             worktree_removed: None,
+            operator_action: None,
         }
+    }
+
+    #[test]
+    fn cancellation_notice_names_the_exact_item_and_owner_reason() {
+        let mut cancelled = item("wi_owner_target", "cancelled");
+        cancelled.reason = "owner discharged obligation".to_string();
+        assert_eq!(
+            super::cancellation_notice(&cancelled),
+            "wi_owner_target: cancelled — owner discharged obligation\n"
+        );
     }
 
     fn ids(items: &[&WorkItem]) -> Vec<String> {

@@ -1,11 +1,10 @@
-//! Reads of the daemon-owned work-item ledger, and of one item's
+//! Reads and owner controls of the daemon-owned work-item ledger, and of one item's
 //! `work_item_*` events in the durable event log.
 //!
 //! Every operation here loads from disk on every call and caches nothing: the
 //! ledger is authoritative on disk, and a reader that cached it would report
-//! work as running after another process settled it. No operation writes, so
-//! none takes the ledger write gate — the gate serializes load→modify→save
-//! sequences, and a read has nothing to lose.
+//! work as running after another process settled it. Reads do not take the
+//! write gate; mutations serialize their load→modify→save sequences.
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +113,15 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         preservation_ref: disposition.and_then(|d| d.preservation_ref.clone()),
         worktree: disposition.and_then(|d| d.worktree.clone()),
         worktree_removed: disposition.and_then(|d| d.worktree_removed),
+        operator_action: item.operator_action.as_ref().map(|action| {
+            crate::proto::WorkItemOperatorAction {
+                command: action.command.clone(),
+                origin: action.origin.clone(),
+                previous_state: action.previous_state.tag().to_string(),
+                previous_reason: action.previous_reason.clone(),
+                previous_settled_at: action.previous_settled_at.map(|at| at.to_rfc3339()),
+            }
+        }),
     }
 }
 
@@ -153,6 +161,74 @@ pub(super) fn get(
         })),
         None => Err(Status::not_found(format!("work item '{id}' not found"))),
     }
+}
+
+/// Owner cancellation: disk work stays off the async worker and shares every
+/// ledger writer's load→modify→atomic-save gate. Events follow a successful save.
+#[tracing::instrument(skip_all, fields(item_id = %id, close))]
+pub(super) async fn cancel_item(
+    path: &Path,
+    ctx: &super::RuntimeContext,
+    id: String,
+    reason: String,
+    operator_origin: String,
+    close: bool,
+) -> Result<ProtoWorkItem, Status> {
+    if id.trim().is_empty() || reason.trim().is_empty() || operator_origin.trim().is_empty() {
+        return Err(Status::invalid_argument("id, reason and operator origin must be nonblank"));
+    }
+    let path = path.to_path_buf();
+    let item = tokio::task::spawn_blocking(move || {
+        let _guard = foundry_sdk::work_item::ledger_write_gate()
+            .lock()
+            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+        let mut store = load_store(&path)?;
+        let item = store
+            .items
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
+        let allowed = if close {
+            item.state.is_open()
+        } else {
+            matches!(item.state, WorkItemState::Submitted | WorkItemState::Queued)
+        };
+        if !allowed {
+            return Err(Status::failed_precondition(format!(
+                "work item '{id}' cannot be {} from {}",
+                if close { "closed" } else { "cancelled" },
+                item.state.tag()
+            )));
+        }
+        item.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
+            command: if close { "close" } else { "cancel" }.to_string(),
+            origin: operator_origin,
+            previous_state: item.state,
+            previous_reason: item.reason.clone(),
+            previous_settled_at: item.settled_at,
+        });
+        item.settle_cancelled(&reason, item.disposition.clone(), chrono::Utc::now());
+        let item = item.clone();
+        store.save(&path).map_err(|error| {
+            Status::internal(format!("failed to persist work-item state: {error}"))
+        })?;
+        Ok(item)
+    })
+    .await
+    .map_err(|error| Status::internal(format!("work-item mutation did not finish: {error}")))??;
+    let payload = foundry_sdk::event::Event::serialize_payload(
+        &foundry_sdk::payload::WorkItemEventPayload::from_item(&item),
+    )
+    .map_err(|error| Status::internal(format!("cannot serialize cancellation: {error}")))?;
+    let event = foundry_sdk::event::Event::new(
+        foundry_sdk::event::EventType::WorkItemCancelled,
+        item.project.clone(),
+        foundry_sdk::throttle::Throttle::Full,
+        payload,
+    )
+    .with_trace_id(item.trace_id.clone());
+    ctx.engine.process(event).await;
+    Ok(item_to_proto(&item))
 }
 
 /// Wire form of one `work_item_*` event.

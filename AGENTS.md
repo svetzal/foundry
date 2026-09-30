@@ -159,6 +159,8 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry queue [show <id>\|open]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--json` and `--offline` supported. Read-only |
+| `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
+| `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued items via the daemon |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
 ### Campaign commands
@@ -192,7 +194,7 @@ are legal.
 ### Queue commands
 
 `foundry queue` is the operator-facing read of the daemon-owned work-item
-ledger. All three forms are read-only — they change no item and dispatch
+ledger. The overview, `show` and `open` are read-only — they change no item and dispatch
 nothing. Group membership and order come from the daemon's `ListWorkItems`
 response; the CLI groups by state and never re-sorts. The 20-item cap applies to
 the settled group alone.
@@ -202,6 +204,8 @@ the settled group alone.
 | `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+| `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
+| `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued cancelled with `cancelled by operator`; rejects `--offline` |
 
 All three take `--json`; the list forms emit an array, `show` emits an object
 (the record's keys unchanged, plus an `events` array), optional fields are
@@ -226,6 +230,14 @@ command render from the same fetched data.
 > and order `ListWorkItemEvents` applies: a missing events directory is
 > `(no events)`, a fault reading the log is an error, and a malformed or glued
 > log line is skipped with a warning without hiding the item's other events.
+
+Owner controls record the CLI hostname and optional origin in `operator_action`,
+without replacing submission origin. They select exact ids, share
+`ledger_write_gate`, reload and atomically save before recording
+`work_item_cancelled` on Watch and in the event log. Unknown ids are NOT_FOUND,
+invalid input INVALID_ARGUMENT, and other states FAILED_PRECONDITION. They
+never dispatch, abort running workflows or dispose of preserved work. A failed
+save emits no cancellation, and earlier event history remains untouched.
 
 ### Registry commands
 
@@ -538,7 +550,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
   | `release` | `ReleaseRequested`, or a clean `MainBranchAudited` | `ReleaseCompleted` |
   | `remediation` | a dirty `MainBranchAudited`, or a failing `PipelineChecked` | `RemediationCompleted` |
 
-  Recording begins at the **root** of each chain — for a task, the `ExecutionRequested` itself, not preflight — so a dispatch that stops early (a failed charter check, a failed preflight) is still in the ledger and is settled `failed` with that event's own reason. Whether a run-shaped root is recorded is decided by the same predicate the dispatching block's `accepts()` already uses, so an item exists exactly when the run does; a `DryRun` throttle records nothing. Daemon-owned and authoritative — every mutation loads the file, applies the change, and saves it through a same-directory temp-file rename, and every mutation in the daemon process takes the one shared ledger write gate (`foundry_sdk::work_item::ledger_write_gate`) so concurrent workflows cannot interleave a load→modify→save and lose a write. Settlement correlation differs by shape: a task-shaped result correlates by `trace_id` alone (a result naming a trace no running task-shaped item carries settles nothing, and the project-newest-running fallback applies only to a result carrying no trace at all), while a run-shaped terminal correlates on trace, project *and* kind — a cycle's fan-out siblings share one trace, and one per-project run can hold a `maintenance`, a `remediation` and a `release` item at once on that same trace and project. `ReleasePipelineCompleted` and `LocalInstallCompleted` are downstream observation of an already-settled release and change no item. On daemon start every item still `running` is settled `failed` with the reason `daemon restarted`. A `campaign cancel --now` is the one settlement that does not come from its chain's own terminal: the abort means no `TaskRunCompleted` will ever arrive, so `DisposeCampaignWork` settles the item carrying the aborted workflow's trace (`CampaignCancelledPayload::aborted_trace_id`) `cancelled` with the operator's `--reason`, recording the disposal it just observed, and emits `work_item_cancelled` on that same trace. It settles there rather than in the `CancelCampaign` RPC because that is the one place the disposal outcome is known; correlation is by trace alone with no project-newest fallback, and a ledger fault never fails the cancellation
+  Recording begins at the **root** of each chain — for a task, the `ExecutionRequested` itself, not preflight — so a dispatch that stops early (a failed charter check, a failed preflight) is still in the ledger and is settled `failed` with that event's own reason. Whether a run-shaped root is recorded is decided by the same predicate the dispatching block's `accepts()` already uses, so an item exists exactly when the run does; a `DryRun` throttle records nothing. Daemon-owned and authoritative — every mutation loads the file, applies the change, and saves it through a same-directory temp-file rename, and every mutation in the daemon process takes the one shared ledger write gate (`foundry_sdk::work_item::ledger_write_gate`) so concurrent workflows cannot interleave a load→modify→save and lose a write. Settlement correlation differs by shape: a task-shaped result correlates by `trace_id` alone (a result naming a trace no running task-shaped item carries settles nothing, and the project-newest-running fallback applies only to a result carrying no trace at all), while a run-shaped terminal correlates on trace, project *and* kind — a cycle's fan-out siblings share one trace, and one per-project run can hold a `maintenance`, a `remediation` and a `release` item at once on that same trace and project. `ReleasePipelineCompleted` and `LocalInstallCompleted` are downstream observation of an already-settled release and change no item. On daemon start every item still `running` is settled `failed` with the reason `daemon restarted`. Owner `queue close`/`queue cancel` settle by exact id independently of chain terminals, preserving original identity and disposition. A `campaign cancel --now` also settles outside its chain's terminal: the abort means no `TaskRunCompleted` will ever arrive, so `DisposeCampaignWork` settles the item carrying the aborted workflow's trace (`CampaignCancelledPayload::aborted_trace_id`) `cancelled` with the operator's `--reason`, recording the disposal it just observed, and emits `work_item_cancelled` on that same trace. It settles there rather than in the `CancelCampaign` RPC because that is the one place the disposal outcome is known; correlation is by trace alone with no project-newest fallback, and a ledger fault never fails the cancellation
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)

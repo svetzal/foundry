@@ -362,7 +362,7 @@ the main branch is clean after a CVE fix.
 ### 11. Inspect the Work Queue
 
 The work-item ledger is the durable record of every unit of work Foundry
-dispatched. `foundry queue` reads it. All three forms are read-only.
+dispatched. `foundry queue`, `show` and `open` read it.
 
 ```bash
 # Everything on one screen: running, queued, open, newest 20 settled
@@ -409,6 +409,35 @@ missing file renders empty groups and exits zero, a malformed one is an error.
 On every start `foundryd` settles each item still `running` as `failed` with the
 reason `daemon restarted`, so after a restart look in `foundry queue open` for
 work that needs re-dispatching.
+
+
+### Close or cancel an item
+
+```bash
+foundry queue close wi_0123456789abcdef01234567 --reason "Reviewed; no further work required" --origin "owner review"
+foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
+```
+
+`close` discharges an open obligation in `preserved`, `needs_decision` or
+`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted` or
+`queued` item and records the reason `cancelled by operator`, without requiring
+a reason argument. Both settle exactly the requested id as `cancelled`.
+
+Both require the daemon, reject `--offline`, and never fall back to local
+writes. They record this CLI's hostname and optional `--origin` in
+`operator_action`, separately from the original submission origin. The action
+retains the previous state, reason and settlement timestamp. Submission
+identity, objective, trace and known disposition remain intact, including
+preserved refs and worktree-removal observations. No agent starts, running
+workflow stops, or preserved work is disposed of by either command.
+
+The daemon reloads the ledger under its shared write gate and saves by atomic
+replacement before emitting `work_item_cancelled` to Watch and the durable
+log. Earlier event bytes stay untouched. Unknown ids return `NOT_FOUND`,
+blank input returns `INVALID_ARGUMENT`, and other states return
+`FAILED_PRECONDITION`. Malformed ledgers also return `FAILED_PRECONDITION`;
+read or save failures return `INTERNAL` and a failed save emits no cancellation.
+Concurrent requests for one item can succeed only once.
 
 ### Prefer convenience commands over raw emit
 

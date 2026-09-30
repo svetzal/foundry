@@ -12,19 +12,19 @@ use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
-    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
-    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse,
-    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
-    ListWorkItemEventsRequest, ListWorkItemEventsResponse, ListWorkItemsRequest,
-    ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
-    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
-    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
-    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest,
-    SentinelListResponse, SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse,
-    StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
-    foundry_server::Foundry,
+    CancelCampaignRequest, CancelCampaignResponse, CancelWorkItemRequest, CancelWorkItemResponse,
+    CloseWorkItemRequest, CloseWorkItemResponse, CompleteCampaignRequest, CompleteCampaignResponse,
+    DecideCampaignRequest, DecideCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest,
+    GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse, HistoryRequest, HistoryResponse,
+    ListCampaignsRequest, ListCampaignsResponse, ListWorkItemEventsRequest,
+    ListWorkItemEventsResponse, ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest,
+    PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
+    RegistryEditResponse, RegistryListRequest, RegistryListResponse, RegistryRemoveRequest,
+    RegistryRemoveResponse, RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest,
+    ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
+    SentinelEnableResponse, SentinelListRequest, SentinelListResponse, SentinelShowRequest,
+    SentinelShowResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
+    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -296,6 +296,40 @@ impl Foundry for FoundryService {
         request: Request<CancelCampaignRequest>,
     ) -> Result<Response<CancelCampaignResponse>, Status> {
         campaign_ops::cancel(&self.campaigns_path, &self.ctx, request).await
+    }
+
+    async fn close_work_item(
+        &self,
+        request: Request<CloseWorkItemRequest>,
+    ) -> Result<Response<CloseWorkItemResponse>, Status> {
+        let request = request.into_inner();
+        let item = work_item_ops::cancel_item(
+            &self.work_items_path,
+            &self.ctx,
+            request.id,
+            request.reason,
+            request.operator_origin,
+            true,
+        )
+        .await?;
+        Ok(Response::new(CloseWorkItemResponse { item: Some(item) }))
+    }
+
+    async fn cancel_work_item(
+        &self,
+        request: Request<CancelWorkItemRequest>,
+    ) -> Result<Response<CancelWorkItemResponse>, Status> {
+        let request = request.into_inner();
+        let item = work_item_ops::cancel_item(
+            &self.work_items_path,
+            &self.ctx,
+            request.id,
+            "cancelled by operator".to_string(),
+            request.operator_origin,
+            false,
+        )
+        .await?;
+        Ok(Response::new(CancelWorkItemResponse { item: Some(item) }))
     }
 
     async fn list_work_items(
@@ -1590,6 +1624,7 @@ mod tests {
             reason: format!("reason for {id}"),
             trace_id: None,
             disposition: None,
+            operator_action: None,
         }
     }
 
@@ -1894,6 +1929,7 @@ mod tests {
             state: WorkItemState::Preserved,
             reason: "review found a remainder".to_string(),
             trace_id: Some("a".repeat(32)),
+            operator_action: None,
             disposition: Some(WorkDisposition {
                 verdict: Some("remainder".to_string()),
                 landed_commit: None,

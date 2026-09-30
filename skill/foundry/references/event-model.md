@@ -134,7 +134,12 @@ Each carries `item_id`, `project`, `objective`, `kind` (`task`,
 landed commit or preservation ref, the worktree path and whether it was
 removed.
 
-`WorkItemCancelled` is emitted only by `foundry campaign cancel --now`, which
+`WorkItemCancelled` is also emitted by `foundry queue close` for open items
+and `foundry queue cancel` for submitted/queued items. These select an exact id,
+retain prior evidence and disposition, and record operator context separately
+from submission origin. They never abort running work or dispose of preserved work.
+
+`foundry campaign cancel --now` emits `WorkItemCancelled` and
 kills the in-flight cycle so no `TaskRunCompleted` can settle its item. That
 item settles `cancelled` with the operator's `--reason` as its reason, and the
 event rides the aborted cycle's trace rather than the cancellation's. A graceful

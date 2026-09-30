@@ -182,6 +182,22 @@ pub struct WorkDisposition {
     pub worktree_removed: Option<bool>,
 }
 
+/// An owner action, separate from the item's original submission and settlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkItemOperatorAction {
+    /// `close` or `cancel`.
+    pub command: String,
+    /// CLI hostname and optional operator context.
+    pub origin: String,
+    /// State before the action.
+    pub previous_state: WorkItemState,
+    /// Reason before the action.
+    pub previous_reason: String,
+    /// Earlier settlement timestamp, retained as evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_settled_at: Option<DateTime<Utc>>,
+}
+
 /// One durable unit of work Foundry dispatched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItem {
@@ -217,6 +233,9 @@ pub struct WorkItem {
     /// How it ended. `None` until it settles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
+    /// Latest owner action. Absent on records predating owner controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_action: Option<WorkItemOperatorAction>,
 }
 
 /// Generate a fresh work-item id as `wi_` followed by 24 lowercase hex
@@ -267,6 +286,7 @@ impl WorkItem {
             reason: "submitted".to_string(),
             trace_id: spec.trace_id,
             disposition: None,
+            operator_action: None,
         }
     }
 

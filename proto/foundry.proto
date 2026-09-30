@@ -601,7 +601,37 @@ message WorkItem {
     // when the item records no worktree, which is why this is `optional` — a
     // recorded `false` and "not recorded" are different facts.
     optional bool worktree_removed = 17;
+    WorkItemOperatorAction operator_action = 18;
 }
+
+// Owner controls retain submission origin, trace, disposition and prior settlement.
+message WorkItemOperatorAction {
+    string command = 1;
+    string origin = 2;
+    string previous_state = 3;
+    string previous_reason = 4;
+    optional string previous_settled_at = 5;
+}
+
+// Close only preserved/needs_decision/failed items. Reason and operator_origin
+// must be nonblank. Invalid input: INVALID_ARGUMENT; absent id: NOT_FOUND;
+// other states or malformed ledger: FAILED_PRECONDITION; I/O faults: INTERNAL.
+// Reload and atomically save under the shared ledger gate before emitting
+// work_item_cancelled. Never dispatch, abort, or dispose of work.
+message CloseWorkItemRequest {
+    string id = 1;
+    string reason = 2;
+    string operator_origin = 3;
+}
+message CloseWorkItemResponse { WorkItem item = 1; }
+
+// Cancel only submitted/queued items with the reason "cancelled by operator".
+// Same validation, persistence and event contract as CloseWorkItem.
+message CancelWorkItemRequest {
+    string id = 1;
+    string operator_origin = 2;
+}
+message CancelWorkItemResponse { WorkItem item = 1; }
 
 // List records from the daemon-owned work-item ledger.
 //
@@ -776,6 +806,8 @@ service Foundry {
 
     // Retrieve one work-item ledger record by exact id, loaded at request time.
     rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
+    rpc CloseWorkItem(CloseWorkItemRequest) returns (CloseWorkItemResponse);
+    rpc CancelWorkItem(CancelWorkItemRequest) returns (CancelWorkItemResponse);
 
     // List one work item's `work_item_*` events from the durable event log,
     // selected by exact item id and in chronological order, loaded at request

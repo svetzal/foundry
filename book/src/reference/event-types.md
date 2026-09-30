@@ -245,9 +245,9 @@ says which point, and `state` says where the item stands.
 
 `work_item_started` pairs with `work_item_settled` rather than a
 `work_item_completed`: an item does not *complete*, it settles, into a state
-that may still hold an obligation. `work_item_cancelled` is emitted only by
-`foundry campaign cancel --now`, and rides the aborted cycle's trace rather than
-the cancellation's.
+that may still hold an obligation. `work_item_cancelled` is emitted by
+`foundry queue close` and `foundry queue cancel` on the exact item's trace,
+and by `foundry campaign cancel --now` on the aborted cycle's trace.
 
 **Shared payload**
 
@@ -262,6 +262,7 @@ the cancellation's.
 | `reason`      | string            | Why the item is in that state, in one line                                        |
 | `origin`      | string            | Opaque submitter text; Foundry never interprets it                                |
 | `disposition` | object (optional) | How the item ended; present only on a settlement                                  |
+| `operator_action` | object (optional) | Owner command, hostname/context in `origin`, `previous_state`, `previous_reason`, optional `previous_settled_at`; original submission origin and disposition retained |
 
 **`disposition` fields**
 

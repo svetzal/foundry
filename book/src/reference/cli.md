@@ -319,7 +319,7 @@ happened would be worse than failing.
 ## `foundry queue`
 
 Inspect the daemon-owned work-item ledger — the durable record of every unit of
-work Foundry dispatched. All three forms are read-only.
+work Foundry dispatched. The overview, `show` and `open` are read-only.
 
 ```bash
 foundry queue [--json] [--offline]
@@ -332,10 +332,12 @@ foundry queue open [--json] [--offline]
 | *(none)*   | Yes unless `--offline` | Print running, queued, open and the newest 20 settled items on one screen      |
 | `show`     | Yes unless `--offline` | Print one item's full durable record, then its `work_item_*` events           |
 | `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed`         |
+| `close <id> --reason <text> [--origin <text>]` | Yes | Discharge an open obligation; `--offline` refused |
+| `cancel <id> [--origin <text>]` | Yes | Cancel submitted/queued work; `--offline` refused |
 
 | Argument   | Description                                                 |
 | ---------- | ----------------------------------------------------------- |
-| `<id>`     | Work-item id, e.g. `wi_0123456789abcdef01234567` (`show` only) |
+| `<id>`     | Work-item id, e.g. `wi_0123456789abcdef01234567` (`show`, `close`, `cancel`) |
 
 | Option      | Description                                                        |
 | ----------- | ------------------------------------------------------------------ |
@@ -384,6 +386,35 @@ naming the matching offline recovery command. There is no silent fallback. Pass
 the ledger JSON file (and, for `show`, the events directory) directly; it
 applies the same grouping order and event selection the RPCs document. A missing ledger renders four empty groups and exits zero without
 creating the file; a malformed one exits non-zero and names the parse failure.
+
+
+### Close or cancel an item
+
+```bash
+foundry queue close wi_0123456789abcdef01234567 --reason "Reviewed; no further work required" --origin "owner review"
+foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
+```
+
+`close` discharges an open obligation in `preserved`, `needs_decision` or
+`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted` or
+`queued` item and records the reason `cancelled by operator`, without requiring
+a reason argument. Both settle exactly the requested id as `cancelled`.
+
+Both require the daemon, reject `--offline`, and never fall back to local
+writes. They record this CLI's hostname and optional `--origin` in
+`operator_action`, separately from the original submission origin. The action
+retains the previous state, reason and settlement timestamp. Submission
+identity, objective, trace and known disposition remain intact, including
+preserved refs and worktree-removal observations. No agent starts, running
+workflow stops, or preserved work is disposed of by either command.
+
+The daemon reloads the ledger under its shared write gate and saves by atomic
+replacement before emitting `work_item_cancelled` to Watch and the durable
+log. Earlier event bytes stay untouched. Unknown ids return `NOT_FOUND`,
+blank input returns `INVALID_ARGUMENT`, and other states return
+`FAILED_PRECONDITION`. Malformed ledgers also return `FAILED_PRECONDITION`;
+read or save failures return `INTERNAL` and a failed save emits no cancellation.
+Concurrent requests for one item can succeed only once.
 
 See [The Work Queue](../guide/work-queue.md) for the full model.
 

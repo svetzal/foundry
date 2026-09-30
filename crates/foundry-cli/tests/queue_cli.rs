@@ -161,7 +161,11 @@ fn make_service(
     state_dir: &std::path::Path,
 ) -> FoundryService {
     let (event_tx, _rx) = broadcast::channel(64);
-    let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+    let engine = Arc::new(
+        Engine::new()
+            .with_event_broadcaster(event_tx.clone())
+            .with_event_writer(Arc::new(EventWriter::new(state_dir.join("events")))),
+    );
     let traces = state_dir.join("traces");
     let trace_writer =
         Arc::new(TraceWriter::new(traces.to_str().expect("trace dir must be UTF-8")));
@@ -858,20 +862,26 @@ fn offline_queue_show_with_a_missing_events_dir_prints_no_events_and_creates_not
 // ── help surface ──────────────────────────────────────────────────────────────
 
 #[test]
-fn foundry_help_lists_queue_and_names_its_three_forms() {
+fn foundry_help_lists_queue_reads_and_owner_controls() {
     let home = tempfile::tempdir().expect("client home");
     let output =
         run_foundry(home.path(), &client_ledger_path(home.path()), DUMMY_ADDR, &["--help"]);
     assert_command_succeeded(&output);
 
     let out = stdout_string(&output);
-    for expected in ["queue", "queue show", "queue open"] {
+    for expected in [
+        "queue",
+        "queue show",
+        "queue open",
+        "queue close",
+        "queue cancel",
+    ] {
         assert!(out.contains(expected), "`foundry --help` should name '{expected}':\n{out}");
     }
 }
 
 #[test]
-fn queue_help_lists_the_three_forms_and_both_flags() {
+fn queue_help_lists_reads_owner_controls_and_both_flags() {
     let home = tempfile::tempdir().expect("client home");
     let output = run_foundry(
         home.path(),
@@ -887,6 +897,8 @@ fn queue_help_lists_the_three_forms_and_both_flags() {
         "queue open",
         "show",
         "open",
+        "close",
+        "cancel",
         "--json",
         "--offline",
     ] {
@@ -895,4 +907,450 @@ fn queue_help_lists_the_three_forms_and_both_flags() {
             "`foundry queue --help` should name '{expected}':\n{out}"
         );
     }
+}
+
+async fn control_client(
+    addr: &str,
+) -> foundryd::proto::foundry_client::FoundryClient<tonic::transport::Channel> {
+    foundryd::proto::foundry_client::FoundryClient::connect(addr.to_string())
+        .await
+        .unwrap()
+}
+
+async fn mutate(
+    client: &mut foundryd::proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    close: bool,
+    id: &str,
+    reason: &str,
+    origin: &str,
+) -> Result<foundryd::proto::WorkItem, tonic::Status> {
+    use foundryd::proto::{CancelWorkItemRequest, CloseWorkItemRequest};
+    if close {
+        Ok(client
+            .close_work_item(CloseWorkItemRequest {
+                id: id.to_string(),
+                reason: reason.to_string(),
+                operator_origin: origin.to_string(),
+            })
+            .await?
+            .into_inner()
+            .item
+            .unwrap())
+    } else {
+        Ok(client
+            .cancel_work_item(CancelWorkItemRequest {
+                id: id.to_string(),
+                operator_origin: origin.to_string(),
+            })
+            .await?
+            .into_inner()
+            .item
+            .unwrap())
+    }
+}
+
+fn log_bytes(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    if !dir.exists() {
+        return vec![];
+    }
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_controls_cover_every_state_and_preserve_exact_identity_and_evidence() {
+    for close in [true, false] {
+        for state in [
+            WorkItemState::Submitted,
+            WorkItemState::Queued,
+            WorkItemState::Running,
+            WorkItemState::Landed,
+            WorkItemState::Preserved,
+            WorkItemState::NeedsDecision,
+            WorkItemState::Failed,
+            WorkItemState::Cancelled,
+        ] {
+            assert_owner_control_state(close, state).await;
+        }
+    }
+}
+
+async fn assert_owner_control_state(close: bool, state: WorkItemState) {
+    use foundryd::proto::WatchRequest;
+    let root = tempfile::tempdir().unwrap();
+    let ledger = root.path().join("ledger.json");
+    let events = root.path().join("events");
+    let mut target = seeded_ledger().find("wi_preserved").unwrap().clone();
+    target.state = state;
+    let mut sibling = target.clone();
+    sibling.id = "wi_same_project_and_trace".to_string();
+    WorkItemStore {
+        version: 1,
+        items: vec![target.clone(), sibling.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+    let prior = lifecycle_event(&target.id, EventType::WorkItemSettled, state, 5_000);
+    write_events(&events, std::slice::from_ref(&prior));
+    let history = log_bytes(&events);
+    let bytes = std::fs::read(&ledger).unwrap();
+    let addr = start_server(make_service(ledger.clone(), root.path())).await;
+    let mut client = control_client(&addr).await;
+    let mut watch = client
+        .watch(WatchRequest {
+            project: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let result = mutate(
+        &mut client,
+        close,
+        &target.id,
+        "owner discharged obligation",
+        "host ops: reviewed evidence",
+    )
+    .await;
+    let allowed = if close {
+        state.is_open()
+    } else {
+        matches!(state, WorkItemState::Submitted | WorkItemState::Queued)
+    };
+    if !allowed {
+        assert_eq!(
+            result.unwrap_err().code(),
+            tonic::Code::FailedPrecondition,
+            "{state:?}, close={close}"
+        );
+        assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
+        assert_eq!(log_bytes(&events), history);
+        assert!(tokio::time::timeout(Duration::from_millis(30), watch.message()).await.is_err());
+        return;
+    }
+    assert_cancelled_evidence(
+        result.unwrap(),
+        (&target, &sibling),
+        (&ledger, &events),
+        &history,
+        &prior,
+        &mut watch,
+        close,
+    )
+    .await;
+}
+
+async fn assert_cancelled_evidence(
+    response: foundryd::proto::WorkItem,
+    subjects: (&WorkItem, &WorkItem),
+    paths: (&std::path::Path, &std::path::Path),
+    history: &[(std::path::PathBuf, Vec<u8>)],
+    prior: &Event,
+    watch: &mut tonic::Streaming<foundryd::proto::WatchResponse>,
+    close: bool,
+) {
+    let (target, sibling) = subjects;
+    let (ledger, events) = paths;
+
+    assert_eq!(response.id, target.id);
+    assert_eq!(response.state, "cancelled");
+    let reason = if close {
+        "owner discharged obligation"
+    } else {
+        "cancelled by operator"
+    };
+    assert_eq!(response.reason, reason);
+    assert_eq!(response.trace_id, target.trace_id);
+    assert_eq!(response.preservation_ref, target.disposition.as_ref().unwrap().preservation_ref);
+    assert_eq!(response.worktree_removed, Some(false));
+    let stored = WorkItemStore::load(ledger).unwrap();
+    assert_eq!(stored.find(&sibling.id), Some(sibling));
+    let cancelled = stored.find(&target.id).unwrap();
+    let action = cancelled.operator_action.as_ref().unwrap();
+    assert_eq!(action.command, if close { "close" } else { "cancel" });
+    assert_eq!(action.origin, "host ops: reviewed evidence");
+    assert_eq!(action.previous_state, target.state);
+    assert_eq!(action.previous_reason, target.reason);
+    assert_eq!(action.previous_settled_at, target.settled_at);
+    let mut expected = target.clone();
+    expected.state = WorkItemState::Cancelled;
+    expected.reason = reason.to_string();
+    expected.settled_at = cancelled.settled_at;
+    expected.operator_action = cancelled.operator_action.clone();
+    assert_eq!(cancelled, &expected);
+    assert!(cancelled.settled_at.unwrap() > target.settled_at.unwrap());
+    let watched = tokio::time::timeout(Duration::from_secs(2), watch.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(watched.event_type, "work_item_cancelled");
+    assert_eq!(watched.project, target.project);
+    assert_eq!(watched.trace_id, target.trace_id.clone().unwrap());
+    let payload: serde_json::Value = serde_json::from_str(&watched.payload_json).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::to_value(WorkItemEventPayload::from_item(cancelled)).unwrap()
+    );
+    for (path, prior_bytes) in history {
+        assert!(std::fs::read(path).unwrap().starts_with(prior_bytes));
+    }
+    let records = foundry_sdk::work_item_events::read_work_item_events(events, &target.id).unwrap();
+    assert_eq!(records[0].event_id, prior.id);
+    assert_eq!(records[0].payload.state, target.state);
+    assert_eq!(records[1].event_id, watched.event_id);
+    assert_eq!(records[1].event_type, EventType::WorkItemCancelled);
+    assert_eq!(records[1].trace_id, target.trace_id);
+    assert_eq!(serde_json::to_value(&records[1].payload).unwrap(), payload);
+    assert_eq!(records.len(), 2);
+    assert!(tokio::time::timeout(Duration::from_millis(30), watch.message()).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_control_faults_leave_ledger_and_event_bytes_untouched() {
+    let (addr, ledger, root) = daemon_over_seeded_ledger().await;
+    let mut client = control_client(&addr).await;
+    let mut watch = client
+        .watch(foundryd::proto::WatchRequest {
+            project: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let events = root.path().join("events");
+    let history = log_bytes(&events);
+    let original = std::fs::read(ledger.path()).unwrap();
+    for close in [true, false] {
+        for (id, reason, origin, code) in [
+            ("wi_missing", "reason", "host ops", tonic::Code::NotFound),
+            (" ", "reason", "host ops", tonic::Code::InvalidArgument),
+            ("wi_preserved", "reason", " \n", tonic::Code::InvalidArgument),
+        ] {
+            assert_eq!(
+                mutate(&mut client, close, id, reason, origin).await.unwrap_err().code(),
+                code
+            );
+            assert_eq!(std::fs::read(ledger.path()).unwrap(), original);
+            assert_eq!(log_bytes(&events), history);
+        }
+    }
+    for reason in ["", " \n\t"] {
+        assert_eq!(
+            mutate(&mut client, true, "wi_preserved", reason, "host ops")
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(std::fs::read(ledger.path()).unwrap(), original);
+        assert_eq!(log_bytes(&events), history);
+    }
+    // A directory at the exact atomic-replacement temp path fails even as root.
+    std::fs::create_dir(ledger.path().with_extension("json.tmp")).unwrap();
+    for (close, id) in [(true, "wi_preserved"), (false, "wi_submitted")] {
+        assert_eq!(
+            mutate(&mut client, close, id, "reason", "host ops").await.unwrap_err().code(),
+            tonic::Code::Internal
+        );
+        assert_eq!(std::fs::read(ledger.path()).unwrap(), original);
+        assert_eq!(log_bytes(&events), history);
+    }
+    std::fs::remove_dir(ledger.path().with_extension("json.tmp")).unwrap();
+    std::fs::write(ledger.path(), b"malformed ledger").unwrap();
+    for close in [true, false] {
+        assert_eq!(
+            mutate(&mut client, close, "wi_preserved", "reason", "host ops")
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(std::fs::read(ledger.path()).unwrap(), b"malformed ledger");
+        assert_eq!(log_bytes(&events), history);
+    }
+    assert!(tokio::time::timeout(Duration::from_millis(30), watch.message()).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_owner_controls_settle_once_and_keep_unrelated_writes() {
+    let (addr, ledger, root) = daemon_over_seeded_ledger().await;
+    let before = WorkItemStore::load(ledger.path()).unwrap();
+    let mut one = control_client(&addr).await;
+    let mut two = one.clone();
+    let mut three = one.clone();
+    let (a, b, c) = tokio::join!(
+        mutate(&mut one, true, "wi_preserved", "first reason", "host first"),
+        mutate(&mut two, true, "wi_preserved", "second reason", "host second"),
+        mutate(&mut three, false, "wi_submitted", "unused", "host third"),
+    );
+    let winner = match (a, b) {
+        (Ok(item), Err(error)) | (Err(error), Ok(item)) => {
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            item
+        }
+        other => panic!("expected exactly one successful settlement: {other:?}"),
+    };
+    assert_eq!(winner.id, "wi_preserved");
+    assert_eq!(c.unwrap().id, "wi_submitted");
+    let after = WorkItemStore::load(ledger.path()).unwrap();
+    assert_eq!(after.find("wi_preserved").unwrap().reason, winner.reason);
+    assert_eq!(after.find("wi_submitted").unwrap().state, WorkItemState::Cancelled);
+    for item in before.items.iter().filter(|i| i.id != "wi_preserved" && i.id != "wi_submitted") {
+        assert_eq!(after.find(&item.id), Some(item));
+    }
+    let events = root.path().join("events");
+    let records =
+        foundry_sdk::work_item_events::read_work_item_events(&events, "wi_preserved").unwrap();
+    let cancellations: Vec<_> = records
+        .iter()
+        .filter(|e| e.event_type == EventType::WorkItemCancelled)
+        .collect();
+    assert_eq!(cancellations.len(), 1);
+    assert_eq!(cancellations[0].payload.item_id, "wi_preserved");
+    assert_eq!(cancellations[0].payload.reason, winner.reason);
+    let other =
+        foundry_sdk::work_item_events::read_work_item_events(&events, "wi_submitted").unwrap();
+    assert_eq!(other[0].payload.item_id, "wi_submitted");
+    assert_eq!(other[0].payload.reason, "cancelled by operator");
+    assert_eq!(other.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_cli_owner_controls_forward_origin_and_never_write_client_files() {
+    let (addr, ledger, state) = daemon_over_seeded_ledger().await;
+    let home = tempfile::tempdir().unwrap();
+    let client_ledger = home.path().join("client-ledger.json");
+    let client_events = home.path().join("events");
+    std::fs::write(&client_ledger, b"client sentinel").unwrap();
+    write_events(&client_events, &seeded_events());
+    let history = log_bytes(&client_events);
+    for args in [
+        vec![
+            "queue",
+            "close",
+            "wi_preserved",
+            "--reason",
+            "owner reviewed",
+            "--origin",
+            "desk note",
+        ],
+        vec!["queue", "cancel", "wi_submitted", "--origin", "desk note"],
+    ] {
+        let output =
+            run_foundry_with_events(home.path(), &client_ledger, &client_events, &addr, &args);
+        assert_command_succeeded(&output);
+    }
+    assert_cli_cancelled(
+        home.path(),
+        &client_ledger,
+        &client_events,
+        &addr,
+        ledger.path(),
+        state.path(),
+    );
+    let daemon_bytes = std::fs::read(ledger.path()).unwrap();
+    let daemon_history = log_bytes(&state.path().join("events"));
+    for (addr, args, expected) in [
+        (
+            addr.as_str(),
+            vec!["queue", "close", "wi_running", "--reason", "stop"],
+            "The system is not in a state required for the operation's execution",
+        ),
+        (
+            addr.as_str(),
+            vec!["queue", "cancel", "wi_missing"],
+            "Some requested entity was not found",
+        ),
+        (
+            addr.as_str(),
+            vec!["queue", "close", "wi_failed", "--reason", " "],
+            "Client specified an invalid argument",
+        ),
+        (
+            addr.as_str(),
+            vec![
+                "queue",
+                "close",
+                "wi_failed",
+                "--reason",
+                "stop",
+                "--offline",
+            ],
+            "--offline is not supported",
+        ),
+        (
+            addr.as_str(),
+            vec!["queue", "cancel", "wi_queued", "--offline"],
+            "--offline is not supported",
+        ),
+        (
+            DUMMY_ADDR,
+            vec!["queue", "close", "wi_failed", "--reason", "stop"],
+            "foundryd is not reachable",
+        ),
+        (DUMMY_ADDR, vec!["queue", "cancel", "wi_queued"], "foundryd is not reachable"),
+    ] {
+        let out = run_foundry_with_events(home.path(), &client_ledger, &client_events, addr, &args);
+        assert!(!out.status.success());
+        let error = String::from_utf8(out.stderr).unwrap();
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(std::fs::read(&client_ledger).unwrap(), b"client sentinel");
+        assert_eq!(log_bytes(&client_events), history);
+        assert_eq!(std::fs::read(ledger.path()).unwrap(), daemon_bytes);
+        assert_eq!(log_bytes(&state.path().join("events")), daemon_history);
+    }
+}
+
+fn assert_cli_cancelled(
+    home: &std::path::Path,
+    client_ledger: &std::path::Path,
+    client_events: &std::path::Path,
+    addr: &str,
+    ledger: &std::path::Path,
+    state: &std::path::Path,
+) {
+    let host = Command::new("hostname").output().unwrap();
+    let origin = format!("host {}: desk note", String::from_utf8(host.stdout).unwrap().trim());
+    let store = WorkItemStore::load(ledger).unwrap();
+    for id in ["wi_preserved", "wi_submitted"] {
+        let item = store.find(id).unwrap();
+        assert_eq!(item.operator_action.as_ref().unwrap().origin, origin);
+        assert_eq!(item.origin, "integration-test");
+        assert_eq!(item.state, WorkItemState::Cancelled);
+        assert_eq!(
+            item.reason,
+            if id == "wi_preserved" {
+                "owner reviewed"
+            } else {
+                "cancelled by operator"
+            }
+        );
+        let events =
+            foundry_sdk::work_item_events::read_work_item_events(&state.join("events"), id)
+                .unwrap();
+        let cancelled =
+            events.iter().find(|e| e.event_type == EventType::WorkItemCancelled).unwrap();
+        assert_eq!(cancelled.payload.item_id, id);
+        assert_eq!(cancelled.payload.operator_action.as_ref().unwrap().origin, origin);
+    }
+    let shown = run_foundry_with_events(
+        home,
+        client_ledger,
+        client_events,
+        addr,
+        &["queue", "show", "wi_preserved", "--json"],
+    );
+    assert_command_succeeded(&shown);
+    let record: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(record["id"], "wi_preserved");
+    assert_eq!(record["operator_action"]["origin"], origin);
+    assert_eq!(record["operator_action"]["previous_reason"], "reason for wi_preserved");
+    assert_eq!(record["preservation_ref"], "foundry/majors/serde");
+    assert_eq!(record["worktree_removed"], false);
 }

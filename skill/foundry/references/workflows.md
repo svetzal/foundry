@@ -361,3 +361,16 @@ Both paths share the same `AgentRelease` work block (ComposedStep architecture)
   Required by CheckCharter for iterate workflow.
 - **`~/.claude/agents/{agent}.md`** — Agent instruction file, resolved from
   registry's `agent` field.
+
+## Owner Work-Item Controls
+
+Use `foundry queue close <id> --reason "reviewed; obligation discharged"`
+for `preserved`, `needs_decision` and `failed` items, or
+`foundry queue cancel <id>` for `submitted` and `queued` items. Optional
+`--origin "owner review"` records context beside the CLI hostname.
+Both require the daemon and reject `--offline`. They settle exactly that id
+`cancelled`, recording an owner action separately from submission origin and
+retaining prior settlement evidence and disposition. The cancellation appears
+on Watch and in the durable event history; earlier events remain intact.
+Neither command starts agents, stops running workflows or removes preserved
+work. Use campaign cancellation for an in-flight campaign, as described above.

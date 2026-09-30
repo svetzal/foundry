@@ -734,6 +734,24 @@ the ledger path is unreadable.
 client-side ledger file; if `FOUNDRY_WORK_ITEMS_PATH` is absent, the online path
 leaves it absent.
 
+### `CloseWorkItem` and `CancelWorkItem`
+
+Both return an `item: WorkItem` after owner-directed settlement to `cancelled`.
+`CloseWorkItemRequest` carries `id`, a nonblank `reason`, and nonblank
+`operator_origin`; it accepts only `preserved`, `needs_decision`, `failed`.
+`CancelWorkItemRequest` carries `id` and nonblank `operator_origin`; it accepts
+only `submitted`, `queued` and uses `cancelled by operator` as the reason.
+
+Validation returns `INVALID_ARGUMENT`, unknown exact ids `NOT_FOUND`, refused
+states and malformed ledgers `FAILED_PRECONDITION`, and I/O faults `INTERNAL`.
+The daemon reloads and atomically replaces the ledger under the shared write
+gate before emitting `work_item_cancelled` on Watch and in the durable event
+log. Failed saves emit nothing. Neither RPC dispatches, aborts a workflow nor
+disposes of work. The original identity, origin, objective, trace and disposition
+remain intact. `operator_action` records command, operator origin, previous
+state, previous reason and optional previous settlement timestamp. Earlier
+lifecycle events remain unchanged. CLI mutations reject `--offline`.
+
 ### `ListWorkItemEvents(ListWorkItemEventsRequest) → ListWorkItemEventsResponse`
 
 List one work item's `work_item_*` events (`work_item_submitted`,
@@ -916,6 +934,10 @@ caller can tell "not recorded" from a recorded empty string or `false`.
 | `preservation_ref` | optional string | Settlement: the durable ref (branch or `bundle:<path>`) holding unlanded work                                |
 | `worktree`         | optional string | Settlement: the isolated worktree the work ran in                                                            |
 | `worktree_removed` | optional bool   | Settlement: whether that worktree was gone by settlement time; absent when the item records no worktree       |
+
+`WorkItem.operator_action` is an optional `WorkItemOperatorAction` message with
+`command`, `origin`, `previous_state`, `previous_reason` and optional
+`previous_settled_at`. Absent on items without an owner action.
 
 ### `WorkItemEvent`
 
