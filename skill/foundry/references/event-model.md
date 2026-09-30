@@ -118,6 +118,12 @@ Each carries `item_id`, `project`, `objective`, `kind` (`task`,
 landed commit or preservation ref, the worktree path and whether it was
 removed.
 
+`WorkItemCancelled` is emitted only by `foundry campaign cancel --now`, which
+kills the in-flight cycle so no `TaskRunCompleted` can settle its item. That
+item settles `cancelled` with the operator's `--reason` as its reason, and the
+event rides the aborted cycle's trace rather than the cancellation's. A graceful
+cancel emits nothing here — its cycle finishes and settles the usual way.
+
 Read the ledger with `foundry queue` (running, queued, open and the newest 20
 settled items), `foundry queue open` (only the three open states) and
 `foundry queue show <item_id>` (one item's full record). All three take `--json`

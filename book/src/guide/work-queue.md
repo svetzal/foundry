@@ -136,6 +136,14 @@ Foundry's `*Started`/`*Completed` pairing rule.
 `work_item_completed`, because an item does not *complete* — it settles, into a
 state that may still hold an obligation.
 
+`work_item_cancelled` is emitted by exactly one thing today:
+`foundry campaign cancel <name> --reason … --now`, which stops the in-flight
+cycle outright. It carries the item's id, project, kind, lane, state, reason and
+origin, plus the settlement fields, and it rides the **aborted cycle's** trace
+rather than the cancellation's — so it sits with the rest of the events about
+that unit of work. Like the other three it reaches `foundry watch` and the
+durable JSONL event log.
+
 ## Commands
 
 ```bash
@@ -290,3 +298,31 @@ only in transport, never in reading order.
 `foundry queue` is read-only by design. There is no `foundry queue cancel` yet —
 to stop an in-flight campaign cycle use `foundry campaign cancel <name>
 --reason … --now`.
+
+### What `campaign cancel --now` does to the cycle's item
+
+A `--now` cancellation kills the in-flight cycle, so the `TaskRunCompleted` that
+normally settles its item never arrives. Foundry therefore settles that item
+itself:
+
+- The `running` item carrying the aborted run's trace settles **`cancelled`**,
+  with your `--reason` text as its reason and the settlement time recorded. It
+  moves out of `Running` and into the `Settled (last 20)` group; `cancelled` is
+  terminal, so it never shows up under `queue open`.
+- Its disposition records the cycle's worktree and whether that worktree is gone,
+  observed *after* disposal ran — plus the branch (or `bundle:` path) the work was
+  preserved on. With `--discard-work` there is no preservation ref, because the
+  work was thrown away. A cycle that had built no worktree records no
+  disposition at all.
+- Correlation is by trace alone, exactly as a normal settlement: if no running
+  item carries the aborted run's trace, nothing is settled. Foundry never falls
+  back to "the project's newest running item", because that would report an
+  unrelated concurrent run as cancelled.
+- A **graceful** cancel (no `--now`) changes no item: the cycle finishes on its
+  own and settles the usual way. A `--now` cancel with nothing in flight, and
+  cancelling an already-cancelled campaign, both change no item either.
+
+The ledger is bookkeeping beside the cancellation, never a precondition for it:
+if the ledger cannot be read or written, the campaign is still cancelled and the
+`CampaignCancelled` event is still emitted — the fault is logged, and the item is
+left for the restart sweep.

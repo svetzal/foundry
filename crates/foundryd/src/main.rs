@@ -505,7 +505,10 @@ fn register_campaign_blocks(
 ) {
     engine.register(Box::new(foundry_blocks::blocks::RequestCampaignAdvance));
     engine.register(Box::new(foundry_blocks::blocks::SurfaceCampaignTerminal));
-    engine.register(Box::new(foundry_blocks::blocks::DisposeCampaignWork::new(registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::DisposeCampaignWork::new(
+        registry.clone(),
+        foundry_sdk::paths::work_items_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
         agent.clone(),
         shell.clone(),

@@ -461,16 +461,16 @@ pub(super) async fn cancel(
         let _ = campaign.check_cancellable().map_err(|e| map_transition_error(&e))?;
     }
 
-    let aborted_event_id = if req.terminate_now {
-        ctx.workflow_tracker
-            .abort_campaign(&name)
-            .await
-            .into_iter()
-            .next()
-            .map(|workflow| workflow.event_id)
+    // Both ids come off the same aborted workflow: the event id is the only
+    // handle onto its partial events, and the trace is what correlates the
+    // killed cycle with its `running` entry in the work-item ledger.
+    let aborted = if req.terminate_now {
+        ctx.workflow_tracker.abort_campaign(&name).await.into_iter().next()
     } else {
         None
     };
+    let aborted_event_id = aborted.as_ref().map(|workflow| workflow.event_id.clone());
+    let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
 
     let (detail, event) = {
         let mut guard = lock_store_exclusive(campaigns_path)?;
@@ -500,6 +500,7 @@ pub(super) async fn cancel(
             terminated_now: req.terminate_now,
             discard_work: req.discard_work,
             aborted_event_id,
+            aborted_trace_id,
         })
         .map_err(|e| Status::internal(format!("failed to serialize cancellation payload: {e}")))?;
         // Mint both ids: like a manual completion, this is a workflow root

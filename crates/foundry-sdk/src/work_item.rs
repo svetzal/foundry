@@ -361,6 +361,34 @@ impl WorkItem {
         self.settled_at = Some(at);
     }
 
+    /// Settle the item `cancelled` with `reason`, recording `disposition`.
+    ///
+    /// Used when an operator stops the work outright — today only
+    /// `foundry campaign cancel --now`, which aborts the in-flight cycle so no
+    /// typed task result ever arrives to settle the item. `reason` is the
+    /// operator's own cancellation reason, recorded verbatim (collapsed to one
+    /// line) rather than paraphrased: it is the only account of why the work
+    /// stopped.
+    ///
+    /// `disposition` is what disposal observed afterwards — the worktree the
+    /// cycle ran in, whether it is gone, and the ref holding any preserved
+    /// work. `None` when the cancellation found no worktree to dispose of.
+    ///
+    /// `Cancelled` is terminal and not *open*: an operator who stopped the work
+    /// has already discharged the decision, so the item carries no further
+    /// obligation.
+    pub fn settle_cancelled(
+        &mut self,
+        reason: &str,
+        disposition: Option<WorkDisposition>,
+        at: DateTime<Utc>,
+    ) {
+        self.state = WorkItemState::Cancelled;
+        self.reason = one_line(reason);
+        self.settled_at = Some(at);
+        self.disposition = disposition;
+    }
+
     /// Settle the item `failed` with `reason`, keeping whatever disposition
     /// fields are already known.
     ///
@@ -1071,6 +1099,48 @@ mod tests {
         assert_eq!(item.state, WorkItemState::Failed);
         assert_eq!(item.reason, "daemon restarted");
         assert_eq!(item.settled_at, Some(at));
+    }
+
+    #[test]
+    fn cancelling_records_the_operator_reason_verbatim_and_its_disposal() {
+        let at = now();
+        let mut item = WorkItem::dispatched(spec(), at);
+        item.settle_cancelled(
+            "superseded by the rewrite",
+            Some(WorkDisposition {
+                verdict: None,
+                landed_commit: None,
+                preservation_ref: Some("foundry-task/alpha-tidy-c3-abcdef".to_string()),
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+            }),
+            at,
+        );
+
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Cancelled,
+                reason: "superseded by the rewrite".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("foundry-task/alpha-tidy-c3-abcdef".to_string()),
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
+        assert_eq!(item.settled_at, Some(at));
+        assert!(!item.is_running());
+        assert!(!WorkItemState::Cancelled.is_open(), "a cancellation holds no obligation");
+    }
+
+    #[test]
+    fn cancelling_with_nothing_to_dispose_of_records_no_disposition() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        item.settle_cancelled("stopping immediately", None, now());
+        assert_eq!(item.state, WorkItemState::Cancelled);
+        assert_eq!(item.reason, "stopping immediately");
+        assert!(item.disposition.is_none());
     }
 
     #[test]

@@ -7,6 +7,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `foundry campaign cancel <name> --reason … --now` now settles the aborted
+  cycle's work item instead of leaving it `running`. The abort means the
+  `TaskRunCompleted` that normally settles the item never arrives, so until now
+  the item sat `running` in `foundry queue` until the next daemon restart closed
+  it `failed` with the reason `daemon restarted` — reporting an operator's
+  deliberate stop as a fault. The `running` item carrying the aborted run's
+  trace now settles `cancelled` with the `--reason` text verbatim, `settled_at`
+  set, and a disposition recording the cycle's worktree, whether that worktree
+  is gone (observed after disposal) and the branch or `bundle:` ref any
+  preserved work is recoverable from. This also makes `work_item_cancelled`
+  real: it is emitted through the engine, on the aborted cycle's own trace, so
+  it reaches `foundry watch` and the durable JSONL log like the other three
+  ledger events. Correlation is by trace alone, exactly as a normal settlement,
+  with no fallback to the project's newest running item. Recording only — no
+  dispatch, abort, landing, preservation or worktree cleanup behaviour changed.
+  A graceful cancel, a `--now` cancel with nothing in flight, and an
+  already-cancelled campaign each change no item and emit nothing; a ledger
+  fault never turns a successful cancellation into an error, and never prevents
+  the abort or the `CampaignCancelled` event. The killed run's trace reaches the
+  settlement through an additive optional `aborted_trace_id` field on the
+  `campaign_cancelled` payload.
+
 ## [0.40.1] - 2026-09-30
 
 ### Added

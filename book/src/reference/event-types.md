@@ -219,10 +219,57 @@ unchanged, and adds the operator's disposition choices.
 | `terminated_now`    | bool    | The in-flight workflow was aborted rather than left to finish   |
 | `discard_work`      | bool    | The terminated cycle's uncommitted work was thrown away         |
 | `aborted_event_id`  | string? | Root event of the aborted workflow; absent for a graceful stop  |
+| `aborted_trace_id`  | string? | Trace of the aborted workflow; absent for a graceful stop       |
 
 An aborted run never reaches trace persistence, so `aborted_event_id` is the
 only handle onto its partial events in the JSONL log — `foundry trace` has
-nothing to show for it.
+nothing to show for it. `aborted_trace_id` is what correlates the cancellation
+with the work-item ledger: the killed cycle's item was recorded `running` under
+that trace, and a `--now` cancellation settles it `cancelled` (see
+[The work queue](../guide/work-queue.md)).
+
+## Work-Item Ledger
+
+The four events of the work-item ledger. They report the same durable record at
+different points in its life, so all four share one payload shape; the event type
+says which point, and `state` says where the item stands.
+
+| Type                  | Description                                                    |
+| --------------------- | -------------------------------------------------------------- |
+| `work_item_submitted` | A unit of work entered the ledger                              |
+| `work_item_started`   | An agent started on a ledger item                              |
+| `work_item_settled`   | A ledger item reached a settled state, with its disposition     |
+| `work_item_cancelled` | An operator stopped a ledger item                              |
+
+`work_item_started` pairs with `work_item_settled` rather than a
+`work_item_completed`: an item does not *complete*, it settles, into a state
+that may still hold an obligation. `work_item_cancelled` is emitted only by
+`foundry campaign cancel --now`, and rides the aborted cycle's trace rather than
+the cancellation's.
+
+**Shared payload**
+
+| Field         | Type              | Description                                                                       |
+| ------------- | ----------------- | --------------------------------------------------------------------------------- |
+| `item_id`     | string            | The item's stable `wi_…` id                                                       |
+| `project`     | string            | Registered project name                                                           |
+| `objective`   | string            | Task description or campaign objective the work serves                            |
+| `kind`        | string            | `task`, `campaign_cycle`, `maintenance`, `major_upgrade`, `release`, `remediation` |
+| `lane`        | string            | `interactive`, `campaign`, or `maintenance`                                        |
+| `state`       | string            | `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, `cancelled` |
+| `reason`      | string            | Why the item is in that state, in one line                                        |
+| `origin`      | string            | Opaque submitter text; Foundry never interprets it                                |
+| `disposition` | object (optional) | How the item ended; present only on a settlement                                  |
+
+**`disposition` fields**
+
+| Field              | Type              | Description                                                      |
+| ------------------ | ----------------- | ---------------------------------------------------------------- |
+| `verdict`          | string (optional) | The reviewer's typed verdict tag, for a task-shaped settlement    |
+| `landed_commit`    | string (optional) | The trunk commit the work landed as                              |
+| `preservation_ref` | string (optional) | Branch or `bundle:<path>` holding unlanded work                  |
+| `worktree`         | string (optional) | The isolated worktree the work ran in                            |
+| `worktree_removed` | bool (optional)   | Whether that worktree was gone by settlement time                |
 
 **`campaign_advance_requested` payload**
 

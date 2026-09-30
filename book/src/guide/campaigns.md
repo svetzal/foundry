@@ -487,6 +487,16 @@ work that did reach a durable ref.
 committed and preserved the cycle's work by the time it stops — there would be
 nothing uncommitted left to discard.
 
+A `--now` cancellation also closes the cycle's entry in the work-item ledger. The
+cycle was recorded `running` when it was dispatched, and killing it means the
+`TaskRunCompleted` that normally settles that entry never arrives — so Foundry
+settles it `cancelled` itself, with your `--reason` text as the reason and a
+disposition naming the cycle's worktree, whether that worktree is gone, and the
+ref any preserved work is recoverable from. A `work_item_cancelled` event records
+it, on the aborted cycle's own trace. `foundry queue show <id>` reads the result
+back. A graceful cancellation changes nothing there: its cycle finishes and
+settles the usual way. See [The work queue](./work-queue.md).
+
 Two limits worth knowing. `--now` kills the agent process itself, but not the
 tool subprocesses that agent spawned; those are reparented and run to their own
 completion. And the aborted run produces no trace file, so reconstruct it from

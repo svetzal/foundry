@@ -91,6 +91,15 @@ pub struct CampaignCancelledPayload {
     /// handle onto its partial events in the JSONL log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aborted_event_id: Option<String>,
+    /// Trace of the workflow that was aborted to satisfy `terminated_now`.
+    ///
+    /// The cancellation itself opens a fresh trace, so the killed cycle's trace
+    /// is carried here rather than on the event. It is what correlates the
+    /// cancellation with the work-item ledger: the cycle's item was recorded
+    /// `running` under this trace, and nothing else can settle it now that the
+    /// run producing its `TaskRunCompleted` is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aborted_trace_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -109,6 +118,7 @@ mod tests {
             terminated_now: true,
             discard_work: false,
             aborted_event_id: Some("evt_abc".to_string()),
+            aborted_trace_id: Some("a".repeat(32)),
         }
     }
 
