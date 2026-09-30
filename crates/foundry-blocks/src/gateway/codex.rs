@@ -48,8 +48,8 @@ use crate::agent_stream::{
 };
 
 use super::{
-    AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
-    ShellGateway,
+    AgentAccess, AgentFailureMetadata, AgentGateway, AgentProvider, AgentRequest, AgentResponse,
+    ProviderModels, ShellGateway,
     engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation, SessionContext},
 };
 
@@ -129,11 +129,22 @@ impl CliAgentAdapter for CodexAdapter {
                 tracing::debug!(error = %e, path = %p.display(), "failed to remove transient last-message file");
             }
 
+            // On failure, carry the real diagnostic from the JSONL stream (the
+            // `turn.failed`/`error` event's message) rather than leaving the
+            // caller to fall back to stderr — codex always writes the same
+            // harmless "Reading additional input from stdin..." line to stderr
+            // regardless of outcome, so stderr alone identifies nothing about
+            // *why* a run failed. See the module doc for the stdin-probe note.
+            let failure =
+                (!success).then(|| extract_failure_message(&outcome.lines)).flatten().map(
+                    |message| AgentFailureMetadata::new(AgentProvider::Codex).with_message(message),
+                );
+
             Interpreted {
                 success,
                 exit_code,
                 stdout,
-                failure: None,
+                failure,
             }
         })
     }
@@ -243,6 +254,52 @@ fn extract_agent_message(lines: &[StreamedLine]) -> String {
         }
     }
     String::new()
+}
+
+/// Extract the real diagnostic behind a failed run: the last `turn.failed` or
+/// top-level `error` event's message, preferring `turn.failed` since it is the
+/// terminal, authoritative failure record when both appear.
+///
+/// codex often wraps the message in a JSON-encoded string (the raw provider
+/// API error body); when that inner text itself parses as JSON with an
+/// `error.message` field, that nested message is returned instead, since it is
+/// the human-readable cause (e.g. "The 'x' model is not supported...") rather
+/// than a doubly-escaped blob.
+fn extract_failure_message(lines: &[StreamedLine]) -> Option<String> {
+    let mut top_level_error: Option<String> = None;
+    let mut turn_failed: Option<String> = None;
+
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(&line.raw) else {
+            continue;
+        };
+        match v.get("type").and_then(Value::as_str) {
+            Some("error") => {
+                if let Some(m) = v.get("message").and_then(Value::as_str) {
+                    top_level_error = Some(m.to_string());
+                }
+            }
+            Some("turn.failed") => {
+                if let Some(m) = v.pointer("/error/message").and_then(Value::as_str) {
+                    turn_failed = Some(m.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let raw = turn_failed.or(top_level_error)?;
+    Some(unwrap_nested_error_message(&raw))
+}
+
+/// Unwrap a message that is itself a JSON-encoded provider error body,
+/// returning its inner `error.message` when present, or the original text
+/// unchanged when it isn't JSON or lacks that shape.
+fn unwrap_nested_error_message(raw: &str) -> String {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// Defensive failure detection: `true` if the stream carries an explicit
@@ -358,6 +415,102 @@ mod tests {
         assert!(has_failure_event(&[line(r#"{"type":"error","message":"boom"}"#)]));
         assert!(has_failure_event(&[line(r#"{"type":"turn.failed"}"#)]));
         assert!(!has_failure_event(&[line(r#"{"type":"turn.completed"}"#)]));
+    }
+
+    // --- extract_failure_message: the real diagnostic behind a failed run ---
+
+    /// The exact transcript codex wrote for a real foundry incident
+    /// (2026-09-30, project `parite`, campaign cycle 1): a full-access run
+    /// requested an invalid model id and failed in ~2.5s. Before this fix,
+    /// `Interpreted.failure` was always `None` for codex, so the operator-facing
+    /// summary fell back to stderr's first line — which is always the harmless
+    /// "Reading additional input from stdin..." probe codex prints regardless of
+    /// outcome, never the real cause.
+    #[test]
+    fn extract_failure_message_returns_the_turn_failed_diagnostic() {
+        let lines = vec![
+            line(r#"{"type":"thread.started","thread_id":"01a0f2e0-2e35-7a43-96e6-ee6ffa7a79dd"}"#),
+            line(
+                r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}"#,
+            ),
+            line(r#"{"type":"turn.started"}"#),
+            line(
+                r#"{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}"}"#,
+            ),
+            line(
+                r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}"}}"#,
+            ),
+        ];
+        assert_eq!(
+            extract_failure_message(&lines),
+            Some(
+                "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn extract_failure_message_falls_back_to_top_level_error_without_turn_failed() {
+        let lines = vec![line(r#"{"type":"error","message":"provider exploded"}"#)];
+        assert_eq!(extract_failure_message(&lines), Some("provider exploded".to_string()));
+    }
+
+    #[test]
+    fn extract_failure_message_none_when_no_error_event_present() {
+        let lines = vec![line(r#"{"type":"turn.completed","usage":{}}"#)];
+        assert_eq!(extract_failure_message(&lines), None);
+    }
+
+    #[test]
+    fn extract_failure_message_leaves_non_json_text_unwrapped() {
+        let lines = vec![line(r#"{"type":"error","message":"plain text, not JSON"}"#)];
+        assert_eq!(extract_failure_message(&lines), Some("plain text, not JSON".to_string()));
+    }
+
+    #[tokio::test]
+    async fn invoke_populates_failure_message_from_turn_failed_on_a_real_failure_transcript() {
+        let transcript = vec![
+            r#"{"type":"thread.started"}"#.to_string(),
+            r#"{"type":"turn.started"}"#.to_string(),
+            r#"{"type":"error","message":"{\"error\":{\"message\":\"The 'x' model is not supported when using Codex with a ChatGPT account.\"}}"}"#.to_string(),
+            r#"{"type":"turn.failed","error":{"message":"{\"error\":{\"message\":\"The 'x' model is not supported when using Codex with a ChatGPT account.\"}}"}}"#.to_string(),
+        ];
+        let mut outcome = ok_outcome();
+        outcome.success = false;
+        outcome.exit_code = 1;
+        let runner = Arc::new(FakeRunner {
+            transcript,
+            last_message: None,
+            outcome,
+        });
+        let shell = crate::gateway::fakes::FakeShellGateway::success();
+        let (tx, _rx) = broadcast::channel(16);
+        let gateway =
+            CodexAgentGateway::new_with_streaming(shell, runner, tmp_dir("foundry-codex-test"), tx);
+
+        let request = AgentRequest {
+            prompt: "x".to_string(),
+            project: "demo".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+
+        let response = gateway.invoke(&request).await.expect("invoke ok");
+        assert!(!response.success);
+        let failure = response.failure.expect("codex must report the real diagnostic on failure");
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("The 'x' model is not supported when using Codex with a ChatGPT account.")
+        );
     }
 
     // --- Full invoke() flow (offline: fake stream runner) -------------------

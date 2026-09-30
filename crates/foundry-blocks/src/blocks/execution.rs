@@ -77,8 +77,21 @@ pub(crate) fn build_agent_execution_result(
                 .filter(|failure| failure.is_terminal_provider_failure())
                 .map_or_else(
                     || {
-                        let first_line =
-                            stderr.lines().next().unwrap_or("agent failed").to_string();
+                        // Prefer a provider-reported failure message (e.g. codex's
+                        // parsed `turn.failed`/`error` diagnostic) over stderr's
+                        // first line: some CLIs (codex) write the same harmless,
+                        // content-free line to stderr on every run regardless of
+                        // outcome, so stderr alone can be worse than useless for a
+                        // non-terminal failure.
+                        let first_line = failure
+                            .as_ref()
+                            .and_then(|f| f.message.as_deref())
+                            .map(str::trim)
+                            .filter(|m| !m.is_empty())
+                            .map_or_else(
+                                || stderr.lines().next().unwrap_or("agent failed").to_string(),
+                                str::to_string,
+                            );
                         format!("{success_label} failed: {first_line}")
                     },
                     AgentFailureMetadata::execution_summary,
@@ -507,6 +520,78 @@ mod tests {
         assert_eq!(result.events[0].payload["failure_kind"], "account_limit");
         assert_eq!(result.events[0].payload["terminal"], true);
         assert_eq!(result.events[0].payload["api_error_status"], 429);
+    }
+
+    /// A non-terminal failure (no `AgentFailureKind` classification — e.g.
+    /// codex's parsed `turn.failed` diagnostic for an invalid model id) must
+    /// still surface its `message` in the summary rather than falling back to
+    /// stderr. Regression test for the 2026-09-30 `parite` incident, where
+    /// codex's stderr is always the harmless "Reading additional input from
+    /// stdin..." probe line regardless of outcome, so the old stderr-first-line
+    /// fallback produced a summary with no diagnostic value.
+    #[test]
+    fn non_terminal_failure_with_a_message_uses_it_over_stderr() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            trace_id: None,
+            project: "proj",
+            workflow: WorkflowType::Task,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        let failure = AgentFailureMetadata::new(AgentProvider::Codex).with_message(
+            "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+        );
+
+        let result = build_agent_execution_result(
+            &ctx,
+            AgentOutcome::AgentFailed {
+                stderr: "Reading additional input from stdin...".to_string(),
+                failure: Some(failure),
+            },
+            false,
+            vec![],
+        );
+
+        assert!(!result.success);
+        assert_eq!(
+            result.summary,
+            "proj: plan execution failed: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+        );
+    }
+
+    /// With no failure metadata at all (or a message-less one), the summary
+    /// still falls back to stderr's first line — unchanged prior behavior for
+    /// providers that don't populate `failure`.
+    #[test]
+    fn no_failure_metadata_falls_back_to_stderr_first_line() {
+        let payload = trigger_payload();
+        let ctx = ExecutionContext {
+            trace_id: None,
+            project: "proj",
+            workflow: WorkflowType::Task,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+
+        let result = build_agent_execution_result(
+            &ctx,
+            AgentOutcome::AgentFailed {
+                stderr: "boom\nsecond line".to_string(),
+                failure: None,
+            },
+            false,
+            vec![],
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.summary, "proj: plan execution failed: boom");
     }
 
     // --- maintain: clean tree → NOT overridden ---
