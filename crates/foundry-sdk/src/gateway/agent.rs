@@ -457,6 +457,15 @@ pub struct AgentRequest {
     /// overlap. `None` means the caller had no trace context (a direct CLI
     /// invocation), not that attribution was skipped.
     pub trace_id: Option<String>,
+    /// Whether the caller parses this invocation's answer as a typed JSON
+    /// object.
+    ///
+    /// A print-mode session gets exactly one turn: an agent that ends its turn
+    /// waiting on something (a background command, a notification that never
+    /// arrives) produces prose where the block needs a verdict, and the block
+    /// fails on a non-result. When this is set, a gateway that can resume a
+    /// session is licensed to do so once to recover the missing answer.
+    pub requires_json: bool,
 }
 
 /// Response from an agent invocation.

@@ -285,11 +285,11 @@ async fn assess_continue(
 
     // Intentionally distinct prompt shape: abbreviated schema inline, no "in this exact format"
     // sentinel — does not use json_output_prompt.
-    let prompt = format!(
+    let prompt = super::with_single_turn_discipline(&format!(
         "You have just completed an iteration of improvements on project '{project}'. \
          {directive}\n\n\
          Output ONLY valid JSON: {{\"continue\": true/false, \"reason\": \"<brief explanation>\"}}"
-    );
+    ));
 
     let outcome = super::invoke_agent(
         agent.as_ref(),
@@ -304,6 +304,7 @@ async fn assess_continue(
             env: Vec::new(),
             timeout: std::time::Duration::from_secs(120),
             trace_id: trace_id.clone(),
+            requires_json: true,
         },
         "strategic continue assessment",
         project,
@@ -446,6 +447,44 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ProjectIterationCompleted);
         assert!(result.events[0].payload.get("loop_context").is_none());
+    }
+
+    /// The continue/stop answer is parsed as JSON, so the assessment prompt
+    /// must carry the single-turn rule too.
+    #[tokio::test]
+    async fn continue_assessment_prompt_ends_with_the_single_turn_discipline() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = FakeAgentGateway::success_with("{\"continue\": false, \"reason\": \"done\"}");
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = StrategicLoopController::new(agent.clone(), registry);
+        let trigger = Event::new(
+            EventType::InnerIterationCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project",
+                "success": true,
+                "summary": "",
+                "workflow": "iterate",
+                "loop_context": {
+                    "strategic": { "iteration": 1, "max": 5 }
+                },
+            }),
+        );
+
+        block.execute(&trigger).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(
+            invocations[0]
+                .prompt
+                .trim_end()
+                .ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
+            "continue-assessment prompt must close with the single-turn rule: {}",
+            invocations[0].prompt
+        );
     }
 
     #[tokio::test]

@@ -333,7 +333,7 @@ fn decision_prompt(
         },
     );
     let history = objective_history(campaign);
-    format!(
+    super::with_single_turn_discipline(&format!(
         "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
          OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
@@ -358,7 +358,7 @@ fn decision_prompt(
         snapshot,
         accumulated,
         context,
-    )
+    ))
 }
 
 fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
@@ -459,6 +459,7 @@ impl DecisionRequest {
             env: Vec::new(),
             timeout: self.timeout,
             trace_id: self.trace_id.clone(),
+            requires_json: true,
         }
     }
 }
@@ -1771,6 +1772,13 @@ mod tests {
         // The trunk snapshot must stay distinguishable from the accumulated work.
         assert!(prompt.contains("LIVE REPO SNAPSHOT (delivered trunk state)"));
         assert!(prompt.contains("ACCUMULATED UNMERGED WORK"));
+        // A formation agent that backgrounds a command and ends its turn
+        // waiting for a notification returns prose, and the campaign
+        // escalates on a non-decision.
+        assert!(
+            prompt.trim_end().ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
+            "formation prompt must close with the single-turn rule: {prompt}"
+        );
     }
 
     #[tokio::test]

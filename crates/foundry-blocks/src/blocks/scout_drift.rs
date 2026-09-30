@@ -189,11 +189,11 @@ impl TaskBlock for ScoutDrift {
             let project_path = PathBuf::from(&entry.path);
             let agent_file = super::resolve_agent_file(&entry.agent);
 
-            let prompt = format!(
+            let prompt = super::with_single_turn_discipline(&format!(
                 "{DRIFT_SCOUT_PROMPT}\n\n\
                  You are analyzing the project '{project}'.\n\
                  {JSON_OUTPUT_INSTRUCTIONS}"
-            );
+            ));
 
             let outcome = invoke_reasoning_agent(
                 &*agent,
@@ -414,6 +414,14 @@ mod tests {
         assert_eq!(invocations[0].access, AgentAccess::ReadOnly);
         assert_eq!(invocations[0].tier, ModelTier::Deep);
         assert_eq!(invocations[0].effort, ReasoningEffort::High);
+        assert!(
+            invocations[0]
+                .prompt
+                .trim_end()
+                .ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
+            "drift prompt must close with the single-turn rule: {}",
+            invocations[0].prompt
+        );
     }
 
     #[tokio::test]

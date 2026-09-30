@@ -115,6 +115,7 @@ impl TaskBlock for CreatePlan {
                     env: Vec::new(),
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
+                    requires_json: true,
                 },
                 "create plan",
                 &project,
@@ -160,7 +161,7 @@ impl TaskBlock for CreatePlan {
 }
 
 fn build_plan_prompt(project: &str, principle: &str, category: &str, assessment: &str) -> String {
-    format!(
+    super::with_single_turn_discipline(&format!(
         "You are creating a correction plan for project '{project}'.\n\n\
          Assessment:\n\
          - Principle violated: {principle}\n\
@@ -180,7 +181,7 @@ fn build_plan_prompt(project: &str, principle: &str, category: &str, assessment:
          concluded the assessment is inaccurate — the codebase already satisfies \
          the principle and no changes are warranted. In that case set `reason` to a \
          brief explanation. Otherwise leave it `true`."
-    )
+    ))
 }
 
 /// Parse the `correctionNeeded` flag from the plan agent's output.
@@ -418,6 +419,10 @@ mod tests {
         assert!(prompt.contains("numbered list"), "expected plan format instructions");
         assert!(prompt.contains("correctionNeeded"), "expected JSON output instructions");
         assert!(prompt.contains("Specific"), "expected specificity requirement");
+        assert!(
+            prompt.trim_end().ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
+            "plan prompt must close with the single-turn rule: {prompt}"
+        );
     }
 
     // --- parse_correction_needed unit tests ---

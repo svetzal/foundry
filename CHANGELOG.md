@@ -30,6 +30,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Agent prompts whose answer is parsed as a typed JSON object now carry a
+  standing single-turn rule: the session gets exactly one turn, no notification
+  will arrive, no command may be started in the background, every command runs
+  to completion in the foreground, and the answer must end with the required
+  JSON object. Two sessions on 2026-09-30 ended their turn waiting for a
+  backgrounded command to notify them — the reviewer's cycle was preserved as a
+  defect it did not have (`reviewer returned no valid task verdict`) and the
+  campaign escalated (`campaign agent returned no valid decision`). The rule is
+  worded once and applied to the reviewer, campaign formation, plan, drift
+  scout, strategic continue-assessment and every `json_output_prompt` caller.
+- The Claude gateway now recovers a missing typed answer instead of failing on
+  it: when a block that parses JSON gets output with no JSON object in it, the
+  gateway resumes that same session once (`claude --resume <session_id>`) at
+  the same tier and under the same tool access, and accepts a parseable second
+  answer. A resume that also returns no object leaves the original answer
+  untouched, so the caller still reports its original parse failure. Every
+  resume is recorded with a `tracing::warn!`.
 - The `foundry queue show` example in the work-queue guide showed an `Origin` of
   `majors`; the ledger records `nightly majors lane`.
 

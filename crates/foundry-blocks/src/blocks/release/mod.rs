@@ -159,6 +159,7 @@ pub(super) async fn run_release(
         env: Vec::new(),
         timeout: CLAUDE_TIMEOUT,
         trace_id: input.trace_id.clone(),
+        requires_json: false,
     };
 
     let run_result = agent.invoke(&request).await;

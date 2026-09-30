@@ -159,6 +159,7 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         }
     }
 

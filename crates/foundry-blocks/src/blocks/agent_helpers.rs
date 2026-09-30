@@ -39,6 +39,23 @@ pub(crate) fn chain_agent_provider(payload: &serde_json::Value) -> Option<AgentP
     parse_agent_provider(payload.get("agent_provider").and_then(serde_json::Value::as_str))
 }
 
+/// Standing turn discipline for every prompt whose answer is parsed as typed
+/// JSON.
+///
+/// A print-mode agent session gets exactly one turn and never receives a task
+/// notification. Two observed runs ended their turn saying they were waiting
+/// for a backgrounded command to notify them; both produced prose instead of a
+/// verdict, and the blocks that parse those answers failed on a non-result —
+/// one cycle was preserved as a defect it did not have, one campaign
+/// escalated. Append this with [`with_single_turn_discipline`] so the rule is
+/// worded once.
+pub(crate) const SINGLE_TURN_JSON_DISCIPLINE: &str = "SINGLE NON-INTERACTIVE TURN. You get exactly one turn and no notification will ever reach you. Never start a command in the background (never use the Bash tool's run_in_background option) and never end your turn waiting for a completion notification — none will arrive, and the turn will be read as your final answer. Run every command to completion in the foreground, then answer. Your answer must end with the required JSON object; ending the turn without it is a failure.";
+
+/// Append [`SINGLE_TURN_JSON_DISCIPLINE`] to a prompt.
+pub(crate) fn with_single_turn_discipline(prompt: &str) -> String {
+    format!("{prompt}\n\n{SINGLE_TURN_JSON_DISCIPLINE}")
+}
+
 /// Configuration for an agent invocation within a task block.
 ///
 /// Pass to [`invoke_agent`] to handle request construction, invocation,
@@ -61,6 +78,11 @@ pub(crate) struct AgentBlockSpec {
     /// Trace this invocation belongs to, from the block's triggering event.
     /// Carries the session's token spend into the workflow that incurred it.
     pub trace_id: Option<String>,
+    /// Whether this block parses the answer as a typed JSON object. Set it
+    /// whenever the prompt ends with [`SINGLE_TURN_JSON_DISCIPLINE`]: it is
+    /// what licenses the gateway to resume the session once when the turn
+    /// ends without the required object.
+    pub requires_json: bool,
 }
 
 /// Invoke an agent with the given spec, returning the outcome.
@@ -85,6 +107,7 @@ pub(crate) async fn invoke_agent(
         env: spec.env,
         timeout: spec.timeout,
         trace_id: spec.trace_id,
+        requires_json: spec.requires_json,
     };
     tracing::info!(project = %project, "{trace_label}: invoking agent");
     let response = agent.invoke(&request).await;
@@ -134,6 +157,7 @@ pub(crate) async fn invoke_coding_agent(
             env: spec.env,
             timeout: spec.timeout,
             trace_id: spec.trace_id,
+            requires_json: false,
         },
         trace_label,
         project,
@@ -276,6 +300,7 @@ pub(crate) async fn invoke_reasoning_agent(
             env: Vec::new(),
             timeout: spec.timeout,
             trace_id: spec.trace_id,
+            requires_json: false,
         },
         trace_label,
         project,
@@ -308,6 +333,7 @@ pub(crate) async fn invoke_summary_agent(
             env: Vec::new(),
             timeout: spec.timeout,
             trace_id: spec.trace_id,
+            requires_json: false,
         },
         trace_label,
         project,
@@ -361,11 +387,12 @@ pub(crate) fn fold_agent_outcome<T>(
 /// Build a prompt that ends with the standard JSON-output envelope.
 ///
 /// Appends `"\n\nOutput ONLY valid JSON in this exact format, nothing else:\n{schema_block}"`
-/// to `preamble`, giving assessment blocks a single place to spell the sentinel.
+/// to `preamble`, giving assessment blocks a single place to spell the
+/// sentinel, then closes with [`SINGLE_TURN_JSON_DISCIPLINE`].
 pub(crate) fn json_output_prompt(preamble: &str, schema_block: &str) -> String {
-    format!(
+    with_single_turn_discipline(&format!(
         "{preamble}\n\nOutput ONLY valid JSON in this exact format, nothing else:\n{schema_block}"
-    )
+    ))
 }
 
 /// Match an agent outcome into text output plus a success flag, or return a failure result.
@@ -454,6 +481,22 @@ mod tests {
             .count();
         assert_eq!(envelope_count, 1);
         assert!(result.contains("{\"key\": \"value\"}"));
+    }
+
+    #[test]
+    fn json_output_prompt_ends_with_the_single_turn_discipline() {
+        let result = json_output_prompt("My preamble.", "{}");
+        assert!(
+            result.trim_end().ends_with(SINGLE_TURN_JSON_DISCIPLINE),
+            "every typed-JSON prompt must close with the single-turn rule: {result}"
+        );
+    }
+
+    #[test]
+    fn single_turn_discipline_forbids_background_commands_and_waiting() {
+        assert!(SINGLE_TURN_JSON_DISCIPLINE.contains("run_in_background"));
+        assert!(SINGLE_TURN_JSON_DISCIPLINE.contains("foreground"));
+        assert!(SINGLE_TURN_JSON_DISCIPLINE.contains("notification"));
     }
 
     #[test]

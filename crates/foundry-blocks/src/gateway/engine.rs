@@ -410,6 +410,7 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -500,6 +501,7 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
 
         gateway.invoke(&request).await.expect("invoke ok");
@@ -547,6 +549,7 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");

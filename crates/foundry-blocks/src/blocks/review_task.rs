@@ -40,7 +40,7 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
+    super::with_single_turn_discipline(&format!(
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
@@ -50,7 +50,7 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
          {{\"verdict\":\"defect\",\"diagnosis\":\"specific diagnosis\"}}\n\
          {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}"
-    )
+    ))
 }
 
 impl TaskBlock for ReviewTask {
@@ -127,6 +127,7 @@ impl TaskBlock for ReviewTask {
                     env: Vec::new(),
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
+                    requires_json: true,
                 },
                 "task review",
                 &project,
@@ -315,6 +316,17 @@ mod tests {
         assert!(prompt.contains("test must exercise that boundary itself"));
         assert!(
             prompt.contains("mock, fake, or stub installed above that boundary is insufficient")
+        );
+    }
+
+    // A reviewer that backgrounds a command and ends its turn waiting for a
+    // notification returns prose, and the verdict parse fails on a non-result.
+    #[test]
+    fn review_prompt_ends_with_the_single_turn_discipline() {
+        let prompt = build_review_prompt("ship the slice", &[]);
+        assert!(
+            prompt.trim_end().ends_with(super::super::SINGLE_TURN_JSON_DISCIPLINE),
+            "reviewer prompt must close with the single-turn rule: {prompt}"
         );
     }
 }

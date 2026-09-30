@@ -153,9 +153,9 @@ impl CliAgentAdapter for ClaudeAdapter {
         &'a self,
         outcome: &'a AgentStreamOutcome,
         session: SessionContext<'a>,
-        _inv: &'a Invocation,
-        _request: &'a AgentRequest,
-        _shell: &'a Arc<dyn ShellGateway>,
+        inv: &'a Invocation,
+        request: &'a AgentRequest,
+        shell: &'a Arc<dyn ShellGateway>,
     ) -> Pin<Box<dyn std::future::Future<Output = Interpreted> + Send + 'a>> {
         Box::pin(async move {
             debug_assert_eq!(session.provider, AgentProvider::Claude);
@@ -185,6 +185,11 @@ impl CliAgentAdapter for ClaudeAdapter {
             } else {
                 outcome.exit_code
             };
+            let stdout = if success && request.requires_json && !carries_json_object(&stdout) {
+                resume_for_json(session, inv, request, shell, stdout).await
+            } else {
+                stdout
+            };
             Interpreted {
                 success,
                 exit_code,
@@ -208,6 +213,115 @@ fn claude_agent_name(agent_file: &Path) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .map_or_else(|| agent_file.display().to_string(), ToString::to_string)
+}
+
+/// Prompt used to recover a verdict from a session that ended its turn
+/// without one.
+const RESUME_FOR_JSON_PROMPT: &str = "Your previous turn ended without the required JSON object. \
+     This is a single non-interactive turn and no notification will reach you: do not start any \
+     command in the background and do not wait for anything. If you still need a command's \
+     result, run it to completion in the foreground now. Then output the required JSON object \
+     and nothing else.";
+
+/// Does this answer already carry the typed JSON object the caller parses?
+fn carries_json_object(output: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(&crate::blocks::extract_json(output))
+        .is_ok_and(|value| value.is_object())
+}
+
+/// Build the argv for a one-shot `claude --resume` recovery turn.
+///
+/// Carries the original invocation's model, effort, agent and tool allowlist
+/// forward verbatim, so the recovery runs at the same tier and under the same
+/// access as the session it is resuming — a read-only reviewer stays
+/// read-only. The recovery prompt is short and rides in argv; the output is
+/// plain text rather than a stream-json transcript because nothing reads this
+/// second turn's transcript.
+fn claude_resume_args(original: &[String], session_id: &str, prompt: &str) -> Vec<String> {
+    let mut args = vec![
+        "--resume".to_string(),
+        session_id.to_string(),
+        "--print".to_string(),
+        "--output-format".to_string(),
+        "text".to_string(),
+    ];
+    let mut index = 0;
+    while index < original.len() {
+        match original[index].as_str() {
+            flag @ ("--model" | "--effort" | "--agent" | "--allowedTools") => {
+                if let Some(value) = original.get(index + 1) {
+                    args.push(flag.to_string());
+                    args.push(value.clone());
+                }
+                index += 2;
+            }
+            flag @ "--dangerously-skip-permissions" => {
+                args.push(flag.to_string());
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    args.push(prompt.to_string());
+    args
+}
+
+/// Resume a finished session once to recover the JSON answer its turn ended
+/// without.
+///
+/// A print-mode turn is final: an agent that backgrounds a command and ends
+/// its turn waiting for a notification has already spent the whole session,
+/// and the block that parses its answer fails on prose. Resuming asks the same
+/// session — with its full context — for the object it owed. Returns the
+/// original answer unchanged when the recovery does not produce one, so the
+/// caller still reports the original parse failure rather than a second,
+/// less informative one.
+async fn resume_for_json(
+    session: SessionContext<'_>,
+    inv: &Invocation,
+    request: &AgentRequest,
+    shell: &Arc<dyn ShellGateway>,
+    original: String,
+) -> String {
+    tracing::warn!(
+        session_id = session.session_id,
+        project = %request.project,
+        "agent turn ended without the required JSON answer; resuming the session once to recover it"
+    );
+    let args = claude_resume_args(&inv.args, session.session_id, RESUME_FOR_JSON_PROMPT);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let env_opt = (!inv.env.is_empty()).then_some(inv.env.as_slice());
+    match shell
+        .run(&request.working_dir, "claude", &arg_refs, env_opt, Some(request.timeout))
+        .await
+    {
+        Ok(result) if carries_json_object(&result.stdout) => {
+            tracing::warn!(
+                session_id = session.session_id,
+                project = %request.project,
+                "recovered the required JSON answer by resuming the session"
+            );
+            result.stdout
+        }
+        Ok(result) => {
+            tracing::warn!(
+                session_id = session.session_id,
+                project = %request.project,
+                exit_code = result.exit_code,
+                "resumed session still returned no JSON answer; keeping the original answer"
+            );
+            original
+        }
+        Err(e) => {
+            tracing::warn!(
+                session_id = session.session_id,
+                project = %request.project,
+                error = %e,
+                "could not resume the session to recover the JSON answer"
+            );
+            original
+        }
+    }
 }
 
 /// Extract the final assistant text from a stream-json transcript.
@@ -487,6 +601,7 @@ mod claude_agent_gateway_streaming_tests {
             env: Vec::new(),
             timeout: Duration::from_secs(60),
             trace_id: None,
+            requires_json: false,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -559,6 +674,7 @@ mod claude_agent_gateway_streaming_tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -607,6 +723,7 @@ mod claude_agent_gateway_streaming_tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
 
         let response = gateway.invoke(&request).await.expect("invoke ok");
@@ -703,6 +820,7 @@ mod claude_agent_gateway_streaming_tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             trace_id: None,
+            requires_json: false,
         };
         let _ = gateway.invoke(&request).await.unwrap();
 
@@ -735,6 +853,208 @@ mod claude_agent_gateway_streaming_tests {
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))),
             "args: {captured:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod claude_json_recovery_tests {
+    use super::fakes::FakeShellGateway;
+    use super::*;
+    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun, StreamedLine};
+    use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    /// Runner that reports one successful turn whose final answer is `answer`.
+    struct AnswerRunner {
+        answer: String,
+    }
+
+    impl AgentStreamRunner for AnswerRunner {
+        fn run<'a>(
+            &'a self,
+            run: StreamRun<'a>,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
+        > {
+            let log_path = run.log_path;
+            let line = serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "result": self.answer.clone(),
+            })
+            .to_string();
+            Box::pin(async move {
+                if let Some(parent) = log_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(log_path, format!("{line}\n")).await?;
+                Ok(AgentStreamOutcome {
+                    exit_code: 0,
+                    success: true,
+                    stderr: String::new(),
+                    bytes_written: line.len() as u64,
+                    lines: vec![StreamedLine { raw: line }],
+                })
+            })
+        }
+    }
+
+    fn review_request(requires_json: bool) -> AgentRequest {
+        AgentRequest {
+            prompt: "review this".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Deep,
+            effort: ReasoningEffort::High,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(30),
+            trace_id: None,
+            requires_json,
+        }
+    }
+
+    /// The observed failure: the reviewer ended its turn waiting on a
+    /// backgrounded command, so the block got prose where it needed a verdict.
+    const WAITING_ANSWER: &str = "Nothing else is outstanding except the background mutation run, so I'm waiting for its \
+         completion notification.";
+
+    fn recovered_json() -> CommandResult {
+        CommandResult {
+            stdout: "{\"verdict\":\"complete\"}".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_without_json_resumes_the_session_once_and_accepts_the_recovered_object() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let shell = FakeShellGateway::always(recovered_json());
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            Arc::clone(&shell) as Arc<dyn ShellGateway>,
+            Arc::new(AnswerRunner {
+                answer: WAITING_ANSWER.to_string(),
+            }),
+            test_support::tmp_dir("foundry-resume"),
+            tx,
+        );
+
+        let response = gateway.invoke(&review_request(true)).await.expect("invoke ok");
+        assert_eq!(response.stdout, "{\"verdict\":\"complete\"}");
+
+        let started = rx.recv().await.expect("started event");
+        let session_id = started.payload["session_id"].as_str().expect("session id").to_string();
+
+        let calls = shell.invocations();
+        assert_eq!(calls.len(), 1, "the session must be resumed exactly once: {calls:?}");
+        assert_eq!(calls[0].command, "claude");
+        let resume_at = calls[0].args.iter().position(|a| a == "--resume").expect("--resume flag");
+        assert_eq!(calls[0].args.get(resume_at + 1), Some(&session_id));
+    }
+
+    #[tokio::test]
+    async fn a_resume_that_also_returns_no_json_keeps_the_original_answer() {
+        let (tx, _rx) = broadcast::channel(16);
+        let shell = FakeShellGateway::always(CommandResult {
+            stdout: "still waiting on the background run".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        });
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            Arc::clone(&shell) as Arc<dyn ShellGateway>,
+            Arc::new(AnswerRunner {
+                answer: WAITING_ANSWER.to_string(),
+            }),
+            test_support::tmp_dir("foundry-resume-fail"),
+            tx,
+        );
+
+        let response = gateway.invoke(&review_request(true)).await.expect("invoke ok");
+        assert_eq!(
+            response.stdout, WAITING_ANSWER,
+            "a failed recovery must leave the caller its original parse failure"
+        );
+        assert_eq!(shell.invocations().len(), 1, "recovery is attempted at most once");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_already_carries_json_is_never_resumed() {
+        let (tx, _rx) = broadcast::channel(16);
+        let shell = FakeShellGateway::always(recovered_json());
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            Arc::clone(&shell) as Arc<dyn ShellGateway>,
+            Arc::new(AnswerRunner {
+                answer: "Here it is:\n```json\n{\"verdict\":\"remainder\",\"gaps\":[\"x\"]}\n```"
+                    .to_string(),
+            }),
+            test_support::tmp_dir("foundry-resume-none"),
+            tx,
+        );
+
+        let response = gateway.invoke(&review_request(true)).await.expect("invoke ok");
+        assert!(response.stdout.contains("remainder"));
+        assert!(shell.invocations().is_empty(), "no recovery needed");
+    }
+
+    #[tokio::test]
+    async fn a_block_that_does_not_parse_json_is_never_resumed() {
+        let (tx, _rx) = broadcast::channel(16);
+        let shell = FakeShellGateway::always(recovered_json());
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            Arc::clone(&shell) as Arc<dyn ShellGateway>,
+            Arc::new(AnswerRunner {
+                answer: "a prose summary".to_string(),
+            }),
+            test_support::tmp_dir("foundry-resume-off"),
+            tx,
+        );
+
+        let response = gateway.invoke(&review_request(false)).await.expect("invoke ok");
+        assert_eq!(response.stdout, "a prose summary");
+        assert!(shell.invocations().is_empty());
+    }
+
+    #[test]
+    fn resume_args_carry_the_original_tier_and_read_only_tools() {
+        let original = vec![
+            "--print".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--model".to_string(),
+            "claude-opus-5".to_string(),
+            "--effort".to_string(),
+            "high".to_string(),
+            "--allowedTools".to_string(),
+            "Read Glob Grep WebFetch WebSearch".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+            "-p".to_string(),
+        ];
+        let args = claude_resume_args(&original, "sess-1", "answer now");
+
+        assert_eq!(args[0], "--resume");
+        assert_eq!(args[1], "sess-1");
+        let model_at = args.iter().position(|a| a == "--model").expect("--model");
+        assert_eq!(args[model_at + 1], "claude-opus-5");
+        let effort_at = args.iter().position(|a| a == "--effort").expect("--effort");
+        assert_eq!(args[effort_at + 1], "high");
+        let tools_at = args.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
+        assert_eq!(args[tools_at + 1], "Read Glob Grep WebFetch WebSearch");
+        assert_eq!(args.last().map(String::as_str), Some("answer now"));
+        assert!(!args.iter().any(|a| a == "stream-json"), "recovery reads plain text: {args:?}");
+    }
+
+    #[test]
+    fn carries_json_object_rejects_prose_and_accepts_a_fenced_object() {
+        assert!(!carries_json_object(WAITING_ANSWER));
+        assert!(carries_json_object("```json\n{\"verdict\":\"complete\"}\n```"));
     }
 }
 
