@@ -116,3 +116,23 @@ behaviour, escalate rather than change it.
    per hour, lanes, provider-health awareness, owner controls.
 5. Planning: duplicate and conflict checks, resume of preserved work, the
    start-time check, `queue explain`, GitHub issue and board intake.
+
+## Owner decisions
+
+### 2026-09-30: one more cycle, for cleanup
+
+After ten cycles the completion evaluation found every required gate green
+and every review statement true, with one line of the completion boundary
+unmet. The owner (Stacey) extended the budget by one cycle and decided:
+
+- The final cycle delivers the unmet line and nothing else:
+  `foundry queue show <id>` prints the item together with its `work_item_*`
+  events, served through an additive typed read path. `ListWorkItems`
+  ordering, dispatch, and ledger writes do not change.
+- Two divergences from the field table are accepted for v1 and are not to be
+  reopened: the item id is carried on `work_item_*` events but not on
+  worktree or branch names (correlation is by trace id), and sentinel-driven
+  items record the origin as `maintenance cycle` or `nightly majors lane`
+  instead of the sentinel's name.
+- When that cycle lands with the required gates green, the campaign is
+  complete.
