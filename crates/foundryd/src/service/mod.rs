@@ -36,6 +36,7 @@ mod eventing_ops;
 mod recovery;
 mod registry_ops;
 mod sentinel_ops;
+mod session_recovery;
 mod tracing_ops;
 mod work_item_ops;
 mod work_ledger;
@@ -119,6 +120,16 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
 /// that reason.
 pub async fn settle_running_work_items_on_start(ctx: &RuntimeContext, path: &std::path::Path) {
     work_ledger::settle_running_items_on_start(ctx, path).await;
+}
+
+/// End every agent session the previous process was stopped during, before
+/// the daemon dispatches anything new (see `session_recovery`). Awaited rather
+/// than spawned so no new session can start first.
+pub async fn end_interrupted_agent_sessions_on_start(
+    ctx: &RuntimeContext,
+    events_dir: &std::path::Path,
+) {
+    session_recovery::end_interrupted_sessions(ctx, events_dir).await;
 }
 
 /// Close, in the background, any maintenance cycle foundryd was stopped in

@@ -466,7 +466,7 @@ stream-json transcript on disk.
 | Type                    | Description                                                       |
 | ----------------------- | ----------------------------------------------------------------- |
 | `agent_session_started` | An agent session has begun; transcript file path is included      |
-| `agent_session_ended`   | The agent session has finished (success, failure, or unavailable) |
+| `agent_session_ended`   | The agent session has finished (success, failure, unavailable, or interrupted) |
 
 **`agent_session_started` payload**
 
@@ -487,8 +487,23 @@ stream-json transcript on disk.
 | Field           | Type               | Description                                                     |
 | --------------- | ------------------ | --------------------------------------------------------------- |
 | `session_id`    | string             | UUID identifying this session (matches `agent_session_started`) |
-| `status`        | string             | Outcome: `ok`, `agent_failed`, or `unavailable`                 |
-| `exit_code`     | number             | Process exit code (omitted when the agent could not be invoked) |
-| `ended_at`      | RFC 3339 timestamp | When the session finished                                       |
-| `bytes_written` | number             | Total bytes streamed to the transcript file                     |
-| `error`         | string             | Error message when `status = unavailable` (omitted otherwise)   |
+| `status`        | string             | Outcome: `ok`, `agent_failed`, `unavailable`, or `interrupted` |
+| `exit_code`     | number             | Process exit code (omitted when the agent could not be invoked, and for `interrupted`) |
+| `ended_at`      | RFC 3339 timestamp | When the session finished; for `interrupted`, when the daemon restarted |
+| `bytes_written` | number             | Total bytes streamed to the transcript file (`0` for `interrupted`) |
+| `error`         | string             | Error message when `status = unavailable`; `daemon restarted` when `status = interrupted` (omitted otherwise) |
+
+**`interrupted` sessions.** An agent session is a child process of `foundryd`,
+so it dies when the daemon stops, and nothing records its end at that moment.
+On the next start, before it accepts work, `foundryd` reads the last 7 days of
+the event log (the same lookback as the interrupted maintenance-cycle recovery)
+for `agent_session_started` events with no `agent_session_ended` for the same
+`session_id`. Nothing can be running then, so each such session is dead. For
+each one, `foundryd` records an `agent_session_ended` with `status`
+`interrupted`, `error` `daemon restarted`, the original session's `project` and
+`trace_id`, and `ended_at` set to the daemon start time. The event is persisted
+to the event log and published on the Watch stream like any other. Because the
+end is in the log, a later start does not end the same session again.
+Unparseable lines in the log are skipped and do not stop the daemon from
+starting. `usage` and `cost` are absent: nothing measured the session's last
+moments.

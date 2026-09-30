@@ -29,8 +29,13 @@ use tempfile::TempDir;
 
 const CYCLE_TRACE: &str = "c0ffee00c0ffee00c0ffee00c0ffee00";
 
+/// Agent sessions a daemon stop left with an `agent_session_started` and no
+/// `agent_session_ended`: the orphaned-session sweep's input.
+const ORPHANED_SESSIONS: [&str; 2] = ["orphan-task-session", "orphan-campaign-session"];
+
 /// A Foundry home in the shape the incident found: one task still running,
-/// one maintenance cycle with no completion, and a campaign store.
+/// one maintenance cycle with no completion, agent sessions with no end, and
+/// a campaign store.
 struct Home {
     dir: TempDir,
     item_id: String,
@@ -75,7 +80,18 @@ impl Home {
             serde_json::json!({}),
         )
         .with_trace_id(Some(CYCLE_TRACE.to_string()));
-        EventWriter::new(foundry.join("events")).write(&cycle).unwrap();
+        let writer = EventWriter::new(foundry.join("events"));
+        writer.write(&cycle).unwrap();
+        for session in ORPHANED_SESSIONS {
+            let started = Event::new(
+                EventType::AgentSessionStarted,
+                "alpha".to_string(),
+                Throttle::Full,
+                serde_json::json!({ "session_id": session }),
+            )
+            .with_trace_id(Some("a".repeat(32)));
+            writer.write(&started).unwrap();
+        }
 
         std::fs::write(
             foundry.join("campaigns.json"),
@@ -186,6 +202,11 @@ fn a_second_start_while_the_lock_is_held_exits_non_zero_and_changes_nothing() {
         home.snapshot(),
         before,
         "the ledger, event log and campaign store are byte-identical"
+    );
+    assert_eq!(
+        count(&logged_events(&home.foundry().join("events")), is_session_end),
+        0,
+        "a refused start ends no agent session: the sweep runs only after the lock is held"
     );
 }
 
@@ -302,6 +323,10 @@ fn count(events: &[serde_json::Value], pred: impl Fn(&serde_json::Value) -> bool
     events.iter().filter(|e| pred(e)).count()
 }
 
+fn is_session_end(event: &serde_json::Value) -> bool {
+    event["event_type"] == "agent_session_ended"
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_normal_start_runs_each_recovery_sweep_exactly_once() {
     let home = Home::new();
@@ -337,12 +362,30 @@ async fn a_normal_start_runs_each_recovery_sweep_exactly_once() {
         assert!(Instant::now() < deadline, "the interrupted cycle was never closed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    while count(&logged_events(&events_dir), is_session_end) < ORPHANED_SESSIONS.len() {
+        assert!(Instant::now() < deadline, "the orphaned agent sessions were never ended");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     // Room for a duplicate sweep to show up if one were going to.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let events = logged_events(&events_dir);
     assert_eq!(count(&events, is_item_settled), 1, "the restart sweep ran exactly once");
     assert_eq!(count(&events, is_cycle_completion), 1, "cycle recovery ran exactly once");
+    assert_eq!(
+        count(&events, is_session_end),
+        ORPHANED_SESSIONS.len(),
+        "no agent session is ended beyond the orphans"
+    );
+    for session in ORPHANED_SESSIONS {
+        let interrupted_end = |e: &serde_json::Value| {
+            is_session_end(e)
+                && e["payload"]["session_id"] == session
+                && e["payload"]["status"] == "interrupted"
+                && e["payload"]["error"] == "daemon restarted"
+        };
+        assert_eq!(count(&events, interrupted_end), 1, "{session}: exactly one interrupted end");
+    }
 
     let ledger = WorkItemStore::load(&home.foundry().join("work-items.json")).unwrap();
     assert_eq!(ledger.items[0].state, WorkItemState::Failed);

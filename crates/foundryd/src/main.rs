@@ -121,7 +121,7 @@ fn claim_instance(
     addr: std::net::SocketAddr,
     lock_path: &std::path::Path,
 ) -> Result<(TcpIncoming, instance_lock::InstanceLock), StartRefusal> {
-    let incoming = TcpIncoming::bind(addr).map_err(|error| {
+    let incoming = bind_listener(addr).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AddrInUse {
             StartRefusal::AddressInUse {
                 addr,
@@ -142,6 +142,16 @@ fn claim_instance(
         },
     })?;
     Ok((incoming, lock))
+}
+
+/// Bind the gRPC listen address with `TCP_NODELAY` requested on every
+/// accepted connection, matching what `Server::builder().serve(addr)` did
+/// before the listener was bound up front by [`claim_instance`].
+///
+/// A bare `TcpIncoming::bind` leaves nodelay unset, so small gRPC frames
+/// (unary replies, `Watch` events) would wait on Nagle's algorithm.
+fn bind_listener(addr: std::net::SocketAddr) -> std::io::Result<TcpIncoming> {
+    Ok(TcpIncoming::bind(addr)?.with_nodelay(Some(true)))
 }
 
 fn init_tracing() -> Result<()> {
@@ -267,8 +277,10 @@ async fn main() -> Result<()> {
     };
 
     // Before anything can dispatch: close out work the previous process was
-    // stopped in the middle of, so a restart never leaves an item running.
+    // stopped in the middle of, so a restart never leaves an item or an agent
+    // session running.
     service::settle_running_work_items_on_start(&ctx, &foundry_sdk::paths::work_items_path()).await;
+    service::end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
@@ -300,7 +312,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, StartRefusal, claim_instance, resolve_listen_addr};
+    use super::{Cli, StartRefusal, bind_listener, claim_instance, resolve_listen_addr};
     use clap::Parser as _;
 
     #[test]
@@ -407,6 +419,38 @@ mod tests {
             super::instance_lock::acquire(&lock_path),
             Err(super::instance_lock::LockError::Held { .. })
         ));
+    }
+
+    /// A plain accepted socket has `TCP_NODELAY` off; the daemon's listener
+    /// must turn it on, as `Server::builder().serve(addr)` used to.
+    #[tokio::test]
+    async fn claim_instance_listener_sets_nodelay_on_accepted_connections() {
+        use tokio_stream::StreamExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("foundryd.lock");
+        let (mut incoming, _lock) =
+            claim_instance("127.0.0.1:0".parse().unwrap(), &lock_path).unwrap();
+        let addr = incoming.local_addr().unwrap();
+
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let accepted = incoming.next().await.unwrap().unwrap();
+
+        assert!(accepted.nodelay().unwrap(), "TCP_NODELAY is requested on accepted connections");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_sets_nodelay_where_a_bare_bind_does_not() {
+        use tokio_stream::StreamExt as _;
+
+        let mut bare = super::TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let _bare_client =
+            tokio::net::TcpStream::connect(bare.local_addr().unwrap()).await.unwrap();
+        assert!(!bare.next().await.unwrap().unwrap().nodelay().unwrap(), "baseline: off");
+
+        let mut ours = bind_listener("127.0.0.1:0".parse().unwrap()).unwrap();
+        let _client = tokio::net::TcpStream::connect(ours.local_addr().unwrap()).await.unwrap();
+        assert!(ours.next().await.unwrap().unwrap().nodelay().unwrap());
     }
 }
 

@@ -19,11 +19,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
   sweep, seeds or merges any store, starts the scheduler or emits any event. If
   the address is in use or the lock is held it prints one line naming the
   running daemon's pid when known, exits non-zero and changes nothing on disk.
-  What the sweeps do when they legitimately run is unchanged.
+  What the sweeps do when they legitimately run is unchanged. Accepted gRPC
+  connections keep `TCP_NODELAY` on, as they had before the listener was bound
+  up front.
 - `foundryd --version` (`-V`) and `foundryd --help` (`-h`) now print and exit 0
   without taking the lock, binding, touching any store or starting anything.
   Unknown flags and arguments are rejected with a usage error instead of being
   ignored.
+- Agent sessions that a daemon stop left without an end no longer show as
+  running forever. On start, once it holds the single-instance lock and before
+  it accepts work, `foundryd` reads the last
+  7 days of the event log for `agent_session_started` events with no
+  `agent_session_ended` for the same `session_id`, and records an
+  `agent_session_ended` for each with the new status `interrupted`, the error
+  `daemon restarted`, the original session's project and trace, and `ended_at`
+  set to the daemon start time. The ends are persisted and published on the
+  Watch stream like any other event, so consumers that rebuild session state
+  from the log (such as ops-visualizer's `/agents` page) see the session close.
+  A second start records nothing for the same session, and unparseable log
+  lines are skipped rather than failing startup. Live sessions start and end as
+  before.
 
 ## [0.40.2] - 2026-09-30
 
