@@ -135,12 +135,16 @@ impl CliAgentAdapter for ClaudeAdapter {
             args.push("Read Glob Grep WebFetch WebSearch".to_string());
         }
         args.push("--dangerously-skip-permissions".to_string());
+        // `-p` with no positional prompt: the CLI reads the prompt from stdin in
+        // print mode. The prompt must NOT ride in argv — Linux caps one argv
+        // element at MAX_ARG_STRLEN (131072 bytes), and a campaign prompt that
+        // crosses it fails the spawn outright with E2BIG.
         args.push("-p".to_string());
-        args.push(request.prompt.clone());
         // CLAUDECODE="" prevents nested-session detection.
         Invocation {
             args,
             env: vec![("CLAUDECODE".to_string(), String::new())],
+            stdin: Some(request.prompt.clone().into_bytes()),
             last_message_path: None,
         }
     }
@@ -398,9 +402,9 @@ async fn read_claude_terminal_failure(
 mod claude_agent_gateway_streaming_tests {
     use super::fakes::FakeShellGateway;
     use super::*;
-    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamedLine};
+    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun, StreamedLine};
     use foundry_sdk::event::EventType;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -416,15 +420,11 @@ mod claude_agent_gateway_streaming_tests {
     impl AgentStreamRunner for FakeAgentStreamRunner {
         fn run<'a>(
             &'a self,
-            _working_dir: &'a Path,
-            _command: &'a str,
-            _args: &'a [&'a str],
-            _env: Option<&'a [(String, String)]>,
-            _timeout: Option<Duration>,
-            log_path: &'a Path,
+            run: StreamRun<'a>,
         ) -> Pin<
             Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
         > {
+            let log_path = run.log_path;
             let transcript = self.transcript.clone();
             let mut template = self.outcome_template.clone();
             Box::pin(async move {
@@ -638,17 +638,13 @@ mod claude_agent_gateway_streaming_tests {
     async fn invoke_includes_stream_json_flags_in_args() {
         struct ArgRecorder {
             recorded: Arc<Mutex<Vec<String>>>,
+            stdin: Arc<Mutex<Option<Vec<u8>>>>,
         }
 
         impl AgentStreamRunner for ArgRecorder {
             fn run<'a>(
                 &'a self,
-                _working_dir: &'a Path,
-                _command: &'a str,
-                args: &'a [&'a str],
-                _env: Option<&'a [(String, String)]>,
-                _timeout: Option<Duration>,
-                log_path: &'a Path,
+                run: StreamRun<'a>,
             ) -> Pin<
                 Box<
                     dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>>
@@ -657,13 +653,17 @@ mod claude_agent_gateway_streaming_tests {
                 >,
             > {
                 let recorded = self.recorded.clone();
-                let captured: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+                let stdin_seen = self.stdin.clone();
+                let log_path = run.log_path;
+                let captured: Vec<String> = run.args.iter().map(|s| (*s).to_string()).collect();
+                let stdin = run.stdin.map(<[u8]>::to_vec);
                 Box::pin(async move {
                     if let Some(parent) = log_path.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
                     tokio::fs::File::create(log_path).await?;
                     *recorded.lock().unwrap() = captured;
+                    *stdin_seen.lock().unwrap() = stdin;
                     Ok(AgentStreamOutcome {
                         exit_code: 0,
                         success: true,
@@ -676,8 +676,10 @@ mod claude_agent_gateway_streaming_tests {
         }
 
         let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let stdin_seen: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
         let runner = Arc::new(ArgRecorder {
             recorded: recorded.clone(),
+            stdin: stdin_seen.clone(),
         });
         let (tx, _rx) = broadcast::channel(4);
         let gateway = ClaudeAgentGateway::new_with_streaming(
@@ -705,6 +707,15 @@ mod claude_agent_gateway_streaming_tests {
         let _ = gateway.invoke(&request).await.unwrap();
 
         let captured = recorded.lock().unwrap().clone();
+        // The prompt rides on stdin, never in argv: a single argv element is
+        // capped at MAX_ARG_STRLEN (131072 bytes) on Linux.
+        assert!(!captured.iter().any(|a| a == "x"), "prompt must not be in argv: {captured:?}");
+        assert_eq!(captured.last().map(String::as_str), Some("-p"), "args: {captured:?}");
+        assert_eq!(
+            stdin_seen.lock().unwrap().as_deref(),
+            Some(b"x".as_slice()),
+            "prompt should be delivered on stdin"
+        );
         assert!(captured.iter().any(|a| a == "--output-format"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "stream-json"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--verbose"), "args: {captured:?}");
@@ -729,11 +740,10 @@ mod claude_agent_gateway_streaming_tests {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::pin::Pin;
-    use std::time::Duration;
 
-    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamedLine};
+    use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun, StreamedLine};
 
     pub(crate) struct FakeRunner {
         pub(crate) transcript: Vec<String>,
@@ -746,22 +756,19 @@ pub(crate) mod test_support {
     impl AgentStreamRunner for FakeRunner {
         fn run<'a>(
             &'a self,
-            _working_dir: &'a Path,
-            _command: &'a str,
-            args: &'a [&'a str],
-            _env: Option<&'a [(String, String)]>,
-            _timeout: Option<Duration>,
-            log_path: &'a Path,
+            run: StreamRun<'a>,
         ) -> Pin<
             Box<dyn std::future::Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>,
         > {
+            let log_path = run.log_path;
             let transcript = self.transcript.clone();
             let last_message = self.last_message.clone();
             let mut outcome = self.outcome.clone();
-            let out_path = args
+            let out_path = run
+                .args
                 .iter()
                 .position(|a| *a == "-o")
-                .and_then(|i| args.get(i + 1))
+                .and_then(|i| run.args.get(i + 1))
                 .map(PathBuf::from);
             Box::pin(async move {
                 if let Some(parent) = log_path.parent() {

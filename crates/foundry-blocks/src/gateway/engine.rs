@@ -25,7 +25,7 @@ use foundry_sdk::payload::AgentSessionEndedPayload;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner};
+use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun};
 
 use super::{
     AgentFailureMetadata, AgentGateway, AgentProvider, AgentRequest, AgentResponse, ProviderModels,
@@ -69,6 +69,10 @@ pub(crate) trait CliAgentAdapter: Send + Sync {
 pub(crate) struct Invocation {
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
+    /// Bytes fed to the CLI's stdin, which is then closed. `Some` for providers
+    /// that take their prompt on stdin — the only way past Linux's 131072-byte
+    /// cap on a single argv element. `None` leaves stdin closed.
+    pub(crate) stdin: Option<Vec<u8>>,
     /// Codex writes its authoritative final answer to an `-o` file; stored here
     /// so `interpret` can read and clean it up. `None` for other providers.
     pub(crate) last_message_path: Option<PathBuf>,
@@ -271,14 +275,15 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
 
             let outcome = self
                 .stream_runner
-                .run(
-                    &request.working_dir,
-                    self.adapter.command(),
-                    &arg_refs,
-                    env_opt,
-                    Some(request.timeout),
-                    &log_path,
-                )
+                .run(StreamRun {
+                    working_dir: &request.working_dir,
+                    command: self.adapter.command(),
+                    args: &arg_refs,
+                    env: env_opt,
+                    stdin: inv.stdin.as_deref(),
+                    timeout: Some(request.timeout),
+                    log_path: &log_path,
+                })
                 .await;
 
             let run = self.settle(outcome, &session_id, provider, &log_path, &inv, request).await;
@@ -350,6 +355,7 @@ mod tests {
             Invocation {
                 args: vec![request.prompt.clone()],
                 env: vec![],
+                stdin: None,
                 last_message_path: None,
             }
         }
@@ -513,12 +519,7 @@ mod tests {
         impl AgentStreamRunner for FailRunner {
             fn run<'a>(
                 &'a self,
-                _: &'a std::path::Path,
-                _: &'a str,
-                _: &'a [&'a str],
-                _: Option<&'a [(String, String)]>,
-                _: Option<Duration>,
-                _: &'a std::path::Path,
+                _: crate::agent_stream::StreamRun<'a>,
             ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentStreamOutcome>> + Send + 'a>>
             {
                 Box::pin(async { Err(anyhow::anyhow!("binary not found")) })

@@ -114,6 +114,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The Claude CLI now receives its prompt on stdin instead of as an argv element,
+  so a large prompt no longer fails the spawn outright. Linux caps a single
+  argv element at `MAX_ARG_STRLEN` (131072 bytes); campaign formations whose
+  prompt crossed that line died instantly with `E2BIG`, recorded only as
+  `failed to spawn claude`, and escalated the campaign. `claude -p` reads the
+  prompt from stdin in print mode, and the streaming runner now takes an
+  optional stdin payload that it writes on its own task and then closes. With
+  no payload, stdin stays closed as before, since `opencode` hangs on an open
+  inherited stdin. The `codex` and `opencode` argv are unchanged.
+- A failed agent spawn now records the underlying OS error — for example
+  `failed to spawn claude: Argument list too long (os error 7)` — in the
+  `agent_session_ended` payload's `error` field, instead of a bare
+  `failed to spawn claude` with no cause.
 - The real-git tests now run Git hermetically, so `cargo test --workspace`
   passes inside a Foundry agent session. An agent session injects
   `remote.origin.pushurl = foundry://agent-push-disabled` through `GIT_CONFIG_*`;

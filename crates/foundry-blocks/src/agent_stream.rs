@@ -26,18 +26,38 @@ pub struct AgentStreamOutcome {
     pub lines: Vec<StreamedLine>,
 }
 
+/// One streaming agent run: the child to spawn, what to feed it, and where to
+/// tee its stdout.
+///
+/// A struct rather than a parameter list because the run now carries an
+/// optional stdin payload as well — see [`StreamRun::stdin`].
+#[derive(Clone, Copy)]
+pub struct StreamRun<'a> {
+    pub working_dir: &'a Path,
+    pub command: &'a str,
+    pub args: &'a [&'a str],
+    pub env: Option<&'a [(String, String)]>,
+    /// Bytes to write to the child's stdin, which is then closed.
+    ///
+    /// `None` leaves stdin closed outright (`Stdio::null()`). That is the
+    /// default because some agentic CLIs (notably `opencode run`) block forever
+    /// after bootstrap on an inherited stdin that never closes.
+    ///
+    /// Supply `Some(..)` to hand the child a payload too large for a single
+    /// argv element: Linux caps one argument at `MAX_ARG_STRLEN` (131072
+    /// bytes), and exceeding it fails the spawn with `E2BIG`.
+    pub stdin: Option<&'a [u8]>,
+    pub timeout: Option<Duration>,
+    pub log_path: &'a Path,
+}
+
 pub trait AgentStreamRunner: Send + Sync {
-    /// Spawn `command` with `args` in `working_dir`, read stdout line by line,
-    /// append every line (with trailing `\n`) to `log_path`, and return the
-    /// collected lines + exit info.
+    /// Spawn `run.command` with `run.args` in `run.working_dir`, read stdout
+    /// line by line, append every line (with trailing `\n`) to `run.log_path`,
+    /// and return the collected lines + exit info.
     fn run<'a>(
         &'a self,
-        working_dir: &'a Path,
-        command: &'a str,
-        args: &'a [&'a str],
-        env: Option<&'a [(String, String)]>,
-        timeout: Option<Duration>,
-        log_path: &'a Path,
+        run: StreamRun<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentStreamOutcome>> + Send + 'a>>;
 }
 
@@ -48,14 +68,18 @@ pub struct ProcessAgentStreamRunner;
 impl AgentStreamRunner for ProcessAgentStreamRunner {
     fn run<'a>(
         &'a self,
-        working_dir: &'a Path,
-        command: &'a str,
-        args: &'a [&'a str],
-        env: Option<&'a [(String, String)]>,
-        timeout: Option<Duration>,
-        log_path: &'a Path,
+        run: StreamRun<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentStreamOutcome>> + Send + 'a>> {
         Box::pin(async move {
+            let StreamRun {
+                working_dir,
+                command,
+                args,
+                env,
+                stdin,
+                timeout,
+                log_path,
+            } = run;
             let timeout = timeout.unwrap_or(Duration::from_secs(300));
 
             if let Some(parent) = log_path.parent() {
@@ -74,11 +98,16 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
             let mut cmd = Command::new(command);
             cmd.current_dir(working_dir)
                 .args(args)
-                // Close stdin. Agentic CLIs run non-interactively here, but some
-                // (notably `opencode run`) block forever after bootstrap waiting on
-                // an inherited stdin that never closes. The `claude` CLI in
-                // `--print -p` mode never reads stdin, so closing it is safe for both.
-                .stdin(std::process::Stdio::null())
+                // With no stdin payload, close stdin. Agentic CLIs run
+                // non-interactively here, but some (notably `opencode run`) block
+                // forever after bootstrap waiting on an inherited stdin that never
+                // closes. With a payload, pipe it in and close the pipe right after
+                // writing, which leaves the child seeing a normal EOF.
+                .stdin(if stdin.is_some() {
+                    std::process::Stdio::piped()
+                } else {
+                    std::process::Stdio::null()
+                })
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
@@ -94,10 +123,33 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 }
             }
 
-            let mut child = cmd.spawn().with_context(|| format!("failed to spawn {command}"))?;
+            // Carry the OS error text into the message. A prompt that exceeds
+            // `MAX_ARG_STRLEN` fails here with `Argument list too long (os error 7)`,
+            // and without the cause the record reads as an unexplained
+            // "failed to spawn claude".
+            let mut child =
+                cmd.spawn().map_err(|e| anyhow::anyhow!("failed to spawn {command}: {e}"))?;
 
             let stdout = child.stdout.take().context("missing stdout pipe")?;
             let stderr = child.stderr.take().context("missing stderr pipe")?;
+
+            // Feed stdin from its own task. A payload larger than the pipe buffer
+            // (64KB on Linux) blocks until the child drains it, so writing inline
+            // would stall before stdout is being read.
+            let stdin_handle = match stdin {
+                Some(bytes) => {
+                    let mut pipe = child.stdin.take().context("missing stdin pipe")?;
+                    let owned = bytes.to_vec();
+                    Some(tokio::spawn(async move {
+                        pipe.write_all(&owned).await?;
+                        pipe.shutdown().await?;
+                        // Drop closes the pipe, so the child sees EOF.
+                        drop(pipe);
+                        Ok::<(), anyhow::Error>(())
+                    }))
+                }
+                None => None,
+            };
 
             let mut reader = BufReader::new(stdout).lines();
             let mut lines: Vec<StreamedLine> = Vec::new();
@@ -131,6 +183,9 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                     lines.push(StreamedLine { raw: line });
                 }
                 log_writer.flush().await?;
+                if let Some(handle) = stdin_handle {
+                    handle.await?.context("failed to write prompt to child stdin")?;
+                }
                 let exit = child.wait().await?;
                 let stderr_text = stderr_handle.await??;
                 Ok::<(std::process::ExitStatus, String), anyhow::Error>((exit, stderr_text))
@@ -164,19 +219,30 @@ mod tests {
         std::env::temp_dir().join(format!("agent-stream-test-{}.jsonl", uuid::Uuid::new_v4()))
     }
 
+    /// A `sh -c` run with no env, no stdin and the default timeout.
+    fn sh_run<'a>(working_dir: &'a Path, args: &'a [&'a str], log_path: &'a Path) -> StreamRun<'a> {
+        StreamRun {
+            working_dir,
+            command: "sh",
+            args,
+            env: None,
+            stdin: None,
+            timeout: None,
+            log_path,
+        }
+    }
+
     #[tokio::test]
     async fn streams_stdout_lines_and_writes_them_to_log() {
         let log = tmp_log();
+        let dir = std::env::temp_dir();
         let runner = ProcessAgentStreamRunner;
         let outcome = runner
-            .run(
-                std::env::temp_dir().as_path(),
-                "sh",
+            .run(sh_run(
+                dir.as_path(),
                 &["-c", "printf 'line one\\nline two\\nline three\\n'"],
-                None,
-                None,
                 log.as_path(),
-            )
+            ))
             .await
             .expect("run should succeed");
 
@@ -188,6 +254,85 @@ mod tests {
 
         let written = tokio::fs::read_to_string(&log).await.unwrap();
         assert_eq!(written, "line one\nline two\nline three\n");
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    // --- stdin delivery -----------------------------------------------------
+
+    /// A prompt larger than Linux's `MAX_ARG_STRLEN` (131072 bytes) cannot ride
+    /// in a single argv element, but must reach the child intact over stdin.
+    #[tokio::test]
+    async fn delivers_a_stdin_payload_larger_than_max_arg_strlen_intact() {
+        const MAX_ARG_STRLEN: usize = 131_072;
+        let payload = "x".repeat(MAX_ARG_STRLEN + 4096);
+
+        let log = tmp_log();
+        let dir = std::env::temp_dir();
+        let runner = ProcessAgentStreamRunner;
+        let mut run = sh_run(dir.as_path(), &["-c", "wc -c"], log.as_path());
+        run.stdin = Some(payload.as_bytes());
+        let outcome = runner.run(run).await.expect("run should succeed");
+
+        assert!(outcome.success, "outcome: {outcome:?}");
+        let counted: usize = outcome
+            .lines
+            .first()
+            .expect("wc should report a byte count")
+            .raw
+            .trim()
+            .parse()
+            .expect("wc output should be a number");
+        assert_eq!(counted, payload.len());
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    #[tokio::test]
+    async fn closes_stdin_when_no_payload_is_supplied() {
+        let log = tmp_log();
+        let dir = std::env::temp_dir();
+        let runner = ProcessAgentStreamRunner;
+        let outcome = runner
+            .run(sh_run(dir.as_path(), &["-c", "wc -c"], log.as_path()))
+            .await
+            .expect("run should succeed");
+
+        assert!(outcome.success);
+        let counted: usize = outcome
+            .lines
+            .first()
+            .expect("wc should report a byte count")
+            .raw
+            .trim()
+            .parse()
+            .expect("wc output should be a number");
+        assert_eq!(counted, 0, "stdin should be closed and empty");
+
+        let _ = tokio::fs::remove_file(&log).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_message_carries_the_os_error() {
+        let log = tmp_log();
+        let dir = std::env::temp_dir();
+        let runner = ProcessAgentStreamRunner;
+        let err = runner
+            .run(StreamRun {
+                working_dir: dir.as_path(),
+                command: "foundry-no-such-binary-6f2a",
+                args: &[],
+                env: None,
+                stdin: None,
+                timeout: None,
+                log_path: log.as_path(),
+            })
+            .await
+            .expect_err("spawning a missing binary should fail");
+
+        let text = format!("{err}");
+        assert!(text.starts_with("failed to spawn foundry-no-such-binary-6f2a: "), "got: {text}");
+        assert!(text.contains("os error"), "spawn error should carry the OS cause; got: {text}");
 
         let _ = tokio::fs::remove_file(&log).await;
     }
@@ -205,18 +350,12 @@ mod tests {
         let expected = ctx.traceparent();
 
         let log = tmp_log();
+        let dir = std::env::temp_dir();
         let runner = ProcessAgentStreamRunner;
         let outcome = SPAN_CONTEXT
             .scope(ctx, async {
                 runner
-                    .run(
-                        std::env::temp_dir().as_path(),
-                        "sh",
-                        &["-c", "printenv TRACEPARENT"],
-                        None,
-                        None,
-                        log.as_path(),
-                    )
+                    .run(sh_run(dir.as_path(), &["-c", "printenv TRACEPARENT"], log.as_path()))
                     .await
             })
             .await
@@ -232,16 +371,10 @@ mod tests {
     #[tokio::test]
     async fn run_does_not_set_traceparent_when_context_absent() {
         let log = tmp_log();
+        let dir = std::env::temp_dir();
         let runner = ProcessAgentStreamRunner;
         let outcome = runner
-            .run(
-                std::env::temp_dir().as_path(),
-                "sh",
-                &["-c", "printenv TRACEPARENT || true"],
-                None,
-                None,
-                log.as_path(),
-            )
+            .run(sh_run(dir.as_path(), &["-c", "printenv TRACEPARENT || true"], log.as_path()))
             .await
             .expect("run should succeed");
 

@@ -88,6 +88,8 @@ impl CliAgentAdapter for CodexAdapter {
         Invocation {
             args,
             env: vec![],
+            // codex takes its prompt in argv.
+            stdin: None,
             last_message_path: Some(last_message_path),
         }
     }

@@ -87,6 +87,8 @@ impl CliAgentAdapter for OpencodeAdapter {
         Invocation {
             args,
             env,
+            // opencode takes its prompt in argv and hangs on an open stdin.
+            stdin: None,
             last_message_path: None,
         }
     }
