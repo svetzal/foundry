@@ -28,11 +28,11 @@ fn parse_verdict(output: &str) -> anyhow::Result<TaskVerdict> {
 /// Linux `execve(2)`'s `MAX_ARG_STRLEN` (`PAGE_SIZE * 32`) bounds any single
 /// argv string, independently of the much larger `ARG_MAX` covering argv and
 /// the environment together. Confirmed 128 KiB (4 KiB pages) on
-/// `mojility-ops-01`, the host that hit this. Codex's prompt rides as the
-/// last positional argv element with stdin deliberately closed for every
-/// invocation (see the module doc comment on `gateway/codex.rs` — `codex
-/// exec` blocks reading a piped stdin), so there is no escape hatch: this one
-/// string must stay under the limit on its own.
+/// `mojility-ops-01`, the host that hit this. Since 0.40.4 the codex gateway
+/// delivers the prompt on stdin (`codex exec -`), as the claude gateway does,
+/// so the prompt is no longer an argv element (see the module doc comment on
+/// `gateway/codex.rs`). The budget stays as defence in depth, and for any
+/// provider that still passes its prompt in argv.
 const MAX_ARG_STRLEN_BYTES: usize = 128 * 1024;
 
 /// Ceiling for the whole rendered review prompt, leaving headroom below
