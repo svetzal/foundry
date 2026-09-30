@@ -5,6 +5,60 @@ not being addressed in the current workflow. Entries require concrete runtime
 evidence and a verifiable completion boundary. Remove an entry when it lands;
 Git history is the archive.
 
+## P1 — Show that an agent session is alive, and stop a restart from killing one unseen
+
+**Observed:** 2026-09-30
+
+A task on project parite ran one agent session for 57 minutes. Between
+`agent_session_started` (13:06:34 UTC) and the end of the block, Foundry
+emitted nothing, so `foundry status`, `foundry queue` and ops-visualizer all
+showed the same line for the whole time and the owner could not tell a working
+agent from a hung one. The same day the daemon was restarted twice while a
+workflow was running (02:08 UTC by one session, 12:00:58 UTC by another); each
+restart killed the running agent, and nothing warned the operator or the other
+session.
+
+Evidence: ops-01 event log for trace of `evt_f2e5d7d67bc09b7874b835d9`
+(no events between 13:06:34 and 14:03); `systemctl --user show foundryd -p
+ActiveEnterTimestamp` on 2026-09-30; the interrupted bedrock task
+`evt_1c073a99f3ee4accdbe27d54`.
+
+Completion evidence:
+
+- While an agent session runs, Foundry records a heartbeat at a fixed interval
+  (last output time and bytes written so far) that `foundry queue`,
+  `foundry status` and the Watch stream expose, without flooding the durable
+  event log.
+- A work item's `queue show` names the provider, tier and session id of the
+  session working it.
+- `foundryd` refuses a graceful stop while items are running unless told to
+  force, and a CLI command reports who is using the daemon (running items and
+  their origins) before a restart.
+- Tests cover the heartbeat cadence, the refusal, and the forced path settling
+  running items as `failed` with the restart reason.
+
+## P2 — The event writer can leave two events on one line
+
+**Observed:** 2026-09-30 (written 2026-09-25)
+
+Line 6245 of `~/.foundry/events/2026-09.jsonl` on mojility-ops-01 holds a
+truncated `agent_session_ended` event (`evt_d42af67b66b914485fb96cc8`, cut off
+inside its timestamp at `2026-09-25T15:44:40.780555034+0`) followed on the
+same line by a complete `execution_requested` event
+(`evt_e3d1502d12e698e13325e8c7`). Both are unreadable to a line-based JSON
+reader. The daemon was killed mid-write on 2026-09-25 and the next process
+appended without first terminating the partial line. ops-visualizer logs a
+parse warning for it on every re-read.
+
+Completion evidence:
+
+- On open, the event writer checks whether the file ends with a newline and,
+  if not, terminates the partial line before appending, so a later event is
+  never glued to a fragment.
+- A partial trailing line is reported once at start with its byte offset.
+- A test writes a truncated last line, reopens the writer, appends an event,
+  and asserts the new event parses on its own line.
+
 ## P1 — A formation agent that fails to spawn should pause the campaign, not escalate it
 
 **Observed:** 2026-09-30
