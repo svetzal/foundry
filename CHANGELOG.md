@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-30
+
 ### Added
 
 - A work-item ledger: one durable record per unit of work Foundry dispatches,
