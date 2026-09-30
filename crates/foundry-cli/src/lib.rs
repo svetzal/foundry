@@ -9,6 +9,7 @@ pub mod campaign_commands;
 pub mod commands;
 pub mod daemon;
 pub mod event_commands;
+pub mod origin;
 pub mod registry_commands;
 pub mod render;
 pub mod workflow_commands;

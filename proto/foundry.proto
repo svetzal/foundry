@@ -481,6 +481,16 @@ message CancelCampaignResponse {
 // FAILED_PRECONDITION for `paused`, `escalated`, or `completed` campaigns.
 message AdvanceCampaignRequest {
     string name = 1;
+    // Opaque operator context for this manual advance: the CLI client's
+    // hostname, plus any `--origin` text the operator passed.
+    //
+    // Additive and optional. Empty means "no operator context", and a request
+    // that omits it dispatches exactly as before, recording the campaign name
+    // and cycle alone as the work item's origin. The daemon never parses,
+    // validates, filters or groups on this value, and no dispatch is rejected,
+    // delayed or altered because of it — it is carried onto the cycle's
+    // ExecutionRequested and recorded in the work-item ledger verbatim.
+    string operator_origin = 2;
 }
 
 message AdvanceCampaignResponse {

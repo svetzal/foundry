@@ -10,6 +10,13 @@ pub struct CampaignAdvanceRequestedPayload {
     pub run_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_result: Option<TaskRunCompletedPayload>,
+    /// Opaque operator context from a manual `foundry campaign advance`.
+    ///
+    /// Absent for the automatic post-result advance, which no operator issued.
+    /// Forwarded verbatim onto the cycle's `ExecutionRequested` so the ledger
+    /// can record who asked; never parsed or acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

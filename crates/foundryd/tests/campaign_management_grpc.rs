@@ -744,6 +744,7 @@ async fn advance_active_campaign_dispatches_event_and_returns_current_state() {
     let resp = service
         .advance_campaign(Request::new(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         }))
         .await
         .expect("advance should succeed");
@@ -779,6 +780,7 @@ async fn advance_paused_campaign_returns_failed_precondition() {
     let err = service
         .advance_campaign(Request::new(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         }))
         .await
         .expect_err("advance on paused campaign must fail");
@@ -796,6 +798,7 @@ async fn advance_escalated_campaign_returns_failed_precondition() {
     let err = service
         .advance_campaign(Request::new(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         }))
         .await
         .expect_err("advance on escalated campaign must fail");
@@ -813,6 +816,7 @@ async fn advance_completed_campaign_returns_failed_precondition() {
     let err = service
         .advance_campaign(Request::new(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         }))
         .await
         .expect_err("advance on completed campaign must fail");
@@ -827,6 +831,7 @@ async fn advance_missing_campaign_returns_not_found() {
     let err = service
         .advance_campaign(Request::new(AdvanceCampaignRequest {
             name: "nonexistent".to_string(),
+            operator_origin: String::new(),
         }))
         .await
         .expect_err("missing campaign must fail");

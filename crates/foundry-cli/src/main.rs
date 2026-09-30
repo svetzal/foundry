@@ -9,6 +9,7 @@ mod daemon;
 mod event_commands;
 mod gates_commands;
 mod init_commands;
+mod origin;
 mod queue_commands;
 mod registry_commands;
 mod render;
@@ -18,6 +19,42 @@ mod workflow_commands;
 pub mod proto {
     #![allow(clippy::all, clippy::pedantic)]
     tonic::include_proto!("foundry");
+}
+
+/// Arguments for `foundry task`.
+///
+/// A named group rather than inline fields so the dispatch arm stays one line.
+#[derive(clap::Args)]
+struct TaskArgs {
+    /// Project name from registry
+    project: String,
+
+    /// Concrete task description for the coding agent
+    description: String,
+
+    /// Agent backend to run on: claude, opencode, or codex
+    /// (overrides the daemon default for this run)
+    #[arg(long)]
+    agent: Option<String>,
+
+    /// Free-text note recorded with this dispatch in the work-item ledger,
+    /// alongside this machine's hostname. Opaque — it changes nothing about how
+    /// the task runs.
+    #[arg(long)]
+    origin: Option<String>,
+}
+
+impl TaskArgs {
+    async fn run(&self, addr: &str) -> Result<()> {
+        workflow_commands::task(
+            addr,
+            &self.project,
+            &self.description,
+            self.agent.as_deref(),
+            self.origin.as_deref(),
+        )
+        .await
+    }
 }
 
 #[derive(Parser)]
@@ -137,18 +174,7 @@ enum Commands {
     },
 
     /// Run one user-provided coding task on a project
-    Task {
-        /// Project name from registry
-        project: String,
-
-        /// Concrete task description for the coding agent
-        description: String,
-
-        /// Agent backend to run on: claude, opencode, or codex
-        /// (overrides the daemon default for this run)
-        #[arg(long)]
-        agent: Option<String>,
-    },
+    Task(TaskArgs),
 
     /// Show a project's outdated dependencies, what maintenance would apply
     /// under its update policy, and what the majors lane would dispatch.
@@ -269,7 +295,15 @@ enum CampaignCommands {
     /// Show one campaign
     Show { name: String },
     /// Derive and dispatch one next objective from live state
-    Advance { name: String },
+    Advance {
+        name: String,
+
+        /// Free-text note recorded with the dispatched cycle in the work-item
+        /// ledger, alongside this machine's hostname. Opaque — it changes
+        /// nothing about how the cycle runs.
+        #[arg(long)]
+        origin: Option<String>,
+    },
     /// Pause automatic advancement
     Pause { name: String },
     /// Record an owner decision and reactivate an escalated campaign
@@ -705,8 +739,9 @@ async fn handle_campaign_command(
         CampaignCommands::Show { name } => {
             campaign_commands::show(campaigns_path, addr, offline, &name).await
         }
-        CampaignCommands::Advance { name } => {
-            campaign_commands::advance(addr, campaigns_path, offline, &name).await
+        CampaignCommands::Advance { name, origin } => {
+            campaign_commands::advance(addr, campaigns_path, offline, &name, origin.as_deref())
+                .await
         }
         CampaignCommands::Pause { name } => {
             campaign_commands::pause(campaigns_path, addr, offline, &name).await
@@ -775,11 +810,7 @@ async fn main() -> Result<()> {
         Commands::Iterate { project, agent } => {
             workflow_commands::iterate(&addr, &project, agent.as_deref()).await
         }
-        Commands::Task {
-            project,
-            description,
-            agent,
-        } => workflow_commands::task(&addr, &project, &description, agent.as_deref()).await,
+        Commands::Task(args) => args.run(&addr).await,
         Commands::Deps { project, policy } => {
             workflow_commands::deps(&addr, &project, policy.as_deref()).await
         }
@@ -841,6 +872,65 @@ async fn main() -> Result<()> {
         Commands::Sentinel(sub) => {
             handle_sentinel_command(sub, &foundry_sdk::paths::sentinels_path(), &addr, cli.offline)
                 .await
+        }
+    }
+}
+
+#[cfg(test)]
+mod cli_surface_tests {
+    use super::*;
+
+    #[test]
+    fn task_accepts_an_optional_origin() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "task",
+            "acme",
+            "do the thing",
+            "--origin",
+            "asked by Stacey",
+        ])
+        .expect("parse");
+
+        match cli.command {
+            Commands::Task(args) => assert_eq!(args.origin.as_deref(), Some("asked by Stacey")),
+            _ => panic!("expected the task subcommand"),
+        }
+    }
+
+    #[test]
+    fn task_without_origin_parses_as_before() {
+        let cli = Cli::try_parse_from(["foundry", "task", "acme", "do the thing"]).expect("parse");
+
+        match cli.command {
+            Commands::Task(args) => assert_eq!(args.origin, None),
+            _ => panic!("expected the task subcommand"),
+        }
+    }
+
+    #[test]
+    fn campaign_advance_accepts_an_optional_origin() {
+        let cli = Cli::try_parse_from([
+            "foundry", "campaign", "advance", "tidy-cli", "--origin", "by hand",
+        ])
+        .expect("parse");
+
+        match cli.command {
+            Commands::Campaign(CampaignCommands::Advance { origin, .. }) => {
+                assert_eq!(origin.as_deref(), Some("by hand"));
+            }
+            _ => panic!("expected the campaign advance subcommand"),
+        }
+    }
+
+    #[test]
+    fn an_empty_origin_is_accepted() {
+        let cli = Cli::try_parse_from(["foundry", "task", "acme", "do the thing", "--origin", ""])
+            .expect("parse");
+
+        match cli.command {
+            Commands::Task(args) => assert_eq!(args.origin.as_deref(), Some("")),
+            _ => panic!("expected the task subcommand"),
         }
     }
 }

@@ -369,7 +369,22 @@ pub async fn resume(
     Ok(())
 }
 
-pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -> Result<()> {
+/// The `AdvanceCampaign` request for one manual advance, carrying the operator
+/// context this client can state.
+fn advance_request(name: &str, origin: Option<&str>) -> AdvanceCampaignRequest {
+    AdvanceCampaignRequest {
+        name: name.to_string(),
+        operator_origin: crate::origin::local_operator_origin(origin),
+    }
+}
+
+pub async fn advance(
+    addr: &str,
+    store_path: &Path,
+    offline: bool,
+    name: &str,
+    origin: Option<&str>,
+) -> Result<()> {
     if offline {
         let store = CampaignStore::load(store_path)?;
         let campaign =
@@ -423,9 +438,7 @@ pub async fn advance(addr: &str, store_path: &Path, offline: bool, name: &str) -
         .into_inner();
 
     let response = client
-        .advance_campaign(AdvanceCampaignRequest {
-            name: name.to_string(),
-        })
+        .advance_campaign(advance_request(name, origin))
         .await
         .map_err(status_to_anyhow)?
         .into_inner();
@@ -915,7 +928,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = advance("http://127.0.0.1:0", &store, true, "c").await.unwrap_err();
+        let err = advance("http://127.0.0.1:0", &store, true, "c", None).await.unwrap_err();
         assert!(err.to_string().contains("cancelled"), "got: {err}");
     }
 
@@ -940,7 +953,7 @@ mod tests {
         );
         add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
-        let err = advance("http://127.0.0.1:0", &store, true, "c").await.unwrap_err();
+        let err = advance("http://127.0.0.1:0", &store, true, "c", None).await.unwrap_err();
         assert!(err.to_string().contains("requires a running daemon"), "got: {err}");
     }
 
@@ -1182,5 +1195,32 @@ mod tests {
         assert_eq!(campaign.owner_decisions[0].authorized_by, "tester");
         assert!(rendered.contains("Owner decisions:"));
         assert!(rendered.contains("Use the typed daemon mutation path."));
+    }
+
+    // -- operator origin on `foundry campaign advance` --
+
+    #[test]
+    fn advance_request_carries_the_hostname_and_the_origin_text_verbatim() {
+        let request = super::advance_request("tidy-cli", Some("kicked off by hand"));
+
+        assert_eq!(request.name, "tidy-cli");
+        assert!(
+            request.operator_origin.starts_with("host "),
+            "expected a hostname, got {:?}",
+            request.operator_origin
+        );
+        assert!(
+            request.operator_origin.ends_with(": kicked off by hand"),
+            "expected the origin text verbatim, got {:?}",
+            request.operator_origin
+        );
+    }
+
+    #[test]
+    fn advance_request_without_origin_text_still_states_the_host() {
+        let request = super::advance_request("tidy-cli", None);
+
+        assert!(request.operator_origin.starts_with("host "));
+        assert!(!request.operator_origin.contains(':'));
     }
 }

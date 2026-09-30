@@ -209,6 +209,7 @@ async fn generated_client_advance_active_returns_pre_advance_state_and_dispatche
     let response = client
         .advance_campaign(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect("advance of Active campaign must succeed")
@@ -271,6 +272,7 @@ async fn generated_client_advance_dispatches_a_traceable_root_event() {
     client
         .advance_campaign(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect("advance of Active campaign must succeed");
@@ -340,6 +342,7 @@ async fn generated_client_advance_paused_returns_failed_precondition_store_uncha
     let err = client
         .advance_campaign(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect_err("advancing a Paused campaign must fail");
@@ -374,6 +377,7 @@ async fn generated_client_advance_escalated_returns_failed_precondition_store_un
     let err = client
         .advance_campaign(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect_err("advancing an Escalated campaign must fail");
@@ -406,6 +410,7 @@ async fn generated_client_advance_completed_returns_failed_precondition_store_un
     let err = client
         .advance_campaign(AdvanceCampaignRequest {
             name: "c".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect_err("advancing a Completed campaign must fail");
@@ -442,6 +447,7 @@ async fn generated_client_advance_missing_name_returns_not_found_store_unchanged
     let err = client
         .advance_campaign(AdvanceCampaignRequest {
             name: "absent".to_string(),
+            operator_origin: String::new(),
         })
         .await
         .expect_err("advancing a missing campaign must fail");
@@ -477,6 +483,7 @@ async fn generated_client_advance_error_messages_do_not_contain_store_path() {
         let err = client
             .advance_campaign(AdvanceCampaignRequest {
                 name: "c".to_string(),
+                operator_origin: String::new(),
             })
             .await
             .expect_err("advancing a Paused campaign must fail");
@@ -499,6 +506,7 @@ async fn generated_client_advance_error_messages_do_not_contain_store_path() {
         let err = client
             .advance_campaign(AdvanceCampaignRequest {
                 name: "absent".to_string(),
+                operator_origin: String::new(),
             })
             .await
             .expect_err("advancing a missing campaign must fail");

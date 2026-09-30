@@ -694,4 +694,27 @@ mod tests {
             assert!(!rendered.ends_with("\n\n"), "must not end with a blank line");
         }
     }
+
+    // ── operator origin ───────────────────────────────────────────────────────
+
+    #[test]
+    fn item_json_emits_the_origin_exactly_as_stored() {
+        let mut stored = item("wi_1", "running");
+        stored.origin = "foundry task (host workbench: asked by Stacey)".to_string();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&item_json(&stored)).expect("valid JSON");
+
+        assert_eq!(parsed["origin"], "foundry task (host workbench: asked by Stacey)");
+    }
+
+    #[test]
+    fn item_detail_prints_the_origin_exactly_as_stored() {
+        let mut stored = item("wi_1", "running");
+        stored.origin = "campaign tidy-cli cycle 4 (host workbench: by hand)".to_string();
+
+        assert!(
+            item_detail(&stored).contains("campaign tidy-cli cycle 4 (host workbench: by hand)")
+        );
+    }
 }

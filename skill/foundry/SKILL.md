@@ -139,7 +139,11 @@ Run one concrete user-provided coding task against a registered project:
 ```bash
 foundry task <project-name> "Add a --quiet flag to the CLI and cover it with tests"
 foundry task <project-name> "Fix the failing parser regression" --agent codex
+foundry task <project-name> "Add retries to the uploader" --origin "asked by Stacey in standup"
 ```
+
+`--origin <text>` is a free-text note recorded on the work item beside the CLI
+client's hostname. It is opaque — it changes nothing about how the task runs.
 
 The task runs inside an isolated Git worktree, checks the project charter,
 resolves and verifies gates, and performs a skeptical read-only review. It ends
@@ -169,7 +173,7 @@ should be derived from the latest repository state:
 foundry campaign add ./campaign.json
 foundry campaign list
 foundry campaign show <name>
-foundry campaign advance <name>
+foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."

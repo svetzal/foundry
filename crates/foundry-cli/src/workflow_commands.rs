@@ -161,6 +161,31 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
     }
 }
 
+/// The `execution_requested` payload for one `foundry task` dispatch.
+///
+/// `operator_origin` is written only when there is operator context to carry, so
+/// a dispatch without it is byte-for-byte the payload this command has always
+/// sent.
+fn task_payload(
+    project: &str,
+    description: &str,
+    agent_provider: Option<&str>,
+    operator_origin: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "project": project,
+        "workflow": "task",
+        "prompt": description,
+    });
+    if let Some(provider) = agent_provider {
+        payload["agent_provider"] = serde_json::json!(provider);
+    }
+    if let Some(origin) = operator_origin {
+        payload["operator_origin"] = serde_json::json!(origin);
+    }
+    payload
+}
+
 /// Validate an optional `--agent` provider override and return its canonical wire form.
 fn resolve_agent_override(agent: Option<&str>) -> Result<Option<String>> {
     match agent {
@@ -193,16 +218,17 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
     Ok(())
 }
 
-pub async fn task(addr: &str, project: &str, description: &str, agent: Option<&str>) -> Result<()> {
+pub async fn task(
+    addr: &str,
+    project: &str,
+    description: &str,
+    agent: Option<&str>,
+    origin: Option<&str>,
+) -> Result<()> {
     let agent_provider = resolve_agent_override(agent)?;
-    let mut payload = serde_json::json!({
-        "project": project,
-        "workflow": "task",
-        "prompt": description,
-    });
-    if let Some(p) = &agent_provider {
-        payload["agent_provider"] = serde_json::json!(p);
-    }
+    let operator_origin = crate::origin::local_operator_origin(origin);
+    let payload =
+        task_payload(project, description, agent_provider.as_deref(), Some(&operator_origin));
     let runner = WorkflowRunner::new(addr, project);
     println!("Running task for {project}...");
     let (event_id, _events) = runner
@@ -448,5 +474,38 @@ mod tests {
         assert!(!super::review_block_failed("block_completed", ok));
         assert!(!super::review_block_failed("block_completed", other));
         assert!(!super::review_block_failed("dependency_updates_classified", failed));
+    }
+
+    // -- operator origin on `foundry task` --
+
+    #[test]
+    fn task_payload_carries_the_hostname_and_the_origin_text_verbatim() {
+        let origin = crate::origin::operator_origin(Some("workbench"), Some("asked by Stacey"));
+        let payload = super::task_payload("p", "do the thing", None, Some(&origin));
+
+        assert_eq!(payload["operator_origin"], "host workbench: asked by Stacey");
+        assert_eq!(payload["prompt"], "do the thing");
+        assert_eq!(payload["workflow"], "task");
+    }
+
+    #[test]
+    fn a_failed_hostname_lookup_still_dispatches_with_the_stated_fallback() {
+        // The lookup failing yields `None` for the hostname; the dispatch still
+        // carries its prompt and gains a stated origin rather than no origin.
+        let origin = crate::origin::operator_origin(None, Some("by hand"));
+        let payload = super::task_payload("p", "do the thing", None, Some(&origin));
+
+        assert_eq!(payload["operator_origin"], "host unknown host: by hand");
+        assert_eq!(payload["prompt"], "do the thing");
+    }
+
+    #[test]
+    fn task_payload_without_operator_origin_is_unchanged() {
+        let payload = super::task_payload("p", "do the thing", None, None);
+
+        assert_eq!(
+            payload,
+            serde_json::json!({ "project": "p", "workflow": "task", "prompt": "do the thing" })
+        );
     }
 }

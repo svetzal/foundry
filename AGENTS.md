@@ -133,7 +133,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | Command | Purpose |
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
-| `foundry task <project> "<description>" [--agent <provider>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict |
+| `foundry task <project> "<description>" [--agent <provider>] [--origin <text>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname |
 | `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
 | `foundry deps <project> [--policy patch\|minor\|major]` | Show outdated dependencies, the maintain brief under the project's update policy, and what the majors lane would dispatch; changes nothing |
 | `foundry scout <project>` | Detect intent drift without changes |
@@ -164,7 +164,7 @@ are legal.
 | `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign list` | Yes (or `--offline`) | Reads daemon-owned campaign state via `ListCampaigns`; `--offline` reads the file directly |
 | `foundry campaign show <name>` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`; `--offline` reads the file directly |
-| `foundry campaign advance <name>` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback |
+| `foundry campaign advance <name> [--origin <text>]` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback. `--origin` records a free-text operator note on the dispatched cycle's work item, beside the CLI client's hostname |
 | `foundry campaign pause <name>` | Yes (or `--offline`) | Mutates via `PauseCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign decide <name> …` | Yes (or `--offline`) | Mutates via `DecideCampaign`; unreachable daemon is an error unless `--offline` is set |

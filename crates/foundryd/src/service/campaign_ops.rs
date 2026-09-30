@@ -536,7 +536,11 @@ pub(super) fn advance(
     ctx: &super::RuntimeContext,
     request: Request<AdvanceCampaignRequest>,
 ) -> Result<Response<AdvanceCampaignResponse>, Status> {
-    let name = request.into_inner().name;
+    let req = request.into_inner();
+    let name = req.name;
+    // Opaque: an empty field is simply "no operator context". It is never
+    // parsed, and never a reason to refuse, delay or alter the dispatch.
+    let operator_origin = Some(req.operator_origin).filter(|text| !text.is_empty());
 
     // Validate under the exclusive lock; release before emitting to avoid a
     // deadlock with the AdvanceCampaign block which also acquires the lock.
@@ -558,6 +562,7 @@ pub(super) fn advance(
         campaign: name,
         run_event_id: None,
         run_result: None,
+        operator_origin,
     })
     .map_err(|e| Status::internal(format!("failed to serialize advance payload: {e}")))?;
 

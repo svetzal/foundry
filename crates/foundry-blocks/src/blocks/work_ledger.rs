@@ -44,6 +44,31 @@ fn classify(
     objective: &str,
     campaign: Option<&str>,
     cycle: Option<u64>,
+    operator_origin: Option<&str>,
+) -> (WorkItemKind, WorkLane, String) {
+    let (kind, lane, dispatch_origin) = classify_dispatch(objective, campaign, cycle);
+    (kind, lane, with_operator_origin(dispatch_origin, operator_origin))
+}
+
+/// Append the opaque operator context to the origin the dispatch itself implies.
+///
+/// The ledger stores one `origin` string, so operator context is appended to the
+/// dispatch origin rather than replacing it: a campaign cycle still says which
+/// campaign and cycle it is. Nothing reads the result back apart — it is
+/// display text, and neither the daemon nor the read RPCs parse it.
+fn with_operator_origin(dispatch_origin: String, operator_origin: Option<&str>) -> String {
+    match operator_origin.filter(|text| !text.is_empty()) {
+        Some(operator) => format!("{dispatch_origin} ({operator})"),
+        None => dispatch_origin,
+    }
+}
+
+/// The origin, kind and lane the dispatch itself implies, before any operator
+/// context is appended.
+fn classify_dispatch(
+    objective: &str,
+    campaign: Option<&str>,
+    cycle: Option<u64>,
 ) -> (WorkItemKind, WorkLane, String) {
     if let Some(campaign) = campaign {
         let origin = match cycle {
@@ -68,8 +93,12 @@ fn classify(
 
 /// The item a task dispatch opens, read off its root `ExecutionRequested`.
 fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
-    let (kind, lane, origin) =
-        classify(&payload.prompt, payload.chain.campaign.as_deref(), payload.chain.campaign_cycle);
+    let (kind, lane, origin) = classify(
+        &payload.prompt,
+        payload.chain.campaign.as_deref(),
+        payload.chain.campaign_cycle,
+        payload.operator_origin.as_deref(),
+    );
     WorkItem::dispatched(
         WorkItemSpec {
             project: trigger.project.clone(),
@@ -410,8 +439,15 @@ impl SimulatedSuccess for SettleWorkItem {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let (kind, lane, origin) =
-            classify(&objective, result.context.campaign.as_deref(), result.context.campaign_cycle);
+        // A settle simulation reconstructs a synthetic item from a result
+        // event, which carries no operator context — the recorded item it
+        // stands in for already holds whatever origin the dispatch recorded.
+        let (kind, lane, origin) = classify(
+            &objective,
+            result.context.campaign.as_deref(),
+            result.context.campaign_cycle,
+            None,
+        );
         let mut item = WorkItem::dispatched(
             WorkItemSpec {
                 project: trigger.project.clone(),
@@ -801,6 +837,77 @@ mod tests {
         assert_eq!(item.kind, WorkItemKind::CampaignCycle);
         assert_eq!(item.lane, WorkLane::Campaign);
         assert_eq!(item.origin, "campaign tidy-cli cycle 3");
+    }
+
+    #[tokio::test]
+    async fn operator_origin_is_recorded_verbatim_beside_the_dispatch_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let block = recorder(path.to_str().unwrap());
+
+        let result = block
+            .execute(&dispatch(
+                &serde_json::json!({"operator_origin": "host workbench: asked by Stacey"}),
+            ))
+            .await
+            .unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.origin, "foundry task (host workbench: asked by Stacey)");
+        assert_eq!(
+            result.events[0].payload["origin"],
+            "foundry task (host workbench: asked by Stacey)"
+        );
+        assert_eq!(
+            result.events[1].payload["origin"],
+            "foundry task (host workbench: asked by Stacey)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_campaign_cycle_keeps_its_campaign_and_cycle_beside_the_operator_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let block = recorder(path.to_str().unwrap());
+
+        block
+            .execute(&dispatch(&serde_json::json!({
+                "campaign": "tidy-cli",
+                "campaign_cycle": 3,
+                "operator_origin": "host workbench: by hand",
+            })))
+            .await
+            .unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.origin, "campaign tidy-cli cycle 3 (host workbench: by hand)");
+    }
+
+    #[test]
+    fn a_dispatch_without_operator_origin_records_exactly_the_origins_it_always_did() {
+        assert_eq!(super::classify("Add a flag.", None, None, None).2, "foundry task");
+        assert_eq!(
+            super::classify("Add a flag.", Some("tidy-cli"), Some(3), None).2,
+            "campaign tidy-cli cycle 3"
+        );
+        let objective = crate::dependency_updates::majors::objective(
+            "alpha",
+            &foundry_sdk::payload::PlannedUpdate {
+                ecosystem: foundry_sdk::payload::Ecosystem::Cargo,
+                manifest: ".".to_string(),
+                package: "serde".to_string(),
+                from: "1.0.0".to_string(),
+                to: "2.0.0".to_string(),
+                class: foundry_sdk::payload::UpdateClass::Major,
+                change: foundry_sdk::payload::ChangeKind::Manifest,
+                security: None,
+                beyond_policy: false,
+                beyond_hold: false,
+            },
+        );
+        assert_eq!(super::classify(&objective, None, None, None).2, "nightly majors lane");
+        // An empty operator origin says nothing, so it adds nothing.
+        assert_eq!(super::classify("Add a flag.", None, None, Some("")).2, "foundry task");
     }
 
     #[tokio::test]

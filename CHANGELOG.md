@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry task <project> "<description>" [--origin <text>]` and
+  `foundry campaign advance <name> [--origin <text>]` now record operator
+  context on the work item they dispatch: the CLI client's hostname, plus any
+  `--origin` text verbatim. A campaign cycle keeps its campaign name and cycle
+  and gains the operator context beside them. The value reaches the daemon
+  through an additive optional `operator_origin` field on the
+  `ExecutionRequested` payload and on `AdvanceCampaignRequest`; a payload or
+  request that omits it records exactly the origins it did before (`foundry
+  task`, `campaign <name> cycle <n>`, `nightly majors lane`), and cycles from
+  the automatic post-result advance are unchanged. Origin stays opaque —
+  nothing parses, validates, filters or groups on it, an empty `--origin` is
+  accepted, and no dispatch is rejected, delayed or altered because of it. A
+  hostname lookup that fails records the stated fallback `host unknown host`
+  rather than failing the dispatch.
+- `CHARTER.md` now states that work admission, pacing and settlement are in
+  scope — a deliberate scope expansion decided by the owner on 2026-09-29 —
+  and that the queue holds only executable work and is deliberately not a
+  backlog.
+
+### Fixed
+
+- The `foundry queue show` example in the work-queue guide showed an `Origin` of
+  `majors`; the ledger records `nightly majors lane`.
+
 ## [0.40.0] - 2026-09-30
 
 ### Added

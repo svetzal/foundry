@@ -36,6 +36,14 @@ Foundry automates engineering workflows for a registered project portfolio:
 - Release management (tag, build, distribute)
 - Local tool installation
 - Release pipeline observation
+- Work admission, pacing and settlement — the work-item ledger records every
+  unit of work Foundry admitted, how it reached Foundry, and how it settled.
+  This is a deliberate scope expansion, decided by the owner on 2026-09-29:
+  automating work that a person cannot see admitted or settled is not
+  automation they can rely on. The queue holds only executable work — work
+  Foundry has dispatched or is about to — and is deliberately **not** a
+  backlog: intent that nobody has committed to executing belongs in planning
+  tools, not here.
 
 It does **not** replace the existing `evt-cli` event logging system.
 Foundry emits events into the same JSONL intake files, coexisting with

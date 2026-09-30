@@ -592,6 +592,7 @@ fn execution_event(
     throttle: foundry_sdk::throttle::Throttle,
     objective: &str,
     base_ref: Option<String>,
+    operator_origin: Option<&str>,
 ) -> Event {
     // `cycles_completed` was incremented for this dispatch just above, so it is
     // the number of the cycle this task *is* — and it matches the count the
@@ -610,6 +611,11 @@ fn execution_event(
     }
     if let Some(reference) = base_ref {
         payload["base_ref"] = serde_json::json!(reference);
+    }
+    // Opaque operator context, forwarded verbatim from the manual advance that
+    // asked for this cycle. Absent for the automatic post-result advance.
+    if let Some(origin) = operator_origin {
+        payload["operator_origin"] = serde_json::json!(origin);
     }
     Event::new(EventType::ExecutionRequested, campaign.project.clone(), throttle, payload)
 }
@@ -930,7 +936,13 @@ fn apply_advance_outcome(
                     },
                     record,
                 ),
-                execution_event(campaign, throttle, &objective, base_ref),
+                execution_event(
+                    campaign,
+                    throttle,
+                    &objective,
+                    base_ref,
+                    request.operator_origin.as_deref(),
+                ),
             ]
         }
     }
@@ -1152,6 +1164,7 @@ impl SimulatedSuccess for AdvanceCampaign {
                 foundry_sdk::throttle::Throttle::DryRun,
                 &format!("Dry-run next objective for campaign '{}'.", campaign.name),
                 None,
+                request.operator_origin.as_deref(),
             ),
         ]
     }
@@ -1391,6 +1404,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(run_result),
             })
@@ -1452,6 +1466,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(TaskRunCompletedPayload {
                     project: "p".to_string(),
@@ -1536,6 +1551,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(TaskRunCompletedPayload {
                     project: "p".to_string(),
@@ -1610,6 +1626,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(TaskRunCompletedPayload {
                     project: "p".to_string(),
@@ -1702,6 +1719,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-9".to_string()),
                 run_result: Some(TaskRunCompletedPayload {
                     project: "p".to_string(),
@@ -1777,6 +1795,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: None,
                 run_result: None,
             })
@@ -1841,6 +1860,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(pending.clone()),
             })
@@ -1860,6 +1880,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: None,
                 run_result: None,
             })
@@ -1939,6 +1960,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: None,
                 run_result: None,
             })
@@ -2067,6 +2089,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(TaskRunCompletedPayload {
                     project: "p".to_string(),
@@ -2413,6 +2436,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: None,
                 run_result: None,
             })
@@ -2604,6 +2628,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(run_result_with(TaskVerdict::RunnerError {
                     detail: "agent account limit reached: You've hit your monthly spend limit \
@@ -2652,6 +2677,7 @@ mod tests {
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
                 run_result: Some(run_result_with(TaskVerdict::RunnerError {
                     detail: "task review missing isolated worktree".to_string(),
@@ -2782,6 +2808,7 @@ mod tests {
             Throttle::DryRun,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
                 campaign: "c".to_string(),
+                operator_origin: None,
                 run_event_id: None,
                 run_result: None,
             })

@@ -150,7 +150,7 @@ completes.
 Run one concrete coding objective against a registered project.
 
 ```bash
-foundry task <project> "<description>" [--agent <provider>]
+foundry task <project> "<description>" [--agent <provider>] [--origin <text>]
 ```
 
 | Argument      | Required | Description                                             |
@@ -158,6 +158,12 @@ foundry task <project> "<description>" [--agent <provider>]
 | `project`     | Yes      | Registered project name                                 |
 | `description` | Yes      | One concrete objective, supplied as a positional string |
 | `--agent`     | No       | Override the registered agent provider for this task    |
+| `--origin`    | No       | Free-text note recorded with the work item, beside this machine's hostname |
+
+The work item this dispatch records always carries the CLI client's hostname in
+its `origin`, plus any `--origin` text verbatim. Origin is opaque: it changes
+nothing about how the task runs, and an empty `--origin` is accepted. See
+[The Work Queue](../guide/work-queue.md).
 
 The command waits for `task_run_completed`, streams block progress, and renders
 the full trace. Execution and verification occur in an isolated Git worktree.
@@ -207,7 +213,7 @@ Manage durable, evidence-terminated engineering objectives.
 foundry campaign add <definition.json>
 foundry campaign list
 foundry campaign show <name>
-foundry campaign advance <name>
+foundry campaign advance <name> [--origin <text>]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
@@ -222,7 +228,7 @@ foundry campaign resume <name> --add-cycles 2
 | `add`      | Yes unless `--offline` | Validate and atomically add one JSON definition                             |
 | `list`     | Yes unless `--offline` | Show campaign status and cycle counts                                       |
 | `show`     | Yes unless `--offline` | Show the complete stored campaign record                                    |
-| `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate |
+| `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate. `--origin <text>` records a free-text note, beside this machine's hostname, on the work item of the cycle it dispatches |
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
 | `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active   |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason         |

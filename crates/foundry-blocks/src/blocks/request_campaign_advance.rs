@@ -41,6 +41,9 @@ impl TaskBlock for RequestCampaignAdvance {
                     campaign,
                     run_event_id: Some(event_id),
                     run_result: Some(payload),
+                    // The automatic post-result advance: no operator issued it,
+                    // so there is no operator origin to carry.
+                    operator_origin: None,
                 },
             )
         })

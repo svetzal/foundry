@@ -45,6 +45,46 @@ through a same-directory temp-file rename.
 | `campaign` | A campaign derived it |
 | `maintenance` | A scheduled maintenance run dispatched it |
 
+## Origin: how the work reached Foundry
+
+An item's `origin` says how the work arrived. For work an automation dispatched
+that is the lane itself:
+
+| Dispatched by | Origin |
+|---------------|--------|
+| `foundry task` | `foundry task` |
+| A campaign cycle | `campaign <name> cycle <n>` |
+| The nightly majors lane | `nightly majors lane` |
+
+For work a person asked for by hand, the useful extra fact is *who* asked and
+from *where*. `foundry task` and `foundry campaign advance` therefore record the
+CLI client's hostname, and accept an optional `--origin <text>` note that is
+recorded verbatim beside it:
+
+```bash
+foundry task acme "Add a --quiet flag" --origin "asked by Stacey in standup"
+foundry campaign advance tidy-cli --origin "kicked off by hand after the fix"
+```
+
+The recorded origins then read:
+
+```text
+foundry task (host workbench: asked by Stacey in standup)
+campaign tidy-cli cycle 4 (host workbench: kicked off by hand after the fix)
+```
+
+The operator context is appended to the dispatch origin rather than replacing
+it, so a campaign cycle still says which campaign and cycle it is. If the
+hostname cannot be read, the origin states `host unknown host` rather than going
+silent — "the lookup failed" is a more honest record than "no operator was
+involved".
+
+Origin is **opaque**. Nothing parses, validates, filters or groups on it;
+`foundry queue` only displays it, and no dispatch is ever rejected, delayed or
+altered because of what its origin says — an empty `--origin` is accepted and
+simply adds nothing. Cycles dispatched by the automatic post-result advance
+carry no operator context, because no operator issued them.
+
 ## The states
 
 An item moves through unsettled states, then settles. Settled does not mean
@@ -150,7 +190,7 @@ Project:          beta
 Objective:        bump serde to 2.0
 Kind:             major_upgrade
 Lane:             maintenance
-Origin:           majors
+Origin:           nightly majors lane
 State:            preserved
 Reason:           gates red after the bump; work held on a branch
 Submitted:        2026-09-29T02:00:00+00:00
@@ -196,7 +236,7 @@ or `false`, so the JSON round-trips the same facts the record carries:
     "objective": "bump serde to 2.0",
     "kind": "major_upgrade",
     "lane": "maintenance",
-    "origin": "majors",
+    "origin": "nightly majors lane",
     "submitted_at": "2026-09-29T02:00:00+00:00",
     "started_at": "2026-09-29T02:00:01+00:00",
     "settled_at": "2026-09-29T03:10:00+00:00",
