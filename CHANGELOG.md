@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.40.2] - 2026-09-30
+
 ### Added
 
 - `foundry queue show <id>` now prints the item's own `work_item_*` events after
@@ -31,6 +33,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Codex failures now surface the provider's real error instead of a useless
+  stdin-probe line. `CodexAdapter::interpret()` always set `Interpreted.failure`
+  to `None`, so `build_agent_execution_result()` fell back to stderr's first
+  line for every codex failure — and codex's stderr opens with "Reading
+  additional input from stdin..." on every run, success or failure alike,
+  carrying no diagnostic value. A `parite` campaign_cycle task hit this on
+  2026-09-30: the summary read "plan execution failed: Reading additional input
+  from stdin..." while the actual cause — an invalid `codex.balanced` model id
+  in the operator's `~/.foundry/agents.json`, rejected by OpenAI with a 400 —
+  sat unread in the JSONL stdout stream. `interpret()` now extracts the real
+  `turn.failed`/error message (unwrapping the nested JSON-encoded provider
+  error body when present), and the summary prefers that message over stderr's
+  first line whenever one is present, unchanged for every other case.
 - A task whose trunk moved while it ran now lands instead of being reported as a
   defect. When landing-eligible work (a `complete`, or a converging `remainder`
   with green required gates) cannot fast-forward because the registered trunk
