@@ -602,6 +602,7 @@ message WorkItem {
     // recorded `false` and "not recorded" are different facts.
     optional bool worktree_removed = 17;
     WorkItemOperatorAction operator_action = 18;
+    optional string resumes = 19;
 }
 
 // Owner controls retain submission origin, trace, disposition and prior settlement.
@@ -632,6 +633,16 @@ message CancelWorkItemRequest {
     string operator_origin = 2;
 }
 message CancelWorkItemResponse { WorkItem item = 1; }
+
+// Resume only preserved work with usable preservation evidence. Persists a new
+// linked task before dispatch; the original stays open until actual landing.
+// INVALID_ARGUMENT: blank input; NOT_FOUND: unknown id; FAILED_PRECONDITION:
+// ineligible state/project/evidence; INTERNAL: persistence or I/O failure.
+message ResumeWorkItemRequest {
+    string id = 1;
+    string operator_origin = 2;
+}
+message ResumeWorkItemResponse { WorkItem item = 1; }
 
 // List records from the daemon-owned work-item ledger.
 //
@@ -807,6 +818,7 @@ service Foundry {
     // Retrieve one work-item ledger record by exact id, loaded at request time.
     rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
     rpc CloseWorkItem(CloseWorkItemRequest) returns (CloseWorkItemResponse);
+    rpc ResumeWorkItem(ResumeWorkItemRequest) returns (ResumeWorkItemResponse);
     rpc CancelWorkItem(CancelWorkItemRequest) returns (CancelWorkItemResponse);
 
     // List one work item's `work_item_*` events from the durable event log,

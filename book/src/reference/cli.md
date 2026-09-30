@@ -416,6 +416,31 @@ blank input returns `INVALID_ARGUMENT`, and other states return
 read or save failures return `INTERNAL` and a failed save emits no cancellation.
 Concurrent requests for one item can succeed only once.
 
+### Resume preserved work
+
+```bash
+foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work"
+```
+
+Owner-directed preserved-work continuation uses `foundry queue resume <id>
+[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
+`preserved` item with a usable preservation ref and a registered project can be
+resumed. Foundry dispatches a new task with the original objective and starts
+from the preserved local branch, remote ref or `bundle:<path>` through the
+existing continuation path. The new record and its lifecycle payloads expose
+`resumes`, the exact original id. Queue reads show this link in human and JSON
+output. Submission identity and the parent's prior evidence remain intact;
+the child records the hostname and optional origin in its `resume` operator
+action.
+
+The original obligation stays preserved until the linked task actually lands.
+Then Foundry records its landing commit and appends `work_item_settled` for the
+original. Failed, blocked, preserved and no-landing results leave it open.
+An original cancelled by its owner stays cancelled even if its child lands.
+Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
+states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
+`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.
+
 See [The Work Queue](../guide/work-queue.md) for the full model.
 
 ## `foundry sentinel`

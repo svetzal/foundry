@@ -249,3 +249,8 @@ and `--offline`, and all three are read-only.
 | `CampaignAdvanceCompleted`    | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason`                                                             |
 | `CampaignEscalated`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |
 | `CampaignCompleted`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |
+
+A resumed task records `resumes` on its own work-item lifecycle payloads.
+Only actual landing with a commit can append `WorkItemSettled` for the exact
+linked preserved parent. Nonlanding outcomes and owner-cancelled parents do
+not produce a parent settlement. Existing lifecycle history is retained.

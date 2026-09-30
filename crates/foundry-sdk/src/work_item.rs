@@ -233,6 +233,9 @@ pub struct WorkItem {
     /// How it ended. `None` until it settles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
+    /// Exact preserved item this task continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes: Option<String>,
     /// Latest owner action. Absent on records predating owner controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<WorkItemOperatorAction>,
@@ -287,6 +290,7 @@ impl WorkItem {
             trace_id: spec.trace_id,
             disposition: None,
             operator_action: None,
+            resumes: None,
         }
     }
 

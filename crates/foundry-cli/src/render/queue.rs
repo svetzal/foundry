@@ -146,8 +146,9 @@ impl Widths {
 /// One item as a single unwrapped line: id, project, kind, lane, state, the
 /// timestamp that placed it in its group, then the one-line reason.
 fn item_line(item: &WorkItem, widths: &Widths) -> String {
+    let resumes = item.resumes.as_ref().map_or_else(String::new, |id| format!(" (resumes {id})"));
     format!(
-        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}",
+        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}{resumes}",
         id = item.id,
         project = item.project,
         kind = item.kind,
@@ -242,6 +243,7 @@ pub fn item_detail(item: &WorkItem) -> String {
     let _ = writeln!(out, "{:<18}{}", "Submitted:", item.submitted_at);
     optional_field(&mut out, "Started:", item.started_at.as_deref());
     optional_field(&mut out, "Settled:", item.settled_at.as_deref());
+    optional_field(&mut out, "Resumes:", item.resumes.as_deref());
     optional_field(&mut out, "Trace:", item.trace_id.as_deref());
     optional_field(&mut out, "Verdict:", item.verdict.as_deref());
     optional_field(&mut out, "Landed commit:", item.landed_commit.as_deref());
@@ -370,6 +372,8 @@ struct JsonItem<'a> {
     worktree_removed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operator_action: Option<JsonOperatorAction<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumes: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -398,6 +402,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
     fn from(item: &'a WorkItem) -> Self {
         Self {
             id: &item.id,
+            resumes: item.resumes.as_deref(),
             project: &item.project,
             objective: &item.objective,
             kind: &item.kind,
@@ -489,6 +494,7 @@ mod tests {
             worktree: None,
             worktree_removed: None,
             operator_action: None,
+            resumes: None,
         }
     }
 
@@ -930,5 +936,18 @@ mod tests {
             serde_json::from_str(&item_with_events_json(&item("wi_one", "running"), &[]))
                 .expect("parses");
         assert_eq!(parsed["events"], serde_json::json!([]));
+    }
+    #[test]
+    fn resume_link_is_visible_in_human_and_json_reads() {
+        let mut child = item("wi_child", "preserved");
+        child.resumes = Some("wi_parent".to_string());
+        assert!(item_detail(&child).contains("wi_parent"));
+        assert!(queue_overview(&[child.clone()]).contains("resumes wi_parent"));
+        assert!(open_only(&[child.clone()]).contains("resumes wi_parent"));
+        let json: serde_json::Value = serde_json::from_str(&items_json(&[child])).unwrap();
+        assert_eq!(json[0]["resumes"], "wi_parent");
+        let legacy: serde_json::Value =
+            serde_json::from_str(&items_json(&[item("wi_old", "landed")])).unwrap();
+        assert!(legacy[0].get("resumes").is_none());
     }
 }

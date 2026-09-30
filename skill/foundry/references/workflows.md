@@ -374,3 +374,22 @@ retaining prior settlement evidence and disposition. The cancellation appears
 on Watch and in the durable event history; earlier events remain intact.
 Neither command starts agents, stops running workflows or removes preserved
 work. Use campaign cancellation for an in-flight campaign, as described above.
+
+Owner-directed preserved-work continuation uses `foundry queue resume <id>
+[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
+`preserved` item with a usable preservation ref and a registered project can be
+resumed. Foundry dispatches a new task with the original objective and starts
+from the preserved local branch, remote ref or `bundle:<path>` through the
+existing continuation path. The new record and its lifecycle payloads expose
+`resumes`, the exact original id. Queue reads show this link in human and JSON
+output. Submission identity and the parent's prior evidence remain intact;
+the child records the hostname and optional origin in its `resume` operator
+action.
+
+The original obligation stays preserved until the linked task actually lands.
+Then Foundry records its landing commit and appends `work_item_settled` for the
+original. Failed, blocked, preserved and no-landing results leave it open.
+An original cancelled by its owner stays cancelled even if its child lands.
+Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
+states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
+`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.

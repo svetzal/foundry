@@ -97,6 +97,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
     let disposition = item.disposition.as_ref();
     ProtoWorkItem {
         id: item.id.clone(),
+        resumes: item.resumes.clone(),
         project: item.project.clone(),
         objective: item.objective.clone(),
         kind: item.kind.tag().to_string(),
@@ -264,6 +265,164 @@ pub(super) async fn list_events(
 
     let events = records.iter().map(event_to_proto).collect();
     Ok(Response::new(ListWorkItemEventsResponse { events }))
+}
+
+/// Admit a continuation atomically before allowing execution to start.
+#[tracing::instrument(skip_all, fields(item_id = %id))]
+pub(super) async fn resume_item(
+    path: &Path,
+    ctx: &super::RuntimeContext,
+    id: String,
+    operator_origin: String,
+) -> Result<ProtoWorkItem, Status> {
+    if id.trim().is_empty() || operator_origin.trim().is_empty() {
+        return Err(Status::invalid_argument("id and operator origin must be nonblank"));
+    }
+    let path = path.to_path_buf();
+    let registry = std::sync::Arc::clone(&ctx.registry);
+    let (item, base) = tokio::task::spawn_blocking(move || {
+        let _guard = foundry_sdk::work_item::ledger_write_gate()
+            .lock()
+            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+        let mut store = load_store(&path)?;
+        let parent = store
+            .find(&id)
+            .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
+        if parent.state != WorkItemState::Preserved {
+            return Err(Status::failed_precondition("only preserved work can be resumed"));
+        }
+        if parent.objective.trim().is_empty() {
+            return Err(Status::failed_precondition("preserved work has no objective"));
+        }
+        let entry = registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?
+            .find_project(&parent.project)
+            .cloned()
+            .ok_or_else(|| Status::failed_precondition("project is no longer registered"))?;
+        let base = parent
+            .disposition
+            .as_ref()
+            .and_then(|d| d.preservation_ref.as_ref())
+            .filter(|reference| !reference.trim().is_empty())
+            .ok_or_else(|| Status::failed_precondition("preserved work has no preservation ref"))?
+            .clone();
+        validate_preservation(&entry.path, &base)?;
+        let mut child = WorkItem::dispatched(
+            foundry_sdk::work_item::WorkItemSpec {
+                project: parent.project.clone(),
+                objective: parent.objective.clone(),
+                kind: foundry_sdk::work_item::WorkItemKind::Task,
+                lane: foundry_sdk::work_item::WorkLane::Interactive,
+                origin: parent.origin.clone(),
+                trace_id: Some(foundry_sdk::event::mint_trace_id()),
+            },
+            chrono::Utc::now(),
+        );
+        child.resumes = Some(parent.id.clone());
+        child.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
+            command: "resume".to_string(),
+            origin: operator_origin,
+            previous_state: parent.state,
+            previous_reason: parent.reason.clone(),
+            previous_settled_at: parent.settled_at,
+        });
+        store.upsert(child.clone());
+        store.save(&path).map_err(|error| {
+            Status::internal(format!("failed to persist work-item state: {error}"))
+        })?;
+        Ok((child, base))
+    })
+    .await
+    .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
+    for event_type in [
+        foundry_sdk::event::EventType::WorkItemSubmitted,
+        foundry_sdk::event::EventType::WorkItemStarted,
+    ] {
+        let mut snapshot = item.clone();
+        if event_type == foundry_sdk::event::EventType::WorkItemSubmitted {
+            snapshot.state = WorkItemState::Submitted;
+            snapshot.reason = "submitted".to_string();
+        }
+        let payload = foundry_sdk::event::Event::serialize_payload(
+            &foundry_sdk::payload::WorkItemEventPayload::from_item(&snapshot),
+        )
+        .map_err(|error| Status::internal(format!("cannot serialize resume: {error}")))?;
+        ctx.engine
+            .process(
+                foundry_sdk::event::Event::new(
+                    event_type,
+                    item.project.clone(),
+                    foundry_sdk::throttle::Throttle::Full,
+                    payload,
+                )
+                .with_trace_id(item.trace_id.clone()),
+            )
+            .await;
+    }
+    let event = foundry_sdk::event::Event::new(
+        foundry_sdk::event::EventType::ExecutionRequested,
+        item.project.clone(),
+        foundry_sdk::throttle::Throttle::Full,
+        serde_json::json!({"project": item.project, "prompt": item.objective,
+            "workflow": "task", "base_ref": base, "admitted_work_item_id": item.id}),
+    )
+    .with_trace_id(item.trace_id.clone());
+    super::spawn_workflow(event, ctx);
+    Ok(item_to_proto(&item))
+}
+
+fn validate_preservation(repo: &str, base: &str) -> Result<(), Status> {
+    // Read-only validation mirrors continuation's local/ref/bundle inputs.
+    // Fetching and worktree creation remain the existing task runner's job.
+    let mut git = std::process::Command::new("git");
+    git.current_dir(repo);
+    if let Some(bundle) = base.strip_prefix("bundle:") {
+        git.args(["bundle", "verify", bundle]);
+    } else {
+        git.args([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{base}^{{commit}}"),
+        ]);
+    }
+    let local = git
+        .output()
+        .map_err(|error| Status::internal(format!("cannot inspect preservation: {error}")))?;
+    if local.status.success()
+        && let Some(bundle) = base.strip_prefix("bundle:")
+    {
+        let heads = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["bundle", "list-heads", bundle])
+            .output()
+            .map_err(|error| {
+                Status::internal(format!("cannot inspect preservation bundle: {error}"))
+            })?;
+        if !heads.status.success()
+            || !String::from_utf8_lossy(&heads.stdout)
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(1))
+                .any(|name| name.starts_with("refs/heads/"))
+        {
+            return Err(Status::failed_precondition("preservation bundle carries no branch ref"));
+        }
+    }
+    if !local.status.success() {
+        if base.starts_with("bundle:") || base.starts_with('-') {
+            return Err(Status::failed_precondition("unusable preservation evidence"));
+        }
+        let remote = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["ls-remote", "--exit-code", "origin", base])
+            .output()
+            .map_err(|error| Status::internal(format!("cannot inspect preserved ref: {error}")))?;
+        if !remote.status.success() || remote.stdout.is_empty() {
+            return Err(Status::failed_precondition("unusable preservation evidence"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

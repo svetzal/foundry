@@ -315,6 +315,21 @@ impl Foundry for FoundryService {
         Ok(Response::new(CloseWorkItemResponse { item: Some(item) }))
     }
 
+    async fn resume_work_item(
+        &self,
+        request: Request<crate::proto::ResumeWorkItemRequest>,
+    ) -> Result<Response<crate::proto::ResumeWorkItemResponse>, Status> {
+        let request = request.into_inner();
+        let item = work_item_ops::resume_item(
+            &self.work_items_path,
+            &self.ctx,
+            request.id,
+            request.operator_origin,
+        )
+        .await?;
+        Ok(Response::new(crate::proto::ResumeWorkItemResponse { item: Some(item) }))
+    }
+
     async fn cancel_work_item(
         &self,
         request: Request<CancelWorkItemRequest>,
@@ -1625,6 +1640,7 @@ mod tests {
             trace_id: None,
             disposition: None,
             operator_action: None,
+            resumes: None,
         }
     }
 
@@ -1930,6 +1946,7 @@ mod tests {
             reason: "review found a remainder".to_string(),
             trace_id: Some("a".repeat(32)),
             operator_action: None,
+            resumes: None,
             disposition: Some(WorkDisposition {
                 verdict: Some("remainder".to_string()),
                 landed_commit: None,

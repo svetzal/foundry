@@ -183,14 +183,17 @@ impl RecordWorkItem {
 }
 
 impl SimulatedSuccess for RecordWorkItem {
-    type Outcome = WorkItem;
+    type Outcome = Option<WorkItem>;
 
-    fn simulate(&self, trigger: &Event) -> WorkItem {
+    fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
+        if trigger.payload.get("admitted_work_item_id").is_some() {
+            return None;
+        }
         // accepts() has already filtered everything but a real task dispatch,
         // so a parse failure here is not reachable; an empty objective is the
         // honest synthetic stand-in if it ever were.
         let payload = trigger.parse_payload::<ExecutionRequestedPayload>().ok();
-        payload.map_or_else(
+        Some(payload.map_or_else(
             || {
                 WorkItem::dispatched(
                     WorkItemSpec {
@@ -205,10 +208,13 @@ impl SimulatedSuccess for RecordWorkItem {
                 )
             },
             |payload| item_from_dispatch(trigger, &payload),
-        )
+        ))
     }
 
-    fn success_events(&self, trigger: &Event, outcome: &WorkItem) -> Vec<Event> {
+    fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
+        let Some(outcome) = outcome else {
+            return Vec::new();
+        };
         let mut submitted = outcome.clone();
         submitted.state = foundry_sdk::work_item::WorkItemState::Submitted;
         submitted.reason = "submitted".to_string();
@@ -229,7 +235,11 @@ impl TaskBlock for RecordWorkItem {
     dry_run_via_simulation!();
 
     fn accepts(&self, trigger: &Event) -> bool {
-        accepts_dispatch(trigger) && self.project_is_registered(&trigger.project)
+        // ResumeWorkItem admits its child atomically before dispatch; recording
+        // that root again would mint a second identity on the same trace.
+        accepts_dispatch(trigger)
+            && trigger.payload.get("admitted_work_item_id").is_none()
+            && self.project_is_registered(&trigger.project)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -237,7 +247,7 @@ impl TaskBlock for RecordWorkItem {
         let item = item_from_dispatch(trigger, &payload);
         let stored = self.write(&item);
         let events = if stored {
-            self.success_events(trigger, &item)
+            self.success_events(trigger, &Some(item.clone()))
         } else {
             vec![]
         };
@@ -407,14 +417,43 @@ impl SettleWorkItem {
     /// `None` when the ledger holds no running item for the run — a task that
     /// started before the ledger existed, for one — or when the ledger cannot
     /// be read or written.
-    fn settle(&self, trigger: &Event, result: &TaskRunCompletedPayload) -> Option<WorkItem> {
+    fn settle(
+        &self,
+        trigger: &Event,
+        result: &TaskRunCompletedPayload,
+    ) -> Option<(WorkItem, Option<WorkItem>)> {
         let _guard = ledger_lock()?;
         let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
         item.settle_from_task_run(result, removed, Utc::now());
         let settled = item.clone();
-        save_ledger(&store, &self.store_path).then_some(settled)
+        let parent =
+            if result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed {
+                settled
+                    .resumes
+                    .as_deref()
+                    .and_then(|id| {
+                        store.items.iter_mut().find(|item| {
+                            item.id == id
+                                && item.project == settled.project
+                                && item.state == foundry_sdk::work_item::WorkItemState::Preserved
+                        })
+                    })
+                    .and_then(|parent| {
+                        let commit = result
+                            .preservation_ref
+                            .as_ref()
+                            .filter(|commit| !commit.trim().is_empty())?;
+                        let disposition = parent.disposition.as_mut()?;
+                        disposition.landed_commit = Some(commit.clone());
+                        parent.settle_landed("resumed work landed", Utc::now());
+                        Some(parent.clone())
+                    })
+            } else {
+                None
+            };
+        save_ledger(&store, &self.store_path).then_some((settled, parent))
     }
 }
 
@@ -428,9 +467,9 @@ fn worktree_removed(result: &TaskRunCompletedPayload) -> Option<bool> {
 }
 
 impl SimulatedSuccess for SettleWorkItem {
-    type Outcome = Option<WorkItem>;
+    type Outcome = Option<(WorkItem, Option<WorkItem>)>;
 
-    fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
+    fn simulate(&self, trigger: &Event) -> Self::Outcome {
         let result = trigger.parse_payload::<TaskRunCompletedPayload>().ok()?;
         let objective = result
             .context
@@ -460,14 +499,19 @@ impl SimulatedSuccess for SettleWorkItem {
             Utc::now(),
         );
         item.settle_from_task_run(&result, worktree_removed(&result), Utc::now());
-        Some(item)
+        Some((item, None))
     }
 
-    fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
-        outcome
-            .as_ref()
-            .map(|item| vec![work_item_event(EventType::WorkItemSettled, trigger, item)])
-            .unwrap_or_default()
+    fn success_events(&self, trigger: &Event, outcome: &Self::Outcome) -> Vec<Event> {
+        outcome.as_ref().map_or_else(Vec::new, |(child, parent)| {
+            std::iter::once(child)
+                .chain(parent.iter())
+                .map(|item| {
+                    work_item_event(EventType::WorkItemSettled, trigger, item)
+                        .with_trace_id(item.trace_id.clone())
+                })
+                .collect()
+        })
     }
 }
 
@@ -485,7 +529,7 @@ impl TaskBlock for SettleWorkItem {
         let settled = self.settle(trigger, &result);
         let events = self.success_events(trigger, &settled);
         let summary = match &settled {
-            Some(item) => {
+            Some((item, _)) => {
                 format!("{}: work item {} settled {:?}", trigger.project, item.id, item.state)
             }
             None => format!("{}: no ledger item to settle", trigger.project),
@@ -574,7 +618,7 @@ mod tests {
     };
 
     use super::super::test_helpers;
-    use super::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem};
+    use super::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
 
     /// A recorder over `path`, with "alpha" the one project in the registry.
     fn recorder(path: &str) -> RecordWorkItem {
@@ -1199,5 +1243,14 @@ mod tests {
                 "iteration {iteration}: the settle was lost"
             );
         }
+    }
+
+    #[test]
+    fn dry_run_and_accepts_agree_on_skip_for_an_admitted_resume() {
+        let block = recorder("/tmp/unused-resume-ledger.json");
+        let event = dispatch(&serde_json::json!({"admitted_work_item_id": "wi_child"}));
+        assert!(!block.accepts(&event));
+        assert!(block.simulate(&event).is_none());
+        assert!(block.dry_run_events(&event).is_empty());
     }
 }

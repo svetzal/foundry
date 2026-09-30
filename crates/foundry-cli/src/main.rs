@@ -343,6 +343,12 @@ enum CampaignCommands {
 
 #[derive(Subcommand)]
 enum QueueCommands {
+    /// Continue preserved work through a new linked task
+    Resume {
+        id: String,
+        #[arg(long)]
+        origin: Option<String>,
+    },
     /// Close an open obligation without disposing of preserved work
     Close {
         id: String,
@@ -703,6 +709,9 @@ async fn handle_queue_command(
         }
         Some(QueueCommands::Close { id, reason, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, Some(&reason), origin.as_deref()).await
+        }
+        Some(QueueCommands::Resume { id, origin }) => {
+            queue_commands::resume_item(addr, offline, &id, origin.as_deref()).await
         }
         Some(QueueCommands::Cancel { id, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, None, origin.as_deref()).await

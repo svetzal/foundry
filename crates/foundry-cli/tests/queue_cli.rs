@@ -160,6 +160,21 @@ fn make_service(
     work_items_path: std::path::PathBuf,
     state_dir: &std::path::Path,
 ) -> FoundryService {
+    make_service_with_registry(
+        work_items_path,
+        state_dir,
+        Registry {
+            version: 2,
+            projects: vec![],
+        },
+    )
+}
+
+fn make_service_with_registry(
+    work_items_path: std::path::PathBuf,
+    state_dir: &std::path::Path,
+    registry: Registry,
+) -> FoundryService {
     let (event_tx, _rx) = broadcast::channel(64);
     let engine = Arc::new(
         Engine::new()
@@ -174,10 +189,7 @@ fn make_service(
         Arc::clone(&trace_writer),
     ));
     let workflow_tracker = Arc::new(WorkflowTracker::new());
-    let registry = Arc::new(RwLock::new(Registry {
-        version: 2,
-        projects: vec![],
-    }));
+    let registry = Arc::new(RwLock::new(registry));
 
     let ctx = RuntimeContext {
         engine,
@@ -1353,4 +1365,126 @@ fn assert_cli_cancelled(
     assert_eq!(record["operator_action"]["previous_reason"], "reason for wi_preserved");
     assert_eq!(record["preservation_ref"], "foundry/majors/serde");
     assert_eq!(record["worktree_removed"], false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_cli_resume_links_exact_parent_forwards_context_and_leaves_client_stores_untouched()
+{
+    let state = tempfile::tempdir().unwrap();
+    let (addr, store, parent) = resume_cli_fixture(state.path()).await;
+    let ledger = state.path().join("work-items.json");
+    let home = tempfile::tempdir().unwrap();
+    let client_ledger = home.path().join("client-ledger.json");
+    let client_events = home.path().join("events");
+    std::fs::write(&client_ledger, "client sentinel").unwrap();
+    write_events(&client_events, &seeded_events());
+    let history = log_bytes(&client_events);
+    let output = run_foundry_with_events(
+        home.path(),
+        &client_ledger,
+        &client_events,
+        &addr,
+        &[
+            "queue",
+            "resume",
+            "wi_preserved",
+            "--origin",
+            "finish from desk",
+        ],
+    );
+    assert_command_succeeded(&output);
+    let after = WorkItemStore::load(&ledger).unwrap();
+    assert_eq!(after.find("wi_preserved"), Some(&parent));
+    let child = after
+        .items
+        .iter()
+        .find(|item| item.resumes.as_deref() == Some("wi_preserved"))
+        .unwrap();
+    assert_ne!(child.id, parent.id);
+    assert_eq!(child.project, parent.project);
+    assert_eq!(child.objective, parent.objective);
+    assert_eq!(child.origin, parent.origin);
+    let hostname = String::from_utf8(Command::new("hostname").output().unwrap().stdout).unwrap();
+    assert_eq!(
+        child.operator_action.as_ref().unwrap().origin,
+        format!("host {}: finish from desk", hostname.trim())
+    );
+    assert!(String::from_utf8(output.stdout).unwrap().contains("wi_preserved"));
+    let shown = run_foundry_with_events(
+        home.path(),
+        &client_ledger,
+        &client_events,
+        &addr,
+        &["queue", "show", &child.id, "--json"],
+    );
+    assert_command_succeeded(&shown);
+    let json: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(json["resumes"], parent.id);
+    for (id, options, expected) in [
+        ("wi_running", vec![], "The system is not in a state"),
+        ("wi_absent", vec![], "Some requested entity was not found"),
+        (" ", vec![], "Client specified an invalid argument"),
+        ("wi_preserved", vec!["--offline"], "--offline is not supported"),
+    ] {
+        let mut args = vec!["queue", "resume", id];
+        args.extend(options);
+        let out =
+            run_foundry_with_events(home.path(), &client_ledger, &client_events, &addr, &args);
+        assert!(!out.status.success());
+        assert!(String::from_utf8(out.stderr).unwrap().contains(expected));
+    }
+    assert_eq!(std::fs::read(&client_ledger).unwrap(), b"client sentinel");
+    assert_eq!(log_bytes(&client_events), history);
+    for item in &store.items {
+        assert_eq!(after.find(&item.id), Some(item));
+    }
+}
+
+async fn resume_cli_fixture(state: &std::path::Path) -> (String, WorkItemStore, WorkItem) {
+    use foundry_sdk::registry::{ActionFlags, ProjectEntry, Stack};
+    let repo = state.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+        vec!["commit", "--allow-empty", "-m", "base"],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let ledger = state.join("work-items.json");
+    let mut store = seeded_ledger();
+    let parent = store.find_mut("wi_preserved").unwrap();
+    parent.disposition.as_mut().unwrap().preservation_ref = Some("main".to_string());
+    let parent = parent.clone();
+    store.save(&ledger).unwrap();
+    let registry = Registry {
+        version: 2,
+        projects: vec![ProjectEntry {
+            name: "beta".to_string(),
+            path: repo.to_str().unwrap().to_string(),
+            stack: Stack::Rust,
+            agent: "claude".to_string(),
+            repo: String::new(),
+            branch: "main".to_string(),
+            skip: None,
+            notes: None,
+            actions: ActionFlags::default(),
+            install: None,
+            installs_skill: None,
+            timeout_secs: None,
+            audit_exceptions: vec![],
+            update_policy: None,
+        }],
+    };
+    let addr = start_server(make_service_with_registry(ledger.clone(), state, registry)).await;
+    (addr, store, parent)
 }

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use foundry_sdk::event::{Event, EventType, mint_trace_id};
 use foundry_sdk::gateway::{AgentGateway, AgentRequest, AgentResponse};
 use foundry_sdk::registry::Registry;
+use foundry_sdk::task_block::TaskBlock as _;
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemState, WorkItemStore, WorkLane};
 
@@ -606,4 +607,743 @@ async fn a_charter_failed_dispatch_broadcasts_its_three_work_item_events() {
         settled.payload["reason"].as_str().unwrap().contains("charter"),
         "the settlement reason must name why the dispatch stopped"
     );
+}
+
+/// Agent-only fake: execution must begin with the actual preserved Git tree.
+struct ContinuationAgent {
+    parent: WorkItem,
+    ledger: PathBuf,
+    calls: Mutex<usize>,
+    verdict: &'static str,
+}
+
+impl AgentGateway for ContinuationAgent {
+    fn invoke<'a>(
+        &'a self,
+        request: &'a AgentRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>> {
+        let mut calls = self.calls.lock().unwrap();
+        let first = *calls == 0;
+        *calls += 1;
+        if first {
+            assert_eq!(
+                std::fs::read_to_string(request.working_dir.join("preserved.txt")).unwrap(),
+                "preserved change"
+            );
+            let store = WorkItemStore::load(&self.ledger).unwrap();
+            assert_eq!(store.find(&self.parent.id), Some(&self.parent));
+            let child = store
+                .items
+                .iter()
+                .find(|item| item.resumes.as_deref() == Some(&self.parent.id))
+                .unwrap();
+            assert_ne!(child.id, self.parent.id);
+            assert_eq!(child.objective, self.parent.objective);
+            assert_eq!(child.state, WorkItemState::Running);
+        }
+        let reply = if first {
+            "Implemented".to_string()
+        } else {
+            format!("```json\n{}\n```", self.verdict)
+        };
+        Box::pin(async move {
+            if reply.contains("agent failure") {
+                Ok(AgentResponse::failure("agent failure"))
+            } else {
+                Ok(AgentResponse::success(reply))
+            }
+        })
+    }
+}
+
+async fn resume_service(
+    dir: &Path,
+    registry: Arc<RwLock<Registry>>,
+    engine: Engine,
+) -> (
+    crate::proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::broadcast::Receiver<Event>,
+) {
+    use crate::service::{FoundryService, RuntimeContext, StoreConfig};
+    let (event_tx, events) = tokio::sync::broadcast::channel(256);
+    let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
+        dir.join("traces").to_str().unwrap(),
+    ));
+    let ctx = RuntimeContext {
+        engine: Arc::new(engine.with_event_broadcaster(event_tx.clone()).with_event_writer(
+            Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events"))),
+        )),
+        trace_store: Arc::new(crate::trace_store::TraceStore::with_trace_writer(
+            std::time::Duration::from_secs(60),
+            trace_writer.clone(),
+        )),
+        workflow_tracker: Arc::new(crate::workflow_tracker::WorkflowTracker::new()),
+        trace_writer,
+        event_tx,
+        registry,
+    };
+    let service = FoundryService::new(
+        ctx,
+        StoreConfig {
+            work_items_path: dir.join("work-items.json"),
+            events_dir: dir.join("events"),
+            campaigns_path: dir.join("campaigns.json"),
+            registry_path: dir.join("registry.json"),
+            sentinels: Arc::new(RwLock::new(foundry_sdk::sentinel::SentinelStore::default_seed())),
+            sentinels_path: dir.join("sentinels.json"),
+            scheduler_reload: Arc::new(tokio::sync::Notify::new()),
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(crate::proto::foundry_server::FoundryServer::new(service))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+    let client = crate::proto::foundry_client::FoundryClient::connect(addr).await.unwrap();
+    (client, server, events)
+}
+
+fn preserved_parent(checkout: &Path) -> WorkItem {
+    assert!(git_ok(Some(checkout), &["checkout", "-b", "preserved-work"]));
+    std::fs::write(checkout.join("preserved.txt"), "preserved change").unwrap();
+    assert!(git_ok(Some(checkout), &["add", "preserved.txt"]));
+    assert!(git_ok(Some(checkout), &["commit", "-m", "preserved work"]));
+    assert!(git_ok(Some(checkout), &["checkout", "main"]));
+    let mut parent = WorkItem::dispatched(
+        foundry_sdk::work_item::WorkItemSpec {
+            project: "test-project".to_string(),
+            objective: "Finish preserved changes".to_string(),
+            kind: WorkItemKind::Task,
+            lane: WorkLane::Interactive,
+            origin: "original submitter".to_string(),
+            trace_id: Some(mint_trace_id()),
+        },
+        chrono::Utc::now(),
+    );
+    parent.state = WorkItemState::Preserved;
+    parent.reason = "prior remainder".to_string();
+    parent.settled_at = Some(chrono::Utc::now());
+    parent.disposition = Some(foundry_sdk::work_item::WorkDisposition {
+        verdict: Some("remainder".to_string()),
+        preservation_ref: Some("preserved-work".to_string()),
+        landed_commit: None,
+        worktree: Some("prior-worktree".to_string()),
+        worktree_removed: Some(true),
+    });
+    parent
+}
+
+#[tokio::test]
+async fn resume_generated_client_runs_preserved_tree_and_settles_exact_parent_on_landing() {
+    for source in ["local", "remote", "bundle"] {
+        assert_resume_landing(source).await;
+    }
+}
+
+async fn assert_resume_landing(source: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    let mut parent = preserved_parent(&checkout);
+    let base = preservation_source(&checkout, dir.path(), source);
+    parent.disposition.as_mut().unwrap().preservation_ref = Some(base.clone());
+    let mut sibling = parent.clone();
+    sibling.id = "wi_unrelated_sibling".to_string();
+    let ledger = dir.path().join("work-items.json");
+    WorkItemStore {
+        version: 1,
+        items: vec![parent.clone(), sibling.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = Arc::new(ContinuationAgent {
+        parent: parent.clone(),
+        ledger: ledger.clone(),
+        calls: Mutex::new(0),
+        verdict: r#"{"verdict":"complete"}"#,
+    });
+    let engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
+    let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+    let watch = client
+        .watch(crate::proto::WatchRequest {
+            project: parent.project.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let child = client
+        .resume_work_item(crate::proto::ResumeWorkItemRequest {
+            id: parent.id.clone(),
+            operator_origin: "owner-host (finish it)".to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .item
+        .unwrap();
+    assert_eq!(child.resumes.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(child.objective, parent.objective);
+    assert_eq!(child.origin, parent.origin);
+    assert_eq!(child.operator_action.as_ref().unwrap().origin, "owner-host (finish it)");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut observed = Vec::new();
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();
+        let done =
+            event.event_type == EventType::WorkItemSettled && event.payload["item_id"] == parent.id;
+        observed.push(event);
+        if done {
+            break;
+        }
+    }
+    assert_watch_matches(watch, &observed).await;
+    let store = WorkItemStore::load(&ledger).unwrap();
+    let landed = store.find(&parent.id).unwrap();
+    let child_item = store.find(&child.id).unwrap();
+    assert_eq!(landed.state, WorkItemState::Landed);
+    assert_eq!(child_item.state, WorkItemState::Landed);
+    assert_eq!(store.find(&sibling.id), Some(&sibling));
+    assert_eq!(landed.origin, parent.origin);
+    assert_eq!(
+        landed.disposition.as_ref().unwrap().preservation_ref,
+        parent.disposition.as_ref().unwrap().preservation_ref
+    );
+    let commit = landed.disposition.as_ref().unwrap().landed_commit.as_ref().unwrap();
+    assert_eq!(child_item.disposition.as_ref().unwrap().landed_commit.as_ref(), Some(commit));
+    let actual = Command::new("git")
+        .current_dir(&checkout)
+        .args(["rev-parse", "main"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(actual.stdout).unwrap().trim(), commit);
+    let dispatch = observed.iter().find(|e| e.event_type == EventType::ExecutionRequested).unwrap();
+    assert_eq!(dispatch.payload["base_ref"], base);
+    assert_eq!(dispatch.payload["prompt"], parent.objective);
+    for id in [&parent.id, &child.id] {
+        let read = client
+            .get_work_item(crate::proto::GetWorkItemRequest { id: id.clone() })
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+        assert_eq!(read.landed_commit.as_ref(), Some(commit));
+        assert_lifecycle_log_matches(&dir.path().join("events"), id, &observed);
+    }
+    assert_terminal_redelivery_is_inert(&ledger, &observed).await;
+    assert_eq!(*agent.calls.lock().unwrap(), 2);
+    server.abort();
+}
+
+#[tokio::test]
+async fn resume_generated_client_refuses_every_other_state_and_failed_admission_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    let parent = preserved_parent(&checkout);
+    let ledger = dir.path().join("work-items.json");
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let mut items = vec![parent.clone()];
+    for state in [
+        WorkItemState::Submitted,
+        WorkItemState::Queued,
+        WorkItemState::Running,
+        WorkItemState::Landed,
+        WorkItemState::NeedsDecision,
+        WorkItemState::Failed,
+        WorkItemState::Cancelled,
+    ] {
+        let mut other = parent.clone();
+        other.id = format!("wi_{}", state.tag());
+        other.state = state;
+        items.push(other);
+    }
+    let mut missing = parent.clone();
+    missing.id = "wi_missing_evidence".to_string();
+    missing.disposition = None;
+    items.push(missing);
+    let mut unusable = parent.clone();
+    unusable.id = "wi_unusable".to_string();
+    unusable.disposition.as_mut().unwrap().preservation_ref = Some("no-such-branch".to_string());
+    items.push(unusable);
+    let mut unknown_project = parent.clone();
+    unknown_project.id = "wi_unregistered".to_string();
+    unknown_project.project = "absent".to_string();
+    items.push(unknown_project);
+    WorkItemStore {
+        version: 1,
+        items: items.clone(),
+    }
+    .save(&ledger)
+    .unwrap();
+    let (mut client, server, mut events) =
+        resume_service(dir.path(), registry, Engine::new()).await;
+    let before = std::fs::read(&ledger).unwrap();
+    for other in items.iter().skip(1) {
+        let error = client
+            .resume_work_item(crate::proto::ResumeWorkItemRequest {
+                id: other.id.clone(),
+                operator_origin: "host desk".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition, "{}", other.id);
+        assert_eq!(std::fs::read(&ledger).unwrap(), before);
+    }
+    for (id, origin, code) in [
+        ("absent", "host desk", tonic::Code::NotFound),
+        (" ", "host desk", tonic::Code::InvalidArgument),
+        (parent.id.as_str(), " ", tonic::Code::InvalidArgument),
+    ] {
+        assert_eq!(
+            client
+                .resume_work_item(crate::proto::ResumeWorkItemRequest {
+                    id: id.to_string(),
+                    operator_origin: origin.to_string()
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            code
+        );
+    }
+    std::fs::create_dir(ledger.with_extension("json.tmp")).unwrap();
+    assert_eq!(
+        client
+            .resume_work_item(crate::proto::ResumeWorkItemRequest {
+                id: parent.id,
+                operator_origin: "host desk".to_string()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Internal
+    );
+    assert_eq!(std::fs::read(&ledger).unwrap(), before);
+    assert!(events.try_recv().is_err());
+    assert!(!dir.path().join("events").exists());
+    server.abort();
+}
+
+fn continuation_engine(
+    agent: Arc<dyn AgentGateway>,
+    registry: Arc<RwLock<Registry>>,
+    ledger: &Path,
+) -> Engine {
+    let mut engine = Engine::new();
+    engine.register(Box::new(foundry_blocks::blocks::CheckCharter::new(registry.clone())));
+    test_helpers::register_gate_scaffold(
+        &mut engine,
+        Arc::new(foundry_blocks::gateway::ProcessShellGateway),
+        registry.clone(),
+    );
+    engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    register_ledger_blocks(&mut engine, ledger, &registry);
+    engine.register(Box::new(foundry_blocks::blocks::ExecutePlan::new(
+        agent.clone(),
+        registry.clone(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(agent, registry.clone())));
+    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry)));
+    engine
+}
+
+#[tokio::test]
+async fn resume_nonlanding_results_and_pre_agent_failure_keep_parent_open() {
+    for (verdict, expected, mode) in [
+        (r#"{"verdict":"complete"}"#, WorkItemState::Landed, "no-deliverable"),
+        (r#"{"verdict":"complete"}"#, WorkItemState::Preserved, "dirty-trunk"),
+        (
+            r#"{"verdict":"defect","diagnosis":"faulty approach"}"#,
+            WorkItemState::Preserved,
+            "normal",
+        ),
+        (
+            r#"{"verdict":"blocked_on_decision","finding":"policy","options":["ask owner"]}"#,
+            WorkItemState::NeedsDecision,
+            "normal",
+        ),
+        ("agent failure", WorkItemState::Failed, "normal"),
+        (r#"{"verdict":"complete"}"#, WorkItemState::Failed, "no-charter"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = task_project(dir.path());
+        let parent = preserved_parent(&checkout);
+        if mode == "no-deliverable" {
+            assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+        } else if mode == "dirty-trunk" {
+            std::fs::write(checkout.join("dirty.txt"), "owner work").unwrap();
+        } else if mode == "no-charter" {
+            std::fs::remove_file(checkout.join("CHARTER.md")).unwrap();
+        }
+        let ledger = dir.path().join("work-items.json");
+        WorkItemStore {
+            version: 1,
+            items: vec![parent.clone()],
+        }
+        .save(&ledger)
+        .unwrap();
+        let registry =
+            test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+        let agent = Arc::new(ContinuationAgent {
+            parent: parent.clone(),
+            ledger: ledger.clone(),
+            calls: Mutex::new(0),
+            verdict,
+        });
+        let engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
+        let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+        let child = client
+            .resume_work_item(crate::proto::ResumeWorkItemRequest {
+                id: parent.id.clone(),
+                operator_origin: "host desk".to_string(),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .item
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();
+            if event.event_type == EventType::WorkItemSettled
+                && event.payload["item_id"] == child.id
+            {
+                assert_eq!(
+                    event.payload["state"],
+                    expected.tag(),
+                    "mode {mode}, verdict {verdict}"
+                );
+                break;
+            }
+        }
+        let store = WorkItemStore::load(&ledger).unwrap();
+        assert_eq!(store.find(&parent.id), Some(&parent));
+        assert_eq!(store.find(&child.id).unwrap().state, expected);
+        assert_eq!(store.find(&child.id).unwrap().resumes.as_ref(), Some(&parent.id));
+        assert!(
+            foundry_sdk::work_item_events::read_work_item_events(
+                &dir.path().join("events"),
+                &parent.id
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let logged = foundry_sdk::work_item_events::read_work_item_events(
+            &dir.path().join("events"),
+            &child.id,
+        )
+        .unwrap();
+        assert_eq!(logged.last().unwrap().payload.state, expected);
+        assert_eq!(logged.last().unwrap().payload.resumes.as_ref(), Some(&parent.id));
+        if mode == "no-charter" {
+            assert_eq!(*agent.calls.lock().unwrap(), 0);
+        }
+        server.abort();
+    }
+}
+
+struct HeldContinuationAgent {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    held: std::sync::atomic::AtomicBool,
+    fail_save: Option<PathBuf>,
+}
+
+impl AgentGateway for HeldContinuationAgent {
+    fn invoke<'a>(
+        &'a self,
+        request: &'a AgentRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>> {
+        Box::pin(async move {
+            if request.access == foundry_sdk::gateway::AgentAccess::Full {
+                if !self.held.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    assert_eq!(
+                        std::fs::read_to_string(request.working_dir.join("preserved.txt"))?,
+                        "preserved change"
+                    );
+                    self.started.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(AgentResponse::success("Implemented"))
+            } else {
+                if let Some(path) = &self.fail_save {
+                    std::fs::create_dir(path)?;
+                }
+                Ok(AgentResponse::success(
+                    r#"```json
+{"verdict":"complete"}
+```"#,
+                ))
+            }
+        })
+    }
+}
+
+async fn next_settled(events: &mut tokio::sync::broadcast::Receiver<Event>, id: &str) -> Event {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();
+        if event.event_type == EventType::WorkItemSettled && event.payload["item_id"] == id {
+            return event;
+        }
+    }
+}
+
+#[tokio::test]
+async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_exact_records_and_history()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    let parent = preserved_parent(&checkout);
+    let ledger = dir.path().join("work-items.json");
+    WorkItemStore {
+        version: 1,
+        items: vec![parent.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+    let writer = foundry_engine::event_writer::EventWriter::new(dir.path().join("events"));
+    let previous = Event::new(
+        EventType::WorkItemSettled,
+        parent.project.clone(),
+        Throttle::Full,
+        Event::serialize_payload(&foundry_sdk::payload::WorkItemEventPayload::from_item(&parent))
+            .unwrap(),
+    )
+    .with_trace_id(parent.trace_id.clone());
+    writer.write(&previous).unwrap();
+    let log_path = dir
+        .path()
+        .join("events")
+        .join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m")));
+    let history = std::fs::read(&log_path).unwrap();
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = Arc::new(HeldContinuationAgent {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        held: std::sync::atomic::AtomicBool::new(false),
+        fail_save: None,
+    });
+    let engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
+    let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+    let child = client
+        .resume_work_item(crate::proto::ResumeWorkItemRequest {
+            id: parent.id.clone(),
+            operator_origin: "host desk".to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .item
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), agent.started.notified())
+        .await
+        .unwrap();
+    let unrelated_trace = mint_trace_id();
+    client.emit(crate::proto::EmitRequest { event_type: "execution_requested".to_string(), project: parent.project.clone(), throttle: 0,
+        payload_json: serde_json::json!({"project": parent.project, "workflow": "task", "prompt": "Unrelated objective"}).to_string(),
+        trace_id: unrelated_trace.clone(), span_id: String::new(), parent_span_id: String::new() }).await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let unrelated = loop {
+        let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();
+        if event.event_type == EventType::WorkItemSettled
+            && event.trace_id.as_ref() == Some(&unrelated_trace)
+        {
+            break event.payload["item_id"].as_str().unwrap().to_string();
+        }
+    };
+    let sibling = WorkItemStore::load(&ledger).unwrap().find(&unrelated).unwrap().clone();
+    assert_ne!(sibling.id, child.id);
+    assert_ne!(sibling.id, parent.id);
+    assert_eq!(sibling.objective, "Unrelated objective");
+    assert_eq!(sibling.state, WorkItemState::Landed);
+    client
+        .close_work_item(crate::proto::CloseWorkItemRequest {
+            id: parent.id.clone(),
+            reason: "owner stopped".to_string(),
+            operator_origin: "host desk".to_string(),
+        })
+        .await
+        .unwrap();
+    let cancelled = WorkItemStore::load(&ledger).unwrap().find(&parent.id).unwrap().clone();
+    agent.release.notify_one();
+    let event = next_settled(&mut events, &child.id).await;
+    assert_eq!(event.payload["state"], "landed");
+    assert!(event.payload["disposition"]["landed_commit"].as_str().is_some());
+    let store = WorkItemStore::load(&ledger).unwrap();
+    assert_eq!(store.find(&parent.id), Some(&cancelled));
+    assert_eq!(store.find(&unrelated), Some(&sibling));
+    assert_eq!(store.find(&child.id).unwrap().resumes.as_ref(), Some(&parent.id));
+    let log = std::fs::read(&log_path).unwrap();
+    assert!(log.starts_with(&history));
+    let recorded = foundry_sdk::work_item_events::read_work_item_events(
+        &dir.path().join("events"),
+        &parent.id,
+    )
+    .unwrap();
+    assert_eq!(recorded[0].event_id, previous.id);
+    assert_eq!(recorded[1].payload.state, WorkItemState::Cancelled);
+    assert_eq!(recorded.len(), 2);
+    server.abort();
+}
+
+fn preservation_source(checkout: &Path, dir: &Path, source: &str) -> String {
+    if source == "bundle" {
+        let bundle = dir.join("preserved.bundle");
+        assert!(git_ok(
+            Some(checkout),
+            &[
+                "bundle",
+                "create",
+                bundle.to_str().unwrap(),
+                "preserved-work"
+            ]
+        ));
+        format!("bundle:{}", bundle.display())
+    } else {
+        if source == "remote" {
+            assert!(git_ok(Some(checkout), &["push", "origin", "preserved-work"]));
+            assert!(git_ok(Some(checkout), &["branch", "-D", "preserved-work"]));
+        }
+        "preserved-work".to_string()
+    }
+}
+
+async fn assert_watch_matches(
+    mut watch: tonic::Streaming<crate::proto::WatchResponse>,
+    observed: &[Event],
+) {
+    for expected in observed {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(30), watch.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.event_id, expected.id);
+        assert_eq!(event.event_type, expected.event_type.as_str());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap(),
+            expected.payload
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_settlement_save_failure_emits_no_false_child_or_parent_settlement() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = task_project(dir.path());
+    let parent = preserved_parent(&checkout);
+    let ledger = dir.path().join("work-items.json");
+    WorkItemStore {
+        version: 1,
+        items: vec![parent.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    let agent = Arc::new(HeldContinuationAgent {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        held: std::sync::atomic::AtomicBool::new(false),
+        fail_save: Some(ledger.with_extension("json.tmp")),
+    });
+    let engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
+    let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+    let child = client
+        .resume_work_item(crate::proto::ResumeWorkItemRequest {
+            id: parent.id.clone(),
+            operator_origin: "host desk".to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .item
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), agent.started.notified())
+        .await
+        .unwrap();
+    let admitted_bytes = std::fs::read(&ledger).unwrap();
+    agent.release.notify_one();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let terminal = loop {
+        let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();
+        assert_ne!(event.event_type, EventType::WorkItemSettled);
+        if event.event_type == EventType::TaskRunCompleted {
+            break event;
+        }
+    };
+    assert_eq!(terminal.payload["landed"], true);
+    loop {
+        let status = client
+            .status(crate::proto::StatusRequest {
+                workflow_id: String::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if status.workflows.is_empty() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let store = WorkItemStore::load(&ledger).unwrap();
+    assert_eq!(std::fs::read(&ledger).unwrap(), admitted_bytes);
+    assert_eq!(store.find(&parent.id), Some(&parent));
+    assert_eq!(store.find(&child.id).unwrap().state, WorkItemState::Running);
+    assert!(
+        foundry_sdk::work_item_events::read_work_item_events(
+            &dir.path().join("events"),
+            &parent.id
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let child_events =
+        foundry_sdk::work_item_events::read_work_item_events(&dir.path().join("events"), &child.id)
+            .unwrap();
+    assert_eq!(child_events[0].payload.item_id, child.id);
+    assert_eq!(child_events[1].payload.state, WorkItemState::Running);
+    assert_eq!(child_events.len(), 2);
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.event_type, EventType::WorkItemSettled);
+    }
+    server.abort();
+}
+
+async fn assert_terminal_redelivery_is_inert(ledger: &Path, observed: &[Event]) {
+    let terminal = observed
+        .iter()
+        .find(|e| e.event_type == EventType::TaskRunCompleted)
+        .unwrap()
+        .clone();
+    let before = std::fs::read(ledger).unwrap();
+    let settle = foundry_blocks::blocks::SettleWorkItem::new(ledger.to_path_buf());
+    assert!(settle.execute(&terminal).await.unwrap().events.is_empty());
+    assert_eq!(std::fs::read(ledger).unwrap(), before);
+}
+
+fn assert_lifecycle_log_matches(events_dir: &Path, id: &str, observed: &[Event]) {
+    let logged = foundry_sdk::work_item_events::read_work_item_events(events_dir, id).unwrap();
+    let expected: Vec<_> = observed
+        .iter()
+        .filter(|event| {
+            foundry_sdk::work_item_events::is_work_item_event(&event.event_type)
+                && event.payload["item_id"] == id
+        })
+        .collect();
+    assert_eq!(logged.len(), expected.len());
+    for (record, event) in logged.iter().zip(expected) {
+        assert_eq!(record.event_id, event.id);
+        assert_eq!(record.trace_id, event.trace_id);
+        assert_eq!(
+            record.payload,
+            event.parse_payload::<foundry_sdk::payload::WorkItemEventPayload>().unwrap()
+        );
+    }
 }

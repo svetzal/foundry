@@ -159,6 +159,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry queue [show <id>\|open]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--json` and `--offline` supported. Read-only |
+| `foundry queue resume <id> [--origin <text>]` | Resume preserved work through a linked continuation; daemon required |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
 | `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued items via the daemon |
 | `foundry emit <event>` | Raw event emission for advanced use |
@@ -204,6 +205,7 @@ the settled group alone.
 | `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+| `foundry queue resume <id> [--origin <text>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id; rejects `--offline` |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
 | `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued cancelled with `cancelled by operator`; rejects `--offline` |
 
@@ -238,6 +240,25 @@ without replacing submission origin. They select exact ids, share
 invalid input INVALID_ARGUMENT, and other states FAILED_PRECONDITION. They
 never dispatch, abort running workflows or dispose of preserved work. A failed
 save emits no cancellation, and earlier event history remains untouched.
+
+Owner-directed preserved-work continuation uses `foundry queue resume <id>
+[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
+`preserved` item with a usable preservation ref and a registered project can be
+resumed. Foundry dispatches a new task with the original objective and starts
+from the preserved local branch, remote ref or `bundle:<path>` through the
+existing continuation path. The new record and its lifecycle payloads expose
+`resumes`, the exact original id. Queue reads show this link in human and JSON
+output. Submission identity and the parent's prior evidence remain intact;
+the child records the hostname and optional origin in its `resume` operator
+action.
+
+The original obligation stays preserved until the linked task actually lands.
+Then Foundry records its landing commit and appends `work_item_settled` for the
+original. Failed, blocked, preserved and no-landing results leave it open.
+An original cancelled by its owner stays cancelled even if its child lands.
+Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
+states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
+`INTERNAL`. A failed admission dispatches nothing and emits no lifecycle events.
 
 ### Registry commands
 

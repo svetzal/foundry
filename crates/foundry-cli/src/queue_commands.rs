@@ -225,6 +225,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
     let disposition = item.disposition.as_ref();
     ProtoWorkItem {
         id: item.id.clone(),
+        resumes: item.resumes.clone(),
         project: item.project.clone(),
         objective: item.objective.clone(),
         kind: item.kind.tag().to_string(),
@@ -301,6 +302,24 @@ pub async fn cancel_item(
     }
     .context("daemon returned no cancelled work item")?;
     print!("{}", render::queue::cancellation_notice(&item));
+    Ok(())
+}
+
+/// Resume preserved work via the daemon; never read or write client stores.
+pub async fn resume_item(addr: &str, offline: bool, id: &str, origin: Option<&str>) -> Result<()> {
+    anyhow::ensure!(!offline, "queue resume requires foundryd; --offline is not supported");
+    let mut client = crate::daemon::connect_daemon_online(addr).await?;
+    let item = client
+        .resume_work_item(crate::proto::ResumeWorkItemRequest {
+            id: id.to_string(),
+            operator_origin: crate::origin::local_operator_origin(origin),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .item
+        .context("daemon returned no resumed work item")?;
+    print!("{}", render::queue::item_detail(&item));
     Ok(())
 }
 
