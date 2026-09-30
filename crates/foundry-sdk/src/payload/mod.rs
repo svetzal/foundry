@@ -409,6 +409,20 @@ mod tests {
         assert!(json.get("exit_code").is_none(), "exit_code should be omitted when None");
     }
 
+    #[test]
+    fn interrupted_agent_session_ended_payload_carries_status_and_reason() {
+        let payload =
+            AgentSessionEndedPayload::interrupted("id", "2026-09-30T12:01:00Z", "daemon restarted");
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["session_id"], "id");
+        assert_eq!(json["status"], "interrupted");
+        assert_eq!(json["error"], "daemon restarted");
+        assert_eq!(json["ended_at"], "2026-09-30T12:01:00Z");
+        assert!(json.get("exit_code").is_none());
+        assert!(json.get("usage").is_none());
+    }
+
     // ---------------------------------------------------------------------
     // Commit-digest payloads
     // ---------------------------------------------------------------------

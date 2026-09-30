@@ -136,8 +136,10 @@ async fn main() -> Result<()> {
     };
 
     // Before anything can dispatch: close out work the previous process was
-    // stopped in the middle of, so a restart never leaves an item running.
+    // stopped in the middle of, so a restart never leaves an item or an agent
+    // session running.
     service::settle_running_work_items_on_start(&ctx, &foundry_sdk::paths::work_items_path()).await;
+    service::end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);

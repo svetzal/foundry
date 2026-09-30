@@ -53,3 +53,31 @@ pub struct AgentSessionEndedPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostEstimate>,
 }
+
+impl AgentSessionEndedPayload {
+    /// The `status` of a session whose process died with the daemon that
+    /// launched it, closed on the next daemon start rather than by the session
+    /// itself.
+    pub const STATUS_INTERRUPTED: &'static str = "interrupted";
+
+    /// The end of a session that never recorded one because the daemon running
+    /// it stopped.
+    ///
+    /// Nothing measured the session's last moments, so `exit_code`, `usage`
+    /// and `cost` are absent and `bytes_written` is zero: this records that the
+    /// session is over, not what it did.
+    #[must_use]
+    pub fn interrupted(session_id: &str, ended_at: &str, reason: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            status: Self::STATUS_INTERRUPTED.to_string(),
+            exit_code: None,
+            ended_at: ended_at.to_string(),
+            bytes_written: 0,
+            error: Some(reason.to_string()),
+            failure: AgentFailureMetadata::default(),
+            usage: None,
+            cost: None,
+        }
+    }
+}

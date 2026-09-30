@@ -97,6 +97,22 @@ Event types use PascalCase in code and snake_case on the wire (e.g.,
 | `TaskReviewed`     | Domain fact     |
 | `TaskRunCompleted` | Lifecycle end   |
 
+### Agent Sessions
+
+| Event                 | Category        |
+| --------------------- | --------------- |
+| `AgentSessionStarted` | Lifecycle start |
+| `AgentSessionEnded`   | Lifecycle end   |
+
+Both carry `session_id`. `AgentSessionEnded.status` is `ok`, `agent_failed`,
+`unavailable`, or `interrupted`. An agent session dies when `foundryd` stops,
+and nothing records its end then. On the next start, before it accepts work,
+`foundryd` looks back 7 days in the event log for sessions with a start and no
+end. It records an `AgentSessionEnded` for each, with status `interrupted`,
+`error` `daemon restarted`, the original session's project and trace, and
+`ended_at` set to the daemon start time. These ends are in the log, so a later
+start does not end the same session again.
+
 ### Work-Item Ledger
 
 One durable record per unit of work Foundry dispatched, in

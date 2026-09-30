@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent sessions that a daemon stop left without an end no longer show as
+  running forever. On start, before it accepts work, `foundryd` reads the last
+  7 days of the event log for `agent_session_started` events with no
+  `agent_session_ended` for the same `session_id`, and records an
+  `agent_session_ended` for each with the new status `interrupted`, the error
+  `daemon restarted`, the original session's project and trace, and `ended_at`
+  set to the daemon start time. The ends are persisted and published on the
+  Watch stream like any other event, so consumers that rebuild session state
+  from the log (such as ops-visualizer's `/agents` page) see the session close.
+  A second start records nothing for the same session, and unparseable log
+  lines are skipped rather than failing startup. Live sessions start and end as
+  before.
+
 ## [0.40.2] - 2026-09-30
 
 ### Added
