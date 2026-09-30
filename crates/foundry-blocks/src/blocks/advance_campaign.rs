@@ -2375,6 +2375,126 @@ mod tests {
         );
     }
 
+    /// A `CampaignAdvanceRequested` carrying an operator origin, ready to run
+    /// through the real block.
+    fn advance_trigger_with_origin(
+        origin: Option<&str>,
+        throttle: foundry_sdk::throttle::Throttle,
+    ) -> Event {
+        Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            throttle,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                operator_origin: origin.map(ToString::to_string),
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
+        )
+    }
+
+    /// A staged active campaign plus a block wired to fakes, for the
+    /// operator-origin forwarding proofs below.
+    fn origin_forwarding_block(dir: &std::path::Path) -> AdvanceCampaign {
+        let store_path = dir.join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.to_str().unwrap());
+        AdvanceCampaign::new(
+            FakeAgentGateway::success_with(
+                "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+            ),
+            FakeShellGateway::success(),
+            registry,
+            store_path,
+        )
+    }
+
+    /// The operator's note on a manual advance must reach the cycle that advance
+    /// dispatches. It is the only carrier of *why a person asked* — drop it here
+    /// and the ledger item for that cycle can never name its human origin, with
+    /// nothing downstream able to recover it.
+    #[tokio::test]
+    async fn a_manual_advance_forwards_its_operator_origin_to_the_dispatched_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = origin_forwarding_block(dir.path());
+
+        let result = block
+            .execute(&advance_trigger_with_origin(Some("host workbench: by hand"), Throttle::Full))
+            .await
+            .unwrap();
+
+        let execution = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("next task dispatched");
+        assert_eq!(
+            execution.payload.get("operator_origin").and_then(serde_json::Value::as_str),
+            Some("host workbench: by hand"),
+            "the dispatched cycle must carry the advance's operator origin verbatim"
+        );
+    }
+
+    /// An advance with no operator note must dispatch the payload it always did
+    /// — an absent key, not an empty string, so a consumer can tell "no note"
+    /// from "a note that says nothing".
+    #[tokio::test]
+    async fn a_manual_advance_without_an_origin_dispatches_no_operator_origin_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = origin_forwarding_block(dir.path());
+
+        let result =
+            block.execute(&advance_trigger_with_origin(None, Throttle::Full)).await.unwrap();
+
+        let execution = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("next task dispatched");
+        assert!(
+            execution.payload.get("operator_origin").is_none(),
+            "an advance with no operator origin must leave the key absent"
+        );
+    }
+
+    /// The dry-run preview must show the operator origin the real dispatch would
+    /// carry — a preview that silently omits it misreports what the run does.
+    #[test]
+    fn a_dry_run_advance_previews_the_operator_origin_it_would_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = origin_forwarding_block(dir.path());
+
+        let with_origin = block.dry_run_events(&advance_trigger_with_origin(
+            Some("host workbench: by hand"),
+            Throttle::DryRun,
+        ));
+        let execution = with_origin
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("dry run must preview the dispatched task");
+        assert_eq!(
+            execution.payload.get("operator_origin").and_then(serde_json::Value::as_str),
+            Some("host workbench: by hand"),
+            "the previewed cycle must carry the advance's operator origin verbatim"
+        );
+
+        let without_origin =
+            block.dry_run_events(&advance_trigger_with_origin(None, Throttle::DryRun));
+        let execution = without_origin
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("dry run must preview the dispatched task");
+        assert!(
+            execution.payload.get("operator_origin").is_none(),
+            "a preview with no operator origin must leave the key absent"
+        );
+    }
+
     /// A decision made without asking an agent has no formation to record, and
     /// must not imply otherwise.
     #[tokio::test]
