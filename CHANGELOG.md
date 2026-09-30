@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-09-30
+
 ### Added
 
 - `foundry task <project> "<description>" [--origin <text>]` and
