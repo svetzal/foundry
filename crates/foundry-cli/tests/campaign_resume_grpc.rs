@@ -152,6 +152,8 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
             landed: false,
             summary: "escalated: boundary choice needed".to_string(),
             preservation_ref: Some("foundry-task/cli-resume-grpc-test-ref".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::BlockedOnDecision {
                 finding: "which path to take".to_string(),
                 options: vec!["path-a".to_string(), "path-b".to_string()],

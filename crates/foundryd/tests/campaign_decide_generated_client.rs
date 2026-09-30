@@ -146,6 +146,8 @@ fn escalated_campaign(name: &str) -> Campaign {
             landed: false,
             summary: "waiting on owner policy".to_string(),
             preservation_ref: Some("foundry-task/preserved-ref".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::BlockedOnDecision {
                 finding: "boundary choice required".to_string(),
                 options: vec!["grpc".to_string(), "json".to_string()],

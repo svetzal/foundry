@@ -308,6 +308,12 @@ impl WorkItem {
     /// non-landing `remainder` or a `defect` is preserved work; a
     /// `blocked_on_decision` needs a person; a `runner_error` failed.
     ///
+    /// A `complete` whose landing was blocked (`land_blocked` set — trunk
+    /// moved and the rebase conflicted, say) is preserved work to reconcile:
+    /// the reviewer accepted it, but it is not on trunk. A `complete` with no
+    /// deliverable reports no landing and no block, and settles `landed` as
+    /// before.
+    ///
     /// `worktree_removed` reports whether the run's isolated worktree was gone
     /// by settlement time. The finalize step removes it best-effort and
     /// reports nothing, so this is observed rather than asked for.
@@ -318,6 +324,9 @@ impl WorkItem {
         at: DateTime<Utc>,
     ) {
         let (state, reason) = match &result.verdict {
+            TaskVerdict::Complete if result.land_blocked.is_some() => {
+                (WorkItemState::Preserved, result.summary.clone())
+            }
             TaskVerdict::Complete => (WorkItemState::Landed, result.summary.clone()),
             TaskVerdict::Remainder { .. } if result.landed => {
                 (WorkItemState::Landed, result.summary.clone())
@@ -671,6 +680,8 @@ mod tests {
             landed,
             summary: "task summary".to_string(),
             preservation_ref: Some("ref-or-commit".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {
                 task_worktree: Some("/tmp/worktrees/alpha/abc".to_string()),
@@ -963,6 +974,31 @@ mod tests {
                 reason: "task summary".to_string(),
                 landed_commit: Some("ref-or-commit".to_string()),
                 preservation_ref: None,
+                worktree: Some(WORKTREE.to_string()),
+                worktree_removed: Some(true),
+                trace_id: Some(TRACE.to_string()),
+            }
+        );
+        assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("complete"));
+    }
+
+    /// The reviewer accepted the work but trunk moved under it: that is
+    /// preserved work to reconcile, and the verdict stays `complete`.
+    #[test]
+    fn a_complete_whose_landing_was_blocked_settles_preserved_not_as_a_defect() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        let mut result = run_result(TaskVerdict::Complete, false);
+        result.land_blocked = Some(crate::payload::LandBlocked::TrunkMovedConflict);
+        result.summary = "complete work preserved; land blocked (trunk_moved_conflict)".to_string();
+        item.settle_from_task_run(&result, Some(true), now());
+
+        assert_eq!(
+            settled(&item),
+            Settled {
+                state: WorkItemState::Preserved,
+                reason: "complete work preserved; land blocked (trunk_moved_conflict)".to_string(),
+                landed_commit: None,
+                preservation_ref: Some("ref-or-commit".to_string()),
                 worktree: Some(WORKTREE.to_string()),
                 worktree_removed: Some(true),
                 trace_id: Some(TRACE.to_string()),

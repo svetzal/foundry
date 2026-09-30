@@ -186,11 +186,13 @@ Every event carries these common fields:
 | Field              | Type               | Description                                                                                |
 | ------------------ | ------------------ | ------------------------------------------------------------------------------------------ |
 | `project`          | string             | Registered project name                                                                    |
-| `success`          | bool               | `true` only for a `complete` verdict                                                       |
+| `success`          | bool               | `true` only for a `complete` verdict whose landing was not blocked                         |
 | `landed`           | bool               | Whether complete or safe converging remainder work reached trunk                           |
 | `summary`          | string             | Human-readable terminal summary                                                            |
 | `verdict`          | string             | `complete`, `remainder`, `defect`, `blocked_on_decision`, or `runner_error`                |
 | `preservation_ref` | string (optional)  | Continuation ref: landed commit SHA, or remote branch / `bundle:<path>` for preserved work |
+| `land_blocked`     | string (optional)  | Why landing-eligible work did not land: `trunk_moved_conflict`, `trunk_moved_gates_failed`, `trunk_moved_repeatedly`, `checkout_not_ready`, or `git_failed`. The verdict is unchanged |
+| `trunk_arrivals`   | array (optional)   | Trunk commits (`commit`, `subject`) that arrived during the run, oldest first; absent when trunk did not move |
 | `campaign`         | string (optional)  | Campaign that dispatched the task                                                          |
 | `campaign_cycle`   | integer (optional) | Campaign cycle that dispatched the task                                                    |
 

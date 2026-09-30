@@ -161,6 +161,8 @@ impl TaskBlock for ExecutePlan {
                                 landed: false,
                                 summary: error.to_string(),
                                 preservation_ref: None,
+                                land_blocked: None,
+                                trunk_arrivals: Vec::new(),
                                 verdict: TaskVerdict::RunnerError {
                                     detail: error.to_string(),
                                 },

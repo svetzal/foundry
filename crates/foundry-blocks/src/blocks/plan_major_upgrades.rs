@@ -190,6 +190,9 @@ pub(crate) fn blocking_reason(
                 TaskVerdict::Remainder { .. } => "remainder",
                 TaskVerdict::Defect { .. } => "defect",
                 TaskVerdict::BlockedOnDecision { .. } => "blocked-on-decision",
+                // Accepted by review but kept off trunk (trunk moved under it,
+                // say): the upgrade is done, just not integrated yet.
+                TaskVerdict::Complete if done.land_blocked.is_some() => "unlanded complete",
                 TaskVerdict::Complete | TaskVerdict::RunnerError { .. } => return None,
             };
             let reference = done.preservation_ref.clone()?;
@@ -807,6 +810,8 @@ mod tests {
             landed,
             summary: String::new(),
             preservation_ref: reference.map(str::to_string),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext::default(),
         }
@@ -845,6 +850,21 @@ mod tests {
             blocking_reason(&logged(Some(runner), 1), now).is_none(),
             "a runner error may be retried"
         );
+    }
+
+    /// A reviewed-complete upgrade that trunk movement kept off trunk is
+    /// preserved work: re-dispatching it would redo finished work.
+    #[test]
+    fn an_unlanded_complete_blocks_a_repeat_dispatch() {
+        let now = Utc::now();
+        let mut unlanded = done(false, TaskVerdict::Complete, Some("foundry-task/alpha-2"));
+        unlanded.land_blocked = Some(foundry_sdk::payload::LandBlocked::TrunkMovedConflict);
+        let (reason, reference) = blocking_reason(&logged(Some(unlanded), 1), now).unwrap();
+        assert!(
+            reason.contains("preserved unlanded complete at foundry-task/alpha-2"),
+            "{reason}"
+        );
+        assert_eq!(reference.as_deref(), Some("foundry-task/alpha-2"));
     }
 
     #[test]

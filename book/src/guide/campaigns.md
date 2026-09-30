@@ -111,6 +111,47 @@ required gates are what keep trunk from going red; a `remainder` with no
 required gate to vouch for it does not land. Its reviewer gaps travel forward in
 the typed result and become the campaign's next objective.
 
+### When trunk moves during a task
+
+A task can run for an hour. On a shared repository, other people and sessions
+push to trunk in that time. The task branch then cannot fast-forward trunk,
+but that says nothing about the quality of the work. Foundry reconciles it:
+
+1. It fetches trunk and rebases the task branch onto it inside the task
+   worktree.
+2. If the rebase is clean, it runs the project's required gates again on the
+   rebased tree (fix commands do not run).
+3. If the gates pass, the rebased work lands.
+4. If trunk moved again while the gates ran, Foundry does steps 1–3 one more
+   time. It makes no more than two rebase attempts in one task.
+
+If the rebase conflicts, a required gate fails on the rebased tree, or trunk
+is still moving after the second attempt, Foundry puts the branch back on the
+reviewed commit and preserves it as usual. The reviewer's verdict does not
+change. A `complete` that could not land is still `complete`, with `landed:
+false`, `success: false`, and a typed `land_blocked` reason in the
+`task_run_completed` payload:
+
+| `land_blocked` | Meaning |
+|----------------|---------|
+| `trunk_moved_conflict` | Trunk moved and the rebase conflicted |
+| `trunk_moved_gates_failed` | The rebase was clean, but a required gate failed on the rebased tree |
+| `trunk_moved_repeatedly` | Trunk moved again after the second rebase |
+| `checkout_not_ready` | The registered checkout was dirty or on the wrong branch |
+| `git_failed` | Another git operation needed to land failed |
+
+The payload also lists in `trunk_arrivals` the trunk commits that arrived
+during the run (commit and subject, oldest first). This list is present when
+the work landed after a rebase too. When trunk did not move, the payload has
+neither field and the result is the same as before.
+
+A `complete` with a `land_blocked` reason is preserved work to reconcile, not
+a defect. Its work item settles `preserved` and its reason names the block.
+The next campaign cycle starts from the preserved branch, and the campaign
+history shows the cycle as `complete, did not land (<reason>)`. The nightly
+majors lane does not dispatch the same upgrade again while that branch
+exists.
+
 `defect`, `blocked_on_decision`, and `runner_error` never land. Every result
 that does not land is pushed to a named preservation branch; if no remote push
 is possible, Foundry writes a Git bundle under `~/.foundry/preserved/`. Either

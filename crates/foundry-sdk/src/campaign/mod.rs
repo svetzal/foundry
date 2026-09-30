@@ -5,7 +5,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
-use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
+use crate::payload::{LandBlocked, TaskRunCompletedPayload, TaskVerdict};
 
 pub mod transition;
 pub use transition::{Transition, TransitionError};
@@ -383,6 +383,7 @@ impl Campaign {
             cycle.outcome = Some(CycleOutcome {
                 verdict: result.verdict.clone(),
                 landed: result.landed,
+                land_blocked: result.land_blocked,
             });
         }
     }
@@ -533,6 +534,9 @@ pub struct CycleOutcome {
     #[serde(flatten)]
     pub verdict: TaskVerdict,
     pub landed: bool,
+    /// Why landing-eligible work did not reach trunk, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land_blocked: Option<LandBlocked>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -836,6 +840,8 @@ mod tests {
             landed,
             summary: "converging".to_string(),
             preservation_ref: None,
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Remainder {
                 gaps: vec![gap.to_string()],
             },
@@ -861,6 +867,7 @@ mod tests {
                     gaps: vec!["the CLI still reads local files".to_string()],
                 },
                 landed: true,
+                land_blocked: None,
             })
         );
     }
@@ -882,6 +889,7 @@ mod tests {
         let CycleOutcome {
             verdict: TaskVerdict::Remainder { gaps },
             landed,
+            ..
         } = campaign.objective_history[0].outcome.clone().unwrap()
         else {
             panic!("expected a remainder outcome");

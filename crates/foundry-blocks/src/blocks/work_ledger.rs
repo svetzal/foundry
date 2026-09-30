@@ -680,6 +680,8 @@ mod tests {
             landed,
             summary: "task summary".to_string(),
             preservation_ref: Some("ref-or-commit".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {
                 task_worktree: worktree.map(str::to_string),

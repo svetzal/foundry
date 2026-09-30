@@ -178,10 +178,10 @@ fn outcome_label(outcome: Option<&CycleOutcome>) -> String {
     let Some(outcome) = outcome else {
         return "dispatched, no result recorded".to_string();
     };
-    let landing = if outcome.landed {
-        "landed"
-    } else {
-        "did not land"
+    let landing = match (outcome.landed, outcome.land_blocked) {
+        (true, _) => "landed".to_string(),
+        (false, Some(reason)) => format!("did not land ({reason}), preserved for the next cycle"),
+        (false, None) => "did not land".to_string(),
     };
     let detail = match &outcome.verdict {
         TaskVerdict::Complete => format!("complete, {landing}"),
@@ -1231,8 +1231,29 @@ mod tests {
 
     use super::{
         AdvanceCampaign, DECISION_ATTEMPTS, enforce_campaign_budget, enforce_done_gate_truth,
-        parse_decision, run_done_gates,
+        outcome_label, parse_decision, run_done_gates,
     };
+
+    /// The decision agent must read an unlanded complete as preserved work
+    /// carried forward, not as finished-and-integrated.
+    #[test]
+    fn an_unlanded_complete_is_labelled_with_its_land_block() {
+        let blocked = CycleOutcome {
+            verdict: TaskVerdict::Complete,
+            landed: false,
+            land_blocked: Some(foundry_sdk::payload::LandBlocked::TrunkMovedConflict),
+        };
+        assert_eq!(
+            outcome_label(Some(&blocked)),
+            "complete, did not land (trunk_moved_conflict), preserved for the next cycle"
+        );
+        let landed = CycleOutcome {
+            verdict: TaskVerdict::Complete,
+            landed: true,
+            land_blocked: None,
+        };
+        assert_eq!(outcome_label(Some(&landed)), "complete, landed");
+    }
 
     #[test]
     fn parses_structural_advance_decision() {
@@ -1390,6 +1411,8 @@ mod tests {
             landed: false,
             summary: "decision needed".to_string(),
             preservation_ref: Some("foundry-task/preserved".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::BlockedOnDecision {
                 finding: "boundaries differ".to_string(),
                 options: vec!["A".to_string(), "B".to_string()],
@@ -1475,6 +1498,8 @@ mod tests {
                     landed: true,
                     summary: "landed".to_string(),
                     preservation_ref: None,
+                    land_blocked: None,
+                    trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
                         campaign: Some("c".to_string()),
@@ -1560,6 +1585,8 @@ mod tests {
                     landed: true,
                     summary: "landed".to_string(),
                     preservation_ref: None,
+                    land_blocked: None,
+                    trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
                         campaign: Some("c".to_string()),
@@ -1635,6 +1662,8 @@ mod tests {
                     landed: false,
                     summary: "required no landing".to_string(),
                     preservation_ref: None,
+                    land_blocked: None,
+                    trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
                         campaign: Some("c".to_string()),
@@ -1729,6 +1758,8 @@ mod tests {
                     summary: "task stopped with a typed non-complete verdict; work preserved"
                         .to_string(),
                     preservation_ref: Some("foundry-task/parite-61ef680dcf08".to_string()),
+                    land_blocked: None,
+                    trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Remainder {
                         gaps: vec!["deployment evidence".to_string()],
                     },
@@ -1832,6 +1863,8 @@ mod tests {
             landed: true,
             summary: "first slice landed with one boundary test gap".to_string(),
             preservation_ref: Some("4a855db".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Remainder {
                 gaps: vec!["exercise the generated gRPC boundary".to_string()],
             },
@@ -2007,6 +2040,7 @@ mod tests {
                         gaps: vec!["RegistryCommands::List still reads local files".to_string()],
                     },
                     landed: true,
+                    land_blocked: None,
                 }),
             },
             CampaignCycle {
@@ -2105,6 +2139,8 @@ mod tests {
                     landed: true,
                     summary: "the RPCs exist; the CLI still routes locally".to_string(),
                     preservation_ref: None,
+                    land_blocked: None,
+                    trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Remainder {
                         gaps: vec!["registry init still writes the local file".to_string()],
                     },
@@ -2579,6 +2615,8 @@ mod tests {
             landed: false,
             summary: "runner stopped".to_string(),
             preservation_ref: Some("foundry-task/preserved".to_string()),
+            land_blocked: None,
+            trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {
                 campaign: Some("c".to_string()),

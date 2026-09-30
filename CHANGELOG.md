@@ -9,6 +9,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A task whose trunk moved while it ran now lands instead of being reported as a
+  defect. When landing-eligible work (a `complete`, or a converging `remainder`
+  with green required gates) cannot fast-forward because the registered trunk
+  advanced, Finalize Task fetches, rebases the task branch onto the new trunk
+  inside the task worktree, re-runs the project's required gates on the rebased
+  tree, and lands when they pass. If trunk moved again during the gate re-run it
+  tries once more — two rebase attempts at most. A conflicting rebase, a red
+  required gate, or a trunk that keeps moving preserves the reviewed branch as
+  before. On 2026-09-30 a 57-minute parite task that passed its gates and review
+  was recorded as `defect` because two documentation commits reached
+  `origin/main` while it ran; the owner had to land it by hand.
+- A blocked landing no longer rewrites the reviewer's verdict. A `complete` that
+  cannot land stays `complete` in `task_run_completed`, with `landed: false`,
+  `success: false` and a typed `land_blocked` reason (`trunk_moved_conflict`,
+  `trunk_moved_gates_failed`, `trunk_moved_repeatedly`, `checkout_not_ready` or
+  `git_failed`). The payload also records the trunk commits that arrived during
+  the run in `trunk_arrivals`. Both fields are absent when trunk did not move and
+  landing succeeded, so that wire shape is unchanged. Consumers treat an unlanded
+  `complete` as preserved work to reconcile: its work item settles `preserved`
+  with the block in its reason, the campaign history shows
+  `complete, did not land (<reason>)`, and the nightly majors lane does not
+  re-dispatch that upgrade while the preserved branch exists. `defect`,
+  `blocked_on_decision` and `runner_error` handling is unchanged.
+
 - `foundry campaign cancel <name> --reason … --now` now settles the aborted
   cycle's work item instead of leaving it `running`. The abort means the
   `TaskRunCompleted` that normally settles the item never arrives, so until now
