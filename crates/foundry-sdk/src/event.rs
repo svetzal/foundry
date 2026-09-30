@@ -362,6 +362,22 @@ pub enum EventType {
     /// disposition into the stream and the ops digest.
     CampaignCancelled,
 
+    // Work-item ledger — the durable record of one dispatched unit of work.
+    //
+    // `WorkItemStarted` has no `*Completed` partner: an item does not
+    // "complete", it *settles*, into a state that may still hold an
+    // obligation (preserved, needs a decision, failed). Naming the end
+    // `WorkItemSettled` says that; `WorkItemCompleted` would not. This is the
+    // owner-specified exception to the `*Started`/`*Completed` pairing rule.
+    /// A unit of work entered the ledger.
+    WorkItemSubmitted,
+    /// An agent started on a ledger item.
+    WorkItemStarted,
+    /// A ledger item reached a settled state, with its disposition.
+    WorkItemSettled,
+    /// An operator stopped a ledger item.
+    WorkItemCancelled,
+
     // Validation workflow
     ValidationRequested,
     /// Emitted by the standalone validation workflow (`ValidationRequested` →
@@ -581,6 +597,10 @@ impl EventType {
             | EventType::CampaignPaused
             | EventType::CampaignCompleted
             | EventType::CampaignCancelled
+            | EventType::WorkItemSubmitted
+            | EventType::WorkItemStarted
+            | EventType::WorkItemSettled
+            | EventType::WorkItemCancelled
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
             | EventType::ProjectRunCompleted
@@ -708,6 +728,10 @@ mod tests {
             (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::CampaignCancelled, "campaign_cancelled"),
+            (EventType::WorkItemSubmitted, "work_item_submitted"),
+            (EventType::WorkItemStarted, "work_item_started"),
+            (EventType::WorkItemSettled, "work_item_settled"),
+            (EventType::WorkItemCancelled, "work_item_cancelled"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -797,6 +821,10 @@ mod tests {
             (EventType::CampaignPaused, "campaign_paused"),
             (EventType::CampaignCompleted, "campaign_completed"),
             (EventType::CampaignCancelled, "campaign_cancelled"),
+            (EventType::WorkItemSubmitted, "work_item_submitted"),
+            (EventType::WorkItemStarted, "work_item_started"),
+            (EventType::WorkItemSettled, "work_item_settled"),
+            (EventType::WorkItemCancelled, "work_item_cancelled"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -1234,6 +1262,10 @@ mod tests {
         // still opens no span of its own.
         assert!(!EventType::CampaignCompleted.is_span_opener());
         assert!(!EventType::CampaignCancelled.is_span_opener());
+        assert!(!EventType::WorkItemSubmitted.is_span_opener());
+        assert!(!EventType::WorkItemStarted.is_span_opener());
+        assert!(!EventType::WorkItemSettled.is_span_opener());
+        assert!(!EventType::WorkItemCancelled.is_span_opener());
 
         // Supply-chain workflow openers and non-openers
         assert!(EventType::SupplyChainScanStarted.is_span_opener());

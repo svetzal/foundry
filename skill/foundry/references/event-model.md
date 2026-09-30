@@ -97,6 +97,27 @@ Event types use PascalCase in code and snake_case on the wire (e.g.,
 | `TaskReviewed`     | Domain fact     |
 | `TaskRunCompleted` | Lifecycle end   |
 
+### Work-Item Ledger
+
+One durable record per unit of work Foundry dispatched, in
+`~/.foundry/work-items.json`. `WorkItemStarted` pairs with `WorkItemSettled`
+rather than a `*Completed`: an item does not complete, it settles into a state
+that may still hold an obligation (`preserved`, `needs_decision`, `failed`).
+
+| Event               | Category        |
+| ------------------- | --------------- |
+| `WorkItemSubmitted` | Domain fact     |
+| `WorkItemStarted`   | Lifecycle start |
+| `WorkItemSettled`   | Domain fact     |
+| `WorkItemCancelled` | Domain fact     |
+
+Each carries `item_id`, `project`, `objective`, `kind` (`task`,
+`campaign_cycle`, `maintenance`, `major_upgrade`, `release`, `remediation`),
+`lane` (`interactive`, `campaign`, `maintenance`), `state`, `reason` and
+`origin`; a settlement also carries a `disposition` with the verdict, the
+landed commit or preservation ref, the worktree path and whether it was
+removed.
+
 ### Campaign Formation
 
 | Event                      | Category      |

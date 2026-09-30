@@ -7,6 +7,41 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A work-item ledger: one durable record per unit of work Foundry dispatches,
+  at `~/.foundry/work-items.json` (override with `FOUNDRY_WORK_ITEMS_PATH`).
+  Until now nothing answered "what is running, what still needs a person"
+  without reading raw events, worktrees on disk and remote branches. Each item
+  carries its project, objective, `kind` (`task`, `campaign_cycle`,
+  `maintenance`, `major_upgrade`, `release`, `remediation`), `lane`
+  (`interactive`, `campaign`, `maintenance`), opaque `origin`, timestamps,
+  `state` (`submitted`, `queued`, `running`, `landed`, `preserved`,
+  `needs_decision`, `failed`, `cancelled`), a one-line `reason`, and a
+  settlement `disposition` holding the verdict, the landed commit or
+  preservation ref, the worktree path and whether it was removed. The store is
+  daemon-owned and authoritative: every mutation loads the file, applies the
+  change, and saves it through a same-directory temp-file rename.
+- `foundryd` records every task-kind dispatch in the ledger: `foundry task`
+  (kind `task`, lane `interactive`), each campaign cycle (kind
+  `campaign_cycle`, lane `campaign`, origin naming the campaign and cycle),
+  and each nightly majors-lane upgrade task (kind `major_upgrade`, lane
+  `maintenance`). The item reaches `running` before the coding agent is
+  invoked, and settles from the run's existing typed result: `complete` or a
+  landing `remainder` lands; a non-landing `remainder` or a `defect` is
+  preserved work, with its preservation ref; `blocked_on_decision` needs a
+  decision; `runner_error` — including a dispatch that faults before the agent
+  starts — fails, with the reason. On daemon start, every item still `running`
+  is settled `failed` with the reason `daemon restarted`, so a restart never
+  leaves work visibly running.
+- Four event types carry ledger state onto the Watch stream and into the
+  durable JSONL log: `work_item_submitted`, `work_item_started`,
+  `work_item_settled` and `work_item_cancelled`. `WorkItemStarted` pairs with
+  `WorkItemSettled` rather than a `*Completed`, because an item does not
+  complete — it settles, into a state that may still hold an obligation.
+  No dispatch is delayed, reordered, merged or deduplicated, and a ledger
+  fault never fails, delays or alters a dispatch.
+
 ## [0.39.9] - 2026-09-29
 
 ### Fixed

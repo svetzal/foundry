@@ -35,6 +35,7 @@ mod recovery;
 mod registry_ops;
 mod sentinel_ops;
 mod tracing_ops;
+mod work_ledger;
 
 /// The Arc cluster shared between `spawn_workflow`, `spawn_scheduler`, and
 /// `FoundryService`. Grouping them here eliminates recurring long positional
@@ -99,6 +100,13 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
         started_at: chrono::Utc::now(),
         campaign,
     });
+}
+
+/// Settle every work item the previous process was stopped during, before the
+/// daemon dispatches anything new. Awaited rather than spawned for exactly
+/// that reason.
+pub async fn settle_running_work_items_on_start(ctx: &RuntimeContext, path: &std::path::Path) {
+    work_ledger::settle_running_items_on_start(ctx, path).await;
 }
 
 /// Close, in the background, any maintenance cycle foundryd was stopped in

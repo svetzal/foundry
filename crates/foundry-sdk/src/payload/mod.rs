@@ -39,6 +39,7 @@ pub mod supply_chain;
 pub mod task;
 pub mod validation;
 pub mod vulnerability;
+pub mod work_item;
 
 pub use agent_session::*;
 pub use campaign::*;
@@ -61,6 +62,7 @@ pub use supply_chain::*;
 pub use task::*;
 pub use validation::*;
 pub use vulnerability::*;
+pub use work_item::*;
 
 #[cfg(test)]
 mod tests {

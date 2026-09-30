@@ -22,4 +22,5 @@ pub mod token_rates;
 pub mod token_usage;
 pub mod trace;
 pub mod triage;
+pub mod work_item;
 pub mod workflow;

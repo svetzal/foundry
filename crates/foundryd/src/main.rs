@@ -135,6 +135,10 @@ async fn main() -> Result<()> {
         registry,
     };
 
+    // Before anything can dispatch: close out work the previous process was
+    // stopped in the middle of, so a restart never leaves an item running.
+    service::settle_running_work_items_on_start(&ctx, &foundry_sdk::paths::work_items_path()).await;
+
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir);
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
 
@@ -594,7 +598,17 @@ fn register_iterate_blocks(
         agent.clone(),
         registry.clone(),
     )));
+    // Registration order is load-bearing: the engine runs the blocks matching
+    // one event in registration order, so recording the work item before
+    // `DirectPrompt` is what puts the item in the ledger, `running`, before
+    // `DirectPrompt` hands the prompt to `ExecutePlan` and the agent runs.
+    engine.register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(
+        foundry_sdk::paths::work_items_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
+    engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(
+        foundry_sdk::paths::work_items_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
         agent.clone(),
         registry.clone(),

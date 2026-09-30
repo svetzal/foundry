@@ -103,7 +103,7 @@ All event types follow a disciplined taxonomy with four suffix categories:
 | Command | `*Requested` | Intent — someone or something wants action taken | `ProjectIterationRequested`, `ProjectMaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested`, `MaintenanceSummaryRequested` |
 | Lifecycle start | `*Started` | A multi-step operation began | `MaintenanceCycleStarted`, `ProjectRunStarted`, `StrategicCycleStarted`, `InnerIterationStarted`, `RemediationStarted` |
 | Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `MaintenanceCycleCompleted`, `ProjectRunCompleted`, `ProjectIterationCompleted`, `PreflightCompleted`, `GateResolutionCompleted`, `MaintenanceTriageCompleted` |
-| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked` |
+| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked`, `WorkItemSettled` |
 
 Rules:
 
@@ -112,6 +112,21 @@ Rules:
 - **`*Started`/`*Completed` must pair** — if you add a `*Started`, there must be a corresponding `*Completed`.
 - **Noun form for compound prefixes** — use `ProjectIterationCompleted` (noun), not `ProjectIterateCompleted` (verb).
 - **Payload boolean results use `success`** — not `passed`, `ok`, or other variants. The one exception is the `passed` field on individual gate results (where "passed" is domain-specific to gates).
+
+The work-item ledger's four event types are the owner-specified exception to
+the `*Started`/`*Completed` pairing rule:
+
+| Event | Meaning |
+|-------|---------|
+| `work_item_submitted` | A unit of work entered the ledger |
+| `work_item_started` | An agent started on a ledger item |
+| `work_item_settled` | A ledger item reached a settled state, with its disposition |
+| `work_item_cancelled` | An operator stopped a ledger item |
+
+`WorkItemStarted` pairs with `WorkItemSettled` rather than a
+`WorkItemCompleted`, because an item does not *complete* — it settles, into a
+state that may still hold an obligation (`preserved`, `needs_decision`,
+`failed`). `WorkItemCompleted` would report unfinished work as finished.
 
 ## CLI Commands
 
@@ -457,6 +472,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 
 - `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
 - `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; owned by `foundryd` for normal online reads and mutations, with direct file access reserved for explicit `--offline` recovery
+- `~/.foundry/work-items.json` — the work-item ledger: one durable record per unit of work Foundry dispatched (`foundry task`, a campaign cycle, a nightly major-upgrade task), with its kind, lane, origin, state and settlement disposition. Daemon-owned and authoritative — every mutation loads the file, applies the change, and saves it through a same-directory temp-file rename. On daemon start every item still `running` is settled `failed` with the reason `daemon restarted`
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
@@ -483,6 +499,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_WORKTREES_DIR` | `~/.foundry/worktrees` | Isolated task worktrees |
 | `FOUNDRY_PRESERVED_DIR` | `~/.foundry/preserved` | Fallback preserved-work bundles |
 | `FOUNDRY_SENTINELS_PATH` | `~/.foundry/sentinels.json` | Sentinel store file |
+| `FOUNDRY_WORK_ITEMS_PATH` | `~/.foundry/work-items.json` | Durable work-item ledger |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
 | `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |

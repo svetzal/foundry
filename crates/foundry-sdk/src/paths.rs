@@ -77,6 +77,21 @@ pub fn campaigns_path() -> PathBuf {
     }
 }
 
+/// Returns the durable work-item ledger path.
+///
+/// The ledger holds one record per unit of work Foundry dispatched (see
+/// [`crate::work_item`]). It is daemon-owned and authoritative: every
+/// mutation loads this file, applies the change, and saves it.
+///
+/// Override with `FOUNDRY_WORK_ITEMS_PATH`.
+pub fn work_items_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_WORK_ITEMS_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("work-items.json")
+    }
+}
+
 /// Returns the root used for isolated one-shot task worktrees.
 ///
 /// Override with `FOUNDRY_WORKTREES_DIR`.
@@ -263,6 +278,16 @@ mod tests {
         let dir = triage_dir();
         let s = dir.to_string_lossy();
         assert!(s.ends_with(".foundry/triage"), "got: {s}");
+    }
+
+    #[test]
+    fn work_items_path_defaults_under_foundry_home_when_env_unset() {
+        if env::var("FOUNDRY_WORK_ITEMS_PATH").is_ok() {
+            return;
+        }
+        let path = work_items_path();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with(".foundry/work-items.json"), "got: {s}");
     }
 
     #[test]
