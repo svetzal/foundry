@@ -24,6 +24,13 @@ pub struct StageReport {
     pub unpriced_models: BTreeSet<String>,
 }
 
+mod formation;
+pub use formation::{
+    FormationDecisionReport, FormationSessionReport, FormationToolActivity,
+    NativeFormationObservation,
+};
+use formation::{find_native_log, read_native_observation, read_tool_activity};
+
 /// Accounting for the campaign, excluding unrelated digest sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CampaignReport {
@@ -37,6 +44,10 @@ pub struct CampaignReport {
     pub inferred_stage_sessions: u64,
     pub incomplete_log_lines: u64,
     pub stages: BTreeMap<String, StageReport>,
+    #[serde(default)]
+    pub formation_sessions: Vec<FormationSessionReport>,
+    #[serde(default)]
+    pub formation_decisions: Vec<FormationDecisionReport>,
 }
 
 /// Read the daemon's event logs. Invalid complete records are errors, not zero spend.
@@ -79,6 +90,30 @@ pub fn read_report(campaign: &Campaign, directory: &Path) -> anyhow::Result<Camp
     }
     let mut report = aggregate(campaign, &events);
     report.incomplete_log_lines = incomplete;
+    for session in &mut report.formation_sessions {
+        match read_tool_activity(Path::new(&session.source_log_path)) {
+            Ok(activity) => session.tool_activity = Some(activity),
+            Err(error) => session.transcript_error = Some(error.to_string()),
+        }
+    }
+    let native_root = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codex"))
+        })
+        .map(|root| root.join("sessions"));
+    for session in &mut report.formation_sessions {
+        let observed = session
+            .tool_activity
+            .as_ref()
+            .and_then(|activity| activity.native_thread_id.as_deref());
+        if let (Some(root), Some(id)) = (&native_root, observed) {
+            match find_native_log(root, id).and_then(|path| read_native_observation(&path)) {
+                Ok(value) => session.native_observation = Some(value),
+                Err(error) => session.native_observation_error = Some(error.to_string()),
+            }
+        }
+    }
     Ok(report)
 }
 
@@ -102,27 +137,7 @@ pub fn aggregate(campaign: &Campaign, events: &[Value]) -> CampaignReport {
         .filter(|e| e["event_type"] == "agent_session_ended")
         .filter_map(|e| e["payload"]["session_id"].as_str().map(|id| (id, e)))
         .collect();
-    let mut report = CampaignReport {
-        name: campaign.name.clone(),
-        stage_limits: campaign.budget.stages.clone(),
-        writable_repositories: if campaign.writable_repositories.is_empty() {
-            vec![campaign.project.clone()]
-        } else {
-            campaign.writable_repositories.clone()
-        },
-        status: campaign.status.to_string(),
-        cycles_dispatched: campaign.cycles_completed,
-        cycles_landed: campaign.cycles_landed,
-        external_completion_reasons: campaign
-            .owner_decisions
-            .iter()
-            .filter(|d| d.decision.starts_with("Completed externally:"))
-            .map(|d| d.decision.clone())
-            .collect(),
-        inferred_stage_sessions: 0,
-        incomplete_log_lines: 0,
-        stages: BTreeMap::new(),
-    };
+    let mut report = initial_report(campaign, events);
     let mut seen = BTreeSet::new();
     for event in events {
         if event["event_type"] != "agent_session_started"
@@ -148,6 +163,23 @@ pub fn aggregate(campaign: &Campaign, events: &[Value]) -> CampaignReport {
                 "formation"
             }
         });
+        if role == "formation" {
+            let finish = ends.get(id).map(|e| &e["payload"]);
+            report.formation_sessions.push(FormationSessionReport {
+                session_id: id.into(),
+                trace_id: text(&event["trace_id"]),
+                started_at: text(&p["started_at"]),
+                ended_at: finish.and_then(|e| e["ended_at"].as_str().map(str::to_owned)),
+                status: finish.map_or_else(|| "running".into(), |e| text(&e["status"])),
+                source_log_path: text(&p["source_log_path"]),
+                prompt_bytes: p["prompt_bytes"].as_u64(),
+                usage: finish.and_then(|e| serde_json::from_value(e["usage"].clone()).ok()),
+                tool_activity: None,
+                transcript_error: None,
+                native_observation: None,
+                native_observation_error: None,
+            });
+        }
         let stage = report.stages.entry(role.into()).or_default();
         stage.sessions += 1;
         let Some(end) = ends.get(id) else {
@@ -187,6 +219,60 @@ pub fn aggregate(campaign: &Campaign, events: &[Value]) -> CampaignReport {
         }
     }
     report
+        .formation_sessions
+        .sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.session_id.cmp(&b.session_id)));
+    report
+        .formation_decisions
+        .sort_by(|a, b| a.occurred_at.cmp(&b.occurred_at).then(a.event_id.cmp(&b.event_id)));
+    report
+}
+
+fn initial_report(campaign: &Campaign, events: &[Value]) -> CampaignReport {
+    CampaignReport {
+        name: campaign.name.clone(),
+        stage_limits: campaign.budget.stages.clone(),
+        writable_repositories: if campaign.writable_repositories.is_empty() {
+            vec![campaign.project.clone()]
+        } else {
+            campaign.writable_repositories.clone()
+        },
+        status: campaign.status.to_string(),
+        cycles_dispatched: campaign.cycles_completed,
+        cycles_landed: campaign.cycles_landed,
+        external_completion_reasons: campaign
+            .owner_decisions
+            .iter()
+            .filter(|d| d.decision.starts_with("Completed externally:"))
+            .map(|d| d.decision.clone())
+            .collect(),
+        inferred_stage_sessions: 0,
+        incomplete_log_lines: 0,
+        stages: BTreeMap::new(),
+        formation_sessions: Vec::new(),
+        formation_decisions: events
+            .iter()
+            .filter(|e| {
+                e["event_type"] == "campaign_advance_completed"
+                    && e["payload"]["campaign"] == campaign.name
+            })
+            .map(|e| {
+                let p = &e["payload"];
+                FormationDecisionReport {
+                    event_id: text(&e["id"]),
+                    trace_id: text(&e["trace_id"]),
+                    occurred_at: text(&e["occurred_at"]),
+                    decision: text(&p["decision"]),
+                    reason: text(&p["reason"]),
+                    last_task_run_event_id: p["last_task_run_event_id"].as_str().map(str::to_owned),
+                    prompt_bytes: p["prompt"].as_str().map(str::len),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn text(value: &Value) -> String {
+    value.as_str().unwrap_or_default().to_owned()
 }
 
 #[cfg(test)]

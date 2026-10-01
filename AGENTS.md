@@ -169,6 +169,9 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 
 Campaign agents must not have clock-time limits. Bound content or token size
 instead. Elapsed time is diagnostic evidence, not a spending limit.
+Reassess the remaining mission after each implementation cycle. Implementation
+discoveries must inform the next assessment; assessment token volume alone does
+not establish waste.
 
 Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
 `show`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel` go through

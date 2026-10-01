@@ -613,6 +613,7 @@ fn completed_event(
         &campaign.project,
         throttle,
         &CampaignAdvanceCompletedPayload {
+            last_task_run_event_id: campaign.last_run_event_id.clone(),
             campaign: campaign.name.clone(),
             project: campaign.project.clone(),
             cycles_completed: campaign.cycles_completed,
@@ -692,6 +693,7 @@ fn terminal_error_result(
         project,
         throttle,
         &CampaignAdvanceCompletedPayload {
+            last_task_run_event_id: None,
             campaign: campaign.to_string(),
             project: project.to_string(),
             cycles_completed,

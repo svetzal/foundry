@@ -23,6 +23,7 @@
 - [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Dependency Update Policy](guide/dependency-update-policy.md)
 - [Tasks and Campaigns](guide/campaigns.md)
+  - [Context-mixer2 formation audit](guide/campaign-formation-audit.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
 - [The Work Queue](guide/work-queue.md)
 - [Work Reconciler](guide/work-reconciler.md)

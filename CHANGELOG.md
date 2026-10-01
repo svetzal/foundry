@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Campaign reports expose individual formation sessions and decision events,
+  transcript paths, exact request bytes for new sessions, and command activity.
+  Native Codex usage observations remain separate from terminal accounting so
+  interrupted sessions can be investigated without reporting partial spend as
+  complete or counting it twice.
+
 - Formation defaults to a 32 KiB prompt limit. Large Git snapshots and preserved
   branch summaries are bounded and name commands for reading the full evidence.
   Missions, owner policy, and typed reviewer findings retain their wording.

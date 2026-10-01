@@ -29,6 +29,9 @@ pub enum CampaignDecision {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CampaignAdvanceCompletedPayload {
+    /// Most recent task result known to the campaign. The prompt records what was supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_task_run_event_id: Option<String>,
     pub campaign: String,
     pub project: String,
     pub cycles_completed: u64,

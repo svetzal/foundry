@@ -401,6 +401,7 @@ pub(crate) fn emit_session_started(
         project: request.project.clone(),
         working_dir: request.working_dir.clone(),
         source_log_path: log_path.to_path_buf(),
+        prompt_bytes: Some(request.prompt.len()),
         tier: request.tier.as_str().to_string(),
         stage: request
             .env

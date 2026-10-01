@@ -307,6 +307,22 @@ formation, execution, and review time and tokens. It also shows dispatched and
 landed cycles, running sessions, missing usage, unpriced models, stage limits,
 and external completion reasons. Digest sessions do not enter these totals.
 
+The report also lists formation sessions and decision events separately. JSON
+includes session IDs, trace IDs, timestamps, transcript paths, terminal usage,
+exact Foundry prompt bytes when recorded, and command activity. Captured output
+bytes are not tokens and do not prove how much output the model saw. Exact
+command repeats exclude duplicate transcript events.
+
+For Codex, native observations include the first request's input, the latest
+cumulative usage, and a native transcript path. These observations never add to
+terminal accounting. An interrupted session can have a partial observation while
+its final usage remains unmeasured. Missing or unsupported transcripts produce
+explicit audit errors, not zero counts. Native transcript lookup uses the daemon's
+`CODEX_HOME`, or `~/.codex`, and reads only the matching thread's file.
+
+See [the context-mixer2 formation audit](campaign-formation-audit.md) for a worked
+example and the limits of each measurement.
+
 Older session records lack an explicit stage. Their role is inferred from access
 and model tier, and the report gives the count of inferred sessions. Missing
 usage means unmeasured spend. A partial list-price estimate is not total cost.

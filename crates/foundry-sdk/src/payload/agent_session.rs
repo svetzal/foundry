@@ -16,6 +16,9 @@ pub struct AgentSessionStartedPayload {
     pub project: String,
     pub working_dir: std::path::PathBuf,
     pub source_log_path: std::path::PathBuf,
+    /// Exact Foundry request bytes, excluding provider and automatically loaded instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_bytes: Option<usize>,
     pub tier: String,
     /// Explicit orchestration stage; absent on older sessions.
     #[serde(default)]

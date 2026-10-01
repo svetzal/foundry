@@ -201,6 +201,39 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
             );
         }
     }
+    for session in &report.formation_sessions {
+        let _ = writeln!(out, "Formation {}: {}", session.session_id, session.status);
+        if let Some(tools) = &session.tool_activity {
+            let _ = writeln!(
+                out,
+                "  {} commands, {} exact repeats, {} failed; {} captured output bytes (not model tokens)",
+                tools.completed_commands,
+                tools.repeated_commands,
+                tools.failed_commands,
+                tools.captured_output_bytes
+            );
+        }
+        if let Some(observation) = &session.native_observation {
+            let _ = writeln!(
+                out,
+                "  Native observation: {} input including {} cached, {} output; first request {} input (not added to final usage)",
+                observation.input_tokens_including_cache,
+                observation.cached_input_tokens,
+                observation.output_tokens,
+                observation.first_request_input_tokens
+            );
+            if session.usage.is_none() {
+                let _ = writeln!(out, "  Partial observation only; final usage remains unmeasured");
+            }
+        }
+        for error in [&session.transcript_error, &session.native_observation_error]
+            .into_iter()
+            .flatten()
+        {
+            let _ = writeln!(out, "  Audit unavailable: {error}");
+        }
+        let _ = writeln!(out, "  Transcript: {}", session.source_log_path);
+    }
     for reason in &report.external_completion_reasons {
         let _ = writeln!(out, "{reason}");
     }

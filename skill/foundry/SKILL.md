@@ -228,7 +228,10 @@ rejected. Other campaign providers are currently refused because they cannot
 enforce this scope. Standalone tasks retain their existing provider behavior.
 
 Campaign `budget.stages.formation_prompt_bytes` defaults to 32768 bytes.
-Campaign agents have no clock deadline. Legacy stage time fields are ignored. Use `campaign report` to inspect stage tokens/time, unmeasured
+Campaign agents have no clock deadline. Legacy stage time fields are ignored.
+`campaign report --json` includes per-formation session and decision records,
+transcript links, command/output observations, and separate partial native usage.
+Partial observations never add to final token totals; missing data is explicit. Use `campaign report` to inspect stage tokens/time, unmeasured
 or unpriced spend, landed cycles, and external repairs.
 
 Coding sessions should run verbose checks through `foundry capture -- <command>`.
