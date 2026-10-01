@@ -176,8 +176,17 @@ fn make_service_with_registry(
     registry: Registry,
 ) -> FoundryService {
     let (event_tx, _rx) = broadcast::channel(64);
+    let registry = Arc::new(RwLock::new(registry));
+    let mut engine = Engine::new();
+    engine.register(Box::new(foundry_blocks::blocks::ReconcileWork::new(
+        registry.clone(),
+        work_items_path.clone(),
+        state_dir.join("worktrees"),
+        state_dir.join("events"),
+        state_dir.join("reconcile"),
+    )));
     let engine = Arc::new(
-        Engine::new()
+        engine
             .with_event_broadcaster(event_tx.clone())
             .with_event_writer(Arc::new(EventWriter::new(state_dir.join("events")))),
     );
@@ -189,7 +198,6 @@ fn make_service_with_registry(
         Arc::clone(&trace_writer),
     ));
     let workflow_tracker = Arc::new(WorkflowTracker::new());
-    let registry = Arc::new(RwLock::new(registry));
 
     let ctx = RuntimeContext {
         engine,
@@ -1571,4 +1579,38 @@ async fn queue_show_and_json_read_automatic_supersession_from_daemon_ledger() {
     assert_eq!(json["events"][0]["reason"], reason);
     assert!(!client_ledger.exists());
     assert!(!client_events.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_cli_prints_daemon_invocation_and_rejects_offline() {
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let absent_client_ledger = home.path().join("client-ledger.json");
+    let ledger = state.path().join("work-items.json");
+    WorkItemStore::default().save(&ledger).unwrap();
+    let addr = start_server(make_service(ledger, state.path())).await;
+    let output = run_foundry(home.path(), &absent_client_ledger, &addr, &["queue", "reconcile"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let markdown = String::from_utf8(output.stdout).unwrap();
+    let report = state
+        .path()
+        .join("reconcile")
+        .join(format!("{}.md", Utc::now().format("%Y-%m-%d")));
+    assert_eq!(markdown, std::fs::read_to_string(report).unwrap());
+    assert!(markdown.contains(
+        "Settled: 0; orphan worktrees: 0; orphan branches: 0; broken items: 0; unresolved: 0"
+    ));
+    assert!(!absent_client_ledger.exists());
+    let rejected = run_foundry(
+        home.path(),
+        &absent_client_ledger,
+        &addr,
+        &["queue", "reconcile", "--offline"],
+    );
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("requires the daemon"));
+    let unavailable =
+        run_foundry(home.path(), &absent_client_ledger, DUMMY_ADDR, &["queue", "reconcile"]);
+    assert!(!unavailable.status.success());
+    assert!(!absent_client_ledger.exists());
 }

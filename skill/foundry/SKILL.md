@@ -663,3 +663,15 @@ rejects merge commits that `git cherry` cannot account for. Queue show and JSON
 expose the persisted commit and reason through the daemon's read path.
 Scheduled invocation and the reporting reconciler are not delivered by this
 landing-triggered check.
+
+### Work reconciliation
+
+`foundry queue reconcile` requires the daemon and prints that invocation's
+report; `--offline` is rejected. The canonical `work-reconciler` sentinel uses
+`30 */3 * * *` and pairs `work_reconcile_started` with `work_reconcile_completed`.
+Inventory reports exact IDs, paths, branch refs and registered-trunk status.
+Conservative supersession may settle preserved work without a task landing;
+concurrent owner changes win, and preservation evidence is retained. No cleanup
+or agent invocation occurs. Errors surface as INTERNAL, and anomaly findings
+force ops observation below its normal volume threshold. Reports use
+`FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).

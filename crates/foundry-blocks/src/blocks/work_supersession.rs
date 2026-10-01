@@ -1,4 +1,4 @@
-//! Read-only Git proof for landing-triggered ledger supersession.
+//! Read-only Git proof shared by landing-triggered and scheduled ledger supersession.
 //!
 //! No fetching, checkout, ref updates or preservation cleanup happens here.
 //! Unavailable objects and ambiguous evidence are explicit unresolved results.
@@ -121,7 +121,16 @@ pub(super) async fn prove_supersession(
         .and_then(|d| d.preservation_ref.as_deref())
         .ok_or_else(|| anyhow::anyhow!("missing preservation evidence"))?;
     let preserved = preserved_commit(path, reference).await?;
-    let ancestry = git(path, &["merge-base", "--is-ancestor", &preserved, trunk]).await?;
+    prove_commit_supersession(path, trunk, &preserved).await
+}
+
+/// Apply the same conservative proof to an already resolved inventory commit.
+pub(super) async fn prove_commit_supersession(
+    path: &Path,
+    trunk: &str,
+    preserved: &str,
+) -> Result<String> {
+    let ancestry = git(path, &["merge-base", "--is-ancestor", preserved, trunk]).await?;
     if ancestry.success {
         return Ok(trunk.to_string());
     }
@@ -130,14 +139,14 @@ pub(super) async fn prove_supersession(
         output(path, &["rev-parse", "--is-shallow-repository"]).await? == "false",
         "shallow history cannot prove patch equivalence"
     );
-    let base = output(path, &["merge-base", trunk, &preserved]).await?;
+    let base = output(path, &["merge-base", trunk, preserved]).await?;
     ensure!(valid_hash(&base), "no common history for patch comparison");
     let range = format!("{trunk}..{preserved}");
     let commits = output(path, &["rev-list", &range]).await?;
     ensure!(!commits.is_empty(), "no preserved commits to compare");
     let merges = output(path, &["rev-list", "--merges", &range]).await?;
     ensure!(merges.is_empty(), "merge commits cannot be proved by git cherry");
-    let cherry = output(path, &["cherry", trunk, &preserved]).await?;
+    let cherry = output(path, &["cherry", trunk, preserved]).await?;
     let rows: Vec<_> = cherry.lines().collect();
     ensure!(
         !rows.is_empty() && rows.len() == commits.lines().count(),

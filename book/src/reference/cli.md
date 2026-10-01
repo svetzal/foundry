@@ -815,3 +815,14 @@ foundry registry edit my-tool \
 | `--timeout-secs`    | Set command timeout in seconds                               |
 | `--update-policy`   | Set the dependency update policy: `patch`, `minor` or `major` |
 | `--installs-skill`  | Set the skill install: `true`, `false`, or a command to run verbatim. An empty value is rejected |
+
+## `foundry queue reconcile`
+
+Runs the canonical work reconciler through daemon-authoritative `ReconcileWork`
+gRPC and prints that invocation's Markdown digest. Requires the daemon and
+rejects `--offline`; it never reads client-side ledger or digest files.
+Unreachable transport is an error. Inspection, fetch, ledger-save and digest-write
+failures surface as `INTERNAL` with diagnostics. Verified settlements can already
+be durable when a later digest write fails. Reports default to
+`~/.foundry/reconcile/YYYY-MM-DD.md` (`FOUNDRY_RECONCILE_DIR` overrides the directory).
+See [Work reconciler](../guide/work-reconciler.md).

@@ -971,6 +971,13 @@ fn register_digest_blocks(
     engine.register(Box::new(foundry_blocks::blocks::ObserveCommits::new(registry.clone())));
     engine.register(Box::new(foundry_blocks::blocks::SummarizeCommits::new(agent.clone())));
     engine.register(Box::new(foundry_blocks::blocks::WriteCommitDigest::new(paths.digests_dir)));
+    engine.register(Box::new(foundry_blocks::blocks::ReconcileWork::new(
+        registry.clone(),
+        foundry_sdk::paths::work_items_path(),
+        foundry_sdk::paths::worktrees_dir(),
+        foundry_sdk::paths::events_dir(),
+        foundry_sdk::paths::reconcile_dir(),
+    )));
     // Ops-digest formation (periodic summary of MBOS operational events).
     engine.register(Box::new(foundry_blocks::blocks::ObserveEvents::new(
         paths.ops_events_intake_dir,

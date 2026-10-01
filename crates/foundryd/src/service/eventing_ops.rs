@@ -338,6 +338,19 @@ pub(super) async fn run_workflow(
     event_tx: broadcast::Sender<Event>,
     registry: Arc<RwLock<Registry>>,
 ) {
+    run_workflow_result(event, engine, trace_store, tracker, trace_writer, event_tx, registry)
+        .await;
+}
+
+pub(super) async fn run_workflow_result(
+    event: Event,
+    engine: Arc<Engine>,
+    trace_store: Arc<TraceStore>,
+    tracker: Arc<WorkflowTracker>,
+    trace_writer: Arc<TraceWriter>,
+    event_tx: broadcast::Sender<Event>,
+    registry: Arc<RwLock<Registry>>,
+) -> ProcessResult {
     let event_id = event.id.clone();
     let root_event_type = event.event_type.clone();
     let root_project = event.project.clone();
@@ -386,7 +399,8 @@ pub(super) async fn run_workflow(
         }
     }
 
-    trace_store.insert(event_id, result);
+    trace_store.insert(event_id, result.clone());
+    result
 }
 
 pub(super) fn emit_rpc(

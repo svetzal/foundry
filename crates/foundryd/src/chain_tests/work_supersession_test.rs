@@ -515,3 +515,515 @@ async fn automatic_supersession_respects_concurrent_owner_cancellation_and_unrel
     assert!(repeat.execute(terminal).await.unwrap().events.is_empty());
     server.abort();
 }
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One ordered integration scenario keeps preservation snapshots and exact boundary assertions together"
+)]
+async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history() {
+    use foundry_blocks::blocks::{ObserveEvents, ReconcileWork};
+    use foundry_sdk::payload::WorkReconcileCompletedPayload;
+    for proof in ["ancestry", "cherry"] {
+        for source in ["local", "remote", "bundle"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (checkout, preserved, mut untouched, trunk, _) =
+                supersession_fixture(dir.path(), proof, source);
+            // A running item's identity is obtained from durable trace evidence, not its name.
+            let active_root = dir.path().join("worktrees/test-project/active-work");
+            std::fs::create_dir_all(active_root.parent().unwrap()).unwrap();
+            assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    "foundry-task/active",
+                    active_root.to_str().unwrap(),
+                    "integration-trunk"
+                ]
+            ));
+            let running = untouched.iter_mut().find(|i| i.state == WorkItemState::Running).unwrap();
+            running.disposition = None;
+            let active_event = Event::new(EventType::ExecutionRequested, "test-project".into(), Throttle::Full,
+                serde_json::json!({"task_worktree": active_root, "task_branch": "foundry-task/active"}))
+                .with_trace_id(running.trace_id.clone());
+            let active_id = running.id.clone();
+            let orphan = dir.path().join("worktrees/test-project/orphan-directory");
+            std::fs::create_dir_all(&orphan).unwrap();
+            std::fs::write(orphan.join("keep.txt"), "valuable orphan content").unwrap();
+            let informational = dir.path().join("personal worktree");
+            assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    informational.to_str().unwrap(),
+                    "integration-trunk"
+                ]
+            ));
+            assert!(git_ok(
+                Some(&checkout),
+                &["branch", "foundry-task/local-only", "integration-trunk"]
+            ));
+            assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "push",
+                    "origin",
+                    "integration-trunk:refs/heads/foundry-task/remote-only"
+                ]
+            ));
+            assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "update-ref",
+                    "refs/remotes/origin/foundry-task/stale",
+                    &trunk
+                ]
+            ));
+            std::fs::write(checkout.join("dirty.txt"), "keep dirty checkout").unwrap();
+            assert!(git_ok(Some(&checkout), &["branch", "foundry-task/unlanded", "unmatched"]));
+            assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "push",
+                    "origin",
+                    "integration-trunk:refs/heads/ambiguous-head"
+                ]
+            ));
+            assert!(git_ok(Some(&checkout), &["branch", "ambiguous-head", "unmatched"]));
+            let mut ambiguous = preserved.clone();
+            ambiguous.id = "wi_ambiguous_exact".into();
+            ambiguous.disposition.as_mut().unwrap().preservation_ref =
+                Some("ambiguous-head".into());
+            untouched.push(ambiguous);
+            let bundle_snapshot = preserved
+                .disposition
+                .as_ref()
+                .unwrap()
+                .preservation_ref
+                .as_ref()
+                .and_then(|reference| reference.strip_prefix("bundle:"))
+                .map(|path| (PathBuf::from(path), std::fs::read(path).unwrap()));
+            let ledger = dir.path().join("work-items.json");
+            let mut items = untouched.clone();
+            items.push(preserved.clone());
+            WorkItemStore { version: 1, items }.save(&ledger).unwrap();
+            let (previous, history_path, history) = prior_history(dir.path(), &preserved);
+            foundry_engine::event_writer::EventWriter::new(dir.path().join("events"))
+                .write(&active_event)
+                .unwrap();
+            let registry =
+                test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+            registry.write().unwrap().projects[0].branch = "integration-trunk".into();
+            let mut engine = Engine::new();
+            engine.register(Box::new(ReconcileWork::new(
+                registry.clone(),
+                ledger.clone(),
+                dir.path().join("worktrees"),
+                dir.path().join("events"),
+                dir.path().join("reconcile"),
+            )));
+            engine.register(Box::new(
+                ObserveEvents::new(dir.path().join("intake"), dir.path().join("watermark"))
+                    .with_disk(
+                        Vec::new(),
+                        foundry_sdk::disk::DiskThreshold {
+                            min_free_bytes: 0,
+                            min_free_percent: 0,
+                        },
+                    ),
+            ));
+            let content_snapshots = [&checkout, &active_root, &informational, &orphan]
+                .map(|path| (path.clone(), content_snapshot(path)));
+            let index_snapshot = std::fs::read(checkout.join(".git/index")).unwrap();
+            let local_before = git_text(&checkout, &["for-each-ref", "refs/heads"]);
+            let remote_before = git_text(&checkout, &["ls-remote", "--heads", "origin"]);
+            let (mut client, server, mut events) =
+                resume_service(dir.path(), registry, engine).await;
+            let watch = client
+                .watch(crate::proto::WatchRequest {
+                    project: String::new(),
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            let seed = foundry_sdk::sentinel::SentinelStore::default_seed();
+            let scheduled = seed.find_sentinel("work-reconciler").unwrap();
+            assert_eq!(
+                scheduled.schedule,
+                foundry_sdk::sentinel::Schedule::Cron("30 */3 * * *".into())
+            );
+            let trace = mint_trace_id();
+            client
+                .emit(crate::proto::EmitRequest {
+                    event_type: scheduled.emit.event_type.to_string(),
+                    project: scheduled.emit.project.clone(),
+                    throttle: 0,
+                    payload_json: scheduled.emit.payload.to_string(),
+                    trace_id: trace.clone(),
+                    span_id: String::new(),
+                    parent_span_id: String::new(),
+                })
+                .await
+                .unwrap();
+            let mut observed = Vec::new();
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(20), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let done = event.event_type == EventType::OpsObserved;
+                observed.push(event);
+                if done {
+                    break;
+                }
+            }
+            assert_watch_matches(watch, &observed).await;
+            let completion = observed
+                .iter()
+                .find(|e| e.event_type == EventType::WorkReconcileCompleted)
+                .unwrap();
+            assert_eq!(completion.trace_id.as_ref(), Some(&trace));
+            let report: WorkReconcileCompletedPayload = completion.parse_payload().unwrap();
+            assert!(report.success, "{:?}", report.errors);
+            assert_eq!(report.settled_ids, vec![preserved.id.clone()]);
+            let has = |category: &str, identity: &str| {
+                report.findings.iter().any(|f| f.category == category && f.identity == identity)
+            };
+            assert!(has("orphan_worktree", orphan.to_str().unwrap()));
+            assert!(has("orphan_branch", "refs/heads/foundry-task/local-only"));
+            assert!(has("orphan_branch", "refs/remotes/origin/foundry-task/remote-only"));
+            assert!(has("informational", informational.to_str().unwrap()));
+            assert!(has("dirty_checkout", checkout.to_str().unwrap()));
+            assert!(has("unresolved", "wi_missing"));
+            assert!(has("broken_item", "wi_no_evidence"));
+            assert!(has("broken_item", "wi_other_project"));
+            assert_eq!(report.broken_items, 2);
+            assert!(has("unresolved", "wi_edited_squash"));
+            assert!(has("unresolved", "wi_ambiguous_exact"));
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.identity == "wi_ambiguous_exact"
+                        && f.detail.contains("heads disagree"))
+            );
+            assert!(
+                report.findings.iter().any(|f| f.identity == "refs/heads/foundry-task/unlanded"
+                    && f.detail.contains("unmatched patches"))
+            );
+            assert!(!report.findings.iter().any(|f| f.identity.contains("foundry-task/stale")
+                || f.identity == active_root.to_str().unwrap()
+                || f.identity == active_id));
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .filter(|f| f.category == "orphan_branch"
+                        && f.identity != "refs/heads/foundry-task/unlanded")
+                    .all(|f| {
+                        f.detail.contains("trunk=integration-trunk; ancestor of registered trunk")
+                    })
+            );
+            assert_eq!(report.orphan_worktrees, 1);
+            assert_eq!(report.orphan_branches, 3);
+            let digest = std::fs::read_to_string(report.digest_path.as_ref().unwrap()).unwrap();
+            assert_eq!(digest, report.markdown);
+            assert!(digest.contains(&preserved.id));
+            assert!(digest.contains("foundry-task/remote-only"));
+            let ops = observed.last().unwrap();
+            assert_eq!(ops.payload["anomaly_present"], true);
+            assert_eq!(ops.payload["new_event_count"], 1);
+            assert_eq!(ops.payload["events"][0]["summary"], digest);
+            let store = WorkItemStore::load(&ledger).unwrap();
+            for item in &untouched {
+                assert_eq!(store.find(&item.id), Some(item));
+            }
+            let landed = store.find(&preserved.id).unwrap();
+            let mut expected = preserved.clone();
+            expected.settle_landed(&format!("superseded by {trunk}"), landed.settled_at.unwrap());
+            expected.disposition.as_mut().unwrap().landed_commit = Some(trunk.clone());
+            assert_eq!(landed, &expected);
+            let evidence = foundry_sdk::work_item_events::read_work_item_events(
+                &dir.path().join("events"),
+                &preserved.id,
+            )
+            .unwrap();
+            assert_eq!(evidence.len(), 2);
+            assert_eq!(evidence[0].event_id, previous.id);
+            assert_eq!(evidence[1].trace_id, preserved.trace_id);
+            assert_eq!(evidence[1].payload.reason, format!("superseded by {trunk}"));
+            assert!(std::fs::read(&history_path).unwrap().starts_with(&history));
+            let fetched = client
+                .get_work_item(crate::proto::GetWorkItemRequest {
+                    id: preserved.id.clone(),
+                })
+                .await
+                .unwrap()
+                .into_inner()
+                .item
+                .unwrap();
+            assert_eq!(fetched.state, "landed");
+            assert_eq!(fetched.reason, format!("superseded by {trunk}"));
+            let repeat = client
+                .reconcile_work(crate::proto::ReconcileWorkRequest {})
+                .await
+                .unwrap()
+                .into_inner();
+            let repeat: WorkReconcileCompletedPayload =
+                serde_json::from_str(&repeat.completion_json).unwrap();
+            assert!(repeat.settled_ids.is_empty());
+            assert_eq!(
+                foundry_sdk::work_item_events::read_work_item_events(
+                    &dir.path().join("events"),
+                    &preserved.id
+                )
+                .unwrap()
+                .len(),
+                2
+            );
+            assert_eq!(git_text(&checkout, &["for-each-ref", "refs/heads"]), local_before);
+            assert_eq!(git_text(&checkout, &["ls-remote", "--heads", "origin"]), remote_before);
+            assert_eq!(
+                std::fs::read_to_string(orphan.join("keep.txt")).unwrap(),
+                "valuable orphan content"
+            );
+            assert_eq!(
+                std::fs::read_to_string(checkout.join("dirty.txt")).unwrap(),
+                "keep dirty checkout"
+            );
+            for (path, snapshot) in content_snapshots {
+                assert_eq!(content_snapshot(&path), snapshot, "{}", path.display());
+            }
+            assert_eq!(std::fs::read(checkout.join(".git/index")).unwrap(), index_snapshot);
+            if let Some((path, bytes)) = bundle_snapshot {
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+            }
+            assert!(active_root.exists());
+            assert!(informational.exists());
+            server.abort();
+        }
+    }
+}
+
+fn git_text(checkout: &Path, args: &[&str]) -> String {
+    let result = Command::new("git").current_dir(checkout).args(args).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    String::from_utf8(result.stdout).unwrap()
+}
+
+fn reconciliation_engine(dir: &Path, registry: Arc<RwLock<Registry>>, output: PathBuf) -> Engine {
+    let mut engine = Engine::new();
+    engine.register(Box::new(foundry_blocks::blocks::ReconcileWork::new(
+        registry,
+        dir.join("work-items.json"),
+        dir.join("worktrees"),
+        dir.join("events"),
+        output,
+    )));
+    engine.register(Box::new(
+        foundry_blocks::blocks::ObserveEvents::new(dir.join("intake"), dir.join("watermark"))
+            .with_disk(
+                Vec::new(),
+                foundry_sdk::disk::DiskThreshold {
+                    min_free_bytes: 0,
+                    min_free_percent: 0,
+                },
+            ),
+    ));
+    engine
+}
+
+#[tokio::test]
+async fn reconcile_service_surfaces_fetch_git_ledger_and_digest_failures() {
+    use foundry_sdk::payload::WorkReconcileCompletedPayload;
+    for failure in ["fetch", "git", "ledger", "digest"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (checkout, preserved, _, _, _) = supersession_fixture(dir.path(), "ancestry", "local");
+        let ledger = dir.path().join("work-items.json");
+        WorkItemStore {
+            version: 1,
+            items: vec![preserved.clone()],
+        }
+        .save(&ledger)
+        .unwrap();
+        let bytes = std::fs::read(&ledger).unwrap();
+        let registry =
+            test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+        registry.write().unwrap().projects[0].branch = "integration-trunk".into();
+        let output = dir.path().join("reconcile");
+        match failure {
+            "fetch" => assert!(git_ok(
+                Some(&checkout),
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    dir.path().join("absent.git").to_str().unwrap()
+                ]
+            )),
+            "git" => {
+                registry.write().unwrap().projects[0].path =
+                    dir.path().join("missing checkout").display().to_string();
+            }
+            "ledger" => std::fs::create_dir(ledger.with_extension("json.tmp")).unwrap(),
+            "digest" => std::fs::write(&output, "block directory creation").unwrap(),
+            _ => unreachable!(),
+        }
+        let engine = reconciliation_engine(dir.path(), registry.clone(), output);
+        let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+        let error = client.reconcile_work(crate::proto::ReconcileWorkRequest {}).await.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Internal);
+        let mut observed = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            observed.push(event);
+        }
+        let report: WorkReconcileCompletedPayload = observed
+            .iter()
+            .find(|e| e.event_type == EventType::WorkReconcileCompleted)
+            .unwrap()
+            .parse_payload()
+            .unwrap();
+        assert!(!report.success);
+        assert!(!report.errors.is_empty());
+        assert!(observed.iter().any(
+            |e| e.event_type == EventType::OpsObserved && e.payload["anomaly_present"] == true
+        ));
+        if failure == "digest" {
+            assert_eq!(report.settled_ids, vec![preserved.id.clone()]);
+            assert_eq!(
+                WorkItemStore::load(&ledger).unwrap().find(&preserved.id).unwrap().state,
+                WorkItemState::Landed
+            );
+            assert!(report.digest_path.is_none());
+            assert!(report.markdown.contains("digest write"));
+        } else {
+            assert!(report.settled_ids.is_empty());
+            assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
+            assert!(!observed.iter().any(|e| e.event_type == EventType::WorkItemSettled));
+            assert!(report.digest_path.is_some());
+        }
+        server.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reconcile_reloads_under_owner_gate_and_keeps_concurrent_cancellation_and_unrelated_writes()
+{
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (checkout, preserved, _, _, _) = supersession_fixture(dir.path(), "ancestry", "local");
+    let ledger = dir.path().join("work-items.json");
+    WorkItemStore {
+        version: 1,
+        items: vec![preserved.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+    let entered = dir.path().join("fetch-entered");
+    let release = dir.path().join("release-fetch");
+    let script = dir.path().join("upload-pack");
+    std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nexec git-upload-pack \"$@\"\n", entered.display(), release.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(git_ok(
+        Some(&checkout),
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap()
+        ]
+    ));
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    registry.write().unwrap().projects[0].branch = "integration-trunk".into();
+    let engine = reconciliation_engine(dir.path(), registry.clone(), dir.path().join("reconcile"));
+    let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
+    let mut runner = client.clone();
+    let invocation =
+        tokio::spawn(
+            async move { runner.reconcile_work(crate::proto::ReconcileWorkRequest {}).await },
+        );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !entered.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let cancelled = client
+        .close_work_item(crate::proto::CloseWorkItemRequest {
+            id: preserved.id.clone(),
+            reason: "owner stopped work".into(),
+            operator_origin: "test owner".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .item
+        .unwrap();
+    assert_eq!(cancelled.state, "cancelled");
+    let mut unrelated = preserved.clone();
+    unrelated.id = "wi_unrelated_concurrent".into();
+    unrelated.project = "other-project".into();
+    {
+        let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
+        let mut store = WorkItemStore::load(&ledger).unwrap();
+        store.upsert(unrelated.clone());
+        store.save(&ledger).unwrap();
+    }
+    std::fs::write(&release, "continue").unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(15), invocation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .into_inner();
+    let report: foundry_sdk::payload::WorkReconcileCompletedPayload =
+        serde_json::from_str(&response.completion_json).unwrap();
+    assert!(report.settled_ids.is_empty());
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.identity == preserved.id && f.detail.contains("ledger changed"))
+    );
+    let store = WorkItemStore::load(&ledger).unwrap();
+    assert_eq!(store.find(&preserved.id).unwrap().state, WorkItemState::Cancelled);
+    assert_eq!(store.find(&unrelated.id), Some(&unrelated));
+    let mut observed = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        observed.push(event);
+    }
+    assert!(
+        observed.iter().any(|e| e.event_type == EventType::WorkItemCancelled
+            && e.payload["item_id"] == preserved.id)
+    );
+    assert!(!observed.iter().any(|e| e.event_type == EventType::WorkItemSettled));
+    server.abort();
+}
+
+/// File bytes only: repository object and tracking-ref updates are checked separately.
+fn content_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, path: &Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                if entry.file_name() != ".git" {
+                    visit(root, &path, files);
+                }
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}

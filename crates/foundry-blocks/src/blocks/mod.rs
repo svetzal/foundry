@@ -245,3 +245,6 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("poisoned"));
     }
 }
+
+mod work_reconcile;
+pub use work_reconcile::ReconcileWork;

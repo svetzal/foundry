@@ -343,6 +343,8 @@ enum CampaignCommands {
 
 #[derive(Subcommand)]
 enum QueueCommands {
+    /// Reconcile work now and print this invocation’s digest (daemon required)
+    Reconcile,
     /// Continue preserved work through a new linked task
     Resume {
         id: String,
@@ -707,6 +709,7 @@ async fn handle_queue_command(
             )
             .await
         }
+        Some(QueueCommands::Reconcile) => queue_commands::reconcile(addr, offline).await,
         Some(QueueCommands::Close { id, reason, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, Some(&reason), origin.as_deref()).await
         }

@@ -330,6 +330,50 @@ impl Foundry for FoundryService {
         Ok(Response::new(crate::proto::ResumeWorkItemResponse { item: Some(item) }))
     }
 
+    #[tracing::instrument(skip(self, _request))]
+    async fn reconcile_work(
+        &self,
+        _request: Request<crate::proto::ReconcileWorkRequest>,
+    ) -> Result<Response<crate::proto::ReconcileWorkResponse>, Status> {
+        let event = Event::new(
+            foundry_sdk::event::EventType::WorkReconcileStarted,
+            "system".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()));
+        track_workflow(&event, &self.ctx.workflow_tracker);
+        let result = eventing_ops::run_workflow_result(
+            event,
+            self.ctx.engine.clone(),
+            self.ctx.trace_store.clone(),
+            self.ctx.workflow_tracker.clone(),
+            self.ctx.trace_writer.clone(),
+            self.ctx.event_tx.clone(),
+            self.ctx.registry.clone(),
+        )
+        .await;
+        let completion = result
+            .events
+            .iter()
+            .find(|event| event.event_type == foundry_sdk::event::EventType::WorkReconcileCompleted)
+            .ok_or_else(|| Status::internal("work reconciliation emitted no completion"))?;
+        let report = completion
+            .parse_payload::<foundry_sdk::payload::WorkReconcileCompletedPayload>()
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if !report.success {
+            return Err(Status::internal(format!(
+                "work reconciliation failed: {}",
+                report.errors.join("; ")
+            )));
+        }
+        Ok(Response::new(crate::proto::ReconcileWorkResponse {
+            digest_path: report.digest_path.unwrap_or_default(),
+            markdown: report.markdown,
+            completion_json: completion.payload.to_string(),
+        }))
+    }
+
     async fn cancel_work_item(
         &self,
         request: Request<CancelWorkItemRequest>,
@@ -1075,7 +1119,7 @@ mod tests {
             .expect("list should succeed")
             .into_inner();
 
-        assert_eq!(response.sentinels.len(), 4);
+        assert_eq!(response.sentinels.len(), 5);
         assert_eq!(response.sentinels[0].name, "nightly-maintenance");
         assert_eq!(response.sentinels[0].cron, "0 2 * * *");
         assert_eq!(response.sentinels[0].emit_event_type, "maintenance_cycle_started");

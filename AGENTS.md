@@ -159,6 +159,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry queue [show <id>\|open]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--json` and `--offline` supported. Read-only |
+| `foundry queue reconcile` | Run the canonical reconciler now through the daemon and print this invocation’s digest; no offline fallback |
 | `foundry queue resume <id> [--origin <text>]` | Resume preserved work through a linked continuation; daemon required |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
 | `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued items via the daemon |
@@ -204,6 +205,7 @@ the settled group alone.
 |---------|-----------------|-------|
 | `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
+| `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
 | `foundry queue resume <id> [--origin <text>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id; rejects `--offline` |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
@@ -289,12 +291,13 @@ The gRPC RPCs are `RegistryList`, `RegistryShow`, `RegistryAdd`, `RegistryRemove
 
 ### Sentinel commands
 
-Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. Three canonical sentinels ship in the default seed (see the Sentinel commands section below for full details).
+Sentinels are declarative, named, scheduled triggers that live inside `foundryd` and emit a configured event when their schedule fires. Five canonical sentinels ship in the default seed (see the Sentinel commands section below for full details).
 
 The daemon auto-seeds `~/.foundry/sentinels.json` on first start and **additively merges** missing canonical seed entries on every restart, so new Foundry releases that add canonical sentinels reach existing installs automatically without manual JSON edits. User toggles, hand-edited cron, and user-added entries on the file are never overwritten. See `book/src/guide/sentinels.md` for the full model.
 
-Three canonical sentinels ship in the default seed:
+Five canonical sentinels ship in the default seed:
 
+- `work-reconciler` (`30 */3 * * *`) — emits `WorkReconcileStarted` for `system`; reports inventory and conservatively settles preserved work. See `book/src/guide/work-reconciler.md`.
 - `nightly-maintenance` (02:00 local) — emits `MaintenanceCycleStarted` for project `system`. Drives the maintenance run.
 - `daily-commit-digest` (17:00 local) — emits `CommitDigestStarted` for project `system`. Drives the commit digest formation; output lands at `{FOUNDRY_DIGESTS_DIR}/{YYYY-MM-DD}.md`. See `book/src/guide/commit-digest.md`.
 - `ops-digest` (every 3 hours, `0 */3 * * *`) — emits `OpsDigestStarted` for project `system`. Reads MBOS JSONL events, applies a pressure gate (≥25 new events or any anomaly), summarises via agent, and writes `{FOUNDRY_OPS_DIGESTS_DIR}/{YYYY-MM-DD}.md`. See `book/src/guide/ops-digest.md`.
@@ -608,6 +611,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_WORKTREES_DIR` | `~/.foundry/worktrees` | Isolated task worktrees |
 | `FOUNDRY_PRESERVED_DIR` | `~/.foundry/preserved` | Fallback preserved-work bundles |
 | `FOUNDRY_SENTINELS_PATH` | `~/.foundry/sentinels.json` | Sentinel store file |
+| `FOUNDRY_RECONCILE_DIR` | `~/.foundry/reconcile` | Daily work-reconciliation report directory; reporting is not authoritative state |
 | `FOUNDRY_WORK_ITEMS_PATH` | `~/.foundry/work-items.json` | Durable work-item ledger |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
@@ -622,3 +626,11 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_MAJOR_TASKS_PER_PROJECT` | `2` | Most major-upgrade tasks the nightly majors lane dispatches for one project. Overflow is reported in the summary with its `foundry task` command. |
 | `FOUNDRY_MAJOR_TASKS_PER_NIGHT` | `6` | Most major-upgrade tasks the nightly majors lane dispatches across every project. |
 | `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | *(unset → off)* | Truthy (`1`/`true`/`yes`/`on`) enables the supply-chain auto-fix engine (verified, commit-only Rust in-range bumps). Off by default — the formation only classifies until this is set. |
+
+The canonical `work-reconciler` sentinel runs at `30 */3 * * *`, emitting
+`work_reconcile_started` for system and paired `work_reconcile_completed`.
+It shares conservative Git supersession proof and `ledger_write_gate`, retains
+all preservation evidence and never invokes cleanup. Orphan, broken, unresolved
+and error findings reach the real ops observation anomaly path. See
+`book/src/guide/work-reconciler.md`. `queue reconcile` requires the daemon;
+inspection, fetch, ledger and digest-write failures surface as gRPC INTERNAL.

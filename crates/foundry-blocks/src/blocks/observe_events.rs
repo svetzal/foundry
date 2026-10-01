@@ -91,10 +91,40 @@ impl TaskBlock for ObserveEvents {
     task_block_meta! {
         name: "Observe Events",
         kind: Observer,
-        sinks_on: [OpsDigestStarted],
+        sinks_on: [OpsDigestStarted, WorkReconcileCompleted],
+    }
+
+    fn accepts(&self, trigger: &Event) -> bool {
+        trigger.event_type == EventType::OpsDigestStarted
+            || trigger
+                .parse_payload::<foundry_sdk::payload::WorkReconcileCompletedPayload>()
+                .ok()
+                .is_some_and(|report| report.has_anomaly())
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+        if trigger.event_type == EventType::WorkReconcileCompleted {
+            let report =
+                parse_payload!(trigger, foundry_sdk::payload::WorkReconcileCompletedPayload);
+            let result = trigger.with_payload(
+                EventType::OpsDigestStarted,
+                &OpsDigestStartedPayload {
+                    event_count: 1,
+                    forced_event: Some(OpsEventDigest {
+                        id: trigger.id.clone(),
+                        event_type: "work_reconcile_anomaly".into(),
+                        occurred_at: trigger.occurred_at.to_rfc3339(),
+                        domain: "infrastructure".into(),
+                        urgency: Some("P1".into()),
+                        summary: Some(report.markdown),
+                        client: None,
+                    }),
+                },
+            );
+            return Box::pin(async move {
+                Ok(TaskBlockResult::success("Reconciliation anomaly", vec![result?]))
+            });
+        }
         let TriggerContext {
             project, throttle, ..
         } = TriggerContext::from_trigger(trigger);

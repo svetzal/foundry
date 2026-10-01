@@ -468,3 +468,13 @@ The ledger is bookkeeping beside the cancellation, never a precondition for it:
 if the ledger cannot be read or written, the campaign is still cancelled and the
 `CampaignCancelled` event is still emitted — the fault is logged, and the item is
 left for the restart sweep.
+
+## Work reconciliation
+
+The `work-reconciler` sentinel runs at `30 */3 * * *`, or use
+`foundry queue reconcile` against the daemon to run it now and print that
+invocation’s report. It reports exact inventory identities and conservatively
+settles verified preserved obligations without deleting their evidence. Orphan,
+broken and unresolved findings, including inspection errors, reach the ops
+anomaly path even below the normal pressure threshold. See the
+[work reconciler guide](work-reconciler.md) for proof and failure semantics.

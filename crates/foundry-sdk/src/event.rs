@@ -377,6 +377,10 @@ pub enum EventType {
     WorkItemSettled,
     /// An operator stopped a ledger item.
     WorkItemCancelled,
+    /// Scheduled or operator-invoked inventory and supersession check.
+    WorkReconcileStarted,
+    /// Reconciliation report, including explicit inspection failures.
+    WorkReconcileCompleted,
 
     // Validation workflow
     ValidationRequested,
@@ -571,6 +575,7 @@ impl EventType {
             | EventType::InnerIterationStarted
             | EventType::MaintenanceSummaryRequested
             | EventType::CommitDigestStarted
+            | EventType::WorkReconcileStarted
             | EventType::OpsDigestStarted
             | EventType::SupplyChainScanStarted
             | EventType::DependencyReviewRequested => true,
@@ -600,6 +605,7 @@ impl EventType {
             | EventType::WorkItemSubmitted
             | EventType::WorkItemStarted
             | EventType::WorkItemSettled
+            | EventType::WorkReconcileCompleted
             | EventType::WorkItemCancelled
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
@@ -732,6 +738,8 @@ mod tests {
             (EventType::WorkItemStarted, "work_item_started"),
             (EventType::WorkItemSettled, "work_item_settled"),
             (EventType::WorkItemCancelled, "work_item_cancelled"),
+            (EventType::WorkReconcileStarted, "work_reconcile_started"),
+            (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -825,6 +833,8 @@ mod tests {
             (EventType::WorkItemStarted, "work_item_started"),
             (EventType::WorkItemSettled, "work_item_settled"),
             (EventType::WorkItemCancelled, "work_item_cancelled"),
+            (EventType::WorkReconcileStarted, "work_reconcile_started"),
+            (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
             (EventType::ValidationCompleted, "validation_completed"),
             (EventType::MaintenanceCycleStarted, "maintenance_cycle_started"),
@@ -1266,6 +1276,8 @@ mod tests {
         assert!(!EventType::WorkItemStarted.is_span_opener());
         assert!(!EventType::WorkItemSettled.is_span_opener());
         assert!(!EventType::WorkItemCancelled.is_span_opener());
+        assert!(EventType::WorkReconcileStarted.is_span_opener());
+        assert!(!EventType::WorkReconcileCompleted.is_span_opener());
 
         // Supply-chain workflow openers and non-openers
         assert!(EventType::SupplyChainScanStarted.is_span_opener());
