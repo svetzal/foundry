@@ -99,6 +99,10 @@ fn near_matches(parent: &WorkItem) -> Vec<WorkItem> {
         update.to = target.into();
         item.objective = objective(project, &update);
         item.state = state;
+        // These are unrelated obligations, so their Git evidence must also
+        // be unrelated to the resumed parent's delivered work.
+        item.disposition.as_mut().unwrap().preservation_ref =
+            Some("unrelated-preserved-work".into());
         item.trace_id = Some(mint_trace_id());
         unrelated.push(item);
     }
@@ -113,6 +117,11 @@ impl Nightly {
         assert!(git_ok(Some(&checkout), &["push", "origin", "preserved-work"]));
         parent.objective =
             objective("test-project", &major("x")) + " Keep the original owner's evidence.";
+        assert!(git_ok(Some(&checkout), &["checkout", "-b", "unrelated-preserved-work"]));
+        std::fs::write(checkout.join("unrelated.txt"), "unrelated obligation").unwrap();
+        assert!(git_ok(Some(&checkout), &["add", "unrelated.txt"]));
+        assert!(git_ok(Some(&checkout), &["commit", "-m", "unrelated preserved work"]));
+        assert!(git_ok(Some(&checkout), &["checkout", "main"]));
         let unrelated = near_matches(&parent);
         let ledger = dir.path().join("work-items.json");
         let mut items = unrelated.clone();

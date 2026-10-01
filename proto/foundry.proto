@@ -589,10 +589,14 @@ message WorkItem {
     optional string trace_id = 12;
     // Settlement: the reviewer's typed verdict tag. Absent until it settles.
     optional string verdict = 13;
-    // Settlement: the trunk commit the work landed as. Absent unless it landed.
+    // Settlement: the trunk commit the work landed as, or the verified registered
+    // trunk commit carrying superseded preserved work. Automatic supersession runs
+    // only after actual task landing, on same-project preserved items, with reason
+    // `superseded by <commit>` and a work_item_settled event on the item's trace.
+    // Unresolved evidence leaves the item open. No scheduled reconciler is implied.
     optional string landed_commit = 14;
     // Settlement: the durable ref (a branch name, or "bundle:" followed by a
-    // path) holding unlanded work. Absent unless work was preserved.
+    // path) holding preserved work. Retained after resume landing or supersession.
     optional string preservation_ref = 15;
     // Settlement: the isolated worktree the work ran in. Absent when none was
     // recorded.

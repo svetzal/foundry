@@ -404,6 +404,37 @@ Reviews, dry runs and interrupted-cycle summaries dispatch nothing. Without a
 matching preserved ledger item, the existing fresh-task and history-suppression
 rules apply. Owner `queue resume` remains an interactive, asynchronous task.
 
+After a task actually lands, Foundry also checks that registered project's
+other `preserved` ledger items against the registered trunk branch, using the
+registered checkout path. A preserved commit reachable from trunk, or a
+nonempty set of commits whose patches are all matched by `git cherry`, settles
+`landed`. Its `landed_commit` is the verified trunk commit and its reason is
+exactly `superseded by <commit>`. The appended `work_item_settled` event carries
+that item's exact id, project and original trace. Objective, submission origin,
+`resumes` and prior preservation evidence remain intact; no preserved ref,
+bundle or worktree is deleted.
+
+This check runs only after actual task landing. Failed, blocked, preserved and
+no-landing task results do not trigger it. It checks only preserved items in
+the same registered project; owner-cancelled items remain cancelled. A repeated
+terminal does not append another settlement. The ledger is reloaded under the
+shared write gate before saving, so concurrent owner actions and unrelated
+updates are retained. A failed save emits no settlement.
+
+Missing refs or objects, failed Git commands, unmatched patches, edited
+squashes without patch-equivalence proof, and ambiguous evidence leave the item
+open with an explicit supersession diagnostic in the settlement block's result
+and structured log. Empty Git output is never proof. Local branch refs and
+commit ids are checked directly. Branch names are also checked by exact name
+on `origin` when configured, without fetching; conflicting local and remote
+heads remain unresolved. A remote-only head must already have locally available
+objects. A bundle must advertise exactly one head and that commit must already be
+locally available. Patch comparison requires complete, shared history and
+rejects merge commits that `git cherry` cannot account for. Queue show and JSON
+expose the persisted commit and reason through the daemon's read path.
+Scheduled invocation and the reporting reconciler are not delivered by this
+landing-triggered check.
+
 ## What `queue` does not do
 
 `queue close` and `queue cancel` do not stop running work.

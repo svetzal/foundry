@@ -147,8 +147,10 @@ fn register_ledger_blocks(
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         store_path.to_path_buf(),
     )));
-    engine
-        .register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(store_path.to_path_buf())));
+    engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::with_registry(
+        store_path.to_path_buf(),
+        registry.clone(),
+    )));
 }
 
 /// A `foundry task`-shaped dispatch, optionally carrying campaign context.
@@ -768,6 +770,8 @@ async fn assert_resume_landing(source: &str) {
     parent.disposition.as_mut().unwrap().preservation_ref = Some(base.clone());
     let mut sibling = parent.clone();
     sibling.id = "wi_unrelated_sibling".to_string();
+    sibling.disposition.as_mut().unwrap().preservation_ref =
+        Some("unrelated-missing-ref".to_string());
     let ledger = dir.path().join("work-items.json");
     WorkItemStore {
         version: 1,
@@ -1682,3 +1686,6 @@ fn assert_rejected_resume_history(
 
 #[path = "nightly_major_test.rs"]
 mod nightly_major_test;
+
+#[path = "work_supersession_test.rs"]
+mod supersession_test;

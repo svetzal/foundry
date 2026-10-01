@@ -1488,3 +1488,87 @@ async fn resume_cli_fixture(state: &std::path::Path) -> (String, WorkItemStore, 
     let addr = start_server(make_service_with_registry(ledger.clone(), state, registry)).await;
     (addr, store, parent)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_show_and_json_read_automatic_supersession_from_daemon_ledger() {
+    let state = tempfile::tempdir().unwrap();
+    let (addr, mut store, parent) = resume_cli_fixture(state.path()).await;
+    let ledger = state.path().join("work-items.json");
+    let repo = state.path().join("repo");
+    let commit = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "main"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap().trim().to_string();
+    let running = WorkItem::dispatched(
+        WorkItemSpec {
+            project: parent.project.clone(),
+            objective: "ordinary landing".into(),
+            kind: WorkItemKind::Task,
+            lane: WorkLane::Interactive,
+            origin: "test".into(),
+            trace_id: Some(foundry_sdk::event::mint_trace_id()),
+        },
+        Utc::now(),
+    );
+    store.upsert(running.clone());
+    store.save(&ledger).unwrap();
+    let registry: Registry = serde_json::from_value(serde_json::json!({
+        "version":2, "projects":[{"name":"beta", "path":repo, "stack":"rust",
+            "agent":"claude", "repo":"", "branch":"main"}]
+    }))
+    .unwrap();
+    let mut engine =
+        Engine::new().with_event_writer(Arc::new(EventWriter::new(state.path().join("events"))));
+    engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::with_registry(
+        ledger,
+        Arc::new(RwLock::new(registry)),
+    )));
+    let terminal = Event::new(
+        EventType::TaskRunCompleted,
+        parent.project.clone(),
+        Throttle::Full,
+        serde_json::json!({"project":parent.project, "success":true,"landed":true,
+            "summary":"ordinary landing", "preservation_ref":commit,"verdict":"complete"}),
+    )
+    .with_trace_id(running.trace_id);
+    engine.process(terminal).await;
+    let home = tempfile::tempdir().unwrap();
+    let client_ledger = home.path().join("absent-client-ledger.json");
+    let client_events = home.path().join("absent-client-events");
+    let reason = format!("superseded by {commit}");
+    let human = run_foundry_with_events(
+        home.path(),
+        &client_ledger,
+        &client_events,
+        &addr,
+        &["queue", "show", &parent.id],
+    );
+    assert_command_succeeded(&human);
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains(&reason));
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("Landed commit:") && line.ends_with(&commit))
+    );
+    let json = run_foundry_with_events(
+        home.path(),
+        &client_ledger,
+        &client_events,
+        &addr,
+        &["queue", "show", &parent.id, "--json"],
+    );
+    assert_command_succeeded(&json);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["id"], parent.id);
+    assert_eq!(json["state"], "landed");
+    assert_eq!(json["reason"], reason);
+    assert_eq!(json["landed_commit"], commit);
+    assert_eq!(json["preservation_ref"], "main");
+    assert_eq!(json["events"][0]["reason"], reason);
+    assert!(!client_ledger.exists());
+    assert!(!client_events.exists());
+}

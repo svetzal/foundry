@@ -906,8 +906,9 @@ fn register_iterate_blocks(
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         foundry_sdk::paths::work_items_path(),
     )));
-    engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::new(
+    engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::with_registry(
         foundry_sdk::paths::work_items_path(),
+        registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::ReviewTask::new(
         agent.clone(),

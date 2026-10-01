@@ -149,6 +149,7 @@ mod triage_maintenance;
 mod validate;
 mod watch_pipeline;
 mod work_ledger;
+mod work_supersession;
 mod write_commit_digest;
 mod write_ops_digest;
 mod write_supply_chain_digest;

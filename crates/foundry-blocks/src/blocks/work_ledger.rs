@@ -34,6 +34,7 @@ use foundry_sdk::work_item::{
 use foundry_sdk::workflow::WorkflowType;
 
 use super::SimulatedSuccess;
+use super::work_supersession::{prove_supersession, verified_commit};
 
 /// How a task dispatch reached the engine, as the ledger records it.
 ///
@@ -403,13 +404,97 @@ fn settle_failed_in_ledger(path: &Path, trigger: &Event, reason: &str) -> Option
 /// decides *which* item settles and what the worktree looked like afterwards.
 pub struct SettleWorkItem {
     store_path: PathBuf,
+    registry: Option<Arc<RwLock<Registry>>>,
 }
 
 impl SettleWorkItem {
     /// Settle items in the ledger at `store_path`.
     #[must_use]
     pub fn new(store_path: PathBuf) -> Self {
-        Self { store_path }
+        Self {
+            store_path,
+            registry: None,
+        }
+    }
+
+    /// Enable landing-triggered supersession against each project's registered trunk.
+    #[must_use]
+    pub fn with_registry(store_path: PathBuf, registry: Arc<RwLock<Registry>>) -> Self {
+        Self {
+            store_path,
+            registry: Some(registry),
+        }
+    }
+
+    async fn verify_supersession(
+        &self,
+        trigger: &Event,
+        result: &TaskRunCompletedPayload,
+    ) -> (Vec<(WorkItem, String)>, Vec<String>) {
+        if !result.landed {
+            return (Vec::new(), Vec::new());
+        }
+        let Some(registry) = &self.registry else {
+            return (Vec::new(), Vec::new());
+        };
+        let project = match registry.read() {
+            Ok(registry) => registry.find_project(&trigger.project).cloned(),
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    vec![format!("supersession unresolved: registry lock: {error}")],
+                );
+            }
+        };
+        let Some(project) = project else {
+            return (Vec::new(), vec!["supersession unresolved: project is not registered".into()]);
+        };
+        let candidates = {
+            let Some(_guard) = ledger_lock() else {
+                return (Vec::new(), Vec::new());
+            };
+            let Some(mut store) = load_ledger(&self.store_path) else {
+                return (Vec::new(), Vec::new());
+            };
+            let Some(running) =
+                store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)
+            else {
+                return (Vec::new(), Vec::new());
+            };
+            // The exact resume parent already settles through the existing linked
+            // continuation proof. Supersession checks the remaining obligations.
+            let resumes = running.resumes.clone();
+            store
+                .items
+                .into_iter()
+                .filter(|item| {
+                    item.project == trigger.project
+                        && resumes.as_deref() != Some(item.id.as_str())
+                        && item.state == foundry_sdk::work_item::WorkItemState::Preserved
+                })
+                .collect::<Vec<_>>()
+        };
+        let path = Path::new(&project.path);
+        let trunk = verified_commit(path, &format!("refs/heads/{}", project.branch)).await;
+        let mut verified = Vec::new();
+        let mut diagnostics = Vec::new();
+        for item in candidates {
+            let proof = match &trunk {
+                Ok(trunk) => prove_supersession(path, trunk, &item).await,
+                Err(error) => Err(anyhow::anyhow!("registered trunk unavailable: {error}")),
+            };
+            match proof {
+                Ok(commit) => verified.push((item, commit)),
+                Err(error) => {
+                    // Best-effort: unresolved evidence leaves the obligation open;
+                    // bookkeeping must never interrupt a task that already landed.
+                    tracing::warn!(item_id = %item.id, project = %item.project,
+                        trace_id = ?item.trace_id, error = %error, "supersession unresolved");
+                    diagnostics.push(format!("supersession unresolved for {}: {error}", item.id));
+                }
+            }
+        }
+        (verified, diagnostics)
     }
 
     /// Settle the running item this result belongs to, and return it.
@@ -421,7 +506,8 @@ impl SettleWorkItem {
         &self,
         trigger: &Event,
         result: &TaskRunCompletedPayload,
-    ) -> Option<(WorkItem, Option<WorkItem>)> {
+        verified: &[(WorkItem, String)],
+    ) -> Option<(WorkItem, Vec<WorkItem>)> {
         let _guard = ledger_lock()?;
         let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
@@ -453,7 +539,23 @@ impl SettleWorkItem {
             } else {
                 None
             };
-        save_ledger(&store, &self.store_path).then_some((settled, parent))
+        let mut additional: Vec<_> = parent.into_iter().collect();
+        for (candidate, commit) in verified.iter().filter(|_| {
+            result.landed
+                && settled.project == trigger.project
+                && settled.state == foundry_sdk::work_item::WorkItemState::Landed
+        }) {
+            // Recheck the entire snapshot under the owner-controls write gate.
+            // An owner cancellation or another writer must win over stale Git evidence.
+            if let Some(item) = store.items.iter_mut().find(|item| **item == *candidate)
+                && let Some(disposition) = item.disposition.as_mut()
+            {
+                disposition.landed_commit = Some(commit.clone());
+                item.settle_landed(&format!("superseded by {commit}"), Utc::now());
+                additional.push(item.clone());
+            }
+        }
+        save_ledger(&store, &self.store_path).then_some((settled, additional))
     }
 }
 
@@ -526,15 +628,32 @@ impl TaskBlock for SettleWorkItem {
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let result = parse_payload!(trigger, TaskRunCompletedPayload);
-        let settled = self.settle(trigger, &result);
-        let events = self.success_events(trigger, &settled);
-        let summary = match &settled {
-            Some((item, _)) => {
-                format!("{}: work item {} settled {:?}", trigger.project, item.id, item.state)
-            }
-            None => format!("{}: no ledger item to settle", trigger.project),
-        };
-        Box::pin(async move { Ok(TaskBlockResult::success(summary, events)) })
+        let trigger = trigger.clone();
+        Box::pin(async move {
+            let (verified, diagnostics) = self.verify_supersession(&trigger, &result).await;
+            let settled = self.settle(&trigger, &result, &verified);
+            let events = settled.as_ref().map_or_else(Vec::new, |(child, additional)| {
+                std::iter::once(child)
+                    .chain(additional.iter())
+                    .map(|item| {
+                        work_item_event(EventType::WorkItemSettled, &trigger, item)
+                            .with_trace_id(item.trace_id.clone())
+                    })
+                    .collect()
+            });
+            let summary = match &settled {
+                Some((item, _)) => {
+                    format!("{}: work item {} settled {:?}", trigger.project, item.id, item.state)
+                }
+                None => format!("{}: no ledger item to settle", trigger.project),
+            };
+            let summary = if diagnostics.is_empty() {
+                summary
+            } else {
+                format!("{summary}; {}", diagnostics.join("; "))
+            };
+            Ok(TaskBlockResult::success(summary, events))
+        })
     }
 }
 
@@ -607,6 +726,7 @@ pub(super) fn save_ledger(store: &WorkItemStore, path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use std::sync::Arc;
 
     use foundry_sdk::event::{Event, EventType};
@@ -1252,5 +1372,53 @@ mod tests {
         assert!(!block.accepts(&event));
         assert!(block.simulate(&event).is_none());
         assert!(block.dry_run_events(&event).is_empty());
+    }
+    #[tokio::test]
+    async fn supersession_reloads_after_owner_cancellation_and_keeps_unrelated_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
+            .await
+            .unwrap();
+        let mut store = WorkItemStore::load(&path).unwrap();
+        let mut candidate = store.items[0].clone();
+        candidate.id = "wi_preserved_candidate".into();
+        candidate.settle_from_task_run(
+            &completion(TaskVerdict::Remainder { gaps: vec![] }, false, None)
+                .parse_payload::<TaskRunCompletedPayload>()
+                .unwrap(),
+            None,
+            Utc::now(),
+        );
+        let verified = vec![(candidate.clone(), "verified-trunk-commit".to_string())];
+        // The Git proof snapshot predates an owner mutation under the same gate.
+        candidate.settle_cancelled("owner stopped", None, Utc::now());
+        let unrelated = WorkItem::dispatched(
+            foundry_sdk::work_item::WorkItemSpec {
+                project: "other-project".into(),
+                objective: "new unrelated update".into(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "owner".into(),
+                trace_id: Some("b".repeat(32)),
+            },
+            Utc::now(),
+        );
+        {
+            let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
+            store.upsert(candidate.clone());
+            store.upsert(unrelated.clone());
+            store.save(&path).unwrap();
+        }
+        let trigger = completion(TaskVerdict::Complete, true, None);
+        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+        let outcome =
+            SettleWorkItem::new(path.clone()).settle(&trigger, &result, &verified).unwrap();
+        assert!(outcome.1.is_empty());
+        let after = WorkItemStore::load(&path).unwrap();
+        assert_eq!(after.find(&candidate.id), Some(&candidate));
+        assert_eq!(after.find(&unrelated.id), Some(&unrelated));
+        assert_eq!(after.items[0].state, WorkItemState::Landed);
     }
 }
