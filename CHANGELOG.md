@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-10-01
+
 ### Fixed
 
 - Early acceptance prompts show exact behavioral and direct JSON shapes and
