@@ -7,42 +7,52 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry capture -- <command>` retains full stdout/stderr logs, returns the
+  command's exit code, and prints a bounded failure tail.
+- `foundry campaign report <name> [--json]` reports dispatched and landed cycles,
+  stage sessions and tokens, elapsed time, external completion, and unknown or
+  unpriced usage. Per-formation records include decisions, task-result event
+  references, transcript paths, request bytes, and command activity. Native Codex
+  observations remain separate from terminal usage, including partial counters
+  for interrupted sessions.
+- Campaign tasks require early acceptance evidence in `.foundry/proof.json`
+  before paid review. The proof records a real rejecting input, its corrected
+  passing form, commands, exit codes, and retained logs. Nonbehavioral changes
+  use the documented direct-proof form.
+
 ### Changed
 
-- The charter, campaign guide, maintainer guidance, and operating skill state
-  the campaign learning loop explicitly. Each implementation cycle informs a
-  full reassessment of remaining scope; efficiency changes must preserve it.
-
-- Campaign reports expose individual formation sessions and decision events,
-  transcript paths, exact request bytes for new sessions, and command activity.
-  Native Codex usage observations remain separate from terminal accounting so
-  interrupted sessions can be investigated without reporting partial spend as
-  complete or counting it twice.
-
-- Formation defaults to a 32 KiB prompt limit. Large Git snapshots and preserved
-  branch summaries are bounded and name commands for reading the full evidence.
-  Missions, owner policy, and typed reviewer findings retain their wording.
-
-- Campaign formation uses balanced/medium reasoning and smaller prompts.
-  Source, protobuf, agent guidance and reference guides are listed by path;
-  contract files are read selectively rather than copied into each prompt. Passing gate logs are
-  omitted, failure diagnostics are bounded, and the last task result no longer
-  repeats its prompt and gate logs. Full gate evidence remains in the durable
-  advance event. Independent task review remains deep/high.
-
-- Campaign agents have no clock deadline. Legacy stage time fields are ignored.
-  Campaigns enforce positive prompt limits, bypass formation after
-  an exhausted unlanded defect, and restrict writes to one isolated repository.
-  Scoped campaign execution currently uses Codex; unsupported providers fail
-  before formation. Multi-repository declarations are rejected at admission.
-- Coding agents capture verbose command logs with bounded output. New campaign
-  tasks need early acceptance proof before paid review. Campaign reports expose
-  stage time, tokens, unknown pricing, and external completion separately.
+- Campaigns reassess the full remaining mission after each implementation cycle.
+  The charter, campaign guide, maintainer guidance, and operating skill state
+  this design principle explicitly. Implementation experience can change scope,
+  priority, or task decomposition within the mission and owner constraints.
+- Formation uses balanced/medium reasoning; independent task review remains
+  deep/high. Context files are listed by path for selective inspection. Prompts
+  omit passing gate logs and repeated task prompts. Git evidence and failure
+  diagnostics are bounded, with references to full evidence.
+- Formation defaults to a positive 32 KiB prompt limit. Missions, owner policy,
+  and typed reviewer findings retain their wording. Campaign agents have no
+  clock deadline, including project agent timeouts. Legacy stage time fields
+  are ignored when loading existing definitions.
+- Campaigns enforce one writable repository in an isolated worktree through
+  Codex's workspace sandbox. Multi-repository declarations and unsupported
+  campaign providers fail at admission; standalone tasks retain their existing
+  provider behavior. Exhausted budgets with unlanded non-complete results
+  escalate without another formation invocation.
+- Native Codex sessions request a 2,000-token tool-output limit. Coding prompts
+  direct verbose checks through `foundry capture` to retain complete evidence.
 
 ### Fixed
 
-- Campaign formation reports structured provider failure messages and stops
-  after one unsupported-model rejection instead of retrying it three times.
+- Escalation retains the pending typed task result and preserved base reference.
+  Extending and resuming a campaign now carries reviewer findings and accumulated
+  work into reassessment without manual recovery.
+- Formation reports structured provider errors and stops after one unsupported
+  model rejection instead of retrying it three times.
+- The reconciliation integration fixture uses canonical temporary paths, matching
+  Git's worktree paths on macOS without weakening its assertions.
 
 ## [0.40.4] - 2026-09-30
 

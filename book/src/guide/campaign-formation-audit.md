@@ -47,11 +47,11 @@ therefore reconstructs much of the learning by reading changed source and tests.
 That reconstruction is legitimate, but the audit cannot prove that every useful
 implementation discovery reached the next assessment.
 
-There is also a continuity defect on escalation. Clearing pending_run_result
-removes the convenient typed handoff. This campaign required restoring its
-preserved result during recovery. The durable task event and Git reference still
-existed. This audit improvement exposes the latest task event ID; it does not
-change that continuation behavior.
+During this campaign, escalation cleared pending_run_result and removed the typed
+handoff. Recovery required restoring the preserved result from its durable event.
+The subsequent release-readiness fix retains that result through escalation,
+extension, and resumption. A regression test verifies that reassessment receives
+the reviewer finding and dispatches from the preserved base.
 
 The next contract improvement should be an evidence-linked implementation learning
 record: discoveries, invalidated assumptions, remaining work, and the source/test

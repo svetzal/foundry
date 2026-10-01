@@ -998,7 +998,8 @@ fn apply_advance_outcome(
         }
         CampaignDecision::Escalate { reason } => {
             campaign.status = CampaignStatus::Escalated;
-            campaign.pending_run_result = None;
+            // Resumption must retain the reviewed result and preserved base.
+            // Escalation waits for the owner; it does not discard learning.
             vec![
                 completed_event(
                     campaign,
@@ -1087,7 +1088,7 @@ async fn choose_advance_outcome(
 /// The advance to actually form from.
 ///
 /// A manual advance carries no run result, so it replays whatever the campaign
-/// recorded while it was paused — formation then sees the reviewer gaps and the
+/// recorded while it was paused or escalated — formation then sees the reviewer gaps and the
 /// executor continues from the preserved ref.
 fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> AdvanceExecution {
     let mut request = execution.request.clone();
@@ -3233,5 +3234,59 @@ mod tests {
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
         assert!(agent.invocations().is_empty());
         assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("stage budget"));
+    }
+    #[tokio::test]
+    async fn exhausted_campaign_retains_result_through_extension_and_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let mut store = CampaignStore::load(&store_path).unwrap();
+        store.campaigns[0].cycles_completed = 1;
+        store.campaigns[0].budget.max_cycles = 1;
+        store.save(&store_path).unwrap();
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Repair the validator path diagnostics.\",\"reason\":\"preserved reviewer finding\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let mut trigger = manual_advance_trigger();
+        trigger.payload["run_event_id"] = serde_json::json!("preserved-result");
+        trigger.payload["run_result"] = serde_json::json!({
+            "project":"p", "success":false, "landed":false, "summary":"source work preserved",
+            "verdict":"defect", "diagnosis":"validator path diagnostics lost the filename",
+            "preservation_ref":"foundry-task/p/preserved", "trunk_arrivals":[]
+        });
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(agent.invocations().is_empty());
+        assert!(
+            terminal_reason(&result, &EventType::CampaignEscalated).contains("budget exhausted")
+        );
+        let mut stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find_mut("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Escalated);
+        assert_eq!(
+            campaign.pending_run_result.as_ref().unwrap().preservation_ref.as_deref(),
+            Some("foundry-task/p/preserved")
+        );
+        campaign.resume(1).unwrap();
+        stored.save(&store_path).unwrap();
+        let resumed = block.execute(&manual_advance_trigger()).await.unwrap();
+        let execution = resumed
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ExecutionRequested)
+            .unwrap();
+        assert_eq!(execution.payload["base_ref"], "foundry-task/p/preserved");
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(invocations[0].prompt.contains("validator path diagnostics lost the filename"));
+        assert!(invocations[0].prompt.contains("source work preserved"));
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.cycles_completed, 2);
+        assert!(campaign.pending_run_result.is_none());
     }
 }
