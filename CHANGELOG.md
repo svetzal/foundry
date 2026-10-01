@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-01
+
 ### Added
 
 - `foundry capture -- <command>` retains full stdout/stderr logs, returns the
