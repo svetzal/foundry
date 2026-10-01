@@ -330,9 +330,10 @@ impl TaskBlock for ReviewTask {
                     agent_file: super::resolve_agent_file(&entry.agent),
                     provider,
                     env: vec![("FOUNDRY_AGENT_STAGE".into(), "review".into())],
-                    timeout: context.campaign_limits.as_ref().map_or(entry.timeout(), |l| {
-                        entry.timeout().min(std::time::Duration::from_secs(l.review_seconds))
-                    }),
+                    timeout: context
+                        .campaign_limits
+                        .as_ref()
+                        .map_or(entry.timeout(), |_| std::time::Duration::ZERO),
                     trace_id: trace_id.clone(),
                     requires_json: true,
                 },

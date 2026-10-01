@@ -167,6 +167,9 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 
 ### Campaign commands
 
+Campaign agents must not have clock-time limits. Bound content or token size
+instead. Elapsed time is diagnostic evidence, not a spending limit.
+
 Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
 `show`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel` go through
 `foundryd` via typed gRPC so reads and writes all observe the daemon-owned

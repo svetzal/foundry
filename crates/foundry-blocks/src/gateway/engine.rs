@@ -288,7 +288,7 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                     args: &arg_refs,
                     env: env_opt,
                     stdin: inv.stdin.as_deref(),
-                    timeout: Some(request.timeout),
+                    timeout: (!request.timeout.is_zero()).then_some(request.timeout),
                     log_path: &log_path,
                 })
                 .await;
@@ -434,6 +434,49 @@ mod tests {
         let ended = rx.recv().await.expect("ended event");
         assert_eq!(ended.event_type, EventType::AgentSessionEnded);
         assert_eq!(ended.payload["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn zero_timeout_waits_for_agent_completion() {
+        struct UnlimitedRunner;
+        impl crate::agent_stream::AgentStreamRunner for UnlimitedRunner {
+            fn run<'a>(
+                &'a self,
+                run: StreamRun<'a>,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<crate::agent_stream::AgentStreamOutcome>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                assert!(run.timeout.is_none(), "unlimited agents must bypass clock deadlines");
+                Box::pin(async { Ok(ok_outcome()) })
+            }
+        }
+        let (tx, _rx) = broadcast::channel(16);
+        let gateway = CliAgentGateway::new_with_adapter(
+            FakeShellGateway::success(),
+            Arc::new(UnlimitedRunner),
+            tmp_dir("unlimited-agent"),
+            tx,
+            EchoAdapter,
+        );
+        let request = AgentRequest {
+            prompt: "hello".into(),
+            project: "test".into(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::ReadOnly,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: vec![],
+            timeout: Duration::ZERO,
+            trace_id: None,
+            requires_json: false,
+        };
+        assert!(gateway.invoke(&request).await.unwrap().success);
     }
 
     /// Delegates to [`EchoAdapter`] but records the effort token it was handed.

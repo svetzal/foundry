@@ -177,11 +177,8 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
     let _ = writeln!(out, "Writable repositories: {}", report.writable_repositories.join(", "));
     let _ = writeln!(
         out,
-        "Limits: formation {}s / {} bytes, execution {}s, review {}s",
-        report.stage_limits.formation_seconds,
-        report.stage_limits.formation_prompt_bytes,
-        report.stage_limits.execution_seconds,
-        report.stage_limits.review_seconds
+        "Limits: formation prompt {} bytes; no agent clock deadlines",
+        report.stage_limits.formation_prompt_bytes
     );
     for (role, stage) in &report.stages {
         let _ = writeln!(

@@ -47,6 +47,7 @@ pub struct StreamRun<'a> {
     /// argv element: Linux caps one argument at `MAX_ARG_STRLEN` (131072
     /// bytes), and exceeding it fails the spawn with `E2BIG`.
     pub stdin: Option<&'a [u8]>,
+    /// Maximum runtime. `None` waits for completion without a clock deadline.
     pub timeout: Option<Duration>,
     pub log_path: &'a Path,
 }
@@ -114,7 +115,6 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 timeout,
                 log_path,
             } = run;
-            let timeout = timeout.unwrap_or(Duration::from_secs(300));
 
             if let Some(parent) = log_path.parent() {
                 tokio::fs::create_dir_all(parent)
@@ -218,10 +218,14 @@ impl AgentStreamRunner for ProcessAgentStreamRunner {
                 Ok::<(std::process::ExitStatus, String), anyhow::Error>((exit, stderr_text))
             };
 
-            let (exit_status, stderr_text) =
-                tokio::time::timeout(timeout, combined).await.with_context(|| {
-                    format!("agent stream timed out after {:.1}s", timeout.as_secs_f64())
-                })??;
+            let (exit_status, stderr_text) = match timeout {
+                Some(timeout) => {
+                    tokio::time::timeout(timeout, combined).await.with_context(|| {
+                        format!("agent stream timed out after {:.1}s", timeout.as_secs_f64())
+                    })??
+                }
+                None => combined.await?,
+            };
 
             let exit_code = exit_status.code().unwrap_or(-1);
             let success = exit_status.success();
@@ -246,7 +250,7 @@ mod tests {
         std::env::temp_dir().join(format!("agent-stream-test-{}.jsonl", uuid::Uuid::new_v4()))
     }
 
-    /// A `sh -c` run with no env, no stdin and the default timeout.
+    /// A `sh -c` run with no env, no stdin and no clock deadline.
     fn sh_run<'a>(working_dir: &'a Path, args: &'a [&'a str], log_path: &'a Path) -> StreamRun<'a> {
         StreamRun {
             working_dir,

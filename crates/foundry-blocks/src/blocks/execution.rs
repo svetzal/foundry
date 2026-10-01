@@ -209,9 +209,7 @@ pub(crate) async fn execute_agent_block(
         env.push(("FOUNDRY_CAMPAIGN".into(), campaign.into()));
         env.push(("FOUNDRY_WRITABLE_ROOT".into(), project_path.to_string_lossy().into()));
     }
-    let timeout = limits.map_or(entry.timeout(), |l| {
-        entry.timeout().min(std::time::Duration::from_secs(l.execution_seconds))
-    });
+    let timeout = limits.map_or(entry.timeout(), |_| std::time::Duration::ZERO);
     let outcome = invoke_coding_agent(
         agent,
         ctx.project,

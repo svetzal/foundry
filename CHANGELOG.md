@@ -20,7 +20,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   repeats its prompt and gate logs. Full gate evidence remains in the durable
   advance event. Independent task review remains deep/high.
 
-- Campaigns enforce positive stage time and prompt limits, bypass formation after
+- Campaign agents have no clock deadline. Legacy stage time fields are ignored.
+  Campaigns enforce positive prompt limits, bypass formation after
   an exhausted unlanded defect, and restrict writes to one isolated repository.
   Scoped campaign execution currently uses Codex; unsupported providers fail
   before formation. Multi-repository declarations are rejected at admission.

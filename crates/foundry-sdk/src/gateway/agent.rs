@@ -447,6 +447,7 @@ pub struct AgentRequest {
     /// not affect the daemon or the registered checkout.
     pub env: Vec<(String, String)>,
     /// Maximum duration for the invocation.
+    /// Maximum agent runtime. Zero means no clock deadline.
     pub timeout: std::time::Duration,
     /// The trace this invocation belongs to, taken from the block's triggering
     /// event.

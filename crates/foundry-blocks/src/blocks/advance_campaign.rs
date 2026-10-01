@@ -553,15 +553,10 @@ async fn ask_decision_agent(
     request: &DecisionRequest,
     project: &str,
 ) -> anyhow::Result<AdvanceOutcome> {
-    let deadline = tokio::time::Instant::now() + request.timeout;
     let mut diagnostics = Vec::new();
     let mut delay = DECISION_RETRY_DELAY;
     for attempt in 1..=DECISION_ATTEMPTS {
-        let mut spec = request.spec();
-        spec.timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if spec.timeout.is_zero() {
-            break;
-        }
+        let spec = request.spec();
         let (context, detail) = match invoke_agent(agent, spec, "campaign advance", project).await {
             AgentOutcome::Success { stdout } => {
                 return Ok(AdvanceOutcome::Decided(parse_decision(&stdout)?));
@@ -930,9 +925,7 @@ async fn derive_advance_outcome(
             .as_deref()
             .and_then(|provider| super::parse_agent_provider(Some(provider)))
             .or(Some(AgentProvider::Codex)),
-        timeout: entry
-            .timeout()
-            .min(Duration::from_secs(campaign.budget.stages.formation_seconds)),
+        timeout: Duration::ZERO,
     };
     if decision_request.prompt.len() > campaign.budget.stages.formation_prompt_bytes {
         anyhow::bail!(

@@ -435,22 +435,16 @@ impl Default for CampaignBudget {
     }
 }
 
-/// Per-stage limits in seconds and bytes. All must be positive.
+/// Content limits for campaign stages. Legacy clock limits are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StageBudget {
-    pub formation_seconds: u64,
-    pub execution_seconds: u64,
-    pub review_seconds: u64,
     pub formation_prompt_bytes: usize,
 }
 
 impl Default for StageBudget {
     fn default() -> Self {
         Self {
-            formation_seconds: 120,
-            execution_seconds: 1800,
-            review_seconds: 300,
             formation_prompt_bytes: 32768,
         }
     }
@@ -459,11 +453,7 @@ impl Default for StageBudget {
 impl StageBudget {
     /// Reject limits that would disable a stage or its context.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.formation_seconds == 0
-            || self.execution_seconds == 0
-            || self.review_seconds == 0
-            || self.formation_prompt_bytes == 0
-        {
+        if self.formation_prompt_bytes == 0 {
             anyhow::bail!("campaign stage limits must all be greater than zero");
         }
         Ok(())
@@ -1060,7 +1050,20 @@ mod context_role_tests {
         assert!(campaign.validate().unwrap_err().to_string().contains("multi-repository"));
         campaign.writable_repositories = vec!["p".into()];
         assert!(campaign.validate().is_ok());
-        campaign.budget.stages.formation_seconds = 0;
+        campaign.budget.stages.formation_prompt_bytes = 0;
         assert!(campaign.validate().is_err());
+    }
+    #[test]
+    fn legacy_clock_limits_are_ignored() {
+        let limits: super::StageBudget = serde_json::from_value(serde_json::json!({
+            "formation_seconds": 120, "execution_seconds": 1800,
+            "review_seconds": 300, "formation_prompt_bytes": 32768
+        }))
+        .unwrap();
+        limits.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(limits).unwrap(),
+            serde_json::json!({"formation_prompt_bytes": 32768})
+        );
     }
 }

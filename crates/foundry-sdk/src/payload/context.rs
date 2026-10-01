@@ -398,8 +398,7 @@ mod tests {
     #[test]
     fn stage_limits_survive_chain_and_loop_serialization() {
         let limits = crate::campaign::StageBudget {
-            execution_seconds: 42,
-            ..Default::default()
+            formation_prompt_bytes: 42,
         };
         let payload = serde_json::json!({"campaign":"c", "campaign_limits":limits});
         let chain = ChainContext::extract_from(&payload);
@@ -407,7 +406,7 @@ mod tests {
         chain.merge_into(&mut next);
         let context = LoopContext::extract_from(&next);
         let next = serde_json::to_value(context).unwrap();
-        assert_eq!(next["campaign_limits"]["execution_seconds"], 42);
-        assert_eq!(next["campaign_limits"]["review_seconds"], 300);
+        assert_eq!(next["campaign_limits"]["formation_prompt_bytes"], 42);
+        assert!(next["campaign_limits"].get("execution_seconds").is_none());
     }
 }

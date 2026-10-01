@@ -233,18 +233,17 @@ Campaign definitions accept these limits. Older definitions use these defaults:
   "budget": {
     "max_cycles": 4,
     "stages": {
-      "formation_seconds": 120,
-      "formation_prompt_bytes": 32768,
-      "execution_seconds": 1800,
-      "review_seconds": 300
+      "formation_prompt_bytes": 32768
     }
   }
 }
 ```
 
-Each limit must be positive. Agent time limits also obey the project's shorter
-timeout. Formation retries share one time budget. The byte limit applies to the
-rendered Foundry prompt, not provider instructions or files read during a turn.
+The prompt byte limit must be positive. Campaign formation, execution, and
+review have no clock deadline, including the project's agent timeout. Legacy
+stage time fields are ignored when reading existing definitions. The byte limit
+applies to the rendered Foundry prompt, not provider instructions or files read
+during a turn.
 
 An empty `writable_repositories` means the campaign's project alone. Admission
 rejects any other declaration. Multi-repository isolation and landing are not
