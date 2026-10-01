@@ -60,8 +60,8 @@ abandoned, not achieved. Use `paused` for a campaign meant to resume.
 
 Each dispatched task consumes one cycle. Formation, retries caused by a
 transient decision-provider transport failure, and an automatic provider pause
-do not consume cycles. A final budgeted task always receives one completion
-evaluation; only an attempted dispatch beyond the authorized budget escalates.
+do not consume cycles. A landed final task still receives completion evaluation. An exhausted budget
+with an unlanded non-complete result escalates before gates or formation run.
 
 ## Durable Ownership
 
@@ -132,13 +132,13 @@ change. A `complete` that could not land is still `complete`, with `landed:
 false`, `success: false`, and a typed `land_blocked` reason in the
 `task_run_completed` payload:
 
-| `land_blocked` | Meaning |
-|----------------|---------|
-| `trunk_moved_conflict` | Trunk moved and the rebase conflicted |
+| `land_blocked`             | Meaning                                                              |
+| -------------------------- | -------------------------------------------------------------------- |
+| `trunk_moved_conflict`     | Trunk moved and the rebase conflicted                                |
 | `trunk_moved_gates_failed` | The rebase was clean, but a required gate failed on the rebased tree |
-| `trunk_moved_repeatedly` | Trunk moved again after the second rebase |
-| `checkout_not_ready` | The registered checkout was dirty or on the wrong branch |
-| `git_failed` | Another git operation needed to land failed |
+| `trunk_moved_repeatedly`   | Trunk moved again after the second rebase                            |
+| `checkout_not_ready`       | The registered checkout was dirty or on the wrong branch             |
+| `git_failed`               | Another git operation needed to land failed                          |
 
 The payload also lists in `trunk_arrivals` the trunk commits that arrived
 during the run (commit and subject, oldest first). This list is present when
@@ -212,19 +212,111 @@ artifacts but never invokes the tool that produced them.
 
 Formation uses the balanced model tier with medium reasoning effort. The
 independent task reviewer continues to use the deep tier with high effort.
-Charters, campaign briefs, design requirements and intent projections are
-inlined. Source files (including protobuf), `AGENTS.md`, files under `book/`
-and `docs/configuration/` are listed by path for reading as needed. Agent
-guidance still applies. Keep binding context focused on the mission's
-requirements.
+Context files are listed by path and size for selective reading. Their normative
+requirements still apply. Formation receives the mission, owner decisions,
+reviewer gaps, recent commits, changed paths, and compact gate results.
+It returns a decision; the daemon dispatches that decision. It must not probe
+localhost or start nested Foundry workflows.
 
-Formation receives every gate's command, required flag, exit code and result.
-Passing output is omitted. Failed output keeps up to 4 KiB from its tail,
-with 16 KiB of diagnostic content across all gates. Truncation is marked;
-the full gate results remain in `CampaignAdvanceCompleted`. The latest task
-result includes its summary, verdict, landing status and preservation
-information without repeating its execution prompt and gate logs. Completion rules and
-cycle budgets are unchanged.
+Passing gate output is omitted. Failed output keeps at most 512 bytes per gate
+and 2 KiB across all gates. Full results remain in `CampaignAdvanceCompleted`.
+An oversized packet fails before an agent starts. Binding declarations are
+never silently truncated to fit the packet.
+
+### Stage limits and repository scope
+
+Campaign definitions accept these limits. Older definitions use these defaults:
+
+```json
+{
+  "writable_repositories": ["my-project"],
+  "budget": {
+    "max_cycles": 4,
+    "stages": {
+      "formation_seconds": 120,
+      "formation_prompt_bytes": 16384,
+      "execution_seconds": 1800,
+      "review_seconds": 300
+    }
+  }
+}
+```
+
+Each limit must be positive. Agent time limits also obey the project's shorter
+timeout. Formation retries share one time budget. The byte limit applies to the
+rendered Foundry prompt, not provider instructions or files read during a turn.
+
+An empty `writable_repositories` means the campaign's project alone. Admission
+rejects any other declaration. Multi-repository isolation and landing are not
+supported. Sibling repositories remain read-only.
+
+Campaign execution currently needs Codex to enforce this filesystem boundary.
+An omitted campaign provider selects Codex. Other campaign providers fail before
+formation starts. Codex uses `workspace-write`, clears inherited extra writable
+roots, and permits Foundry's command-log directory. Foundry owns Git finalization.
+Standalone tasks retain their existing provider and access behavior.
+
+### Capture command output
+
+Use the following command for verbose builds and tests:
+
+```bash
+foundry capture -- cargo test --workspace
+```
+
+This command needs no daemon. It returns the child's exit code and stores both
+complete streams in `~/.foundry/tool-logs/`. Passing commands print only status
+and log paths. Failures print at most 2 KiB from each stream. Use `--log-dir`
+to choose another directory. Logs remain until you remove them.
+
+Coding prompts request this command for verbose output. Codex also applies a
+2,000-token limit to tool output retained in conversation history. The native
+limit does not preserve a separate complete log; use `capture` for that.
+
+### Prove acceptance early
+
+Before broad fixture or documentation changes, the executor must exercise the
+hardest acceptance behavior through the real boundary. It must record the
+rejecting case and the corrected passing case in `.foundry/proof.json`:
+
+```json
+{
+  "kind": "behavioral",
+  "source_change": "Describe the changed source/input and its paths",
+  "rejecting": {"command": "test command", "exit_code": 1, "log": "full-log-path"},
+  "corrected": {"command": "test command", "exit_code": 0, "log": "full-log-path"}
+}
+```
+
+For a non-behavioral objective, use `kind: "direct"`, a `reason`, and a passing
+`corrected` probe. New campaign tasks fail with a typed defect if the record is
+missing, malformed, or refers to absent logs. This check spends no reviewer
+session. The independent reviewer checks the source, logs, ordering, and whether
+the probe proves the intended behavior. Schema checks alone cannot establish
+semantic correctness.
+
+### Report campaign efficiency
+
+```bash
+foundry campaign report my-campaign
+foundry campaign report my-campaign --json
+```
+
+The online command reads daemon-owned events through `GetCampaignReport`.
+`--offline` reads local stores and logs explicitly. The report separates
+formation, execution, and review time and tokens. It also shows dispatched and
+landed cycles, running sessions, missing usage, unpriced models, stage limits,
+and external completion reasons. Digest sessions do not enter these totals.
+
+Older session records lack an explicit stage. Their role is inferred from access
+and model tier, and the report gives the count of inferred sessions. Missing
+usage means unmeasured spend. A partial list-price estimate is not total cost.
+
+Formation runs before the first task and after each result that needs a new
+objective or completion evaluation. Thus one campaign with N tasks normally has
+N+1 formation sessions. Separate campaigns each have an initial call. Forced
+terminal decisions bypass the agent. Transport retries can add sessions within
+the formation time budget.
 
 ### Designing done evidence
 
@@ -289,14 +381,14 @@ reviews the repository and context artifacts, then makes exactly one decision:
 - `escalate` — stop because the budget, an escalation rule, runner failure, or
   owner judgment requires attention.
 
-| Status      | Meaning                                                | Valid next control             |
-| ----------- | ------------------------------------------------------ | ------------------------------ |
-| `staged`    | Definition exists; no cycle has started                | `advance`, `pause`, `cancel`           |
-| `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `cancel`           |
-| `paused`    | Advancement is intentionally stopped                   | `resume`, `complete`, `cancel`         |
+| Status      | Meaning                                                | Valid next control                       |
+| ----------- | ------------------------------------------------------ | ---------------------------------------- |
+| `staged`    | Definition exists; no cycle has started                | `advance`, `pause`, `cancel`             |
+| `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `cancel`             |
+| `paused`    | Advancement is intentionally stopped                   | `resume`, `complete`, `cancel`           |
 | `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `complete`, `cancel` |
-| `completed` | Evidence or owner authorization closed the mission     | None                                   |
-| `cancelled` | An owner abandoned the mission before its evidence     | None                                   |
+| `completed` | Evidence or owner authorization closed the mission     | None                                     |
+| `cancelled` | An owner abandoned the mission before its evidence     | None                                     |
 
 ### The status transition table
 
@@ -310,14 +402,14 @@ only in transport and event emission, never in legality. The table below is
 generated from that module's exhaustive state-machine test and is the
 authoritative specification:
 
-| Status      | `pause`   | `resume`                  | `decide`                | `complete`                  | `cancel`                 | `advance`                |
-| ----------- | --------- | -------------------------- | ------------------------ | ---------------------------- | ------------------------- | ------------------------- |
-| `staged`    | allowed † | rejected: wrong status      | rejected: wrong status    | allowed                      | allowed                   | allowed                   |
-| `active`    | allowed † | rejected: wrong status      | rejected: wrong status    | allowed                      | allowed                   | allowed                   |
-| `paused`    | allowed † | allowed                    | rejected: wrong status    | allowed                      | allowed                   | rejected: wrong status     |
-| `escalated` | allowed † | allowed                    | allowed                  | allowed                      | allowed                   | rejected: wrong status     |
-| `completed` | allowed † | rejected: wrong status      | rejected: wrong status    | no-op (already settled)      | rejected: already complete | rejected: wrong status     |
-| `cancelled` | allowed † | rejected: wrong status      | rejected: wrong status    | rejected: cancelled campaign  | no-op (already settled)   | rejected: wrong status     |
+| Status      | `pause`   | `resume`               | `decide`               | `complete`                   | `cancel`                   | `advance`              |
+| ----------- | --------- | ---------------------- | ---------------------- | ---------------------------- | -------------------------- | ---------------------- |
+| `staged`    | allowed † | rejected: wrong status | rejected: wrong status | allowed                      | allowed                    | allowed                |
+| `active`    | allowed † | rejected: wrong status | rejected: wrong status | allowed                      | allowed                    | allowed                |
+| `paused`    | allowed † | allowed                | rejected: wrong status | allowed                      | allowed                    | rejected: wrong status |
+| `escalated` | allowed † | allowed                | allowed                | allowed                      | allowed                    | rejected: wrong status |
+| `completed` | allowed † | rejected: wrong status | rejected: wrong status | no-op (already settled)      | rejected: already complete | rejected: wrong status |
+| `cancelled` | allowed † | rejected: wrong status | rejected: wrong status | rejected: cancelled campaign | no-op (already settled)    | rejected: wrong status |
 
 `resume` and `complete` additionally require `authorized_by` to be set,
 regardless of status; `cancel` deliberately does not, so an unauthorized
@@ -569,7 +661,7 @@ from `foundry trace`.
 `--offline` cancellation is graceful-only and emits no terminal event, matching
 offline `complete`. `--offline --now` is refused rather than quietly downgraded:
 with no daemon there is no workflow to abort, and reporting a kill that never
-happened would be worse than failing. The *legality* of the cancellation
+happened would be worse than failing. The _legality_ of the cancellation
 itself — whether this status may become `cancelled` at all — is not a separate
 offline rule; it is the same `Campaign::cancel` the daemon calls, so a
 `completed` campaign is rejected and an already-`cancelled` one is a no-op on

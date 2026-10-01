@@ -384,6 +384,10 @@ message CampaignDetail {
     repeated OwnerDecision owner_decisions = 15;
 }
 
+message CampaignReportResponse {
+    string report_json = 1;
+}
+
 message GetCampaignRequest {
     string name = 1;
 }
@@ -801,6 +805,7 @@ service Foundry {
 
     // Retrieve the complete durable definition of one campaign by exact name.
     rpc GetCampaign(GetCampaignRequest) returns (GetCampaignResponse);
+    rpc GetCampaignReport(GetCampaignRequest) returns (CampaignReportResponse);
 
     // Pause an active campaign. Preserves pending_run_result.
     rpc PauseCampaign(PauseCampaignRequest) returns (PauseCampaignResponse);

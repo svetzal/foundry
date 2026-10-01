@@ -11,10 +11,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Campaign formation uses balanced/medium reasoning and smaller prompts.
   Source, protobuf, agent guidance and reference guides are listed by path;
-  mission briefs and design requirements remain inline. Passing gate logs are
+  contract files are read selectively rather than copied into each prompt. Passing gate logs are
   omitted, failure diagnostics are bounded, and the last task result no longer
   repeats its prompt and gate logs. Full gate evidence remains in the durable
   advance event. Independent task review remains deep/high.
+
+- Campaigns enforce positive stage time and prompt limits, bypass formation after
+  an exhausted unlanded defect, and restrict writes to one isolated repository.
+  Scoped campaign execution currently uses Codex; unsupported providers fail
+  before formation. Multi-repository declarations are rejected at admission.
+- Coding agents capture verbose command logs with bounded output. New campaign
+  tasks need early acceptance proof before paid review. Campaign reports expose
+  stage time, tokens, unknown pricing, and external completion separately.
 
 ### Fixed
 
@@ -476,7 +484,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
     the first attempt.
   - If `origin/<branch>` moved during the run to commits the checkout holds
     (checked after a fetch, so an explicit-URL push is seen too), the run
-    fails with "needs review: agent pushed directly to origin/<branch> …",
+    fails with "needs review: agent pushed directly to `origin/<branch>` …",
     naming the commits and the suppression check's result. It is not
     retried. The failure metadata carries a new `needs_review` field, and
     `Route Gate Result` stops without retrying whenever it is set.
@@ -498,7 +506,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   children that never arrived (`missing`, with the failing block's error).
 - `Install Locally` no longer starts `brew` on a host that is not macOS. It
   records the step as skipped with "install via brew not supported on
-  <os>". An install command that cannot start is recorded as a failed
+  `<os>`". An install command that cannot start is recorded as a failed
   `local_install_completed` event instead of an engine error that only
   reached the daemon log.
 - The maintenance summary's Local Installs table has a Detail column with
@@ -650,8 +658,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   separate tasks. The agent must not go beyond the list. A maintain retry may
   not move dependencies further.
 - The majors lane. After the nightly summary, each major a `major`-policy
-  project may take is dispatched as its own `foundry task` ("Upgrade <pkg> from
-  <a> to <b> in <project>: adapt call sites, keep all gates green"), one after
+  project may take is dispatched as its own `foundry task` ("Upgrade `<pkg>` from
+  `<a>` to `<b>` in `<project>`: adapt call sites, keep all gates green"), one after
   another. Dedupe skips a major whose task is in flight or left preserved work.
   `FOUNDRY_MAJOR_TASKS_PER_PROJECT` (default 2) and
   `FOUNDRY_MAJOR_TASKS_PER_NIGHT` (default 6) cap it; overflow is reported with

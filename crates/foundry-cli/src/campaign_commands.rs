@@ -583,6 +583,32 @@ fn campaign_offline_hint(command_suffix: &str) -> String {
     format!("foundry campaign {command_suffix} --offline")
 }
 
+/// Read campaign accounting from the daemon, or explicit offline logs.
+pub async fn report(store: &Path, addr: &str, offline: bool, name: &str, json: bool) -> Result<()> {
+    let report: foundry_sdk::campaign::report::CampaignReport = if offline {
+        let store = CampaignStore::load(store)?;
+        let campaign = store.find(name).context("campaign not found")?;
+        foundry_sdk::campaign::report::read_report(campaign, &foundry_sdk::paths::events_dir())?
+    } else {
+        let mut client =
+            connect_daemon_required(addr, &campaign_offline_hint(&format!("report {name}")))
+                .await?;
+        let response = client
+            .get_campaign_report(GetCampaignRequest { name: name.into() })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner();
+        serde_json::from_str(&response.report_json)?
+    };
+    let output = if json {
+        format!("{}\n", serde_json::to_string_pretty(&report)?)
+    } else {
+        render::campaign::report(&report)
+    };
+    print!("{output}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES;
@@ -800,7 +826,10 @@ mod tests {
                 done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
                     statement: "shipped".to_string(),
                 }],
-                budget: foundry_sdk::campaign::CampaignBudget { max_cycles: 2 },
+                budget: foundry_sdk::campaign::CampaignBudget {
+                    max_cycles: 2,
+                    ..Default::default()
+                },
                 escalation: vec![],
                 status: CampaignStatus::Escalated,
                 cycles_completed: 2,
@@ -811,6 +840,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1050,42 +1080,26 @@ mod tests {
         }
     }
 
-    /// Oversized inlined context is not a soft cost: every provider passes the
-    /// formation prompt as a command-line argument, so exceeding `ARG_MAX` fails
-    /// the spawn outright. One real campaign reached 1,050,282 bytes and could
-    /// not be formed at all, surfacing only as an opaque "unavailable".
     #[tokio::test]
-    async fn add_rejects_context_that_exceeds_the_inline_budget() {
+    async fn large_documents_are_admitted_but_oversized_missions_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("campaigns.json");
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         let huge = "x".repeat(usize::try_from(MAX_INLINE_CONTEXT_BYTES + 1).unwrap());
         std::fs::write(repo.join("HUGE.md"), &huge).unwrap();
-        let registry_path = write_registry(&dir, "p", &repo);
-        let file = write_campaign_file(
-            &dir,
-            r#"{
-                "name":"c",
-                "project":"p",
-                "mission":"ship",
-                "context_paths":["HUGE.md"],
-                "done_evidence":[{"kind":"review","statement":"shipped"}]
-            }"#,
-        );
-
-        let err = add(&store, &registry_path, "http://127.0.0.1:0", true, &file)
-            .await
-            .unwrap_err();
-
-        let message = err.to_string();
-        assert!(message.contains("over the"), "must name the budget: {message}");
-        assert!(message.contains("HUGE.md"), "must name the offending file: {message}");
-        assert!(
-            message.contains("Read, Glob, and Grep"),
-            "must tell the author what to do instead: {message}"
-        );
-        assert!(!store.exists(), "a rejected definition must not create a store");
+        let registry = write_registry(&dir, "p", &repo);
+        let mut definition = serde_json::json!({"name":"c", "project":"p", "mission":"ship",
+            "context_paths":["HUGE.md"], "done_evidence":[{"kind":"review","statement":"shipped"}]});
+        let file = write_campaign_file(&dir, &definition.to_string());
+        add(&store, &registry, "http://127.0.0.1:0", true, &file).await.unwrap();
+        let before = std::fs::read(&store).unwrap();
+        definition["name"] = serde_json::json!("too-large");
+        definition["mission"] = serde_json::json!(huge);
+        let file = write_campaign_file(&dir, &definition.to_string());
+        let error = add(&store, &registry, "http://127.0.0.1:0", true, &file).await.unwrap_err();
+        assert!(error.to_string().contains("formation budget"));
+        assert_eq!(std::fs::read(&store).unwrap(), before);
     }
 
     /// Source paths are listed for the agent to read on demand, so they cost
@@ -1162,7 +1176,10 @@ mod tests {
                 done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
                     statement: "shipped".to_string(),
                 }],
-                budget: foundry_sdk::campaign::CampaignBudget { max_cycles: 2 },
+                budget: foundry_sdk::campaign::CampaignBudget {
+                    max_cycles: 2,
+                    ..Default::default()
+                },
                 escalation: vec![],
                 status: CampaignStatus::Escalated,
                 cycles_completed: 2,
@@ -1173,6 +1190,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();

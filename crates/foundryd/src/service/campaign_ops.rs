@@ -628,7 +628,10 @@ mod tests {
             done_evidence: vec![DoneEvidence::Review {
                 statement: "Reviewed.".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 7 },
+            budget: CampaignBudget {
+                max_cycles: 7,
+                ..Default::default()
+            },
             escalation: vec![],
             status: CampaignStatus::Active,
             cycles_completed: 2,
@@ -639,6 +642,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 
@@ -689,7 +693,10 @@ mod tests {
                     statement: "All reviewers approved.".to_string(),
                 },
             ],
-            budget: CampaignBudget { max_cycles: 5 },
+            budget: CampaignBudget {
+                max_cycles: 5,
+                ..Default::default()
+            },
             escalation: vec!["Ping the team.".to_string()],
             status: CampaignStatus::Active,
             cycles_completed: 3,
@@ -706,6 +713,7 @@ mod tests {
             }],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         };
         let tmp = write_store_with(vec![campaign]);
 

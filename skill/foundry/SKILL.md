@@ -190,6 +190,7 @@ should be derived from the latest repository state:
 foundry campaign add ./campaign.json
 foundry campaign list
 foundry campaign show <name>
+foundry campaign report <name> [--json]
 foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
@@ -219,8 +220,23 @@ loop, use `campaign complete` with a non-empty reason. Foundry records the
 authorizing owner and reason, clears stale pending results, and emits the normal
 campaign completion event. Pass `--offline` only when the daemon is stopped.
 
-A final budgeted task still receives completion evaluation. Only an attempted
-dispatch beyond the authorized cycle budget escalates the campaign.
+A landed final task still receives completion evaluation. An exhausted budget
+with an unlanded non-complete result escalates before formation. Campaigns use
+Codex by default and enforce one writable repository. Declare
+`writable_repositories` as the project name alone; other declarations are
+rejected. Other campaign providers are currently refused because they cannot
+enforce this scope. Standalone tasks retain their existing provider behavior.
+
+Campaign `budget.stages` defaults are formation 120 seconds / 16384 prompt
+bytes, execution 1800 seconds, and review 300 seconds. Project timeouts can
+shorten these. Use `campaign report` to inspect stage tokens/time, unmeasured
+or unpriced spend, landed cycles, and external repairs.
+
+Coding sessions should run verbose checks through `foundry capture -- <command>`.
+It needs no daemon, keeps full stdout/stderr logs, returns the actual exit code,
+and prints a bounded failure tail. New campaign tasks must record early real
+acceptance proof in `.foundry/proof.json` before broad expansion. See the
+campaign guide for the behavioral/direct proof schema.
 
 Each advance mints trace and cycle-span identity. Task-side events carry
 `campaign_cycle`, and `CampaignAdvanceCompleted` retains the exact formation
@@ -426,7 +442,6 @@ missing file renders empty groups and exits zero, a malformed one is an error.
 On every start `foundryd` settles each item still `running` as `failed` with the
 reason `daemon restarted`, so after a restart look in `foundry queue open` for
 work that needs re-dispatching.
-
 
 ### Close or cancel an item
 

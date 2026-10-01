@@ -111,7 +111,10 @@ fn active_campaign(name: &str) -> Campaign {
         done_evidence: vec![DoneEvidence::Review {
             statement: "done".to_string(),
         }],
-        budget: CampaignBudget { max_cycles: 10 },
+        budget: CampaignBudget {
+            max_cycles: 10,
+            ..Default::default()
+        },
         escalation: vec![],
         status: CampaignStatus::Active,
         cycles_completed: 2,
@@ -122,6 +125,7 @@ fn active_campaign(name: &str) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        writable_repositories: vec![],
     }
 }
 

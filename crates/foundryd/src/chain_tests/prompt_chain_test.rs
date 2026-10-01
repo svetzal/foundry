@@ -118,7 +118,10 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
             done_evidence: vec![DoneEvidence::Review {
                 statement: "The requested behavior exists.".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 2 },
+            budget: CampaignBudget {
+                max_cycles: 2,
+                ..Default::default()
+            },
             escalation: vec![],
             status: CampaignStatus::Active,
             cycles_completed: 0,
@@ -129,6 +132,7 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         })
         .unwrap();
     assert!(repo.exists());

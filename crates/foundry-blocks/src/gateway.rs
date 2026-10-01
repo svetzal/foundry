@@ -402,6 +402,11 @@ pub(crate) fn emit_session_started(
         working_dir: request.working_dir.clone(),
         source_log_path: log_path.to_path_buf(),
         tier: request.tier.as_str().to_string(),
+        stage: request
+            .env
+            .iter()
+            .find(|(k, _)| k == "FOUNDRY_AGENT_STAGE")
+            .map_or_else(String::new, |(_, v)| v.clone()),
         effort: request.effort.as_str().to_string(),
         effective_effort: effective_effort.as_str().to_string(),
         access: request.access.label().to_string(),

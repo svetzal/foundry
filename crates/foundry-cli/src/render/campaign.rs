@@ -168,6 +168,53 @@ pub fn campaign_detail(campaign: &Campaign) -> String {
     out
 }
 
+/// Show measured stage costs without presenting unpriced usage as free.
+pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String {
+    let mut out = format!(
+        "{}: {}\nCycles: {} dispatched, {} landed\n",
+        report.name, report.status, report.cycles_dispatched, report.cycles_landed
+    );
+    let _ = writeln!(out, "Writable repositories: {}", report.writable_repositories.join(", "));
+    let _ = writeln!(
+        out,
+        "Limits: formation {}s / {} bytes, execution {}s, review {}s",
+        report.stage_limits.formation_seconds,
+        report.stage_limits.formation_prompt_bytes,
+        report.stage_limits.execution_seconds,
+        report.stage_limits.review_seconds
+    );
+    for (role, stage) in &report.stages {
+        let _ = writeln!(
+            out,
+            "{role}: {} sessions, {}s, {} fresh input, {} cached input, {} output; {} running, {} unmeasured",
+            stage.sessions,
+            stage.elapsed_ms / 1000,
+            stage.input_tokens,
+            stage.cached_input_tokens,
+            stage.output_tokens,
+            stage.running_sessions,
+            stage.unmeasured_sessions
+        );
+        if !stage.unpriced_models.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Unpriced: {} (known list estimate ${:.4}; partial, not total spend)",
+                stage.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", "),
+                stage.known_list_usd
+            );
+        }
+    }
+    for reason in &report.external_completion_reasons {
+        let _ = writeln!(out, "{reason}");
+    }
+    let _ = writeln!(
+        out,
+        "Legacy stage inference: {} sessions; incomplete log lines: {}",
+        report.inferred_stage_sessions, report.incomplete_log_lines
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use foundry_sdk::campaign::{CampaignBudget, CampaignStatus, OwnerDecision};
@@ -184,7 +231,10 @@ mod tests {
             done_evidence: vec![DoneEvidence::Review {
                 statement: "auth is hardened".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 5 },
+            budget: CampaignBudget {
+                max_cycles: 5,
+                ..Default::default()
+            },
             escalation: vec![],
             status: CampaignStatus::Active,
             cycles_completed: 2,
@@ -195,6 +245,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 

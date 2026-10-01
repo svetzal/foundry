@@ -339,7 +339,10 @@ mod tests {
             done_evidence: vec![DoneEvidence::Review {
                 statement: "shipped".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 2 },
+            budget: CampaignBudget {
+                max_cycles: 2,
+                ..Default::default()
+            },
             escalation: vec![],
             status,
             cycles_completed: 0,
@@ -350,6 +353,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 

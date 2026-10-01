@@ -87,7 +87,27 @@ impl CliAgentAdapter for CodexAdapter {
         // `--agent` flag.
         let prompt = build_prompt(request.agent_file.as_deref(), &request.prompt, &request.project);
 
-        let args = build_codex_argv(model, effort, request.access, &last_message_path);
+        let mut args = build_codex_argv(model, effort, request.access, &last_message_path);
+        args.splice(1..1, ["-c".into(), "tool_output_token_limit=2000".into()]);
+        if request.env.iter().any(|(k, _)| k == "FOUNDRY_WRITABLE_ROOT") {
+            args.retain(|a| a != "--dangerously-bypass-approvals-and-sandbox");
+            args.splice(
+                1..1,
+                [
+                    "-s".into(),
+                    "workspace-write".into(),
+                    "-c".into(),
+                    "approval_policy=never".into(),
+                    "-c".into(),
+                    format!(
+                        "sandbox_workspace_write.writable_roots=[{}]",
+                        serde_json::json!(foundry_sdk::paths::foundry_home().join("tool-logs"))
+                    ),
+                    "-c".into(),
+                    "sandbox_workspace_write.network_access=true".into(),
+                ],
+            );
+        }
 
         Invocation {
             args,
@@ -687,5 +707,40 @@ mod tests {
         let _started = rx.recv().await.unwrap();
         let ended = rx.recv().await.unwrap();
         assert_eq!(ended.payload["status"], "agent_failed");
+    }
+    #[test]
+    fn campaign_invocation_overrides_unrestricted_defaults_and_limits_tool_history() {
+        let request = AgentRequest {
+            prompt: "work".into(),
+            project: "p".into(),
+            working_dir: PathBuf::from("/tmp/worktree"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: Some(AgentProvider::Codex),
+            env: vec![("FOUNDRY_WRITABLE_ROOT".into(), "/tmp/worktree".into())],
+            timeout: std::time::Duration::from_secs(30),
+            trace_id: None,
+            requires_json: false,
+        };
+        let invocation = CodexAdapter.build_invocation(
+            &request,
+            "model",
+            "medium",
+            "session",
+            Path::new("/tmp/logs"),
+        );
+        let args = &invocation.args;
+        assert!(args.windows(2).any(|p| p == ["-s", "workspace-write"]));
+        assert!(args.contains(&"tool_output_token_limit=2000".into()));
+        assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".into()));
+        let roots = args
+            .iter()
+            .find(|a| a.starts_with("sandbox_workspace_write.writable_roots="))
+            .unwrap();
+        assert!(roots.contains("tool-logs"));
+        assert!(!roots.contains("Work/Projects"));
+        assert_eq!(invocation.stdin.as_deref(), Some(b"work".as_slice()));
     }
 }

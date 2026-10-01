@@ -38,6 +38,8 @@ pub struct ChainContext {
     /// but which attempt — see [`super::LoopContext::campaign_cycle`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign_cycle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_limits: Option<crate::campaign::StageBudget>,
     /// Isolated task worktree prepared by the executor. Absent before execution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_worktree: Option<String>,
@@ -70,6 +72,10 @@ impl ChainContext {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             campaign_cycle: payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
+            campaign_limits: payload
+                .get("campaign_limits")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok()),
             task_worktree: payload
                 .get("task_worktree")
                 .and_then(serde_json::Value::as_str)
@@ -109,6 +115,9 @@ impl ChainContext {
         }
         if let Some(v) = &self.campaign {
             target["campaign"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.campaign_limits {
+            target["campaign_limits"] = serde_json::json!(v);
         }
         if let Some(v) = &self.campaign_cycle {
             target["campaign_cycle"] = serde_json::json!(v);
@@ -151,6 +160,8 @@ pub struct LoopContext {
     /// project or on out-of-order arrival. `None` for non-campaign tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign_cycle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_limits: Option<crate::campaign::StageBudget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_worktree: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +207,10 @@ impl LoopContext {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             campaign_cycle: payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
+            campaign_limits: payload
+                .get("campaign_limits")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok()),
             task_worktree: payload
                 .get("task_worktree")
                 .and_then(serde_json::Value::as_str)
@@ -379,5 +394,20 @@ mod tests {
         let context: LoopContext = serde_json::from_value(legacy).unwrap();
         assert_eq!(context.campaign.as_deref(), Some("c"));
         assert_eq!(context.campaign_cycle, None);
+    }
+    #[test]
+    fn stage_limits_survive_chain_and_loop_serialization() {
+        let limits = crate::campaign::StageBudget {
+            execution_seconds: 42,
+            ..Default::default()
+        };
+        let payload = serde_json::json!({"campaign":"c", "campaign_limits":limits});
+        let chain = ChainContext::extract_from(&payload);
+        let mut next = serde_json::json!({});
+        chain.merge_into(&mut next);
+        let context = LoopContext::extract_from(&next);
+        let next = serde_json::to_value(context).unwrap();
+        assert_eq!(next["campaign_limits"]["execution_seconds"], 42);
+        assert_eq!(next["campaign_limits"]["review_seconds"], 300);
     }
 }

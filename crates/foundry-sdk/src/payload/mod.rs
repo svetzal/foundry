@@ -340,6 +340,7 @@ mod tests {
     fn agent_session_started_payload_serializes_to_expected_json() {
         use std::path::PathBuf;
         let payload = AgentSessionStartedPayload {
+            stage: "execution".into(),
             session_id: "11111111-2222-3333-4444-555555555555".to_string(),
             agent_type: "claude-code".to_string(),
             project: "demo".to_string(),

@@ -114,7 +114,10 @@ fn paused_campaign(name: &str) -> Campaign {
         done_evidence: vec![DoneEvidence::Review {
             statement: "done".to_string(),
         }],
-        budget: CampaignBudget { max_cycles: 10 },
+        budget: CampaignBudget {
+            max_cycles: 10,
+            ..Default::default()
+        },
         escalation: vec![],
         status: CampaignStatus::Paused,
         cycles_completed: 3,
@@ -125,6 +128,7 @@ fn paused_campaign(name: &str) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        writable_repositories: vec![],
     }
 }
 
@@ -138,7 +142,10 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
         done_evidence: vec![DoneEvidence::Review {
             statement: "done".to_string(),
         }],
-        budget: CampaignBudget { max_cycles: 10 },
+        budget: CampaignBudget {
+            max_cycles: 10,
+            ..Default::default()
+        },
         escalation: vec!["budget limit".to_string()],
         status: CampaignStatus::Escalated,
         cycles_completed: 3,
@@ -165,6 +172,7 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
             },
         }),
         objective_history: vec![],
+        writable_repositories: vec![],
     }
 }
 

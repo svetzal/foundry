@@ -243,6 +243,13 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
         request: &'a AgentRequest,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
         Box::pin(async move {
+            if request.env.iter().any(|(k, _)| k == "FOUNDRY_WRITABLE_ROOT")
+                && self.adapter.provider() != AgentProvider::Codex
+            {
+                anyhow::bail!(
+                    "campaign repository isolation currently requires --agent codex; this provider cannot enforce the declared writable repository"
+                );
+            }
             let session_id = Uuid::new_v4().to_string();
             let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
 

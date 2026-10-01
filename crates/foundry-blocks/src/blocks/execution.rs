@@ -202,6 +202,16 @@ pub(crate) async fn execute_agent_block(
         None => None,
     };
     let pre_sha = capture_pre_execution_sha(shell, &project_path).await;
+    let limits = LoopContext::extract_from(ctx.payload).campaign_limits;
+    let mut env = execution_environment(ctx.workflow);
+    env.push(("FOUNDRY_AGENT_STAGE".into(), "execution".into()));
+    if let Some(campaign) = ctx.payload.get("campaign").and_then(serde_json::Value::as_str) {
+        env.push(("FOUNDRY_CAMPAIGN".into(), campaign.into()));
+        env.push(("FOUNDRY_WRITABLE_ROOT".into(), project_path.to_string_lossy().into()));
+    }
+    let timeout = limits.map_or(entry.timeout(), |l| {
+        entry.timeout().min(std::time::Duration::from_secs(l.execution_seconds))
+    });
     let outcome = invoke_coding_agent(
         agent,
         ctx.project,
@@ -210,8 +220,8 @@ pub(crate) async fn execute_agent_block(
             prompt,
             agent_file,
             provider,
-            env: execution_environment(ctx.workflow),
-            timeout: entry.timeout(),
+            env,
+            timeout,
             trace_id: ctx.trace_id.clone(),
         },
         ctx.label,

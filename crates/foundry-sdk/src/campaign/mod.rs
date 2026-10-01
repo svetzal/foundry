@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StoreError;
 use crate::payload::{LandBlocked, TaskRunCompletedPayload, TaskVerdict};
 
+pub mod report;
 pub mod transition;
 pub use transition::{Transition, TransitionError};
 
@@ -181,6 +182,9 @@ pub struct Campaign {
     pub intent_refs: Vec<String>,
     #[serde(default)]
     pub context_paths: Vec<String>,
+    /// Repository names licensed for writes. Empty means this project alone.
+    #[serde(default)]
+    pub writable_repositories: Vec<String>,
     #[serde(default)]
     pub done_evidence: Vec<DoneEvidence>,
     #[serde(default)]
@@ -216,16 +220,12 @@ pub struct Campaign {
     pub objective_history: Vec<CampaignCycle>,
 }
 
-/// How a campaign context path reaches formation.
-///
-/// The two are not interchangeable. A *binding* artifact is normative — its
-/// exact wording must survive into the acceptance criteria — so it is inlined
-/// verbatim. An *orienting* artifact only says where to look, and the formation
-/// agent already holds `Read`, `Glob`, and `Grep` over the checkout, so
-/// inlining one pays whole-file token cost for the few functions it needs.
+/// Semantic role of a campaign context path.
+/// Both roles are listed in the formation manifest and read selectively.
+/// Binding artifacts must retain their normative wording in acceptance criteria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextRole {
-    /// Inlined verbatim: the wording itself is binding.
+    /// The wording itself is binding when read.
     Binding,
     /// Listed as a path for the agent to read on demand.
     Orienting,
@@ -240,72 +240,36 @@ const ORIENTING_EXTENSIONS: &[&str] = &[
     "cpp", "hpp", "cs", "sh", "sql", "proto",
 ];
 
-/// Total bytes of *inlined* context a campaign may carry.
-///
-/// The hard ceiling is the platform's `ARG_MAX` (1 MiB on macOS), because every
-/// provider passes the prompt as a command-line argument — exceed it and
-/// `execve` fails before the agent starts, which surfaces only as an opaque
-/// "unavailable" that retries cannot help. This budget sits far below that,
-/// both to leave room for the rest of the prompt and because a formation
-/// decision made against a megabyte of inlined source is diluted long before it
-/// is impossible. Campaigns that landed well used 35–183 KB.
+/// Legacy upper bound for inline declarations. Stage budgets impose a smaller
+/// formation packet limit. Context file bodies are not included in that packet.
 pub const MAX_INLINE_CONTEXT_BYTES: u64 = 262_144;
 
-/// Reject a campaign whose *inlined* context is too large to form against.
-///
-/// Lives here rather than in either caller because both the CLI's `--offline`
-/// path and the daemon's `AddCampaign` RPC admit campaigns, and a budget
-/// enforced in only one of them is no budget at all — the daemon path is the
-/// default, so a check that lives only in the CLI never runs in practice.
-///
-/// Only binding artifacts count: source paths are listed for the agent to read
-/// on demand, so they cost nothing in the prompt. Returns the operator-facing
-/// message on rejection, for each caller to wrap in its own error type.
-///
-/// # Errors
-///
-/// Returns the rejection message when inlined context exceeds
-/// [`MAX_INLINE_CONTEXT_BYTES`].
+/// Reject oversized binding declarations before spending on formation.
+/// Context files remain on disk and are read selectively; their file sizes no
+/// longer count as prompt bytes. The full rendered packet is checked at runtime.
 pub fn check_inline_context_budget(campaign: &Campaign, repo: &Path) -> Result<(), String> {
-    let mut total = 0u64;
-    let mut largest: Vec<(u64, &str)> = Vec::new();
-    for context_path in &campaign.context_paths {
-        if context_role(context_path) != ContextRole::Binding {
-            continue;
-        }
-        let bytes = std::fs::metadata(repo.join(context_path)).map(|m| m.len()).map_err(|e| {
-            format!(
-                "campaign '{}' lists binding context path '{context_path}' that cannot be read: {e}. \
-                 Binding context is inlined verbatim at formation time, so an unreadable path fails \
-                 the run rather than shrinking the budget.",
-                campaign.name
-            )
-        })?;
-        total += bytes;
-        largest.push((bytes, context_path));
+    for path in &campaign.context_paths {
+        std::fs::metadata(repo.join(path))
+            .map_err(|e| format!("campaign context {path} cannot be read: {e}"))?;
     }
-    if total <= MAX_INLINE_CONTEXT_BYTES {
-        return Ok(());
+    let bytes = campaign.mission.len()
+        + campaign.owner_decisions.iter().map(|d| d.decision.len()).sum::<usize>()
+        + campaign.context_paths.iter().map(String::len).sum::<usize>();
+    let limit = campaign
+        .budget
+        .stages
+        .formation_prompt_bytes
+        .min(usize::try_from(MAX_INLINE_CONTEXT_BYTES).unwrap_or(usize::MAX));
+    if bytes > limit {
+        return Err(format!(
+            "campaign '{}' binding declarations contain {bytes} bytes, over the {limit}-byte formation budget; shorten the mission/decisions or raise budget.stages.formation_prompt_bytes",
+            campaign.name
+        ));
     }
-    largest.sort_by_key(|(bytes, _)| std::cmp::Reverse(*bytes));
-    let worst = largest
-        .iter()
-        .take(3)
-        .map(|(bytes, path)| format!("{path} ({bytes} bytes)"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(format!(
-        "campaign '{}' inlines {total} bytes of context, over the {MAX_INLINE_CONTEXT_BYTES}-byte budget. \
-         Formation is passed to the agent as a command-line argument, so oversized context fails the \
-         spawn outright rather than degrading. Largest: {worst}. Context paths carry binding wording \
-         that must reach the acceptance criteria — a charter or an intent projection. Anything the \
-         agent only needs to inspect can be dropped: it has Read, Glob, and Grep over the checkout, \
-         and source paths are already listed for it rather than inlined.",
-        campaign.name
-    ))
+    Ok(())
 }
 
-/// Whether a context path is inlined verbatim or listed for on-demand reading.
+/// Whether a context path contains binding requirements or orienting material.
 #[must_use]
 pub fn context_role(path: &str) -> ContextRole {
     let normalized = path.replace('\\', "/");
@@ -410,6 +374,15 @@ impl Campaign {
         if self.budget.max_cycles == 0 {
             anyhow::bail!("campaign '{}' max_cycles must be greater than zero", self.name);
         }
+        if !self.writable_repositories.is_empty()
+            && self.writable_repositories != [self.project.clone()]
+        {
+            anyhow::bail!(
+                "campaign writes must name only project {}; multi-repository isolation and landing are not supported",
+                self.project
+            );
+        }
+        self.budget.stages.validate()?;
         self.validate_required_gates_are_runnable()
     }
 
@@ -448,13 +421,52 @@ impl Campaign {
 pub struct CampaignBudget {
     #[serde(default = "default_max_cycles")]
     pub max_cycles: u64,
+    /// Agent time and formation context ceilings.
+    #[serde(default)]
+    pub stages: StageBudget,
 }
 
 impl Default for CampaignBudget {
     fn default() -> Self {
         Self {
             max_cycles: default_max_cycles(),
+            stages: StageBudget::default(),
         }
+    }
+}
+
+/// Per-stage limits in seconds and bytes. All must be positive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StageBudget {
+    pub formation_seconds: u64,
+    pub execution_seconds: u64,
+    pub review_seconds: u64,
+    pub formation_prompt_bytes: usize,
+}
+
+impl Default for StageBudget {
+    fn default() -> Self {
+        Self {
+            formation_seconds: 120,
+            execution_seconds: 1800,
+            review_seconds: 300,
+            formation_prompt_bytes: 16384,
+        }
+    }
+}
+
+impl StageBudget {
+    /// Reject limits that would disable a stage or its context.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.formation_seconds == 0
+            || self.execution_seconds == 0
+            || self.review_seconds == 0
+            || self.formation_prompt_bytes == 0
+        {
+            anyhow::bail!("campaign stage limits must all be greater than zero");
+        }
+        Ok(())
     }
 }
 
@@ -610,6 +622,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&path).unwrap();
@@ -688,6 +701,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 
@@ -949,6 +963,7 @@ mod tests {
             }],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         };
 
         let json = serde_json::to_value(&campaign).unwrap();
@@ -1014,9 +1029,8 @@ mod context_role_tests {
         }
     }
 
-    /// An extensionless file (LICENSE, Makefile) is prose until proven
-    /// otherwise — binding is the safe default, since omitting normative
-    /// wording is worse than inlining a small file.
+    /// Extensionless files default to binding material. Formation must inspect
+    /// their wording before deriving acceptance criteria.
     #[test]
     fn unknown_and_extensionless_paths_bind() {
         assert_eq!(context_role("LICENSE"), ContextRole::Binding);
@@ -1029,11 +1043,24 @@ mod context_role_tests {
         assert_eq!(context_role("src/Main.RS"), ContextRole::Orienting);
     }
 
-    /// The budget must stay well clear of the 1 MiB `ARG_MAX` that the whole
-    /// command line has to fit inside, since context is only one of its parts.
-    /// Checked at compile time so the constant can never drift into the cliff.
+    /// The legacy declaration ceiling stays conservative for providers that
+    /// still use argv. Codex receives its bounded prompt through stdin.
     #[test]
     fn inline_budget_leaves_room_for_the_rest_of_the_command_line() {
         const { assert!(MAX_INLINE_CONTEXT_BYTES < 1_048_576 / 2) };
+    }
+    #[test]
+    fn scope_and_stage_limits_are_admission_requirements() {
+        let mut campaign: super::Campaign = serde_json::from_value(serde_json::json!({
+            "name": "c", "project": "p", "mission": "ship",
+            "done_evidence": [{"kind": "gate", "command": "true", "required": true}]
+        }))
+        .unwrap();
+        campaign.writable_repositories = vec!["p".into(), "sibling".into()];
+        assert!(campaign.validate().unwrap_err().to_string().contains("multi-repository"));
+        campaign.writable_repositories = vec!["p".into()];
+        assert!(campaign.validate().is_ok());
+        campaign.budget.stages.formation_seconds = 0;
+        assert!(campaign.validate().is_err());
     }
 }

@@ -46,71 +46,37 @@ impl AdvanceCampaign {
     }
 }
 
-/// Build the context section: binding artifacts verbatim, orienting artifacts
-/// as a manifest the agent reads on demand.
-///
-/// Inlining every declared path put 1,032,392 bytes of mostly source into one
-/// campaign's prompt and pushed the whole command line past `ARG_MAX`, so the
-/// agent could not be spawned at all. The agent holds `Read`, `Glob`, and
-/// `Grep` over this same checkout, so a path is all it needs to reach a source
-/// file — and it then reads the part it wants rather than the whole file.
+/// Keep normative files available without copying them into every decision.
 fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
     let repo = repo.canonicalize()?;
-    let mut binding = Vec::new();
-    let mut orienting = Vec::new();
+    let mut lines = Vec::new();
     for relative in paths {
         let path = repo.join(relative).canonicalize()?;
         if !path.starts_with(&repo) {
             anyhow::bail!("campaign context path escapes project: {relative}");
         }
-        match foundry_sdk::campaign::context_role(relative) {
-            foundry_sdk::campaign::ContextRole::Binding => {
-                binding.push(format!("## {relative}\n{}", std::fs::read_to_string(&path)?));
-            }
-            foundry_sdk::campaign::ContextRole::Orienting => {
-                // Best-effort: unlike the binding-context path (admission-
-                // gated in `check_inline_context_budget`, which propagates on
-                // an unreadable file), this byte count is purely cosmetic —
-                // it only decorates the "read this yourself" manifest line,
-                // never affects the budget or the agent's ability to read
-                // the file itself.
-                let bytes = std::fs::metadata(&path).map_or_else(
-                    |e| {
-                        tracing::warn!(path = %path.display(), error = %e, "failed to stat orienting context file for manifest display");
-                        0
-                    },
-                    |m| m.len(),
-                );
-                orienting.push(format!("- {relative} ({bytes} bytes)"));
-            }
-        }
-    }
-
-    let mut sections = Vec::new();
-    if !binding.is_empty() {
-        sections.push(binding.join("\n\n"));
-    }
-    if !orienting.is_empty() {
-        sections.push(format!(
-            "## Declared source context — READ THESE YOURSELF\n\
-             Source and reference guides are listed, not inlined. Agent guidance still applies. \
-             You have Read, Glob, and Grep over this checkout: \
-             open the ones the decision actually turns on, and read the relevant part rather \
-             than the whole file. Read agent guidance before deciding unless it is already \
-             loaded. Listing a path never relaxes its requirements or owner policy.\n{}",
-            orienting.join("\n")
+        let bytes = std::fs::metadata(&path)?.len();
+        lines.push(format!(
+            "- {relative} ({bytes} bytes; read relevant contract sections before deciding)"
         ));
     }
-    Ok(sections.join("\n\n"))
+    Ok(format!(
+        "READ THESE YOURSELF; preserve normative wording and owner policy.\n{}",
+        lines.join("\n")
+    ))
 }
 
 async fn repo_snapshot(shell: &dyn ShellGateway, repo: &Path) -> String {
     let status = shell.run(repo, "git", &["status", "--short", "--branch"], None, None).await;
     let log = shell.run(repo, "git", &["log", "-8", "--oneline"], None, None).await;
+    let changed = shell
+        .run(repo, "git", &["show", "--format=", "--name-status", "HEAD"], None, None)
+        .await;
     format!(
-        "STATUS:\n{}\n\nRECENT COMMITS:\n{}",
+        "STATUS:\n{}\n\nRECENT COMMITS:\n{}\n\nLATEST COMMIT PATHS:\n{}",
         status.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
-        log.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))
+        log.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
+        changed.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))
     )
 }
 
@@ -342,7 +308,7 @@ fn decision_prompt(
     );
     let history = objective_history(campaign);
     super::with_single_turn_discipline(&format!(
-        "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate.\n\n\
+        "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate. You return a decision; the daemon dispatches it. Never invoke foundry task/campaign, probe localhost, or infer daemon availability from this sandbox. WRITABLE REPOSITORY: this project only; sibling repositories are read-only.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
          OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
@@ -374,7 +340,7 @@ fn decision_prompt(
 fn formation_gate_results(
     results: &[foundry_sdk::gates::GateResult],
 ) -> Vec<foundry_sdk::gates::GateResult> {
-    let mut remaining = 16 * 1024;
+    let mut remaining = 2 * 1024;
     results
         .iter()
         .map(|gate| {
@@ -382,7 +348,7 @@ fn formation_gate_results(
             compact.output = if gate.passed {
                 String::new()
             } else {
-                let limit = remaining.min(4 * 1024);
+                let limit = remaining.min(512);
                 let mut start = gate.output.len().saturating_sub(limit);
                 while !gate.output.is_char_boundary(start) {
                     start += 1;
@@ -497,7 +463,7 @@ impl DecisionRequest {
             effort: ReasoningEffort::Medium,
             agent_file: self.agent_file.clone(),
             provider: self.provider,
-            env: Vec::new(),
+            env: vec![("FOUNDRY_AGENT_STAGE".into(), "formation".into())],
             timeout: self.timeout,
             trace_id: self.trace_id.clone(),
             requires_json: true,
@@ -548,33 +514,38 @@ async fn ask_decision_agent(
     request: &DecisionRequest,
     project: &str,
 ) -> anyhow::Result<AdvanceOutcome> {
+    let deadline = tokio::time::Instant::now() + request.timeout;
     let mut diagnostics = Vec::new();
     let mut delay = DECISION_RETRY_DELAY;
     for attempt in 1..=DECISION_ATTEMPTS {
-        let (context, detail) =
-            match invoke_agent(agent, request.spec(), "campaign advance", project).await {
-                AgentOutcome::Success { stdout } => {
-                    return Ok(AdvanceOutcome::Decided(parse_decision(&stdout)?));
+        let mut spec = request.spec();
+        spec.timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if spec.timeout.is_zero() {
+            break;
+        }
+        let (context, detail) = match invoke_agent(agent, spec, "campaign advance", project).await {
+            AgentOutcome::Success { stdout } => {
+                return Ok(AdvanceOutcome::Decided(parse_decision(&stdout)?));
+            }
+            AgentOutcome::AgentFailed { stderr, failure } => {
+                if let Some(reason) = provider_outage_reason(failure.as_ref()) {
+                    return Ok(AdvanceOutcome::Pause { reason });
                 }
-                AgentOutcome::AgentFailed { stderr, failure } => {
-                    if let Some(reason) = provider_outage_reason(failure.as_ref()) {
-                        return Ok(AdvanceOutcome::Pause { reason });
-                    }
-                    let detail = failure
-                        .as_ref()
-                        .and_then(|metadata| metadata.message.as_ref())
-                        .filter(|message| !message.trim().is_empty())
-                        .cloned()
-                        .unwrap_or(stderr);
-                    if detail.to_ascii_lowercase().contains("model is not supported") {
-                        return Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                            reason: format!("campaign model configuration rejected: {detail}"),
-                        }));
-                    }
-                    ("failed", detail)
+                let detail = failure
+                    .as_ref()
+                    .and_then(|metadata| metadata.message.as_ref())
+                    .filter(|message| !message.trim().is_empty())
+                    .cloned()
+                    .unwrap_or(stderr);
+                if detail.to_ascii_lowercase().contains("model is not supported") {
+                    return Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
+                        reason: format!("campaign model configuration rejected: {detail}"),
+                    }));
                 }
-                AgentOutcome::Unavailable { error } => ("unavailable", error),
-            };
+                ("failed", detail)
+            }
+            AgentOutcome::Unavailable { error } => ("unavailable", error),
+        };
         let detail = if detail.trim().is_empty() {
             "no diagnostic output".to_string()
         } else {
@@ -658,10 +629,10 @@ fn execution_event(
         "prompt": objective,
         "campaign": campaign.name,
         "campaign_cycle": campaign.cycles_completed,
+        "campaign_limits": campaign.budget.stages,
     });
-    if let Some(agent) = &campaign.agent_provider {
-        payload["agent_provider"] = serde_json::json!(agent);
-    }
+    payload["agent_provider"] =
+        serde_json::json!(campaign.agent_provider.as_deref().unwrap_or("codex"));
     if let Some(reference) = base_ref {
         payload["base_ref"] = serde_json::json!(reference);
     }
@@ -812,6 +783,19 @@ fn update_run_and_forced_outcome(
             TaskVerdict::Complete | TaskVerdict::Remainder { .. } | TaskVerdict::Defect { .. } => {}
         }
     }
+    if campaign.cycles_completed >= campaign.budget.max_cycles
+        && request
+            .run_result
+            .as_ref()
+            .is_some_and(|r| !r.landed && !matches!(r.verdict, TaskVerdict::Complete))
+    {
+        return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
+            reason: format!(
+                "campaign cycle budget exhausted ({}) after an unlanded non-complete result",
+                campaign.budget.max_cycles
+            ),
+        }));
+    }
     None
 }
 
@@ -873,6 +857,16 @@ async fn derive_advance_outcome(
     request: &CampaignAdvanceRequestedPayload,
     trace_id: Option<String>,
 ) -> anyhow::Result<(AdvanceOutcome, FormationRecord)> {
+    campaign.validate()?;
+    if campaign
+        .agent_provider
+        .as_deref()
+        .is_some_and(|p| !p.eq_ignore_ascii_case("codex"))
+    {
+        anyhow::bail!(
+            "campaign repository isolation currently requires agent_provider codex; other providers do not enforce this writable scope"
+        );
+    }
     let repo = Path::new(&entry.path);
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
@@ -895,9 +889,19 @@ async fn derive_advance_outcome(
         provider: campaign
             .agent_provider
             .as_deref()
-            .and_then(|provider| super::parse_agent_provider(Some(provider))),
-        timeout: entry.timeout(),
+            .and_then(|provider| super::parse_agent_provider(Some(provider)))
+            .or(Some(AgentProvider::Codex)),
+        timeout: entry
+            .timeout()
+            .min(Duration::from_secs(campaign.budget.stages.formation_seconds)),
     };
+    if decision_request.prompt.len() > campaign.budget.stages.formation_prompt_bytes {
+        anyhow::bail!(
+            "formation prompt is {} bytes, above its {} byte stage budget; shorten mission/owner decisions or raise budget.stages.formation_prompt_bytes",
+            decision_request.prompt.len(),
+            campaign.budget.stages.formation_prompt_bytes
+        );
+    }
     let outcome = ask_decision_agent(agent, &decision_request, &campaign.project).await?;
     let record = FormationRecord {
         prompt: Some(decision_request.prompt),
@@ -1384,7 +1388,10 @@ mod tests {
             done_evidence: vec![DoneEvidence::Review {
                 statement: "shipped".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 2 },
+            budget: CampaignBudget {
+                max_cycles: 2,
+                ..Default::default()
+            },
             escalation: vec![],
             status: CampaignStatus::Active,
             cycles_completed: 2,
@@ -1395,6 +1402,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 
@@ -1488,6 +1496,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1567,6 +1576,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1654,6 +1664,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1731,6 +1742,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -1790,7 +1802,10 @@ mod tests {
             done_evidence: vec![DoneEvidence::Review {
                 statement: "shipped".to_string(),
             }],
-            budget: CampaignBudget { max_cycles: 6 },
+            budget: CampaignBudget {
+                max_cycles: 6,
+                ..Default::default()
+            },
             escalation: vec![],
             status: CampaignStatus::Active,
             cycles_completed: 2,
@@ -1801,6 +1816,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         }
     }
 
@@ -1971,7 +1987,10 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
-                budget: CampaignBudget { max_cycles: 3 },
+                budget: CampaignBudget {
+                    max_cycles: 3,
+                    ..Default::default()
+                },
                 status: CampaignStatus::Paused,
                 cycles_completed: 1,
                 ..campaign_for_accumulation_test()
@@ -2062,7 +2081,10 @@ mod tests {
                 done_evidence: vec![DoneEvidence::Review {
                     statement: "shipped".to_string(),
                 }],
-                budget: CampaignBudget { max_cycles: 3 },
+                budget: CampaignBudget {
+                    max_cycles: 3,
+                    ..Default::default()
+                },
                 escalation: vec![],
                 status: CampaignStatus::Active,
                 cycles_completed: 1,
@@ -2080,6 +2102,7 @@ mod tests {
                 }],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             })
             .unwrap();
         store.save(&store_path).unwrap();
@@ -2379,7 +2402,7 @@ mod tests {
     /// not be spawned at all. The agent holds `Read`/`Glob`/`Grep` over the same
     /// checkout, so a path is all it needs — and it reads the part it wants.
     #[tokio::test]
-    async fn source_context_is_listed_while_binding_context_is_inlined() {
+    async fn all_context_is_listed_without_copying_document_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
         std::fs::write(repo.join("CHARTER.md"), "BINDING-CHARTER-WORDING").unwrap();
@@ -2419,8 +2442,8 @@ mod tests {
 
         let prompt = &agent.invocations()[0].prompt;
         assert!(
-            prompt.contains("BINDING-CHARTER-WORDING"),
-            "binding context must still be inlined"
+            !prompt.contains("BINDING-CHARTER-WORDING"),
+            "contract files must be read selectively"
         );
         assert!(
             !prompt.contains("SOURCE-BODY"),
@@ -3115,5 +3138,55 @@ mod tests {
 
         assert!(events.is_empty());
         assert!(events.iter().all(|e| !format!("{e:?}").contains("unknown")));
+    }
+    #[tokio::test]
+    async fn exhausted_defect_invokes_neither_agent_nor_gates() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let mut store = CampaignStore::load(&store_path).unwrap();
+        let campaign = &mut store.campaigns[0];
+        campaign.cycles_completed = campaign.budget.max_cycles;
+        store.save(&store_path).unwrap();
+        let agent = FakeAgentGateway::success_with("should never be asked");
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let mut trigger = manual_advance_trigger();
+        trigger.payload["run_event_id"] = serde_json::json!("defect-result");
+        trigger.payload["run_result"] = serde_json::json!({
+            "project":"p", "success":false, "landed":false, "summary":"rejected",
+            "verdict":"defect", "diagnosis":"marker checks", "trunk_arrivals":[]
+        });
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(agent.invocations().is_empty());
+        assert!(
+            terminal_reason(&result, &EventType::CampaignEscalated).contains("budget exhausted")
+        );
+        let completed = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::CampaignAdvanceCompleted)
+            .unwrap();
+        assert!(
+            completed
+                .parse_payload::<CampaignAdvanceCompletedPayload>()
+                .unwrap()
+                .gate_results
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_budget_rejects_before_agent_invocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let mut store = CampaignStore::load(&store_path).unwrap();
+        store.campaigns[0].budget.stages.formation_prompt_bytes = 128;
+        store.save(&store_path).unwrap();
+        let agent = FakeAgentGateway::success_with("should never be asked");
+        let block =
+            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+        assert!(agent.invocations().is_empty());
+        assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("stage budget"));
     }
 }

@@ -148,6 +148,117 @@ fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::Gate
     render_review_prompt(&truncated_objective, &gates)
 }
 
+fn early_review_payload(
+    project: &str,
+    objective: String,
+    gate_results: Vec<foundry_sdk::gates::GateResult>,
+    context: LoopContext,
+    verdict: TaskVerdict,
+    review: String,
+) -> TaskReviewedPayload {
+    TaskReviewedPayload {
+        project: project.into(),
+        objective,
+        gate_results,
+        context,
+        verdict,
+        review,
+    }
+}
+
+fn review_objective(context: &LoopContext) -> String {
+    context
+        .prompt
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Check evidence shape cheaply; the skeptical reviewer checks its meaning.
+fn proof_error(repo: &std::path::Path) -> Option<String> {
+    let path = repo.join(".foundry/proof.json");
+    let check = || -> anyhow::Result<()> {
+        let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let kind = value["kind"].as_str().ok_or_else(|| anyhow::anyhow!("missing proof kind"))?;
+        match kind {
+            "behavioral" => {
+                if value["source_change"].as_str().is_none_or(|s| s.trim().is_empty()) {
+                    anyhow::bail!("behavioral proof requires source_change");
+                }
+                validate_probe(repo, &value["rejecting"], false)?;
+            }
+            "direct" if value["reason"].as_str().is_some_and(|s| !s.trim().is_empty()) => {}
+            _ => anyhow::bail!(
+                "proof kind must be behavioral, or direct with a non-behavioral reason"
+            ),
+        }
+        validate_probe(repo, &value["corrected"], true)
+    };
+    check().err().map(|e| {
+        format!("invalid or missing early acceptance evidence at .foundry/proof.json: {e}")
+    })
+}
+
+fn validate_probe(
+    repo: &std::path::Path,
+    probe: &serde_json::Value,
+    passing: bool,
+) -> anyhow::Result<()> {
+    let code = probe["exit_code"]
+        .as_i64()
+        .ok_or_else(|| anyhow::anyhow!("probe requires actual exit_code"))?;
+    if (code == 0) != passing {
+        anyhow::bail!("probe exit code does not establish the required result");
+    }
+    if probe["command"].as_str().is_none_or(|s| s.trim().is_empty()) {
+        anyhow::bail!("probe requires command");
+    }
+    let log = probe["log"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("probe requires full log path"))?;
+    if !repo.join(log).is_file() {
+        anyhow::bail!("probe log is missing: {log}");
+    }
+    Ok(())
+}
+
+fn task_review_prompt(
+    objective: &str,
+    results: &[foundry_sdk::gates::GateResult],
+    campaign: bool,
+) -> String {
+    let mut prompt = build_review_prompt(objective, results);
+    if campaign {
+        prompt.push_str("\nInspect .foundry/proof.json and its logs: verify the earliest acceptance probe exercised the hardest real boundary before broad expansion. Reject missing evidence, invented results, marker toggles, or failure cases unrelated to the objective. A documented non-behavioral objective may use a direct acceptance probe instead of red/green.");
+    }
+    prompt
+}
+
+fn campaign_proof_review(
+    directory: &std::path::Path,
+    throttle: Throttle,
+    context: &LoopContext,
+    objective: &str,
+    project: &str,
+    results: &[foundry_sdk::gates::GateResult],
+) -> Option<TaskReviewedPayload> {
+    if context.campaign_limits.is_none() || throttle == Throttle::DryRun {
+        return None;
+    }
+    let reason = proof_error(directory)?;
+    Some(early_review_payload(
+        project,
+        objective.into(),
+        results.to_vec(),
+        context.clone(),
+        TaskVerdict::Defect {
+            diagnosis: reason.clone(),
+        },
+        reason,
+    ))
+}
+
 impl TaskBlock for ReviewTask {
     task_block_meta! {
         name: "Review Task",
@@ -170,12 +281,7 @@ impl TaskBlock for ReviewTask {
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
         let context = LoopContext::extract_from(&payload);
-        let objective = context
-            .prompt
-            .as_ref()
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        let objective = review_objective(&context);
         if let Some(reason) = p.failure.needs_review.clone() {
             // Domain skip: see `stop_for_review`.
             let reviewed = needs_review_payload(&project, objective, reason, p.results, context);
@@ -185,27 +291,31 @@ impl TaskBlock for ReviewTask {
             Some(worktree) => PathBuf::from(worktree),
             None if throttle == Throttle::DryRun => PathBuf::from(&entry.path),
             None => {
-                return Box::pin(async move {
-                    let detail = "task review missing isolated worktree".to_string();
-                    super::emit_event_result(
-                        format!("{project}: {detail}"),
-                        false,
-                        EventType::TaskReviewed,
-                        &project,
-                        throttle,
-                        &TaskReviewedPayload {
-                            project: project.clone(),
-                            objective,
-                            review: detail.clone(),
-                            gate_results: p.results,
-                            verdict: TaskVerdict::RunnerError { detail },
-                            context,
-                        },
-                    )
-                });
+                let detail = "task review missing isolated worktree".to_string();
+                let reviewed = early_review_payload(
+                    &project,
+                    objective,
+                    p.results,
+                    context,
+                    TaskVerdict::RunnerError {
+                        detail: detail.clone(),
+                    },
+                    detail,
+                );
+                return stop_for_review(project, throttle, reviewed);
             }
         };
-        let prompt = build_review_prompt(&objective, &p.results);
+        if let Some(reviewed) = campaign_proof_review(
+            &working_dir,
+            throttle,
+            &context,
+            &objective,
+            &project,
+            &p.results,
+        ) {
+            return stop_for_review(project, throttle, reviewed);
+        }
+        let prompt = task_review_prompt(&objective, &p.results, context.campaign.is_some());
         let provider = super::chain_agent_provider(&payload);
 
         Box::pin(async move {
@@ -219,8 +329,10 @@ impl TaskBlock for ReviewTask {
                     effort: ReasoningEffort::High,
                     agent_file: super::resolve_agent_file(&entry.agent),
                     provider,
-                    env: Vec::new(),
-                    timeout: entry.timeout(),
+                    env: vec![("FOUNDRY_AGENT_STAGE".into(), "review".into())],
+                    timeout: context.campaign_limits.as_ref().map_or(entry.timeout(), |l| {
+                        entry.timeout().min(std::time::Duration::from_secs(l.review_seconds))
+                    }),
                     trace_id: trace_id.clone(),
                     requires_json: true,
                 },
@@ -351,6 +463,24 @@ mod tests {
         let payload = &result.events[0].payload;
         assert_eq!(payload["verdict"], "blocked_on_decision");
         assert_eq!(payload["finding"], reason);
+    }
+    #[tokio::test]
+    async fn missing_campaign_proof_stops_before_a_paid_review() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::{event::EventType, task_block::TaskBlock};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with("unused");
+        let block = super::ReviewTask::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+            "project":"p", "workflow":"task", "all_passed":true,
+            "required_passed":true, "results":[], "retry_count":0,
+            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
+        });
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(agent.invocations().is_empty());
+        assert_eq!(result.events[0].payload["verdict"], "defect");
+        assert!(result.events[0].payload["diagnosis"].as_str().unwrap().contains("proof.json"));
     }
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::TaskVerdict;
@@ -554,5 +684,26 @@ mod tests {
         let capped = super::cap_tail_bytes(s, 2);
         assert!(capped.is_char_boundary(capped.len() - 2));
         assert!(String::from_utf8(capped.into_bytes()).is_ok());
+    }
+    #[test]
+    fn early_proof_needs_actual_rejection_correction_and_existing_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(super::proof_error(dir.path()).is_some());
+        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        std::fs::write(dir.path().join("reject.log"), "assertion failed").unwrap();
+        std::fs::write(dir.path().join("pass.log"), "assertion passed").unwrap();
+        let mut proof = serde_json::json!({"kind":"behavioral", "source_change":"src/core.rs",
+            "rejecting":{"command":"test core","exit_code":1,"log":"reject.log"},
+            "corrected":{"command":"test core","exit_code":0,"log":"pass.log"}});
+        let path = dir.path().join(".foundry/proof.json");
+        std::fs::write(&path, proof.to_string()).unwrap();
+        assert!(super::proof_error(dir.path()).is_none());
+        proof["rejecting"]["exit_code"] = serde_json::json!(0);
+        std::fs::write(&path, proof.to_string()).unwrap();
+        assert!(super::proof_error(dir.path()).is_some());
+        proof["rejecting"]["exit_code"] = serde_json::json!(1);
+        proof["corrected"]["log"] = serde_json::json!("absent.log");
+        std::fs::write(&path, proof.to_string()).unwrap();
+        assert!(super::proof_error(dir.path()).is_some());
     }
 }

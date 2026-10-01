@@ -210,7 +210,7 @@ async fn generated_client_add_unknown_project_returns_failed_precondition_and_no
 /// how a 347,694-byte definition was accepted after the guard was added to the
 /// CLI alone.
 #[tokio::test]
-async fn generated_client_add_rejects_context_over_the_inline_budget() {
+async fn generated_client_add_rejects_mission_over_the_prompt_budget() {
     let repo_root = tempfile::tempdir().expect("repo tempdir");
     let huge = "x".repeat(
         usize::try_from(foundry_sdk::campaign::MAX_INLINE_CONTEXT_BYTES + 1).expect("fits usize"),
@@ -223,14 +223,18 @@ async fn generated_client_add_rejects_context_over_the_inline_budget() {
     let mut client = FoundryClient::connect(addr).await.expect("connect");
     let err = client
         .add_campaign(AddCampaignRequest {
-            definition_json: "{\"name\":\"alpha\",\"project\":\"daemon-project\",\"mission\":\"Mission\",\"context_paths\":[\"HUGE.md\"],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"done\"}]}".to_string(),
+            definition_json: serde_json::json!({"name":"alpha", "project":"daemon-project", "mission":huge, "context_paths":["HUGE.md"], "done_evidence":[{"kind":"review", "statement":"done"}]}).to_string(),
         })
         .await
         .expect_err("oversized inline context must fail");
 
     assert_eq!(err.code(), Code::FailedPrecondition);
     assert!(err.message().contains("over the"), "must name the budget: {}", err.message());
-    assert!(err.message().contains("HUGE.md"), "must name the offender: {}", err.message());
+    assert!(
+        err.message().contains("prompt"),
+        "must name the prompt budget: {}",
+        err.message()
+    );
     assert!(
         !err.message().contains(&tmp_campaigns.path().display().to_string()),
         "must not leak the store path"

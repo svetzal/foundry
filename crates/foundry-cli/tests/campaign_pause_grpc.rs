@@ -90,7 +90,7 @@ fn make_service_with_campaigns_path(
     };
     let stores = StoreConfig {
         work_items_path: std::path::PathBuf::new(),
-        events_dir: std::path::PathBuf::new(),
+        events_dir: tmp_traces.path().join("events"),
         campaigns_path,
         registry_path,
         sentinels,
@@ -133,7 +133,10 @@ fn active_campaign(name: &str) -> Campaign {
         done_evidence: vec![DoneEvidence::Review {
             statement: "done".to_string(),
         }],
-        budget: CampaignBudget { max_cycles: 10 },
+        budget: CampaignBudget {
+            max_cycles: 10,
+            ..Default::default()
+        },
         escalation: vec![],
         status: CampaignStatus::Active,
         cycles_completed: 0,
@@ -144,6 +147,7 @@ fn active_campaign(name: &str) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        writable_repositories: vec![],
     }
 }
 
@@ -384,4 +388,37 @@ async fn online_pause_renders_from_rpc_response_not_from_cli_side_file() {
         "rendered output must NOT contain the CLI-side file mission '{cli_file_mission}' \
         (disk re-read regression); got: {rendered:?}"
     );
+}
+
+#[tokio::test]
+async fn campaign_report_reads_daemon_events_through_generated_client() {
+    let (service, campaigns_file, traces) = make_service();
+    seed_campaign(&campaigns_file, active_campaign("reported"));
+    let events = traces.path().join("events");
+    std::fs::create_dir(&events).unwrap();
+    let rows = [
+        serde_json::json!({"trace_id":"campaign-trace","payload":{"campaign":"reported"}}),
+        serde_json::json!({"event_type":"agent_session_started","project":"test-project","trace_id":"campaign-trace", "payload":{"session_id":"measured","stage":"formation"}}),
+        serde_json::json!({"event_type":"agent_session_ended","project":"test-project", "payload":{"session_id":"measured", "usage":{"models":[{"input_tokens":21,"cache_read_tokens":34,"output_tokens":5}]}}}),
+    ];
+    std::fs::write(
+        events.join("2026-09.jsonl"),
+        rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n") + "\n",
+    )
+    .unwrap();
+    let addr = start_server(service).await;
+    let mut client =
+        foundry_cli::proto::foundry_client::FoundryClient::connect(addr).await.unwrap();
+    let reply = client
+        .get_campaign_report(foundry_cli::proto::GetCampaignRequest {
+            name: "reported".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let report: foundry_sdk::campaign::report::CampaignReport =
+        serde_json::from_str(&reply.report_json).unwrap();
+    assert_eq!(report.stages["formation"].input_tokens, 21);
+    assert_eq!(report.stages["formation"].cached_input_tokens, 34);
+    assert_eq!(report.name, "reported");
 }

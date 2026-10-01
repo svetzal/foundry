@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod campaign_commands;
+mod capture_commands;
 mod commands;
 mod daemon;
 mod event_commands;
@@ -75,6 +76,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run a command with full logs and bounded output (example: foundry capture -- cargo test)
+    Capture {
+        #[arg(long)]
+        log_dir: Option<std::path::PathBuf>,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Emit an event into the system
     Emit {
         /// Event type (e.g., `vulnerability_detected`)
@@ -295,6 +303,12 @@ enum CampaignCommands {
     List,
     /// Show one campaign
     Show { name: String },
+    /// Show stage time, token usage, and external completion (example: foundry campaign report atlas --json)
+    Report {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Derive and dispatch one next objective from live state
     Advance {
         name: String,
@@ -780,6 +794,9 @@ async fn handle_campaign_command(
             )
             .await
         }
+        CampaignCommands::Report { name, json } => {
+            campaign_commands::report(campaigns_path, addr, offline, &name, json).await
+        }
         CampaignCommands::List => campaign_commands::list(campaigns_path, addr, offline).await,
         CampaignCommands::Show { name } => {
             campaign_commands::show(campaigns_path, addr, offline, &name).await
@@ -829,6 +846,7 @@ async fn main() -> Result<()> {
     );
 
     match cli.command {
+        Commands::Capture { log_dir, command } => capture_commands::run(log_dir, command).await,
         Commands::Emit {
             event_type,
             project,

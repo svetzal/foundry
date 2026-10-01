@@ -180,7 +180,10 @@ impl TaskBlock for ExecutePlan {
             let plan = &plan_payload.plan;
             let principle = &plan_payload.principle;
             let gates = plan_payload.chain.gates.as_ref();
-            let prompt = build_execution_prompt(&project, plan, principle, gates);
+            let mut prompt = build_execution_prompt(&project, plan, principle, gates);
+            if execution_payload.get("campaign").is_some() {
+                prompt.push_str("\n\nPROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the real boundary. Observe its rejecting case and corrected passing case. Record .foundry/proof.json with kind=behavioral, source_change, and rejecting/corrected objects (command, exit_code, log). Each log must exist; rejecting must be nonzero and corrected zero. A marker toggle or count-only test is insufficient. For non-behavioral objectives use kind=direct with reason and a corrected object containing the smallest passing acceptance probe instead. The reviewer must inspect this evidence. WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.");
+            }
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),
                 project: &project,

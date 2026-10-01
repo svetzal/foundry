@@ -17,6 +17,9 @@ pub struct AgentSessionStartedPayload {
     pub working_dir: std::path::PathBuf,
     pub source_log_path: std::path::PathBuf,
     pub tier: String,
+    /// Explicit orchestration stage; absent on older sessions.
+    #[serde(default)]
+    pub stage: String,
     /// The reasoning effort the block requested.
     pub effort: String,
     /// The reasoning effort the session actually runs at, after the provider's

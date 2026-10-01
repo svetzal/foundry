@@ -12,19 +12,20 @@ use foundry_sdk::sentinel::SentinelStore;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    CancelCampaignRequest, CancelCampaignResponse, CancelWorkItemRequest, CancelWorkItemResponse,
-    CloseWorkItemRequest, CloseWorkItemResponse, CompleteCampaignRequest, CompleteCampaignResponse,
-    DecideCampaignRequest, DecideCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest,
-    GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse, HistoryRequest, HistoryResponse,
-    ListCampaignsRequest, ListCampaignsResponse, ListWorkItemEventsRequest,
-    ListWorkItemEventsResponse, ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest,
-    PauseCampaignResponse, RegistryAddRequest, RegistryAddResponse, RegistryEditRequest,
-    RegistryEditResponse, RegistryListRequest, RegistryListResponse, RegistryRemoveRequest,
-    RegistryRemoveResponse, RegistryShowRequest, RegistryShowResponse, ResumeCampaignRequest,
-    ResumeCampaignResponse, SentinelDisableRequest, SentinelDisableResponse, SentinelEnableRequest,
-    SentinelEnableResponse, SentinelListRequest, SentinelListResponse, SentinelShowRequest,
-    SentinelShowResponse, SpanRequest, SpanResponse, StatusRequest, StatusResponse, TraceRequest,
-    TraceResponse, WatchRequest, WatchResponse, foundry_server::Foundry,
+    CampaignReportResponse, CancelCampaignRequest, CancelCampaignResponse, CancelWorkItemRequest,
+    CancelWorkItemResponse, CloseWorkItemRequest, CloseWorkItemResponse, CompleteCampaignRequest,
+    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
+    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse,
+    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
+    ListWorkItemEventsRequest, ListWorkItemEventsResponse, ListWorkItemsRequest,
+    ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
+    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
+    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
+    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
+    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest,
+    SentinelListResponse, SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse,
+    StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
+    foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
 use crate::workflow_tracker::{ActiveWorkflow, WorkflowTracker};
@@ -261,6 +262,30 @@ impl Foundry for FoundryService {
         request: Request<GetCampaignRequest>,
     ) -> Result<Response<GetCampaignResponse>, Status> {
         campaign_ops::get(&self.campaigns_path, request)
+    }
+
+    async fn get_campaign_report(
+        &self,
+        request: Request<GetCampaignRequest>,
+    ) -> Result<Response<CampaignReportResponse>, Status> {
+        let name = request.into_inner().name;
+        let campaigns = self.campaigns_path.clone();
+        let events = self.events_dir.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            let store = foundry_sdk::campaign::CampaignStore::load(&campaigns)
+                .map_err(|e| Status::internal(e.to_string()))?;
+            let campaign = store
+                .find(&name)
+                .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+            foundry_sdk::campaign::report::read_report(campaign, &events)
+                .map_err(|e| Status::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))??;
+        Ok(Response::new(CampaignReportResponse {
+            report_json: serde_json::to_string(&report)
+                .map_err(|e| Status::internal(e.to_string()))?,
+        }))
     }
 
     async fn pause_campaign(
@@ -1483,7 +1508,10 @@ mod tests {
                     statement: "Human reviewer signed off.".to_string(),
                 },
             ],
-            budget: CampaignBudget { max_cycles: 10 },
+            budget: CampaignBudget {
+                max_cycles: 10,
+                ..Default::default()
+            },
             escalation: vec!["Escalate to team lead.".to_string()],
             status: CampaignStatus::Active,
             cycles_completed: 4,
@@ -1494,6 +1522,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            writable_repositories: vec![],
         };
         let store = CampaignStore {
             version: 1,
@@ -1556,7 +1585,10 @@ mod tests {
                 done_evidence: vec![DoneEvidence::Review {
                     statement: "ok".to_string(),
                 }],
-                budget: CampaignBudget { max_cycles: 3 },
+                budget: CampaignBudget {
+                    max_cycles: 3,
+                    ..Default::default()
+                },
                 escalation: vec![],
                 status: CampaignStatus::Staged,
                 cycles_completed: 0,
@@ -1567,6 +1599,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                writable_repositories: vec![],
             }],
         };
         store.save(tmp.path()).expect("save");
