@@ -1,0 +1,14 @@
+{
+  "kind": "behavioral",
+  "source_change": "review_task.rs accepts path arrays and diagnoses wrong types; workspace.rs excludes new .foundry files while retaining tracked paths; finalize_task.rs archives early proof and exposes proof_evidence.",
+  "rejecting": {
+    "command": "cargo test -p foundry-blocks early_proof -- --nocapture (previous proof and commit implementations restored temporarily)",
+    "exit_code": 101,
+    "log": ".foundry/logs/rejecting.log"
+  },
+  "corrected": {
+    "command": "cargo test -p foundry-blocks early_proof -- --nocapture",
+    "exit_code": 0,
+    "log": ".foundry/logs/corrected.log"
+  }
+}

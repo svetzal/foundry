@@ -1,0 +1,12 @@
+
+running 4 tests
+test blocks::review_task::tests::early_proof_accepts_source_path_arrays ... ok
+test blocks::review_task::tests::early_proof_needs_actual_rejection_correction_and_existing_logs ... ok
+test blocks::review_task::tests::early_proof_names_wrong_field_types ... ok
+test blocks::finalize_task::tests::early_proof_artifacts_stay_out_of_trunk_and_remain_retrievable ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1288 filtered out; finished in 0.26s
+
+   Compiling foundry-blocks v0.41.0 (/home/svetzal/.foundry/worktrees/foundry/328cdfcc7eb3/crates/foundry-blocks)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.24s
+     Running unittests src/lib.rs (target/debug/deps/foundry_blocks-698d3802162e12ab)

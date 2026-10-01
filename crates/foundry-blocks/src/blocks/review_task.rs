@@ -180,43 +180,93 @@ fn proof_error(repo: &std::path::Path) -> Option<String> {
     let path = repo.join(".foundry/proof.json");
     let check = || -> anyhow::Result<()> {
         let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-        let kind = value["kind"].as_str().ok_or_else(|| anyhow::anyhow!("missing proof kind"))?;
+        require_object(&value, "proof")?;
+        let kind = require_string(&value["kind"], "kind")?;
         match kind {
             "behavioral" => {
-                if value["source_change"].as_str().is_none_or(|s| s.trim().is_empty()) {
-                    anyhow::bail!("behavioral proof requires source_change");
+                let source_change = match &value["source_change"] {
+                    serde_json::Value::Array(paths)
+                        if !paths.is_empty()
+                            && paths
+                                .iter()
+                                .all(|p| p.as_str().is_some_and(|s| !s.trim().is_empty())) =>
+                    {
+                        paths
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                    other => require_string(other, "source_change")?.to_owned(),
+                };
+                if source_change.trim().is_empty() {
+                    anyhow::bail!("behavioral proof requires non-empty source_change");
                 }
-                validate_probe(repo, &value["rejecting"], false)?;
+                validate_probe(repo, &value["rejecting"], "rejecting", false)?;
             }
-            "direct" if value["reason"].as_str().is_some_and(|s| !s.trim().is_empty()) => {}
+            "direct" => {
+                if require_string(&value["reason"], "reason")?.trim().is_empty() {
+                    anyhow::bail!("direct proof requires a non-behavioral reason");
+                }
+            }
             _ => anyhow::bail!(
                 "proof kind must be behavioral, or direct with a non-behavioral reason"
             ),
         }
-        validate_probe(repo, &value["corrected"], true)
+        validate_probe(repo, &value["corrected"], "corrected", true)
     };
     check().err().map(|e| {
         format!("invalid or missing early acceptance evidence at .foundry/proof.json: {e}")
     })
 }
 
+fn json_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn require_string<'a>(value: &'a serde_json::Value, field: &str) -> anyhow::Result<&'a str> {
+    value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("{field} must be a string, found {}", json_type(value)))
+}
+
+fn require_object(value: &serde_json::Value, field: &str) -> anyhow::Result<()> {
+    if !value.is_object() {
+        anyhow::bail!("{field} must be an object, found {}", json_type(value));
+    }
+    Ok(())
+}
+
 fn validate_probe(
     repo: &std::path::Path,
     probe: &serde_json::Value,
+    field: &str,
     passing: bool,
 ) -> anyhow::Result<()> {
-    let code = probe["exit_code"]
-        .as_i64()
-        .ok_or_else(|| anyhow::anyhow!("probe requires actual exit_code"))?;
+    require_object(probe, field)?;
+    let code = probe["exit_code"].as_i64().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{field}.exit_code must be an integer, found {}",
+            json_type(&probe["exit_code"])
+        )
+    })?;
     if (code == 0) != passing {
         anyhow::bail!("probe exit code does not establish the required result");
     }
-    if probe["command"].as_str().is_none_or(|s| s.trim().is_empty()) {
+    if require_string(&probe["command"], &format!("{field}.command"))?
+        .trim()
+        .is_empty()
+    {
         anyhow::bail!("probe requires command");
     }
-    let log = probe["log"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("probe requires full log path"))?;
+    let log = require_string(&probe["log"], &format!("{field}.log"))?;
     if !repo.join(log).is_file() {
         anyhow::bail!("probe log is missing: {log}");
     }
@@ -706,5 +756,57 @@ mod tests {
         proof["corrected"]["log"] = serde_json::json!("absent.log");
         std::fs::write(&path, proof.to_string()).unwrap();
         assert!(super::proof_error(dir.path()).is_some());
+    }
+    #[test]
+    fn early_proof_accepts_source_path_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        std::fs::write(dir.path().join("probe.log"), "actual probe output").unwrap();
+        let proof = serde_json::json!({"kind":"behavioral", "source_change":["src/core.rs", "tests/core.rs"],
+            "rejecting":{"command":"test core","exit_code":1,"log":"probe.log"},
+            "corrected":{"command":"test core","exit_code":0,"log":"probe.log"}});
+        let path = dir.path().join(".foundry/proof.json");
+        std::fs::write(&path, proof.to_string()).unwrap();
+        assert_eq!(super::proof_error(dir.path()), None);
+    }
+
+    #[test]
+    fn early_proof_names_wrong_field_types() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        std::fs::write(dir.path().join("probe.log"), "actual probe output").unwrap();
+        let mut proof = serde_json::json!({"kind":"behavioral", "source_change":"src/core.rs",
+            "rejecting":{"command":"test core","exit_code":1,"log":"probe.log"},
+            "corrected":{"command":"test core","exit_code":0,"log":"probe.log"}});
+        let path = dir.path().join(".foundry/proof.json");
+        for (value, expected) in [
+            (serde_json::json!(42), "number"),
+            (serde_json::json!({}), "object"),
+        ] {
+            proof["source_change"] = value;
+            std::fs::write(&path, proof.to_string()).unwrap();
+            assert!(
+                super::proof_error(dir.path())
+                    .unwrap()
+                    .ends_with(&format!("source_change must be a string, found {expected}"))
+            );
+        }
+        for invalid in [
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!(["src/core.rs", 42]),
+        ] {
+            proof["source_change"] = invalid;
+            std::fs::write(&path, proof.to_string()).unwrap();
+            assert!(super::proof_error(dir.path()).is_some());
+        }
+        proof["source_change"] = serde_json::json!("src/core.rs");
+        proof["corrected"] = serde_json::json!([]);
+        std::fs::write(&path, proof.to_string()).unwrap();
+        assert!(
+            super::proof_error(dir.path())
+                .unwrap()
+                .ends_with("corrected must be an object, found array")
+        );
     }
 }

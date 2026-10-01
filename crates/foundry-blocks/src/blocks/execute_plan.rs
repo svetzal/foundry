@@ -14,6 +14,27 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
+const EARLY_PROOF_PROMPT: &str = r#"
+
+PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the real boundary. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
+Record .foundry/proof.json with this exact behavioral shape:
+{
+  "kind": "behavioral",
+  "source_change": "src/core.rs: describe the source/input change",
+  "rejecting": {"command": "test command", "exit_code": 1, "log": ".foundry/logs/rejecting.log"},
+  "corrected": {"command": "test command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+}
+source_change is a single non-empty string. rejecting and corrected are top-level objects. Each log must exist; rejecting must be nonzero and corrected zero. Record actual probe exit codes.
+For a non-behavioral objective, use this exact direct shape with the smallest passing acceptance probe:
+{
+  "kind": "direct",
+  "reason": "Explain why this objective is non-behavioral",
+  "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+}
+Validate the file's JSON, field types, actual exit codes, and existence of each log before finishing. The reviewer must inspect this evidence.
+WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
+"#;
+
 agent_execution_block! {
     /// Applies the correction plan to the project.
     ///
@@ -162,6 +183,7 @@ impl TaskBlock for ExecutePlan {
                                 summary: error.to_string(),
                                 preservation_ref: None,
                                 land_blocked: None,
+                                proof_evidence: None,
                                 trunk_arrivals: Vec::new(),
                                 verdict: TaskVerdict::RunnerError {
                                     detail: error.to_string(),
@@ -182,7 +204,7 @@ impl TaskBlock for ExecutePlan {
             let gates = plan_payload.chain.gates.as_ref();
             let mut prompt = build_execution_prompt(&project, plan, principle, gates);
             if execution_payload.get("campaign").is_some() {
-                prompt.push_str("\n\nPROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the real boundary. Observe its rejecting case and corrected passing case. Record .foundry/proof.json with kind=behavioral, source_change, and rejecting/corrected objects (command, exit_code, log). Each log must exist; rejecting must be nonzero and corrected zero. A marker toggle or count-only test is insufficient. For non-behavioral objectives use kind=direct with reason and a corrected object containing the smallest passing acceptance probe instead. The reviewer must inspect this evidence. WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.");
+                prompt.push_str(EARLY_PROOF_PROMPT);
             }
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),

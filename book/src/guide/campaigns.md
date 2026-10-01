@@ -308,8 +308,39 @@ rejecting case and the corrected passing case in `.foundry/proof.json`:
 }
 ```
 
-For a non-behavioral objective, use `kind: "direct"`, a `reason`, and a passing
-`corrected` probe. New campaign tasks fail with a typed defect if the record is
+Write `source_change` as a single non-empty string. For compatibility, a
+non-empty array of non-empty strings is interpreted as their joined text.
+`rejecting` and `corrected` are top-level objects. Validate the file's JSON,
+field types, actual exit codes, and log paths before finishing.
+
+For a non-behavioral objective, use this direct shape:
+
+```json
+{
+  "kind": "direct",
+  "reason": "Explain why this objective is non-behavioral",
+  "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+}
+```
+
+Review reads the worktree proof before finalization. Before committing,
+Foundry copies the proof and named logs into
+`~/.foundry/evidence/<trace-id>/<unique-attempt>/` (event id when no trace is
+present). The task result's `proof_evidence` field records that directory for
+later audits. `original-proof.json` retains the exact submitted bytes;
+`proof.json` uses relative paths to copied `rejecting.log` and `corrected.log`,
+so the archive is readable after worktree removal. Malformed proofs and absent
+logs remain failed evidence; archival never invents results. An archival I/O
+failure stops finalization before committing or cleanup.
+
+New files under the worktree's `.foundry` directory are excluded from the task
+commit, including accidentally staged proof and raw build logs. Files already
+tracked in HEAD remain project content: their modifications and deletions are
+committed normally. After archival and committing, excluded artifacts are
+removed so the worktree can be cleaned up; tracked `.foundry` content is left
+alone. Keep durable project configuration tracked explicitly.
+
+New campaign tasks fail with a typed defect if the record is
 missing, malformed, or refers to absent logs. This check spends no reviewer
 session. The independent reviewer checks the source, logs, ordering, and whether
 the probe proves the intended behavior. Schema checks alone cannot establish

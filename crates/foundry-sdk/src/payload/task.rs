@@ -151,6 +151,9 @@ pub struct TaskRunCompletedPayload {
     /// when trunk did not move.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trunk_arrivals: Vec<TrunkArrival>,
+    /// Durable directory holding early acceptance proof and its copied logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_evidence: Option<String>,
     #[serde(flatten)]
     pub verdict: TaskVerdict,
     #[serde(flatten)]
@@ -196,6 +199,7 @@ mod tests {
             summary: "preserved".to_string(),
             preservation_ref: Some("foundry-task/alpha-1".to_string()),
             land_blocked: Some(LandBlocked::TrunkMovedGatesFailed),
+            proof_evidence: None,
             trunk_arrivals: vec![TrunkArrival {
                 commit: "abc123".to_string(),
                 subject: "docs: note".to_string(),
@@ -235,6 +239,7 @@ mod tests {
             summary: "done".to_string(),
             preservation_ref: None,
             land_blocked: None,
+            proof_evidence: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Complete,
             context: super::LoopContext::default(),

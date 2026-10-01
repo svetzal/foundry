@@ -521,6 +521,7 @@ fn augment_offline_recovery_campaigns(campaigns_path: &std::path::Path) {
         summary: "done".to_string(),
         preservation_ref: None,
         land_blocked: None,
+        proof_evidence: None,
         trunk_arrivals: Vec::new(),
         verdict: foundry_sdk::payload::TaskVerdict::Complete,
         context: foundry_sdk::payload::LoopContext {

@@ -1,0 +1,34 @@
+
+running 4 tests
+test blocks::review_task::tests::early_proof_names_wrong_field_types ... FAILED
+test blocks::review_task::tests::early_proof_accepts_source_path_arrays ... FAILED
+test blocks::review_task::tests::early_proof_needs_actual_rejection_correction_and_existing_logs ... ok
+test blocks::finalize_task::tests::early_proof_artifacts_stay_out_of_trunk_and_remain_retrievable ... FAILED
+
+failures:
+
+failures:
+    blocks::finalize_task::tests::early_proof_artifacts_stay_out_of_trunk_and_remain_retrievable
+    blocks::review_task::tests::early_proof_accepts_source_path_arrays
+    blocks::review_task::tests::early_proof_names_wrong_field_types
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 1288 filtered out; finished in 0.27s
+
+   Compiling foundry-blocks v0.41.0 (/home/svetzal/.foundry/worktrees/foundry/328cdfcc7eb3/crates/foundry-blocks)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.20s
+     Running unittests src/lib.rs (target/debug/deps/foundry_blocks-698d3802162e12ab)
+
+thread 'blocks::review_task::tests::early_proof_names_wrong_field_types' (2866388) panicked at crates/foundry-blocks/src/blocks/review_task.rs:738:13:
+assertion failed: super::proof_error(dir.path()).unwrap().ends_with(&format!("source_change must be a string, found {expected}"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'blocks::review_task::tests::early_proof_accepts_source_path_arrays' (2866387) panicked at crates/foundry-blocks/src/blocks/review_task.rs:720:9:
+assertion `left == right` failed
+  left: Some("invalid or missing early acceptance evidence at .foundry/proof.json: behavioral proof requires source_change")
+ right: None
+
+thread 'blocks::finalize_task::tests::early_proof_artifacts_stay_out_of_trunk_and_remain_retrievable' (2866386) panicked at crates/foundry-blocks/src/blocks/finalize_task.rs:1587:9:
+assertion `left == right` failed
+  left: ".foundry/logs/green.log\n.foundry/logs/red.log\n.foundry/project.json\n.foundry/proof.json"
+ right: ".foundry/project.json"
+error: test failed, to rerun pass `-p foundry-blocks --lib`
