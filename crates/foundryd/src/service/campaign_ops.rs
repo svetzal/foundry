@@ -68,6 +68,19 @@ fn load_store(path: &Path) -> Result<CampaignStore, Status> {
     CampaignStore::load(path).map_err(map_store_error)
 }
 
+/// Run a campaign store operation, including its blocking flock, off the runtime.
+/// A waiting command reads the latest state after acquisition, just as offline
+/// callers do. Once started, it runs to completion even if the RPC is dropped.
+pub(super) async fn blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, Status> + Send + 'static,
+) -> Result<T, Status> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| Status::internal(format!("campaign store operation failed: {error}")))?
+}
+
+// Production callers must run inside `blocking`; synchronous helpers remain
+// directly usable by unit tests without changing the store's offline contract.
 fn lock_store_exclusive(path: &Path) -> Result<CampaignStoreGuard, Status> {
     CampaignStore::lock_exclusive(path).map_err(map_store_error)
 }
@@ -428,13 +441,9 @@ pub(super) fn complete(
 
 /// Stop a campaign permanently, optionally killing its in-flight cycle first.
 ///
-/// Ordering matters and is deliberate: the abort happens **before** the store
-/// lock is taken. `execute_campaign_advance` holds that lock across the whole
-/// formation agent call, and `fs2::lock_exclusive` is a blocking syscall — so
-/// locking first would park a tokio worker thread for minutes, making `--now`
-/// the slowest command in the tool. Aborting first releases the lock (see
-/// `WorkflowTracker::abort_campaign`, which awaits the unwind for exactly this
-/// reason), leaving the subsequent acquisition uncontended.
+/// Abort the target workflow before waiting for the store lock, so `--now`
+/// releases its formation's lock promptly. Other campaigns may still hold the
+/// lock; acquisition and persistence therefore run on the blocking pool.
 ///
 /// The window between the abort and the lock is safe because the only thing
 /// that could have advanced this campaign is the task just aborted, and the
@@ -472,58 +481,65 @@ pub(super) async fn cancel(
     let aborted_event_id = aborted.as_ref().map(|workflow| workflow.event_id.clone());
     let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
 
-    let (detail, event) = {
-        let mut guard = lock_store_exclusive(campaigns_path)?;
-        let campaign = guard
-            .store
-            .find_mut(&name)
-            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+    let campaigns_path = campaigns_path.to_path_buf();
+    let ctx = ctx.clone();
+    blocking(move || {
+        let (detail, event) = {
+            let mut guard = lock_store_exclusive(&campaigns_path)?;
+            let campaign = guard
+                .store
+                .find_mut(&name)
+                .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-        if campaign.cancel(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
-            == Transition::AlreadySettled
-        {
-            return Ok(Response::new(CancelCampaignResponse {
-                campaign: Some(campaign_to_detail(campaign)),
-                event_id: String::new(),
-            }));
-        }
-        let detail = campaign_to_detail(campaign);
+            if campaign.cancel(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
+                == Transition::AlreadySettled
+            {
+                return Ok(Response::new(CancelCampaignResponse {
+                    campaign: Some(campaign_to_detail(campaign)),
+                    event_id: String::new(),
+                }));
+            }
+            let detail = campaign_to_detail(campaign);
 
-        let payload = Event::serialize_payload(&CampaignCancelledPayload {
-            terminal: CampaignTerminalPayload {
-                campaign: campaign.name.clone(),
-                project: campaign.project.clone(),
-                reason,
-                cycles_completed: campaign.cycles_completed,
-                cycles_landed: campaign.cycles_landed,
-            },
-            terminated_now: req.terminate_now,
-            discard_work: req.discard_work,
-            aborted_event_id,
-            aborted_trace_id,
-        })
-        .map_err(|e| Status::internal(format!("failed to serialize cancellation payload: {e}")))?;
-        // Mint both ids: like a manual completion, this is a workflow root
-        // dispatched through `spawn_workflow` with no trigger to inherit from.
-        // No parent span — it opens its own root chain.
-        let event = Event::new(
-            EventType::CampaignCancelled,
-            campaign.project.clone(),
-            Throttle::Full,
-            payload,
-        )
-        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
-        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
-        guard.save().map_err(map_save_error)?;
-        (detail, event)
-    };
+            let payload = Event::serialize_payload(&CampaignCancelledPayload {
+                terminal: CampaignTerminalPayload {
+                    campaign: campaign.name.clone(),
+                    project: campaign.project.clone(),
+                    reason,
+                    cycles_completed: campaign.cycles_completed,
+                    cycles_landed: campaign.cycles_landed,
+                },
+                terminated_now: req.terminate_now,
+                discard_work: req.discard_work,
+                aborted_event_id,
+                aborted_trace_id,
+            })
+            .map_err(|e| {
+                Status::internal(format!("failed to serialize cancellation payload: {e}"))
+            })?;
+            // Mint both ids: like a manual completion, this is a workflow root
+            // dispatched through `spawn_workflow` with no trigger to inherit from.
+            // No parent span — it opens its own root chain.
+            let event = Event::new(
+                EventType::CampaignCancelled,
+                campaign.project.clone(),
+                Throttle::Full,
+                payload,
+            )
+            .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+            .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
+            guard.save().map_err(map_save_error)?;
+            (detail, event)
+        };
 
-    let event_id = event.id.clone();
-    super::spawn_workflow(event, ctx);
-    Ok(Response::new(CancelCampaignResponse {
-        campaign: Some(detail),
-        event_id,
-    }))
+        let event_id = event.id.clone();
+        super::spawn_workflow(event, &ctx);
+        Ok(Response::new(CancelCampaignResponse {
+            campaign: Some(detail),
+            event_id,
+        }))
+    })
+    .await
 }
 
 /// Dispatch one manual advance iteration for an active (or staged) campaign.

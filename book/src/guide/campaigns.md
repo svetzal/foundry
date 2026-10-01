@@ -578,6 +578,20 @@ foundry campaign resume parite-phase-2d --add-cycles 1
 Completion and escalation are terminal events and are forced into the next ops
 digest as an anomaly. Campaign-store mutations are serialized across the CLI and
 daemon, so a control command cannot overwrite an in-flight formation decision.
+Online `add`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel`
+wait for a formation holding the store lock, including a formation for another
+campaign. They acquire the lock on Tokio's blocking pool, leaving runtime workers
+free to process agent output, finish formations, and answer other RPCs. Campaign
+list and queue reads remain available while controls wait. Once admitted to the
+blocking pool, a control operation finishes even if its client disconnects;
+inspect campaign state before retrying an interrupted command.
+
+Waiting controls validate the latest stored state after acquiring the lock;
+a transition that became invalid while waiting returns `FAILED_PRECONDITION`.
+`cancel --now` aborts its target workflow before waiting, but may still wait for
+another campaign's formation. Formation itself also acquires the file lock on
+the blocking pool. Offline commands retain their synchronous file-lock behaviour.
+
 If a daemon-side save fails during `pause`, `resume`, `decide`, or `complete`,
 the RPC returns `INTERNAL`, leaves the persisted daemon-owned store
 byte-identical, and `complete` does not emit `CampaignCompleted`.

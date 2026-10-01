@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Campaign RPCs wait for the campaign-store lock without blocking Tokio workers,
+  keeping reads and formation agent output responsive during concurrent controls.
+  Formation lock acquisition also runs on the blocking pool; `cancel --now`
+  still aborts its target before waiting for the store.
+
 ## [0.41.0] - 2026-10-01
 
 ### Added

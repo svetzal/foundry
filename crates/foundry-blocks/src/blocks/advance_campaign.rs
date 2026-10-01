@@ -1111,7 +1111,15 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
 
 async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
     let _process_guard = execution.lock.lock().await;
-    let mut guard = match CampaignStore::lock_exclusive(&execution.store_path) {
+    // RPCs and offline processes can hold the flock even after this block has
+    // the in-process mutex. Never park a runtime worker while acquiring it.
+    let store_path = execution.store_path.clone();
+    let acquisition =
+        tokio::task::spawn_blocking(move || CampaignStore::lock_exclusive(&store_path))
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result.map_err(anyhow::Error::from));
+    let mut guard = match acquisition {
         Ok(guard) => guard,
         Err(error) => {
             return terminal_error_result(

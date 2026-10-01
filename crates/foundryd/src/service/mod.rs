@@ -82,6 +82,17 @@ pub struct FoundryService {
 }
 
 impl FoundryService {
+    /// Campaign mutations can wait for a formation's cross-process flock.
+    /// Keep their entire lock/read/save operation off Tokio's worker threads.
+    async fn campaign_operation<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&std::path::Path, &RuntimeContext) -> Result<T, Status> + Send + 'static,
+    ) -> Result<T, Status> {
+        let path = self.campaigns_path.clone();
+        let ctx = self.ctx.clone();
+        campaign_ops::blocking(move || operation(&path, &ctx)).await
+    }
+
     pub fn new(ctx: RuntimeContext, stores: StoreConfig) -> Self {
         Self {
             campaigns_path: stores.campaigns_path,
@@ -247,7 +258,8 @@ impl Foundry for FoundryService {
         &self,
         request: Request<AddCampaignRequest>,
     ) -> Result<Response<AddCampaignResponse>, Status> {
-        campaign_ops::add(&self.campaigns_path, &self.ctx.registry, request)
+        self.campaign_operation(move |path, ctx| campaign_ops::add(path, &ctx.registry, request))
+            .await
     }
 
     async fn list_campaigns(
@@ -292,28 +304,32 @@ impl Foundry for FoundryService {
         &self,
         request: Request<PauseCampaignRequest>,
     ) -> Result<Response<PauseCampaignResponse>, Status> {
-        campaign_ops::pause(&self.campaigns_path, request)
+        self.campaign_operation(move |path, _ctx| campaign_ops::pause(path, request))
+            .await
     }
 
     async fn resume_campaign(
         &self,
         request: Request<ResumeCampaignRequest>,
     ) -> Result<Response<ResumeCampaignResponse>, Status> {
-        campaign_ops::resume(&self.campaigns_path, request)
+        self.campaign_operation(move |path, _ctx| campaign_ops::resume(path, request))
+            .await
     }
 
     async fn decide_campaign(
         &self,
         request: Request<DecideCampaignRequest>,
     ) -> Result<Response<DecideCampaignResponse>, Status> {
-        campaign_ops::decide(&self.campaigns_path, request)
+        self.campaign_operation(move |path, _ctx| campaign_ops::decide(path, request))
+            .await
     }
 
     async fn complete_campaign(
         &self,
         request: Request<CompleteCampaignRequest>,
     ) -> Result<Response<CompleteCampaignResponse>, Status> {
-        campaign_ops::complete(&self.campaigns_path, &self.ctx, request)
+        self.campaign_operation(move |path, ctx| campaign_ops::complete(path, ctx, request))
+            .await
     }
 
     async fn cancel_campaign(
@@ -441,7 +457,8 @@ impl Foundry for FoundryService {
         &self,
         request: Request<AdvanceCampaignRequest>,
     ) -> Result<Response<AdvanceCampaignResponse>, Status> {
-        campaign_ops::advance(&self.campaigns_path, &self.ctx, request)
+        self.campaign_operation(move |path, ctx| campaign_ops::advance(path, ctx, request))
+            .await
     }
 
     async fn sentinel_enable(
