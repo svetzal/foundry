@@ -526,7 +526,9 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
     use foundry_sdk::payload::WorkReconcileCompletedPayload;
     for proof in ["ancestry", "cherry"] {
         for source in ["local", "remote", "bundle"] {
-            let dir = tempfile::tempdir().unwrap();
+            // Git reports canonical worktree paths, including /private/var on macOS.
+            let temp_root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+            let dir = tempfile::tempdir_in(temp_root).unwrap();
             let (checkout, preserved, mut untouched, trunk, _) =
                 supersession_fixture(dir.path(), proof, source);
             // A running item's identity is obtained from durable trace evidence, not its name.
