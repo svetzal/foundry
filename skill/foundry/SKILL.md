@@ -184,7 +184,20 @@ Use this for small, concrete, immediately executable coding work.
 ### 6. Manage Durable Campaigns
 
 Use a campaign when the mission is broader than one task and the next objective
-should be derived from the latest repository state:
+should be derived from implementation experience and current evidence.
+
+Full reassessment of the remaining mission after every implementation cycle is a
+core campaign design feature. Implementation can reveal hidden dependencies,
+invalid assumptions, partial solutions, or work already complete. Use those
+findings, reviewer results, preserved work, and the live repository to reconsider
+scope, priority, and task decomposition within the mission and owner constraints.
+Do not treat formation as selecting from a fixed plan or replaying reviewer gaps.
+The final assessment checks the whole mission, beyond the last task's objective.
+
+Judge assessment by the decisions and learning it produces. Token volume or
+formation-session count alone does not establish waste. Cost reductions must
+preserve full reassessment and useful evidence. The charter defines this principle;
+`book/src/guide/campaigns.md` explains the loop.
 
 ```bash
 foundry campaign add ./campaign.json

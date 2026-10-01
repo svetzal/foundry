@@ -169,9 +169,16 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 
 Campaign agents must not have clock-time limits. Bound content or token size
 instead. Elapsed time is diagnostic evidence, not a spending limit.
-Reassess the remaining mission after each implementation cycle. Implementation
-discoveries must inform the next assessment; assessment token volume alone does
-not establish waste.
+Campaign reassessment is a core design feature, defined in `CHARTER.md` and
+`book/src/guide/campaigns.md` under "Why campaigns reassess scope". After each
+implementation cycle, reassess the full remaining mission using actual
+implementation experience, reviewer findings, preserved work, and current evidence.
+Allow that knowledge to change the next objective, priority, or decomposition
+within the mission and owner constraints. Do not replace this loop with a fixed
+task queue or automatic replay of reviewer gaps. Evaluate efficiency by the
+quality of the resulting decisions and learning handoff. Session counts and
+assessment token volume alone do not establish waste. Preserve this loop when
+changing campaign dispatch, budgets, prompts, or context compaction.
 
 Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
 `show`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel` go through

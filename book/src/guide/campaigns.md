@@ -10,6 +10,27 @@ Campaigns do not contain a pre-cut queue. The next objective is created only
 when the preceding task has a typed result, so stale downstream inventory and
 per-item retry loops are unnecessary.
 
+## Why campaigns reassess scope
+
+Implementation is a source of new knowledge. It can expose hidden dependencies,
+invalid assumptions, partial solutions, and work that is already complete.
+Campaign formation reassesses the full remaining mission after each implementation
+cycle. It uses actual implementation experience, reviewer findings, preserved work,
+and current repository evidence to derive the next objective.
+
+The reassessment can change scope, priority, or task decomposition within the
+mission and owner constraints. It can retain an earlier objective when the evidence
+still supports it. It does not merely select the next item from an initial plan
+or repeat the reviewer's gap list.
+
+The final reassessment checks the whole mission. A complete task verdict proves
+its assigned objective, which can be narrower than campaign completion.
+
+Evaluate formation by whether it uses new evidence to choose appropriate work and
+preserves useful learning. Assessment token volume and the ratio of formation to
+implementation sessions do not establish waste. When reducing cost, preserve the
+full reassessment and the evidence it needs. The charter records this as a design principle.
+
 ## Choosing a Task or Campaign
 
 Use a task when you can state one objective whose acceptance evidence is

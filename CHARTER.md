@@ -27,10 +27,19 @@ maintenance to release management.
    event handling, valid throttle states, and safe concurrency. Malformed
    events are compiler errors, not runtime surprises.
 
+6. **Implementation informs scope.** Campaigns reassess the full remaining
+   mission after each implementation cycle. Actual implementation experience,
+   review findings, and delivered evidence can change the next objective,
+   priority, or decomposition. The mission and owner constraints remain binding.
+   This learning loop is a core design feature. Efficiency improvements must
+   preserve it.
+
 ## Scope
 
 Foundry automates engineering workflows for a registered project portfolio:
 
+- Adaptive engineering campaigns that derive the next task from the mission,
+  current evidence, and experience from previous implementation cycles
 - Vulnerability detection and remediation
 - Dependency maintenance (iterate, maintain, commit, push)
 - Release management (tag, build, distribute)

@@ -9,6 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The charter, campaign guide, maintainer guidance, and operating skill state
+  the campaign learning loop explicitly. Each implementation cycle informs a
+  full reassessment of remaining scope; efficiency changes must preserve it.
+
 - Campaign reports expose individual formation sessions and decision events,
   transcript paths, exact request bytes for new sessions, and command activity.
   Native Codex usage observations remain separate from terminal accounting so
