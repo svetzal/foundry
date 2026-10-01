@@ -287,6 +287,61 @@ fn cancelled_events(rx: &mut broadcast::Receiver<Event>) -> Vec<Event> {
     found
 }
 
+/// Ledger settlement precedes engine persistence and broadcast. Wait for the
+/// event itself before checking its count; reading the ledger is not a barrier.
+async fn wait_for_cancelled_events(rx: &mut broadcast::Receiver<Event>) -> Vec<Event> {
+    let first = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = rx.recv().await.expect("cancellation stream must stay open without lag");
+            if event.event_type == EventType::WorkItemCancelled {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("work_item_cancelled must reach Watch after ledger settlement");
+    let mut events = vec![first];
+    events.extend(cancelled_events(rx));
+    events
+}
+
+/// Force the ledger-visible/event-not-yet-broadcast window that failed in CI.
+#[tokio::test(start_paused = true)]
+async fn cancellation_observation_waits_for_delayed_broadcast_after_settlement() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ledger = tmp.path().join("work-items.json");
+    let id = seed_running_cycle(&ledger, TRACE);
+    let mut store = WorkItemStore::load(&ledger).expect("load ledger");
+    store
+        .find_mut(&id)
+        .expect("the item")
+        .settle_cancelled(REASON, None, Utc::now());
+    store.save(&ledger).expect("save settlement");
+
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut event = Event::new(
+        EventType::WorkItemCancelled,
+        PROJECT.to_string(),
+        foundry_sdk::throttle::Throttle::default(),
+        serde_json::json!({ "item_id": id, "reason": REASON }),
+    );
+    event.trace_id = Some(TRACE.to_string());
+    let expected = event.clone();
+    let sender = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        tx.send(event).expect("receiver stays attached");
+    });
+
+    assert_eq!(item_state(&ledger, &id), WorkItemState::Cancelled);
+    assert!(cancelled_events(&mut rx).is_empty(), "ledger settlement precedes broadcast");
+    let events = wait_for_cancelled_events(&mut rx).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, expected.id);
+    assert_eq!(events[0].payload, expected.payload);
+    assert_eq!(events[0].trace_id.as_deref(), Some(TRACE));
+    sender.await.expect("sender completes");
+}
+
 fn item_state(path: &Path, id: &str) -> WorkItemState {
     WorkItemStore::load(path)
         .expect("load ledger")
@@ -345,7 +400,7 @@ async fn cancel_now_settles_the_aborted_cycles_item_cancelled_and_records_the_ev
     assert_eq!(record.lane, "campaign");
     assert_eq!(record.project, PROJECT);
 
-    let cancelled = cancelled_events(&mut harness.events);
+    let cancelled = wait_for_cancelled_events(&mut harness.events).await;
     assert_eq!(cancelled.len(), 1, "one settled item, one work_item_cancelled event");
     let event = &cancelled[0];
     assert_eq!(event.payload["item_id"], item_id.as_str());
@@ -406,7 +461,7 @@ async fn cancel_now_with_discard_work_settles_the_item_too() {
     let item = WorkItemStore::load(&ledger).unwrap().find(&item_id).unwrap().clone();
     assert_eq!(item.reason, REASON);
     assert!(item.settled_at.is_some());
-    assert_eq!(cancelled_events(&mut harness.events).len(), 1);
+    assert_eq!(wait_for_cancelled_events(&mut harness.events).await.len(), 1);
 }
 
 // ── What must change nothing ────────────────────────────────────────────────

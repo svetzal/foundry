@@ -538,6 +538,12 @@ it, on the aborted cycle's own trace. `foundry queue show <id>` reads the result
 back. A graceful cancellation changes nothing there: its cycle finishes and
 settles the usual way. See [The work queue](./work-queue.md).
 
+Settlement happens asynchronously after the cancellation RPC returns. The ledger
+is saved before the engine writes and broadcasts `work_item_cancelled`, so a
+queue read can show `cancelled` before a Watch subscriber receives the event.
+Consumers waiting for the event should await its arrival rather than treating a
+ledger read as proof that broadcast has finished.
+
 Two limits worth knowing. `--now` kills the agent process itself, but not the
 tool subprocesses that agent spawned; those are reparented and run to their own
 completion. And the aborted run produces no trace file, so reconstruct it from
