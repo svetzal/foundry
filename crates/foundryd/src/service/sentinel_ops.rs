@@ -272,11 +272,12 @@ mod tests {
             .expect("list should succeed")
             .into_inner();
 
-        assert_eq!(response.sentinels.len(), 4);
+        assert_eq!(response.sentinels.len(), 5);
         assert_eq!(response.sentinels[0].name, "nightly-maintenance");
         assert_eq!(response.sentinels[1].name, "daily-commit-digest");
         assert_eq!(response.sentinels[2].name, "ops-digest");
         assert_eq!(response.sentinels[3].name, "nightly-supply-chain");
+        assert_eq!(response.sentinels[4].name, "work-reconciler");
     }
 
     #[test]

@@ -25,6 +25,7 @@
 - [Tasks and Campaigns](guide/campaigns.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
 - [The Work Queue](guide/work-queue.md)
+- [Work Reconciler](guide/work-reconciler.md)
 - [Trusted-LAN Control Plane](guide/trusted-lan-control-plane.md)
 - [Commit Digest](guide/commit-digest.md)
 - [Ops Digest](guide/ops-digest.md)

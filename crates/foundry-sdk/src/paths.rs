@@ -281,6 +281,12 @@ pub fn supply_chain_dir() -> PathBuf {
     }
 }
 
+/// Reconciliation reports; override with `FOUNDRY_RECONCILE_DIR`.
+pub fn reconcile_dir() -> PathBuf {
+    env::var_os("FOUNDRY_RECONCILE_DIR")
+        .map_or_else(|| foundry_home().join("reconcile"), PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

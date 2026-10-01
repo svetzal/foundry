@@ -44,7 +44,7 @@ sentinel. It blocks on `tokio::select!` between that deadline and a reload
 ## The default seed
 
 On first start the daemon writes `~/.foundry/sentinels.json` with the
-canonical seed set — currently four entries:
+canonical seed set — currently five entries:
 
 ```json
 {
@@ -88,6 +88,17 @@ canonical seed set — currently four entries:
       "schedule": { "cron": "0 6 * * *" },
       "emit": {
         "event_type": "supply_chain_scan_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
+    },
+    {
+      "name": "work-reconciler",
+      "schedule": { "cron": "30 */3 * * *" },
+      "emit": {
+        "event_type": "work_reconcile_started",
         "project": "system",
         "throttle": "full",
         "payload": {}
@@ -218,3 +229,13 @@ After the next `foundryd` restart, `foundry sentinel list` should show
 `nightly-maintenance` as `enabled`. Without this cleanup step the daemon
 *and* the legacy plist would both emit `maintenance_cycle_started` each
 night, doubling the work.
+
+## Work reconciliation
+
+The `work-reconciler` sentinel runs at `30 */3 * * *`, or use
+`foundry queue reconcile` against the daemon to run it now and print that
+invocation’s report. It reports exact inventory identities and conservatively
+settles verified preserved obligations without deleting their evidence. Orphan,
+broken and unresolved findings, including inspection errors, reach the ops
+anomaly path even below the normal pressure threshold. See the
+[work reconciler guide](work-reconciler.md) for proof and failure semantics.

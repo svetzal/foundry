@@ -323,6 +323,22 @@ pub async fn resume_item(addr: &str, offline: bool, id: &str, origin: Option<&st
     Ok(())
 }
 
+/// Run the canonical reconciler on the daemon and print its invocation-specific report.
+pub async fn reconcile(addr: &str, offline: bool) -> Result<()> {
+    anyhow::ensure!(
+        !offline,
+        "foundry queue reconcile requires the daemon; --offline is not supported"
+    );
+    let mut client = crate::daemon::connect_daemon_online(addr).await?;
+    let response = client
+        .reconcile_work(crate::proto::ReconcileWorkRequest {})
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    print!("{}", response.markdown);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};

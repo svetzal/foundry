@@ -138,6 +138,8 @@ impl SentinelStore {
     /// sentinels therefore reach existing installs automatically.
     ///
     /// Current seed:
+    /// - `work-reconciler` — `WorkReconcileStarted` at `30 */3 * * *`,
+    ///   inventory and conservative preserved-work supersession.
     /// - `nightly-maintenance` — `MaintenanceCycleStarted` at 02:00 local,
     ///   internalises the schedule that previously lived in
     ///   `launchd/com.mojility.foundry-maintenance.plist`.
@@ -194,6 +196,17 @@ impl SentinelStore {
                         project: "system".to_string(),
                         throttle: Throttle::default(),
                         payload: serde_json::Value::Object(serde_json::Map::new()),
+                    },
+                    enabled: true,
+                },
+                SentinelEntry {
+                    name: "work-reconciler".into(),
+                    schedule: Schedule::Cron("30 */3 * * *".into()),
+                    emit: EmitSpec {
+                        event_type: EventType::WorkReconcileStarted,
+                        project: "system".into(),
+                        throttle: Throttle::Full,
+                        payload: serde_json::json!({}),
                     },
                     enabled: true,
                 },
@@ -308,7 +321,7 @@ mod tests {
     fn default_seed_includes_nightly_maintenance_daily_commit_digest_and_ops_digest() {
         let store = SentinelStore::default_seed();
         assert_eq!(store.version, SENTINEL_STORE_VERSION);
-        assert_eq!(store.sentinels.len(), 4);
+        assert_eq!(store.sentinels.len(), 5);
 
         let nightly = store
             .find_sentinel("nightly-maintenance")
@@ -354,7 +367,7 @@ mod tests {
         let store = SentinelStore::default_seed();
         let json = serde_json::to_value(&store).unwrap();
         assert_eq!(json["version"], 1);
-        assert_eq!(json["sentinels"].as_array().unwrap().len(), 4);
+        assert_eq!(json["sentinels"].as_array().unwrap().len(), 5);
 
         let nightly = &json["sentinels"][0];
         assert_eq!(nightly["name"], "nightly-maintenance");
@@ -697,7 +710,7 @@ mod tests {
         let mut store = legacy_slice1_store();
         let changed = merge_default_seed_into(&mut store);
         assert!(changed, "digest entries were missing → store should be mutated");
-        assert_eq!(store.sentinels.len(), 4);
+        assert_eq!(store.sentinels.len(), 5);
         assert!(store.find_sentinel("nightly-maintenance").is_some());
         assert!(store.find_sentinel("daily-commit-digest").is_some());
         assert!(store.find_sentinel("ops-digest").is_some());

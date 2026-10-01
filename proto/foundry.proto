@@ -638,6 +638,15 @@ message CancelWorkItemRequest {
 }
 message CancelWorkItemResponse { WorkItem item = 1; }
 
+// Online-only reconciliation. Runs the canonical work_reconcile_started workflow
+// against daemon-owned state and returns this invocation's digest, never a client file.
+message ReconcileWorkRequest {}
+message ReconcileWorkResponse {
+    string digest_path = 1;
+    string markdown = 2;
+    string completion_json = 3;
+}
+
 // Resume only preserved work with usable preservation evidence. Persists a new
 // linked task before dispatch; the original stays open until actual landing.
 // Admission stages a failed child with reason "resume admission incomplete;
@@ -832,6 +841,9 @@ service Foundry {
     rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
     rpc CloseWorkItem(CloseWorkItemRequest) returns (CloseWorkItemResponse);
     rpc ResumeWorkItem(ResumeWorkItemRequest) returns (ResumeWorkItemResponse);
+    // No offline fallback. INTERNAL on inspection, ledger or digest-write failure,
+    // or missing completion. Verified settlements may already be durable on failure.
+    rpc ReconcileWork(ReconcileWorkRequest) returns (ReconcileWorkResponse);
     rpc CancelWorkItem(CancelWorkItemRequest) returns (CancelWorkItemResponse);
 
     // List one work item's `work_item_*` events from the durable event log,

@@ -476,6 +476,33 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn canonical_reconciler_fires_at_half_past_every_third_hour() {
+        let now = at(2026, 5, 27, 3, 29);
+        let seed = SentinelStore::default_seed();
+        let reconciler = seed.find_sentinel("work-reconciler").unwrap().clone();
+        let store = Arc::new(RwLock::new(SentinelStore {
+            version: 1,
+            sentinels: vec![reconciler],
+        }));
+        let (sink, captured) = recording_sink();
+        let (clock, clock_state) = mutable_clock(now);
+        let scheduler = Scheduler::new(store, Arc::new(Notify::new()), sink).with_clock(clock);
+        tokio::spawn(scheduler.run());
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        set_clock(&clock_state, at(2026, 5, 27, 3, 30));
+        tokio::task::yield_now().await;
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].event_type, EventType::WorkReconcileStarted);
+        assert_eq!(captured[0].project, "system");
+        assert_eq!(captured[0].throttle, Throttle::Full);
+        assert_eq!(captured[0].payload, serde_json::json!({}));
+        assert_eq!(captured[0].trace_id.as_ref().unwrap().len(), 32);
+        assert!(captured[0].parent_span_id.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn run_emits_when_scheduled_time_arrives() {
         let now = at(2026, 5, 27, 1, 59);
         let store = Arc::new(RwLock::new(SentinelStore {
