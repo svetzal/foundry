@@ -31,6 +31,49 @@ task_block_new! {
     }
 }
 
+/// Keep the original proof and a portable copy whose log paths resolve inside
+/// the archive. Invalid proof is still evidence of a failed task.
+fn archive_proof(worktree: &Path, destination: &Path) -> Result<Option<String>> {
+    let source = worktree.join(".foundry/proof.json");
+    let bytes = match std::fs::read(&source) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    std::fs::create_dir_all(destination)?;
+    std::fs::write(destination.join("original-proof.json"), &bytes)?;
+    let mut proof: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(proof) => proof,
+        Err(error) => {
+            // Best-effort: malformed evidence already yields a review defect;
+            // retain its exact bytes rather than blocking preservation.
+            tracing::warn!(%error, "archiving malformed early proof without interpreting logs");
+            std::fs::write(destination.join("proof.json"), bytes)?;
+            return Ok(Some(destination.to_string_lossy().into_owned()));
+        }
+    };
+    for field in ["rejecting", "corrected"] {
+        if let Some(log) = proof[field]["log"].as_str() {
+            let source = worktree.join(log);
+            match std::fs::read(&source) {
+                Ok(bytes) => {
+                    let name = format!("{field}.log");
+                    std::fs::write(destination.join(&name), bytes)?;
+                    proof[field]["log"] = serde_json::Value::String(name);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Best-effort: absent logs are part of the review defect;
+                    // preserve the proof without inventing their contents.
+                    tracing::warn!(%error, path = %source.display(), "early proof log is absent during archival");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    std::fs::write(destination.join("proof.json"), serde_json::to_vec_pretty(&proof)?)?;
+    Ok(Some(destination.to_string_lossy().into_owned()))
+}
+
 async fn branch_has_deliverable(
     shell: &dyn ShellGateway,
     checkout: &Path,
@@ -412,6 +455,7 @@ fn run_completed(
         summary,
         preservation_ref,
         land_blocked: None,
+        proof_evidence: None,
         trunk_arrivals: Vec::new(),
         verdict,
         context,
@@ -464,6 +508,10 @@ async fn commit_and_preserve_if_needed(
     } else {
         None
     };
+    // Proof has been archived and project files committed. Clear only the
+    // excluded artifacts so normal worktree removal can complete; Git leaves
+    // tracked .foundry content alone.
+    checked(shell, worktree, &["clean", "-fdx", "--", ".foundry"]).await?;
     Ok((deliverable, reference))
 }
 
@@ -491,6 +539,7 @@ impl SimulatedSuccess for FinalizeTask {
             summary: "dry-run task finalization".to_string(),
             preservation_ref: None,
             land_blocked: None,
+            proof_evidence: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: payload.context,
@@ -520,6 +569,7 @@ impl TaskBlock for FinalizeTask {
         let payload = parse_payload!(trigger, TaskReviewedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
+        let trace_id = trigger.trace_id.clone().unwrap_or_else(|| trigger.id.clone());
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
@@ -537,6 +587,17 @@ impl TaskBlock for FinalizeTask {
             };
             let checkout = Path::new(&entry.path);
 
+            // Archival must succeed before any commit or worktree cleanup.
+            let evidence_worktree = worktree.clone();
+            let destination = foundry_sdk::paths::foundry_home()
+                .join("evidence")
+                .join(trace_id)
+                .join(uuid::Uuid::new_v4().to_string());
+            let proof_evidence = tokio::task::spawn_blocking(move || {
+                archive_proof(&evidence_worktree, &destination)
+            })
+            .await??;
+
             let verdict = enforce_gate_truth(&payload);
             let (deliverable, preservation_ref) = match commit_and_preserve_if_needed(
                 &*shell,
@@ -551,10 +612,9 @@ impl TaskBlock for FinalizeTask {
             {
                 Ok(result) => result,
                 Err(error) => {
-                    return terminal_result(
-                        throttle,
-                        &runner_error(&project, error.to_string(), context),
-                    );
+                    let mut result = runner_error(&project, error.to_string(), context);
+                    result.proof_evidence = proof_evidence;
+                    return terminal_result(throttle, &result);
                 }
             };
 
@@ -585,6 +645,7 @@ impl TaskBlock for FinalizeTask {
                     result.success = false;
                     result.land_blocked = Some(reason);
                     result.trunk_arrivals = arrivals;
+                    result.proof_evidence = proof_evidence;
                     return terminal_result(throttle, &result);
                 }
                 true
@@ -606,6 +667,7 @@ impl TaskBlock for FinalizeTask {
             let mut result =
                 run_completed(&project, landed, summary, preservation_ref, verdict, context);
             result.trunk_arrivals = arrivals;
+            result.proof_evidence = proof_evidence;
             terminal_result(throttle, &result)
         })
     }
@@ -1493,5 +1555,72 @@ mod tests {
         // The first arrival, then one per gate re-run.
         assert_eq!(payload["trunk_arrivals"].as_array().unwrap().len(), 3);
         assert_eq!(git(&shared.checkout, &["rev-parse", branch]), task_head);
+    }
+    #[tokio::test]
+    async fn early_proof_artifacts_stay_out_of_trunk_and_remain_retrievable() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/proof-artifacts";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        // Deliberately tracked project content must remain tracked and editable.
+        std::fs::create_dir(worktree.join(".foundry")).unwrap();
+        std::fs::write(worktree.join(".foundry/project.json"), "original").unwrap();
+        git(&worktree, &["add", ".foundry/project.json"]);
+        git(&worktree, &["commit", "-m", "project configuration"]);
+        std::fs::write(worktree.join(".foundry/project.json"), "updated").unwrap();
+        std::fs::create_dir(worktree.join(".foundry/logs")).unwrap();
+        std::fs::write(worktree.join(".foundry/logs/red.log"), "rejection").unwrap();
+        std::fs::write(worktree.join(".foundry/logs/green.log"), "correction").unwrap();
+        let proof = serde_json::json!({"kind":"behavioral","source_change":"README.md",
+            "rejecting":{"command":"probe","exit_code":1,"log":".foundry/logs/red.log"},
+            "corrected":{"command":"probe","exit_code":0,"log":".foundry/logs/green.log"}});
+        std::fs::write(worktree.join(".foundry/proof.json"), proof.to_string()).unwrap();
+        // Even accidentally staged proof must not enter the final commit.
+        git(&worktree, &["add", ".foundry"]);
+        let registry = super::super::test_helpers::registry_with_entry(test_entry(&checkout));
+        let block =
+            FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
+        let trigger = task_trigger_with_gates(
+            &worktree,
+            branch,
+            TaskVerdict::Complete,
+            vec![required_gate(true)],
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["landed"], true);
+        assert_eq!(
+            git(&checkout, &["ls-tree", "-r", "--name-only", "HEAD", "--", ".foundry"]),
+            ".foundry/project.json"
+        );
+        assert_eq!(
+            std::fs::read_to_string(checkout.join(".foundry/project.json")).unwrap(),
+            "updated"
+        );
+        assert!(!worktree.exists(), "archived artifacts must not prevent cleanup");
+        let evidence = Path::new(payload["proof_evidence"].as_str().unwrap());
+        assert!(
+            evidence.starts_with(
+                foundry_sdk::paths::foundry_home()
+                    .join("evidence")
+                    .join(trigger.trace_id.as_ref().unwrap_or(&trigger.id))
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("original-proof.json")).unwrap(),
+            proof.to_string()
+        );
+        let archived: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(evidence.join("proof.json")).unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(evidence.join(archived["rejecting"]["log"].as_str().unwrap()))
+                .unwrap(),
+            "rejection"
+        );
+        assert_eq!(
+            std::fs::read_to_string(evidence.join(archived["corrected"]["log"].as_str().unwrap()))
+                .unwrap(),
+            "correction"
+        );
+        std::fs::remove_dir_all(evidence).unwrap();
     }
 }

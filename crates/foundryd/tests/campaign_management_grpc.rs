@@ -225,6 +225,7 @@ async fn complete_paused_campaign_persists_audit_record_and_emits_terminal_event
         summary: "shipped".to_string(),
         preservation_ref: Some("abc123".to_string()),
         land_blocked: None,
+        proof_evidence: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Complete,
         context: LoopContext {
@@ -494,6 +495,7 @@ async fn pause_preserves_pending_run_result_through_resume() {
         summary: "first slice landed with a gap".to_string(),
         preservation_ref: Some("foundry-task/preserved-ref".to_string()),
         land_blocked: None,
+        proof_evidence: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Remainder {
             gaps: vec!["exercise the gRPC boundary".to_string()],

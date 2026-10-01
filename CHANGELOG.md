@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Early acceptance prompts show exact behavioral and direct JSON shapes and
+  require validation. Proof checks accept source-path arrays and report wrong
+  field types precisely without relaxing exit-code or log checks.
+- Task finalization archives early proof and its logs under Foundry's evidence
+  directory, records `proof_evidence` in the result, and excludes new `.foundry`
+  artifacts from commits while retaining already tracked project files.
+
 - Campaign RPCs wait for the campaign-store lock without blocking Tokio workers,
   keeping reads and formation agent output responsive during concurrent controls.
   Formation lock acquisition also runs on the blocking pool; `cancel --now`

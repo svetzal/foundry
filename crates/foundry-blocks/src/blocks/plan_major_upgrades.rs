@@ -880,6 +880,7 @@ mod tests {
             summary: String::new(),
             preservation_ref: reference.map(str::to_string),
             land_blocked: None,
+            proof_evidence: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext::default(),

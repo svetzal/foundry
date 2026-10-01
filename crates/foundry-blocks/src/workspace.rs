@@ -152,7 +152,22 @@ pub(crate) async fn commit_worktree(
     if status.is_empty() {
         return Ok(false);
     }
-    checked(shell, worktree, &["add", "-A"]).await?;
+    // Only paths already in HEAD belong to the project under .foundry.
+    // Reset any newly staged artifacts before restoring tracked modifications.
+    checked(shell, worktree, &["reset", "HEAD", "--", ".foundry"]).await?;
+    checked(shell, worktree, &["add", "-A", "--", ".", ":(exclude).foundry"]).await?;
+    let tracked =
+        checked(shell, worktree, &["ls-tree", "-r", "--name-only", "HEAD", "--", ".foundry"])
+            .await?;
+    if !tracked.is_empty() {
+        checked(shell, worktree, &["add", "-u", "--", ".foundry"]).await?;
+    }
+    let diff = run(shell, worktree, &["diff", "--cached", "--quiet"]).await?;
+    match diff.exit_code {
+        0 => return Ok(false),
+        1 => {}
+        code => anyhow::bail!("git staged diff failed ({code}): {}", diff.stderr),
+    }
     checked(shell, worktree, &["commit", "-m", &format!("feat({project}): automated task")])
         .await?;
     Ok(true)

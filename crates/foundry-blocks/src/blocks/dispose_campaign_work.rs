@@ -422,21 +422,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = worktrees_root_with(dir.path(), &["ship-billing-c1-abcdef"]);
 
-        // `status --porcelain` reports a dirty tree so the commit path runs;
-        // every later call falls through to the repeated success result.
+        // Report a dirty tree and then a non-empty staged diff after the
+        // artifact exclusion; later calls use the repeated success result.
+        let success = foundry_sdk::gateway::CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        };
         let shell = FakeShellGateway::sequence(vec![
             foundry_sdk::gateway::CommandResult {
                 stdout: " M src/main.rs".to_string(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
+                ..success.clone()
             },
+            success.clone(), // reset artifact staging
+            success.clone(), // stage deliverables
+            success.clone(), // no tracked .foundry paths
             foundry_sdk::gateway::CommandResult {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: 0,
-                success: true,
+                exit_code: 1,
+                success: false,
+                ..success.clone()
             },
+            success,
         ]);
         let summary =
             dispose(&*shell, &root, dir.path(), "demo", "ship-billing", false).await.summary;
@@ -444,7 +451,7 @@ mod tests {
         let issued: Vec<String> =
             shell.invocations().iter().map(|inv| inv.args.join(" ")).collect();
         assert!(summary.contains("preserved at"), "{summary}");
-        assert!(issued.iter().any(|a| a == "add -A"), "{issued:?}");
+        assert!(issued.iter().any(|a| a == "add -A -- . :(exclude).foundry"), "{issued:?}");
         assert!(issued.iter().any(|a| a.starts_with("commit -m")), "{issued:?}");
         assert!(
             issued
