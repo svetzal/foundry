@@ -66,6 +66,23 @@ fn read_context_files(repo: &Path, paths: &[String]) -> anyhow::Result<String> {
     ))
 }
 
+/// Bound orienting Git output. Keep the exact command so formation can read
+/// the complete evidence selectively; mission and owner policy are untouched.
+fn compact_git(text: String, limit: usize, command: &str) -> String {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[{} bytes omitted; read full evidence with `{command}`]",
+        &text[..end],
+        text.len() - end
+    )
+}
+
 async fn repo_snapshot(shell: &dyn ShellGateway, repo: &Path) -> String {
     let status = shell.run(repo, "git", &["status", "--short", "--branch"], None, None).await;
     let log = shell.run(repo, "git", &["log", "-8", "--oneline"], None, None).await;
@@ -74,9 +91,21 @@ async fn repo_snapshot(shell: &dyn ShellGateway, repo: &Path) -> String {
         .await;
     format!(
         "STATUS:\n{}\n\nRECENT COMMITS:\n{}\n\nLATEST COMMIT PATHS:\n{}",
-        status.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
-        log.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
-        changed.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))
+        compact_git(
+            status.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
+            1024,
+            "git status --short --branch"
+        ),
+        compact_git(
+            log.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
+            1024,
+            "git log -8 --oneline"
+        ),
+        compact_git(
+            changed.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)),
+            2048,
+            "git show --format= --name-status HEAD"
+        )
     )
 }
 
@@ -115,8 +144,18 @@ async fn accumulated_work(shell: &dyn ShellGateway, repo: &Path, base_ref: Optio
     let stat = shell.run(repo, "git", &["diff", "--stat", &diff_range], None, None).await;
     format!(
         "NEXT CYCLE BASE: {reference}\n\nCOMMITS ON THAT REF ABSENT FROM THE LIVE CHECKOUT:\n{}\n\nFILES IT CHANGES vs THE LIVE CHECKOUT:\n{}",
-        or_none(commits.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))),
-        or_none(stat.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr)))
+        compact_git(
+            or_none(
+                commits.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))
+            ),
+            1024,
+            &format!("git log --oneline {commit_range}")
+        ),
+        compact_git(
+            or_none(stat.map_or_else(|e| e.to_string(), |r| format!("{}{}", r.stdout, r.stderr))),
+            2048,
+            &format!("git diff --stat {diff_range}")
+        )
     )
 }
 
@@ -1270,6 +1309,17 @@ impl TaskBlock for AdvanceCampaign {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_packet_compaction_is_bounded_unicode_safe_and_names_full_evidence() {
+        let input = "界".repeat(4000);
+        let result = super::compact_git(input.clone(), 1024, "git show HEAD");
+        assert!(result.len() < 1150);
+        assert!(result.starts_with("界"));
+        assert!(result.contains("git show HEAD"));
+        assert!(result.contains(&format!("{} bytes omitted", input.len() - 1023)));
+        assert_eq!(super::compact_git("unchanged".into(), 1024, "git status"), "unchanged");
+    }
+
     use foundry_sdk::campaign::{
         Campaign, CampaignBudget, CampaignCycle, CampaignStatus, CampaignStore, CycleOutcome,
         DoneEvidence, OwnerDecision,

@@ -9,6 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Formation defaults to a 32 KiB prompt limit. Large Git snapshots and preserved
+  branch summaries are bounded and name commands for reading the full evidence.
+  Missions, owner policy, and typed reviewer findings retain their wording.
+
 - Campaign formation uses balanced/medium reasoning and smaller prompts.
   Source, protobuf, agent guidance and reference guides are listed by path;
   contract files are read selectively rather than copied into each prompt. Passing gate logs are

@@ -234,7 +234,7 @@ Campaign definitions accept these limits. Older definitions use these defaults:
     "max_cycles": 4,
     "stages": {
       "formation_seconds": 120,
-      "formation_prompt_bytes": 16384,
+      "formation_prompt_bytes": 32768,
       "execution_seconds": 1800,
       "review_seconds": 300
     }

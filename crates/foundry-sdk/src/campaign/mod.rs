@@ -451,7 +451,7 @@ impl Default for StageBudget {
             formation_seconds: 120,
             execution_seconds: 1800,
             review_seconds: 300,
-            formation_prompt_bytes: 16384,
+            formation_prompt_bytes: 32768,
         }
     }
 }

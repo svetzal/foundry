@@ -227,7 +227,7 @@ Codex by default and enforce one writable repository. Declare
 rejected. Other campaign providers are currently refused because they cannot
 enforce this scope. Standalone tasks retain their existing provider behavior.
 
-Campaign `budget.stages` defaults are formation 120 seconds / 16384 prompt
+Campaign `budget.stages` defaults are formation 120 seconds / 32768 prompt
 bytes, execution 1800 seconds, and review 300 seconds. Project timeouts can
 shorten these. Use `campaign report` to inspect stage tokens/time, unmeasured
 or unpriced spend, landed cycles, and external repairs.
