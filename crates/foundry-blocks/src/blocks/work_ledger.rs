@@ -631,7 +631,17 @@ impl TaskBlock for SettleWorkItem {
         let trigger = trigger.clone();
         Box::pin(async move {
             let (verified, diagnostics) = self.verify_supersession(&trigger, &result).await;
-            let settled = self.settle(&trigger, &result, &verified);
+            let mut settled = self.settle(&trigger, &result, &verified);
+            if let Some((child, additional)) = &mut settled {
+                for item in std::iter::once(child).chain(additional.iter_mut()) {
+                    super::work_branch_cleanup::cleanup(
+                        &self.store_path,
+                        self.registry.as_ref(),
+                        item,
+                    )
+                    .await;
+                }
+            }
             let events = settled.as_ref().map_or_else(Vec::new, |(child, additional)| {
                 std::iter::once(child)
                     .chain(additional.iter())

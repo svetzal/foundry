@@ -311,6 +311,9 @@ mod tests {
         let landed_ref =
             finalized.events[0].payload["preservation_ref"].as_str().unwrap().to_string();
         assert_eq!(landed_ref, expected_commit);
+        // Model the ref being removed by the ledger's later settlement. This
+        // test exercises continuation from a commit after the remote ref is gone.
+        git(&checkout, &["push", "origin", "--delete", "foundry-task/landed-cycle"]);
         assert!(
             git(
                 &checkout,

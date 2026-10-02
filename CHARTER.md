@@ -54,6 +54,22 @@ Foundry automates engineering workflows for a registered project portfolio:
   backlog: intent that nobody has committed to executing belongs in planning
   tools, not here.
 
+Once an item settles landed, Foundry deletes only its recorded task branch
+locally and its recorded preservation branch locally and on origin, best-effort.
+Each deletion requires fresh ancestry or patch-equivalence proof against the
+registered trunk and refuses branches checked out in any worktree. A changed
+ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
+unlanded items in any registered project sharing the repository are retained.
+Ownership compares exact refs across repository slugs and shared Git common
+directories, including separate clones and linked worktrees. The disposition
+and settlement event retain ref names, observed commits and per-ref deletion
+results; deletion failure leaves
+the item landed. Preservation evidence for unlanded work is never deleted.
+Cleanup decides eligibility under the ledger write gate, releases it for all
+Git operations, then reloads under the gate to record outcomes. Concurrent
+ledger updates are retained; a changed state or ref ownership is never
+overwritten by stale cleanup evidence.
+
 It does **not** replace the existing `evt-cli` event logging system.
 Foundry emits events into the same JSONL intake files, coexisting with
 the current tooling. Over time, `evt-cli` may be rewritten in Rust to

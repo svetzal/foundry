@@ -2042,6 +2042,8 @@ mod tests {
             operator_action: None,
             resumes: None,
             disposition: Some(WorkDisposition {
+                task_branch: None,
+                branch_cleanup: Vec::new(),
                 verdict: Some("remainder".to_string()),
                 landed_commit: None,
                 preservation_ref: Some("foundry/task/tidy-cli-3".to_string()),
@@ -2098,6 +2100,8 @@ mod tests {
             Some(2_200),
         );
         landed.disposition = Some(WorkDisposition {
+            task_branch: None,
+            branch_cleanup: Vec::new(),
             verdict: Some("complete".to_string()),
             landed_commit: Some("deadbeef".to_string()),
             preservation_ref: None,

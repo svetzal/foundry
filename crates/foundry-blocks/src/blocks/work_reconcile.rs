@@ -1,4 +1,4 @@
-//! Inventory and conservative scheduled settlement. Never invokes cleanup.
+//! Inventory, conservative scheduled settlement, and guarded landed-branch cleanup.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -47,7 +47,13 @@ impl ReconcileWork {
             Ok(verified) => match apply_verified_async(self.ledger.clone(), verified.clone()).await
             {
                 Ok(settled) => {
-                    for item in settled {
+                    for mut item in settled {
+                        super::work_branch_cleanup::cleanup(
+                            &self.ledger,
+                            Some(&self.registry),
+                            &mut item,
+                        )
+                        .await;
                         report.settled_ids.push(item.id.clone());
                         finding(&mut report, &item.project, "landed", &item.id, &item.reason);
                         let mut event = work_item_event(EventType::WorkItemSettled, trigger, &item)

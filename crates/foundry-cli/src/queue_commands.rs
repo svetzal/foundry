@@ -470,6 +470,8 @@ mod tests {
         let mut settled = item("wi_preserved", "alpha", WorkItemState::Preserved, 2_000);
         settled.trace_id = Some("a".repeat(32));
         settled.disposition = Some(WorkDisposition {
+            task_branch: None,
+            branch_cleanup: Vec::new(),
             verdict: Some("remainder".to_string()),
             landed_commit: None,
             preservation_ref: Some("foundry/wip".to_string()),

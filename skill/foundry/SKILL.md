@@ -670,8 +670,23 @@ nonempty set of commits whose patches are all matched by `git cherry`, settles
 `landed`. Its `landed_commit` is the verified trunk commit and its reason is
 exactly `superseded by <commit>`. The appended `work_item_settled` event carries
 that item's exact id, project and original trace. Objective, submission origin,
-`resumes` and prior preservation evidence remain intact; no preserved ref,
-bundle or worktree is deleted.
+`resumes` and prior preservation evidence remain intact.
+
+Once an item settles landed, Foundry deletes only its recorded task branch
+locally and its recorded preservation branch locally and on origin, best-effort.
+Each deletion requires fresh ancestry or patch-equivalence proof against the
+registered trunk and refuses branches checked out in any worktree. A changed
+ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
+unlanded items in any registered project sharing the repository are retained.
+Ownership compares exact refs across repository slugs and shared Git common
+directories, including separate clones and linked worktrees. The disposition
+and settlement event retain ref names, observed commits and per-ref deletion
+results; deletion failure leaves
+the item landed. Preservation evidence for unlanded work is never deleted.
+Cleanup decides eligibility under the ledger write gate, releases it for all
+Git operations, then reloads under the gate to record outcomes. Concurrent
+ledger updates are retained; a changed state or ref ownership is never
+overwritten by stale cleanup evidence.
 
 This check runs only after actual task landing. Failed, blocked, preserved and
 no-landing task results do not trigger it. It checks only preserved items in
@@ -701,7 +716,7 @@ report; `--offline` is rejected. The canonical `work-reconciler` sentinel uses
 `30 */3 * * *` and pairs `work_reconcile_started` with `work_reconcile_completed`.
 Inventory reports exact IDs, paths, branch refs and registered-trunk status.
 Conservative supersession may settle preserved work without a task landing;
-concurrent owner changes win, and preservation evidence is retained. No cleanup
-or agent invocation occurs. Errors surface as INTERNAL, and anomaly findings
+concurrent owner changes win, and preservation evidence is retained. Landed
+items receive the guarded branch cleanup described above; no agent is invoked. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use
 `FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).

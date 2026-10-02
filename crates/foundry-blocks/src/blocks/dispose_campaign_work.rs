@@ -206,6 +206,8 @@ async fn dispose(
 fn cancellation_disposition(disposal: &Disposal) -> Option<WorkDisposition> {
     let disposed = disposal.worktrees.first()?;
     Some(WorkDisposition {
+        task_branch: None,
+        branch_cleanup: Vec::new(),
         verdict: None,
         landed_commit: None,
         preservation_ref: disposed.preservation_ref.clone(),

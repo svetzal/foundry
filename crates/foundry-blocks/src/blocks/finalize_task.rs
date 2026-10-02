@@ -343,20 +343,6 @@ async fn restore_reviewed_head(shell: &dyn ShellGateway, worktree: &Path, head: 
     run_best_effort(shell, worktree, &["reset", "--hard", head]).await;
 }
 
-async fn cleanup_landed_branch(
-    shell: &dyn ShellGateway,
-    checkout: &Path,
-    worktree: &Path,
-    branch: &str,
-) {
-    remove_workspace(shell, checkout, worktree).await;
-    // Best-effort: the branch has already been fast-forward merged onto
-    // trunk; an undeleted local or remote branch is cosmetic and must not
-    // fail an already-landed task.
-    run_best_effort(shell, checkout, &["branch", "-d", branch]).await;
-    run_best_effort(shell, checkout, &["push", "origin", "--delete", branch]).await;
-}
-
 fn enforce_gate_truth(payload: &TaskReviewedPayload) -> TaskVerdict {
     if payload.verdict.is_complete()
         && payload.gate_results.iter().any(|gate| gate.required && !gate.passed)
@@ -578,7 +564,7 @@ impl TaskBlock for FinalizeTask {
                 .find_project(&project)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
-            let context = payload.context.clone();
+            let mut context = payload.context.clone();
             let (worktree, branch) = match task_location(&context) {
                 Ok(location) => location,
                 Err(detail) => {
@@ -652,17 +638,16 @@ impl TaskBlock for FinalizeTask {
             } else {
                 false
             };
+            context.task_preservation_ref.clone_from(&preservation_ref);
             let preservation_ref = if landed {
                 Some(landed_commit_ref(&*shell, checkout).await?)
             } else {
                 preservation_ref
             };
 
-            if success_needs_cleanup(&verdict, landed) {
-                cleanup_landed_branch(&*shell, checkout, &worktree, branch).await;
-            } else {
-                remove_workspace(&*shell, checkout, &worktree).await;
-            }
+            // Ref deletion belongs to durable ledger settlement, which checks
+            // ownership and fresh trunk proof and records each cleanup result.
+            remove_workspace(&*shell, checkout, &worktree).await;
             let summary = task_summary(&verdict, landed, arrivals.len());
             let mut result =
                 run_completed(&project, landed, summary, preservation_ref, verdict, context);
@@ -671,12 +656,6 @@ impl TaskBlock for FinalizeTask {
             terminal_result(throttle, &result)
         })
     }
-}
-
-/// A branch is disposable once it is merged, or once a complete run proved it
-/// carried nothing to merge. Anything still holding unmerged work is preserved.
-fn success_needs_cleanup(verdict: &TaskVerdict, landed: bool) -> bool {
-    landed || verdict.is_complete()
 }
 
 #[cfg(test)]
@@ -699,7 +678,7 @@ mod tests {
     use super::{FinalizeTask, enforce_gate_truth, may_land};
 
     /// Delegates to `CleanProcessShellGateway` for every command except
-    /// worktree/branch cleanup commands, which it fails outright. Used to
+    /// worktree cleanup commands, which it fails outright. Used to
     /// prove that a failed best-effort cleanup does not fail the task.
     struct CleanupFailsShellGateway;
 
@@ -712,9 +691,7 @@ mod tests {
             env: Option<&'a [(String, String)]>,
             timeout: Option<Duration>,
         ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
-            let is_cleanup = (args.first() == Some(&"worktree") && args.get(1) == Some(&"remove"))
-                || (args.first() == Some(&"branch") && args.get(1) == Some(&"-d"))
-                || (args.first() == Some(&"push") && args.get(2) == Some(&"--delete"));
+            let is_cleanup = args.first() == Some(&"worktree") && args.get(1) == Some(&"remove");
             if is_cleanup {
                 return Box::pin(async move {
                     Ok(CommandResult {
@@ -918,8 +895,8 @@ mod tests {
         assert_eq!(result.events[0].payload["gaps"][0], "queue-explain projection");
         assert!(!worktree.exists(), "merged worktree should be removed");
         assert!(
-            git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
-            "merged task branch should be deleted from origin"
+            !git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "origin ref stays until ledger settlement"
         );
     }
 
@@ -1134,9 +1111,9 @@ mod tests {
         assert!(!worktree.exists(), "landed worktree should be removed");
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
         assert!(
-            git(&checkout, &["ls-remote", "--heads", "origin", "foundry-task/landed-test"])
+            !git(&checkout, &["ls-remote", "--heads", "origin", "foundry-task/landed-test"])
                 .is_empty(),
-            "landed task branch should be deleted from origin"
+            "origin ref stays until ledger settlement"
         );
         assert!(checkout.join("README.md").exists());
         assert!(
@@ -1430,8 +1407,8 @@ mod tests {
         );
         assert!(!shared.worktree.exists());
         assert!(
-            git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
-            "the landed task branch should be deleted from origin"
+            !git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "origin ref stays until ledger settlement"
         );
     }
 

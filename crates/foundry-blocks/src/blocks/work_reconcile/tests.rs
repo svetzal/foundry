@@ -407,6 +407,8 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
         );
         item.state = WorkItemState::Preserved;
         item.disposition = Some(WorkDisposition {
+            task_branch: None,
+            branch_cleanup: Vec::new(),
             preservation_ref: Some("foundry-task/preserved".into()),
             verdict: None,
             landed_commit: None,
@@ -444,6 +446,7 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
         assert_eq!(report.settled_ids, vec![item.id.clone()]);
         let landed = WorkItemStore::load(&ledger).unwrap();
         assert_eq!(landed.items[0].state, WorkItemState::Landed);
+        assert_remote_branch_deleted(&landed.items[0]);
         assert_eq!(
             landed.items[0].disposition.as_ref().unwrap().landed_commit.as_deref(),
             Some(current.as_str())
@@ -474,6 +477,17 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
             if local_ahead { current } else { base }
         );
     }
+}
+
+fn assert_remote_branch_deleted(item: &foundry_sdk::work_item::WorkItem) {
+    assert!(
+        item.disposition
+            .as_ref()
+            .unwrap()
+            .branch_cleanup
+            .iter()
+            .any(|r| r.remote && r.deleted)
+    );
 }
 
 async fn assert_missing_origin(
