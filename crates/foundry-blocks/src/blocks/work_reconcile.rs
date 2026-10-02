@@ -167,6 +167,38 @@ impl ReconcileWork {
                 .errors
                 .push(format!("{} registered trunk {}: {error:#}", project.name, project.branch));
         }
+        let mut trunks = Vec::new();
+        if fetched.is_ok() {
+            if let Ok(commit) = &trunk {
+                trunks.push((
+                    format!("registered trunk refs/heads/{}", project.branch),
+                    commit.clone(),
+                ));
+            }
+            let reference = format!("refs/remotes/origin/{}", project.branch);
+            match verified_commit(checkout, &reference).await {
+                Ok(commit) => {
+                    if let Ok(local) = &trunk
+                        && local != &commit
+                    {
+                        finding(
+                            report,
+                            &project.name,
+                            "informational",
+                            &reference,
+                            &format!(
+                                "trunks differ: refs/heads/{}={local}; {reference}={commit}",
+                                project.branch
+                            ),
+                        );
+                    }
+                    trunks.push((format!("origin trunk {reference}"), commit));
+                }
+                Err(error) => report
+                    .errors
+                    .push(format!("{} origin trunk {reference}: {error:#}", project.name)),
+            }
+        }
         let status = git(checkout, &["status", "--porcelain"]).await?;
         if !status.is_empty() {
             finding(report, &project.name, "dirty_checkout", &project.path, &status);
@@ -192,9 +224,8 @@ impl ReconcileWork {
             ],
         )
         .await?;
-        let (owned_paths, owned_branches, unknown_running) = self
-            .inspect_items(project, items, report, verified, (&trees, &trunk, &fetched))
-            .await;
+        let (owned_paths, owned_branches, unknown_running) =
+            self.inspect_items(project, items, report, verified, (&trees, &trunks)).await;
         let root = self.worktrees.join(crate::workspace::slug(&project.name));
         let directory_root = root.clone();
         let directories = if let Some(directories) =
@@ -248,22 +279,28 @@ impl ReconcileWork {
             if owned_branches.contains(branch) {
                 continue;
             }
-            let trunk_status = match (&trunk, &fetched) {
-                (Ok(trunk), Ok(_)) => {
-                    let result =
-                        git_command(checkout, &["merge-base", "--is-ancestor", hash, trunk])
-                            .await?;
-                    match result.exit_code {
-                        0 => "ancestor of registered trunk".to_string(),
-                        1 => match prove_commit_supersession(checkout, trunk, hash).await {
-                            Ok(_) => "patch-equivalent to registered trunk".to_string(),
-                            Err(error) => format!("not superseded by registered trunk: {error:#}"),
-                        },
-                        _ => format!("unresolved: {}", result.stderr.trim()),
+            let mut trunk_status = "unresolved: trunk or origin observation failed".to_string();
+            let mut failures = Vec::new();
+            for (name, commit) in &trunks {
+                let result =
+                    git_command(checkout, &["merge-base", "--is-ancestor", hash, commit]).await?;
+                match result.exit_code {
+                    0 => {
+                        trunk_status = format!("ancestor of {name}");
+                        break;
                     }
+                    1 => match prove_commit_supersession(checkout, commit, hash).await {
+                        Ok(_) => {
+                            trunk_status = format!("patch-equivalent to {name}");
+                            break;
+                        }
+                        Err(error) => failures.push(format!("not superseded by {name}: {error:#}")),
+                    },
+                    _ => failures
+                        .push(format!("unresolved against {name}: {}", result.stderr.trim())),
                 }
-                _ => "unresolved: trunk or origin observation failed".to_string(),
-            };
+                trunk_status = failures.join("; ");
+            }
             finding(
                 report,
                 &project.name,
@@ -284,7 +321,7 @@ impl ReconcileWork {
         items: &[WorkItem],
         report: &mut WorkReconcileCompletedPayload,
         verified: &mut Vec<(WorkItem, String)>,
-        observations: (&BTreeMap<String, String>, &Result<String>, &Result<String>),
+        observations: (&BTreeMap<String, String>, &[(String, String)]),
     ) -> (BTreeSet<String>, BTreeSet<String>, bool) {
         let mut owned_paths = BTreeSet::new();
         let mut owned_branches = BTreeSet::new();
@@ -300,7 +337,7 @@ impl ReconcileWork {
             report.errors.push(format!("{} running evidence: {error:#}", project.name));
         }
         let checkout = Path::new(&project.path);
-        let (trees, trunk, fetched) = observations;
+        let (trees, trunks) = observations;
         for item in items {
             let disposition = item.disposition.as_ref();
             let recorded_path = disposition.and_then(|d| d.worktree.clone()).or_else(|| {
@@ -359,12 +396,17 @@ impl ReconcileWork {
                         "preserved item has no preservation ref",
                     );
                 }
-                let proof = match (trunk, fetched) {
-                    (Ok(trunk), Ok(_)) => prove_supersession(checkout, trunk, item).await,
-                    _ => Err(anyhow::anyhow!("registered trunk or fetched origin unavailable")),
-                };
-                match proof {
-                    Ok(commit) => verified.push((item.clone(), commit)),
+                match prove_item_against_trunks(checkout, item, trunks).await {
+                    Ok((name, commit)) => {
+                        finding(
+                            report,
+                            &project.name,
+                            "informational",
+                            &item.id,
+                            &format!("superseded by {name} at {commit}"),
+                        );
+                        verified.push((item.clone(), commit));
+                    }
                     Err(error) => finding(
                         report,
                         &project.name,
@@ -377,6 +419,22 @@ impl ReconcileWork {
         }
         (owned_paths, owned_branches, unknown_running)
     }
+}
+
+async fn prove_item_against_trunks(
+    checkout: &Path,
+    item: &WorkItem,
+    trunks: &[(String, String)],
+) -> Result<(String, String)> {
+    ensure!(!trunks.is_empty(), "registered trunk or fetched origin unavailable");
+    let mut failures = Vec::new();
+    for (name, commit) in trunks {
+        match prove_supersession(checkout, commit, item).await {
+            Ok(commit) => return Ok((name.clone(), commit)),
+            Err(error) => failures.push(format!("{name}: {error:#}")),
+        }
+    }
+    Err(anyhow::anyhow!(failures.join("; ")))
 }
 
 async fn git_command(path: &Path, args: &[&str]) -> Result<foundry_sdk::gateway::CommandResult> {

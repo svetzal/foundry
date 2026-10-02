@@ -643,7 +643,11 @@ Foundry already captures rich event data about agent activity — iterations, ma
 The canonical `work-reconciler` sentinel runs at `30 */3 * * *`, emitting
 `work_reconcile_started` for system and paired `work_reconcile_completed`.
 It shares conservative Git supersession proof and `ledger_write_gate`, retains
-all preservation evidence and never invokes cleanup. Orphan, broken, unresolved
-and error findings reach the real ops observation anomaly path. See
+all preservation evidence and never invokes cleanup. After a successful origin
+fetch, supersession can be proved against either the local registered trunk or
+`refs/remotes/origin/<branch>`; findings name the proving trunk and report when
+the two commits differ. Failed fetches or absent origin retain existing behaviour.
+Orphan, broken, unresolved and error findings reach the real ops observation
+anomaly path. See
 `book/src/guide/work-reconciler.md`. `queue reconcile` requires the daemon;
 inspection, fetch, ledger and digest-write failures surface as gRPC INTERNAL.

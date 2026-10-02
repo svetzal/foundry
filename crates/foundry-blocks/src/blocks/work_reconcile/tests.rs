@@ -371,3 +371,197 @@ async fn reconciliation_preserves_bundle_continuation() {
     )
     .await;
 }
+
+async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
+    use foundry_sdk::work_item::{
+        WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore,
+        WorkLane,
+    };
+
+    for patch_equivalent in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (checkout, base, current) =
+            trunk_fixture(root.path(), local_ahead, patch_equivalent).await;
+        let ledger = root.path().join("ledger.json");
+        let mut item = WorkItem::submitted(
+            WorkItemSpec {
+                project: "regression".into(),
+                objective: "preserved deliverable".into(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "regression".into(),
+                trace_id: None,
+            },
+            chrono::Utc::now(),
+        );
+        item.state = WorkItemState::Preserved;
+        item.disposition = Some(WorkDisposition {
+            preservation_ref: Some("foundry-task/preserved".into()),
+            verdict: None,
+            landed_commit: None,
+            worktree: None,
+            worktree_removed: None,
+        });
+        WorkItemStore {
+            version: 1,
+            items: vec![item.clone()],
+        }
+        .save(&ledger)
+        .unwrap();
+        let block = ReconcileWork::new(
+            registry_with_project("regression", checkout.to_str().unwrap()),
+            ledger.clone(),
+            root.path().join("worktrees"),
+            root.path().join("events"),
+            root.path().join("digest"),
+        );
+        let result = block
+            .execute(&make_trigger(
+                foundry_sdk::event::EventType::WorkReconcileStarted,
+                "system",
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let report: WorkReconcileCompletedPayload =
+            result.events.last().unwrap().parse_payload().unwrap();
+        assert!(report.success, "{:?}", report.errors);
+        assert_eq!(report.settled_ids, vec![item.id.clone()]);
+        let landed = WorkItemStore::load(&ledger).unwrap();
+        assert_eq!(landed.items[0].state, WorkItemState::Landed);
+        assert_eq!(
+            landed.items[0].disposition.as_ref().unwrap().landed_commit.as_deref(),
+            Some(current.as_str())
+        );
+        let proving_trunk = if local_ahead {
+            "registered trunk refs/heads/main"
+        } else {
+            "origin trunk refs/remotes/origin/main"
+        };
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.identity == item.id && f.detail.contains(proving_trunk))
+        );
+        assert!(report.findings.iter().any(|f| f.identity.ends_with("foundry-task/orphan")
+            && f.detail.contains(proving_trunk)
+            && f.detail.contains(if patch_equivalent {
+                "patch-equivalent"
+            } else {
+                "ancestor"
+            })));
+        assert!(report.findings.iter().any(|f| f.detail.contains("trunks differ:")
+            && f.detail.contains(&base)
+            && f.detail.contains(&current)));
+        assert_eq!(
+            git(&checkout, &["rev-parse", "main"]).await,
+            if local_ahead { current } else { base }
+        );
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_proves_supersession_with_stale_local_trunk() {
+    isolated_trunk(
+        false,
+        "blocks::work_reconcile::tests::reconciliation_proves_supersession_with_stale_local_trunk",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reconciliation_proves_supersession_with_local_trunk_ahead_of_origin() {
+    isolated_trunk(true, "blocks::work_reconcile::tests::reconciliation_proves_supersession_with_local_trunk_ahead_of_origin").await;
+}
+
+async fn trunk_fixture(
+    root: &Path,
+    local_ahead: bool,
+    patch_equivalent: bool,
+) -> (PathBuf, String, String) {
+    let remote = root.join("remote.git");
+    let producer = root.join("producer");
+    let clone = root.join("clone");
+    git(root, &["init", "--bare", remote.to_str().unwrap()]).await;
+    git(root, &["init", "-b", "main", producer.to_str().unwrap()]).await;
+    git(&producer, &["config", "user.name", "Regression"]).await;
+    git(&producer, &["config", "user.email", "regression@example.test"]).await;
+    std::fs::write(producer.join("base"), "base").unwrap();
+    git(&producer, &["add", "base"]).await;
+    git(&producer, &["commit", "-m", "base"]).await;
+    let base = git(&producer, &["rev-parse", "HEAD"]).await;
+    git(&producer, &["remote", "add", "origin", remote.to_str().unwrap()]).await;
+    git(&producer, &["push", "origin", "main"]).await;
+    git(
+        root,
+        &[
+            "clone",
+            "--branch",
+            "main",
+            remote.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    )
+    .await;
+    git(&producer, &["checkout", "-b", "foundry-task/preserved"]).await;
+    std::fs::write(producer.join("work"), "deliverable").unwrap();
+    git(&producer, &["add", "work"]).await;
+    git(&producer, &["commit", "-m", "preserved work"]).await;
+    let preserved = git(&producer, &["rev-parse", "HEAD"]).await;
+    git(&producer, &["branch", "foundry-task/orphan"]).await;
+    git(&producer, &["checkout", "main"]).await;
+    if patch_equivalent {
+        git(&producer, &["cherry-pick", "--no-commit", &preserved]).await;
+        git(&producer, &["commit", "-m", "equivalent work"]).await;
+    } else {
+        git(&producer, &["merge", "--ff-only", &preserved]).await;
+    }
+    let current = git(&producer, &["rev-parse", "main"]).await;
+    if patch_equivalent {
+        assert_ne!(current, preserved);
+    }
+    git(
+        &producer,
+        &[
+            "push",
+            "origin",
+            "foundry-task/preserved",
+            "foundry-task/orphan",
+        ],
+    )
+    .await;
+    let checkout = if local_ahead {
+        producer
+    } else {
+        git(&producer, &["push", "origin", "main"]).await;
+        clone
+    };
+    (checkout, base, current)
+}
+
+async fn isolated_trunk(local_ahead: bool, name: &str) {
+    if std::env::var_os("RECONCILE_TRUNK_CHILD").is_some() {
+        assert_supersession_uses_either_trunk(local_ahead).await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let global = root.path().join("gitconfig");
+    std::fs::write(&global, "").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env("RECONCILE_TRUNK_CHILD", "1")
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

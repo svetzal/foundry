@@ -28,7 +28,10 @@ async fn output(path: &Path, args: &[&str]) -> Result<String> {
 pub(super) async fn verified_commit(path: &Path, reference: &str) -> Result<String> {
     ensure!(!reference.trim().is_empty(), "missing preservation ref");
     if !valid_hash(reference) {
-        ensure!(reference.starts_with("refs/heads/"), "not an exact branch or commit");
+        ensure!(
+            reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/origin/"),
+            "not an exact branch or commit"
+        );
         output(path, &["check-ref-format", reference]).await?;
     }
     let commit = output(

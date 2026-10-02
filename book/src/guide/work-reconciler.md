@@ -33,7 +33,9 @@ item IDs, full paths and refs:
 - Orphan Foundry directories and Git worktree registrations, with their branch,
   registration and directory status.
 - Orphan local and origin task branches, their commit and ancestry status against
-  the registered trunk. A branch-only fetch refreshes origin tracking refs and
+  either the local registered trunk or its freshly fetched origin tracking branch.
+  Findings name the trunk that proves supersession and report differing trunk
+  commits. A branch-only fetch refreshes origin tracking refs and
   prunes stale origin tracking branches first.
 - Broken item workspace references and unresolved preservation or inspection
   evidence. Unmatched patches and ambiguous heads keep obligations open.
@@ -46,9 +48,13 @@ its possible workspace is not declared orphaned.
 
 Preserved work settles `landed` only when the existing conservative Git proof
 shows it is an ancestor of trunk, or all its non-merge commits have equivalent
-patches on trunk (`git cherry`). Shallow history, missing objects, divergent local
-and remote heads, ambiguous bundles and unmatched patches remain open by exact
-ID. The settlement records the verified trunk commit and exact reason
+patches on trunk (`git cherry`). After a successful origin fetch, either the local
+registered trunk (`refs/heads/<branch>`) or `refs/remotes/origin/<branch>` can
+provide that proof: a stale checkout does not hide landed work, and local work
+ahead of origin still counts. With no origin or a failed fetch, existing
+behaviour is retained; stale tracking refs are never used as proof.
+Shallow history, missing objects, divergent local and remote preservation heads,
+ambiguous bundles and unmatched patches remain open by exact ID. The settlement records the verified trunk commit and exact reason
 `superseded by <commit>`, retaining submission, continuation and preservation
 fields. Its `work_item_settled` event stays on the original trace.
 
