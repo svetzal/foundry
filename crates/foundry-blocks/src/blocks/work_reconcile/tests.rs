@@ -98,14 +98,17 @@ impl ShellGateway for InterleavedShell {
                 let profile = std::env::var("RECONCILE_GIT_PROFILE").unwrap();
                 let global = std::env::var("GIT_CONFIG_GLOBAL").unwrap();
                 let settings = match profile.as_str() {
-                    "global" => "[fetch]\npruneTags = true\n[remote \"origin\"]\ntagOpt = --tags\n",
+                    "global" => {
+                        "[fetch]\nprune = true\npruneTags = true\n[remote \"origin\"]\ntagOpt = --tags\n"
+                    }
                     "no-tags" => {
-                        "[fetch]\npruneTags = true\n[remote \"origin\"]\npruneTags = true\ntagOpt = --no-tags\n"
+                        "[fetch]\nprune = true\npruneTags = true\n[remote \"origin\"]\nprune = true\npruneTags = true\ntagOpt = --no-tags\n"
                     }
                     _ => "",
                 };
                 std::fs::write(&global, settings).unwrap();
                 if profile == "origin" {
+                    git(cwd, &["config", "remote.origin.prune", "true"]).await;
                     git(cwd, &["config", "remote.origin.pruneTags", "true"]).await;
                     git(cwd, &["config", "remote.origin.tagOpt", "--tags"]).await;
                 }
@@ -131,6 +134,7 @@ impl ShellGateway for InterleavedShell {
                         "global"
                     };
                     assert!(config.contains(scope));
+                    assert!(config.contains("prune=true"));
                     assert!(config.contains("prunetags=true"));
                     assert!(config.contains("remote.origin.tagopt="));
                 }
@@ -228,7 +232,7 @@ async fn fixture(root: &Path) -> Fixture {
     assert_ne!(trunk, preserved);
     git(&checkout, &["update-ref", "refs/remotes/origin/stale", &base]).await;
     git(&checkout, &["update-ref", "refs/remotes/origin/competitor", &base]).await;
-    // A configured tracking refresh must change competitor, and prune stale.
+    // A configured tracking refresh must change competitor, but retain stale.
     assert_eq!(git(&checkout, &["rev-parse", "refs/remotes/origin/competitor"]).await, base);
     std::fs::write(checkout.join("content"), "dirty checkout retained").unwrap();
     std::fs::create_dir(root.join("events")).unwrap();
@@ -305,7 +309,7 @@ async fn scenario(mode: &str) {
         )
         .await,
         format!(
-            "refs/remotes/origin/competitor {competitor}\nrefs/remotes/origin/main {trunk}\nrefs/remotes/origin/preserved {preserved}"
+            "refs/remotes/origin/competitor {competitor}\nrefs/remotes/origin/main {trunk}\nrefs/remotes/origin/preserved {preserved}\nrefs/remotes/origin/stale {base}"
         )
     );
     assert!(!root.join("ledger.json").exists());
@@ -378,10 +382,17 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
         WorkLane,
     };
 
-    for patch_equivalent in [false, true] {
+    for (patch_equivalent, missing_origin) in [(false, false), (true, false), (false, true)] {
         let root = tempfile::tempdir().unwrap();
         let (checkout, base, current) =
             trunk_fixture(root.path(), local_ahead, patch_equivalent).await;
+        if missing_origin {
+            // Retain a stale tracking trunk that would falsely prove landing.
+            git(&checkout, &["fetch", "origin"]).await;
+            git(&checkout, &["update-ref", "refs/remotes/origin/main", &current]).await;
+            git(&root.path().join("remote.git"), &["update-ref", "-d", "refs/heads/main"]).await;
+            git(&checkout, &["config", "remote.origin.prune", "true"]).await;
+        }
         let ledger = root.path().join("ledger.json");
         let mut item = WorkItem::submitted(
             WorkItemSpec {
@@ -425,6 +436,10 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
             .unwrap();
         let report: WorkReconcileCompletedPayload =
             result.events.last().unwrap().parse_payload().unwrap();
+        if missing_origin {
+            assert_missing_origin(&report, &checkout, &ledger, &item, &current, local_ahead).await;
+            continue;
+        }
         assert!(report.success, "{:?}", report.errors);
         assert_eq!(report.settled_ids, vec![item.id.clone()]);
         let landed = WorkItemStore::load(&ledger).unwrap();
@@ -458,6 +473,32 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
             git(&checkout, &["rev-parse", "main"]).await,
             if local_ahead { current } else { base }
         );
+    }
+}
+
+async fn assert_missing_origin(
+    report: &WorkReconcileCompletedPayload,
+    checkout: &Path,
+    ledger: &Path,
+    item: &foundry_sdk::work_item::WorkItem,
+    current: &str,
+    local_ahead: bool,
+) {
+    use foundry_sdk::work_item::{WorkItemState, WorkItemStore};
+
+    assert!(report.errors.iter().any(|error| error.contains("not observed by this fetch")));
+    assert_eq!(git(checkout, &["rev-parse", "refs/remotes/origin/main"]).await, current);
+    let stored = WorkItemStore::load(ledger).unwrap();
+    if local_ahead {
+        assert_eq!(report.settled_ids, vec![item.id.clone()]);
+        assert_eq!(stored.items[0].state, WorkItemState::Landed);
+        assert!(report.findings.iter().any(|finding| {
+            finding.identity == item.id
+                && finding.detail.contains("registered trunk refs/heads/main")
+        }));
+    } else {
+        assert!(report.settled_ids.is_empty());
+        assert_eq!(stored.items[0].state, WorkItemState::Preserved);
     }
 }
 

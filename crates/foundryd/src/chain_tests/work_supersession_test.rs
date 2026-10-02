@@ -717,8 +717,9 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
                 report.findings.iter().any(|f| f.identity == "refs/heads/foundry-task/unlanded"
                     && f.detail.contains("unmatched patches"))
             );
-            assert!(!report.findings.iter().any(|f| f.identity.contains("foundry-task/stale")
-                || f.identity == active_root.to_str().unwrap()
+            assert!(has("orphan_branch", "refs/remotes/origin/foundry-task/stale"));
+            assert_eq!(hash(&checkout, "refs/remotes/origin/foundry-task/stale"), trunk);
+            assert!(!report.findings.iter().any(|f| f.identity == active_root.to_str().unwrap()
                 || f.identity == active_id));
             assert!(
                 report
@@ -731,7 +732,7 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
                     })
             );
             assert_eq!(report.orphan_worktrees, 1);
-            assert_eq!(report.orphan_branches, 3);
+            assert_eq!(report.orphan_branches, 4);
             let digest = std::fs::read_to_string(report.digest_path.as_ref().unwrap()).unwrap();
             assert_eq!(digest, report.markdown);
             assert!(digest.contains(&preserved.id));
