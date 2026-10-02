@@ -143,13 +143,15 @@ impl ReconcileWork {
     ) -> Result<()> {
         let checkout = Path::new(&project.path);
         // Startup and continuation resolve FETCH_HEAD after their own fetch.
-        // Inventory must leave it and local tags intact, including when global
-        // or origin configuration enables tag fetching or pruning.
+        // Inventory must leave it, stale tracking refs and local tags intact,
+        // including when global or origin configuration enables pruning.
         let fetched = git(
             checkout,
             &[
                 "fetch",
-                "--prune",
+                "--no-prune",
+                "--porcelain",
+                "--verbose",
                 "--no-write-fetch-head",
                 "--no-tags",
                 "--no-prune-tags",
@@ -168,7 +170,7 @@ impl ReconcileWork {
                 .push(format!("{} registered trunk {}: {error:#}", project.name, project.branch));
         }
         let mut trunks = Vec::new();
-        if fetched.is_ok() {
+        if let Ok(output) = &fetched {
             if let Ok(commit) = &trunk {
                 trunks.push((
                     format!("registered trunk refs/heads/{}", project.branch),
@@ -176,7 +178,17 @@ impl ReconcileWork {
                 ));
             }
             let reference = format!("refs/remotes/origin/{}", project.branch);
-            match verified_commit(checkout, &reference).await {
+            // Porcelain reports even up-to-date refs. A retained tracking ref
+            // absent from this fetch must never become supersession evidence.
+            let observed = output.lines().find_map(|line| {
+                let fields: Vec<_> = line.get(1..)?.split_whitespace().collect();
+                (fields.len() == 3 && fields[2] == reference).then(|| fields[1])
+            });
+            let origin_trunk = match observed {
+                Some(commit) => verified_commit(checkout, commit).await,
+                None => Err(anyhow::anyhow!("not observed by this fetch")),
+            };
+            match origin_trunk {
                 Ok(commit) => {
                     if let Ok(local) = &trunk
                         && local != &commit
