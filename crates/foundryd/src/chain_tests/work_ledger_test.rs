@@ -746,6 +746,8 @@ fn preserved_parent(checkout: &Path) -> WorkItem {
     parent.reason = "prior remainder".to_string();
     parent.settled_at = Some(chrono::Utc::now());
     parent.disposition = Some(foundry_sdk::work_item::WorkDisposition {
+        task_branch: None,
+        branch_cleanup: Vec::new(),
         verdict: Some("remainder".to_string()),
         preservation_ref: Some("preserved-work".to_string()),
         landed_commit: None,
@@ -757,8 +759,68 @@ fn preserved_parent(checkout: &Path) -> WorkItem {
 
 #[tokio::test]
 async fn resume_generated_client_runs_preserved_tree_and_settles_exact_parent_on_landing() {
+    if std::env::var_os("FOUNDRY_RESUME_CLEANUP_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "chain_tests::work_ledger_test::resume_generated_client_runs_preserved_tree_and_settles_exact_parent_on_landing", "--nocapture"])
+            .env("FOUNDRY_RESUME_CLEANUP_CHILD", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     for source in ["local", "remote", "bundle"] {
         assert_resume_landing(source).await;
+    }
+}
+
+fn assert_resume_branch_cleanup(
+    checkout: &Path,
+    source: &str,
+    landed: &WorkItem,
+    child_item: &WorkItem,
+) {
+    let child_disposition = child_item.disposition.as_ref().unwrap();
+    assert!(
+        child_disposition.branch_cleanup.iter().any(|r| !r.remote && r.deleted),
+        "{source}: {child_disposition:?}"
+    );
+    let task_branch = child_disposition.task_branch.as_deref().unwrap();
+    assert!(!git_ok(
+        Some(checkout),
+        &["show-ref", "--verify", &format!("refs/heads/{task_branch}")]
+    ));
+    if source == "remote" {
+        // The isolated fixture has a pushable origin. The parent's durable ref
+        // disappears after the child lands, while the name stays in the ledger.
+        let remote = Command::new("git")
+            .current_dir(checkout)
+            .args([
+                "ls-remote",
+                "--heads",
+                "origin",
+                "refs/heads/preserved-work",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            landed
+                .disposition
+                .as_ref()
+                .unwrap()
+                .branch_cleanup
+                .iter()
+                .any(|r| r.remote && r.deleted)
+        );
+        assert!(remote.status.success());
+        assert!(remote.stdout.is_empty());
     }
 }
 
@@ -826,6 +888,7 @@ async fn assert_resume_landing(source: &str) {
     let child_item = store.find(&child.id).unwrap();
     assert_eq!(landed.state, WorkItemState::Landed);
     assert_eq!(child_item.state, WorkItemState::Landed);
+    assert_resume_branch_cleanup(&checkout, source, landed, child_item);
     assert_eq!(store.find(&sibling.id), Some(&sibling));
     assert_eq!(landed.origin, parent.origin);
     assert_eq!(

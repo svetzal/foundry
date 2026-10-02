@@ -204,6 +204,12 @@ async fn assert_supersession(proof: &str, source: &str) {
     let mut expected = preserved.clone();
     expected.settle_landed(&format!("superseded by {commit}"), landed.settled_at.unwrap());
     expected.disposition.as_mut().unwrap().landed_commit = Some(commit.clone());
+    let cleanup = &landed.disposition.as_ref().unwrap().branch_cleanup;
+    assert!(
+        cleanup.iter().all(|ref_result| !ref_result.deleted),
+        "shared evidence must be retained"
+    );
+    expected.disposition.as_mut().unwrap().branch_cleanup = cleanup.clone();
     assert_eq!(landed, &expected);
     let task = store.items.iter().find(|item| item.trace_id.as_ref() == Some(&trace)).unwrap();
     assert_eq!(task.state, WorkItemState::Landed);
@@ -749,6 +755,12 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
             let mut expected = preserved.clone();
             expected.settle_landed(&format!("superseded by {trunk}"), landed.settled_at.unwrap());
             expected.disposition.as_mut().unwrap().landed_commit = Some(trunk.clone());
+            let cleanup = &landed.disposition.as_ref().unwrap().branch_cleanup;
+            assert!(
+                cleanup.iter().all(|ref_result| !ref_result.deleted),
+                "shared evidence must be retained"
+            );
+            expected.disposition.as_mut().unwrap().branch_cleanup = cleanup.clone();
             assert_eq!(landed, &expected);
             let evidence = foundry_sdk::work_item_events::read_work_item_events(
                 &dir.path().join("events"),

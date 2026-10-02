@@ -643,7 +643,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 The canonical `work-reconciler` sentinel runs at `30 */3 * * *`, emitting
 `work_reconcile_started` for system and paired `work_reconcile_completed`.
 It shares conservative Git supersession proof and `ledger_write_gate`, retains
-all preservation evidence and never invokes cleanup. After a successful origin
+preservation evidence and performs guarded cleanup only for landed items. After a successful origin
 fetch, supersession can be proved against either the local registered trunk or
 `refs/remotes/origin/<branch>`; findings name the proving trunk and report when
 the two commits differ. Failed fetches or absent origin retain existing behaviour.
@@ -651,3 +651,19 @@ Orphan, broken, unresolved and error findings reach the real ops observation
 anomaly path. See
 `book/src/guide/work-reconciler.md`. `queue reconcile` requires the daemon;
 inspection, fetch, ledger and digest-write failures surface as gRPC INTERNAL.
+
+Once an item settles landed, Foundry deletes only its recorded task branch
+locally and its recorded preservation branch locally and on origin, best-effort.
+Each deletion requires fresh ancestry or patch-equivalence proof against the
+registered trunk and refuses branches checked out in any worktree. A changed
+ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
+unlanded items in any registered project sharing the repository are retained.
+Ownership compares exact refs across repository slugs and shared Git common
+directories, including separate clones and linked worktrees. The disposition
+and settlement event retain ref names, observed commits and per-ref deletion
+results; deletion failure leaves
+the item landed. Preservation evidence for unlanded work is never deleted.
+Cleanup decides eligibility under the ledger write gate, releases it for all
+Git operations, then reloads under the gate to record outcomes. Concurrent
+ledger updates are retained; a changed state or ref ownership is never
+overwritten by stale cleanup evidence.

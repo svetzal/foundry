@@ -148,6 +148,7 @@ pub mod triage_core;
 mod triage_maintenance;
 mod validate;
 mod watch_pipeline;
+mod work_branch_cleanup;
 mod work_ledger;
 mod work_supersession;
 mod write_commit_digest;

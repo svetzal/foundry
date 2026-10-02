@@ -411,6 +411,9 @@ fn assert_parent_outcome(parent: &WorkItem, child: &WorkItem, store: &WorkItemSt
     let mut expected = parent.disposition.clone().unwrap();
     expected.landed_commit = child.disposition.as_ref().unwrap().landed_commit.clone();
     assert!(expected.landed_commit.is_some());
+    let cleanup = &current.disposition.as_ref().unwrap().branch_cleanup;
+    assert!(cleanup.iter().any(|r| !r.remote && r.deleted));
+    expected.branch_cleanup = cleanup.clone();
     assert_eq!(current.disposition, Some(expected));
 }
 

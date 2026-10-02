@@ -83,6 +83,8 @@ fn seeded_ledger() -> WorkItemStore {
         5_000,
     );
     preserved.disposition = Some(WorkDisposition {
+        task_branch: None,
+        branch_cleanup: Vec::new(),
         verdict: "remainder".to_string().into(),
         landed_commit: None,
         preservation_ref: Some("foundry/majors/serde".to_string()),

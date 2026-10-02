@@ -166,6 +166,10 @@ pub struct LoopContext {
     pub task_worktree: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_branch: Option<String>,
+    /// Exact branch or bundle created by task preservation before landing.
+    /// Retained separately from the terminal's legacy landing-commit field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_preservation_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
     /// Where an agent run whose commits Foundry pushes (maintain, iterate,
@@ -215,6 +219,10 @@ impl LoopContext {
                 .get("task_worktree")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            task_preservation_ref: payload
+                .get("task_preservation_ref")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             task_branch: payload
                 .get("task_branch")
                 .and_then(serde_json::Value::as_str)

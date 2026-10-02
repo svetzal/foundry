@@ -158,19 +158,41 @@ impl WorkLane {
     }
 }
 
+/// Deletion evidence for an owned branch after its work reached trunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchCleanup {
+    /// Exact branch ref examined.
+    pub reference: String,
+    /// Commit observed before deletion, retained even after the ref is gone.
+    pub commit: Option<String>,
+    /// Whether this is the origin ref rather than the local ref.
+    pub remote: bool,
+    /// Whether the guarded deletion succeeded.
+    pub deleted: bool,
+    /// Why the ref was retained when cleanup could not succeed.
+    pub error: Option<String>,
+}
+
 /// How a settled [`WorkItem`] ended.
 ///
 /// The trace id is deliberately *not* repeated here: it is known at submission
 /// and lives once, on [`WorkItem::trace_id`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkDisposition {
+    /// The task branch owned by this item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_branch: Option<String>,
+    /// Observed cleanup results, also carried by the settlement event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_cleanup: Vec<BranchCleanup>,
     /// The reviewer's typed verdict tag (see [`TaskVerdict::tag`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
     /// The trunk commit the work landed as, when it landed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed_commit: Option<String>,
-    /// The durable ref (branch or `bundle:<path>`) holding unlanded work.
+    /// The durable preservation ref (branch or `bundle:<path>`), retained
+    /// as historical evidence after landing and any guarded branch deletion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preservation_ref: Option<String>,
     /// The isolated worktree the work ran in.
@@ -366,6 +388,8 @@ impl WorkItem {
         self.reason = one_line(&reason);
         self.settled_at = Some(at);
         self.disposition = Some(WorkDisposition {
+            task_branch: result.context.task_branch.clone(),
+            branch_cleanup: Vec::new(),
             verdict: Some(result.verdict.tag().to_string()),
             landed_commit: if result.landed {
                 result.preservation_ref.clone()
@@ -373,7 +397,7 @@ impl WorkItem {
                 None
             },
             preservation_ref: if result.landed {
-                None
+                result.context.task_preservation_ref.clone()
             } else {
                 result.preservation_ref.clone()
             },
@@ -1169,6 +1193,8 @@ mod tests {
         item.settle_cancelled(
             "superseded by the rewrite",
             Some(WorkDisposition {
+                task_branch: None,
+                branch_cleanup: Vec::new(),
                 verdict: None,
                 landed_commit: None,
                 preservation_ref: Some("foundry-task/alpha-tidy-c3-abcdef".to_string()),

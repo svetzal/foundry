@@ -710,7 +710,7 @@ the running agent process is killed, and the cycle's worktree is left orphaned
 because normal finalization never ran. Foundry then disposes of that worktree
 according to `--discard-work` — preserving the work to a branch or bundle by
 default, or deleting the worktree and its local branch when asked. A remote
-branch pushed by an earlier cycle is never deleted; it is the audit trail for
+branch pushed by an earlier cycle is retained until its owning item lands; it is the audit trail for
 work that did reach a durable ref.
 
 `--discard-work` requires `--now`, because a graceful cancellation has already
