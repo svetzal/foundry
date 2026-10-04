@@ -22,6 +22,8 @@ pub struct StageReport {
     pub output_tokens: u64,
     pub known_list_usd: f64,
     pub unpriced_models: BTreeSet<String>,
+    #[serde(default)]
+    pub pricing_limitations: BTreeSet<String>,
 }
 
 mod formation;
@@ -192,31 +194,7 @@ pub fn aggregate(campaign: &Campaign, events: &[Value]) -> CampaignReport {
         {
             stage.elapsed_ms += u64::try_from((end - start).num_milliseconds()).unwrap_or(0);
         }
-        if let Some(models) = finish["usage"]["models"].as_array() {
-            for model in models {
-                stage.input_tokens += model["input_tokens"].as_u64().unwrap_or(0);
-                stage.cached_input_tokens += model["cache_read_tokens"].as_u64().unwrap_or(0);
-                stage.cache_write_tokens += model["cache_write_tokens"].as_u64().unwrap_or(0);
-                stage.output_tokens += model["output_tokens"].as_u64().unwrap_or(0);
-            }
-        } else {
-            stage.unmeasured_sessions += 1;
-        }
-        if finish["cost"]["list_usd"].as_f64().is_none()
-            && let Some(models) = finish["usage"]["models"].as_array()
-        {
-            stage.unpriced_models.extend(
-                models
-                    .iter()
-                    .map(|model| model["model"].as_str().unwrap_or("unknown").to_string()),
-            );
-        }
-        stage.known_list_usd += finish["cost"]["list_usd"].as_f64().unwrap_or(0.0);
-        if let Some(models) = finish["cost"]["unpriced_models"].as_array() {
-            stage
-                .unpriced_models
-                .extend(models.iter().filter_map(Value::as_str).map(str::to_string));
-        }
+        add_terminal_accounting(stage, finish);
     }
     report
         .formation_sessions
@@ -271,6 +249,39 @@ fn initial_report(campaign: &Campaign, events: &[Value]) -> CampaignReport {
     }
 }
 
+fn add_terminal_accounting(stage: &mut StageReport, finish: &Value) {
+    if let Some(models) = finish["usage"]["models"].as_array() {
+        for model in models {
+            stage.input_tokens += model["input_tokens"].as_u64().unwrap_or(0);
+            stage.cached_input_tokens += model["cache_read_tokens"].as_u64().unwrap_or(0);
+            stage.cache_write_tokens += model["cache_write_tokens"].as_u64().unwrap_or(0);
+            stage.output_tokens += model["output_tokens"].as_u64().unwrap_or(0);
+        }
+    } else {
+        stage.unmeasured_sessions += 1;
+    }
+    if finish["cost"]["list_usd"].as_f64().is_none()
+        && let Some(models) = finish["usage"]["models"].as_array()
+    {
+        stage.unpriced_models.extend(
+            models
+                .iter()
+                .map(|model| model["model"].as_str().unwrap_or("unknown").to_string()),
+        );
+    }
+    stage.known_list_usd += finish["cost"]["list_usd"].as_f64().unwrap_or(0.0);
+    if let Some(limitations) = finish["cost"]["pricing_limitations"].as_array() {
+        stage
+            .pricing_limitations
+            .extend(limitations.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    if let Some(models) = finish["cost"]["unpriced_models"].as_array() {
+        stage
+            .unpriced_models
+            .extend(models.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+}
+
 fn text(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_owned()
 }
@@ -294,7 +305,7 @@ mod tests {
             start,
             json!({"event_type":"agent_session_ended","payload":{"session_id":"s","ended_at":"2026-09-30T12:00:02Z",
                 "usage":{"models":[{"input_tokens":10,"cache_read_tokens":100,"output_tokens":4,"reasoning_tokens":2}]},
-                "cost":{"list_usd":0.0,"unpriced_models":["unknown-model"]}}}),
+                "cost":{"list_usd":0.125,"unpriced_models":["unknown-model"],"pricing_limitations":["processing tier unknown"]}}}),
             json!({"event_type":"agent_session_started","project":"system","trace_id":"t","payload":{"session_id":"digest","tier":"deep"}}),
             json!({"event_type":"agent_session_started","project":"p","trace_id":"t","payload":{"session_id":"missing","access":"full"}}),
             json!({"event_type":"agent_session_ended","payload":{"session_id":"missing"}}),
@@ -308,6 +319,8 @@ mod tests {
             (10, 100, 4)
         );
         assert!(formation.unpriced_models.contains("unknown-model"));
+        assert!((formation.known_list_usd - 0.125).abs() < f64::EPSILON);
+        assert!(formation.pricing_limitations.contains("processing tier unknown"));
         assert_eq!(report.stages["execution"].unmeasured_sessions, 1);
         assert_eq!(report.inferred_stage_sessions, 1);
         assert!(!report.stages.contains_key("review"));

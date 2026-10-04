@@ -378,6 +378,8 @@ example and the limits of each measurement.
 Older session records lack an explicit stage. Their role is inferred from access
 and model tier, and the report gives the count of inferred sessions. Missing
 usage means unmeasured spend. A partial list-price estimate is not total cost.
+The report shows known list USD and billing dimensions missing from the
+transcript. See [Inference costs](inference-costs.md) for rates and limits.
 
 Formation runs before the first task and after each result that needs a new
 objective or completion evaluation. Thus one campaign with N tasks normally has

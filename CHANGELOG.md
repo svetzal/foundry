@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Inference costing includes the configured Claude 5.1/5.5 and GPT-6 models,
+  with their published cache rates verified on 2026-10-04. Recognised old seed
+  entries refresh without overwriting custom rates. Sonnet 5 uses the current
+  $2/$10 price after 2026-08-31 and retains historical accounting before it.
+- Codex cache writes are priced separately from fresh input. Model lookup accepts
+  OpenCode prefixes and OpenAI dated snapshots. Campaign reports show known
+  list USD and identify missing billing dimensions instead of presenting an
+  incomplete estimate as total cost. Provider-reported cost remains authoritative.
+
 ## [0.41.1] - 2026-10-01
 
 ### Fixed

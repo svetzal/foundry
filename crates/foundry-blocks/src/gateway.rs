@@ -460,8 +460,17 @@ pub(crate) fn price_session(
     // Read the book per session rather than caching it: rates are runtime data
     // an operator edits between runs, and a session ends rarely enough that a
     // few-KB read is irrelevant next to the inference that preceded it.
-    let book =
-        RateBook::load(&paths::token_rates_path()).unwrap_or_else(|_| RateBook::default_seed());
+    let mut book = match RateBook::load(&paths::token_rates_path()) {
+        Ok(book) => book,
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => RateBook::default_seed(),
+        Err(error) => {
+            tracing::warn!(%error, "token rate book unreadable; using published defaults");
+            RateBook::default_seed()
+        }
+    };
+    // Refresh recognised seed entries in memory too, so a session need not
+    // wait for a daemon restart to receive new defaults. Overrides survive.
+    token_rates::merge_default_seed_into(&mut book);
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let cost = token_rates::estimate(&usage, &book, &today);
 

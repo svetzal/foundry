@@ -22,6 +22,7 @@
 - [Strategic Iteration](guide/strategic-iteration.md)
 - [Maintenance Workflow](guide/maintenance-workflow.md)
 - [Dependency Update Policy](guide/dependency-update-policy.md)
+- [Inference costs](guide/inference-costs.md)
 - [Tasks and Campaigns](guide/campaigns.md)
   - [Context-mixer2 formation audit](guide/campaign-formation-audit.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)

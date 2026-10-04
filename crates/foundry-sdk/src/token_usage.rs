@@ -22,9 +22,9 @@
 //!
 //! Normalized here so downstream pricing never has to ask:
 //!
-//! - `input_tokens` is always **fresh** input — cache reads excluded. Anthropic
-//!   already reports it that way; `OpenAI` reports a total that *includes* cached
-//!   input, so the cached portion is subtracted on the way in.
+//! - `input_tokens` is always **fresh** input: cache reads and writes excluded.
+//!   Anthropic already reports it that way; `OpenAI` includes both in total
+//!   input, so both are subtracted on the way in.
 //! - `reasoning_tokens` is a **subset** of `output_tokens`, not an addition to
 //!   it. Both vendors bill reasoning at the output rate, so pricing must use
 //!   `output_tokens` alone and treat reasoning as informational.
@@ -93,6 +93,10 @@ pub struct SessionUsage {
     /// this share. Defaults to `0.0` (all 5-minute) when unreported.
     #[serde(default)]
     pub cache_write_1h_share: f64,
+    /// Whether cache-write counts were explicitly reported, including zero.
+    /// Older Codex summaries omit them; omission is not evidence of no writes.
+    #[serde(default)]
+    pub cache_write_tokens_reported: bool,
     /// Which provider shape this came from.
     pub source: UsageSource,
 }
@@ -195,6 +199,7 @@ fn parse_claude_result(value: &serde_json::Value) -> Option<SessionUsage> {
         models,
         provider_cost_usd: value.get("total_cost_usd").and_then(serde_json::Value::as_f64),
         cache_write_1h_share,
+        cache_write_tokens_reported: true,
         source: UsageSource::ClaudeResult,
     })
 }
@@ -202,21 +207,25 @@ fn parse_claude_result(value: &serde_json::Value) -> Option<SessionUsage> {
 fn parse_codex_turn(value: &serde_json::Value, model_hint: Option<&str>) -> Option<SessionUsage> {
     let usage = value.get("usage")?;
     let cached = u64_at(usage, "/cached_input_tokens");
-    // OpenAI's `input_tokens` is the total including cached; normalize to fresh.
+    // OpenAI includes both cache reads and writes in total input. Each token
+    // bills at exactly one input rate, so exclude both from fresh input.
     let total_input = u64_at(usage, "/input_tokens");
+    let writes = u64_at(usage, "/cache_write_input_tokens");
 
     Some(SessionUsage {
         models: vec![ModelTokens {
             model: model_hint.unwrap_or_default().to_string(),
-            input_tokens: total_input.saturating_sub(cached),
+            input_tokens: total_input.saturating_sub(cached).saturating_sub(writes),
             output_tokens: u64_at(usage, "/output_tokens"),
             cache_read_tokens: cached,
-            // Codex does not bill or report a separate cache-write category.
-            cache_write_tokens: 0,
+            cache_write_tokens: writes,
             reasoning_tokens: u64_at(usage, "/reasoning_output_tokens"),
         }],
         provider_cost_usd: None,
         cache_write_1h_share: 0.0,
+        cache_write_tokens_reported: usage
+            .get("cache_write_input_tokens")
+            .is_some_and(serde_json::Value::is_u64),
         source: UsageSource::CodexTurn,
     })
 }
@@ -245,6 +254,22 @@ pub fn aggregate(sessions: &[SessionUsage]) -> BTreeMap<String, ModelTokens> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_cache_write_counts_are_exclusive_and_omission_is_unknown() {
+        let parse = |extra: &str| {
+            parse_transcript_str(&format!(
+            "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":100,\"cached_input_tokens\":40,\"output_tokens\":5{extra}}}}}"), Some("gpt-6.1-sol")).unwrap()
+        };
+        let writes = parse(",\"cache_write_input_tokens\":20");
+        assert!(writes.cache_write_tokens_reported);
+        assert_eq!(writes.models[0].input_tokens, 40);
+        assert_eq!(writes.models[0].cache_write_tokens, 20);
+        assert_eq!(writes.total_tokens(), 105);
+        assert!(parse(",\"cache_write_input_tokens\":0").cache_write_tokens_reported);
+        assert!(!parse("").cache_write_tokens_reported);
+        assert!(!parse(",\"cache_write_input_tokens\":null").cache_write_tokens_reported);
+    }
 
     const CLAUDE_RESULT: &str = r#"{"type":"result","total_cost_usd":0.0718422,"usage":{"input_tokens":42,"cache_creation_input_tokens":24744,"cache_read_input_tokens":194572,"output_tokens":571,"cache_creation":{"ephemeral_1h_input_tokens":24744,"ephemeral_5m_input_tokens":0}},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":42,"outputTokens":571,"cacheReadInputTokens":194572,"cacheCreationInputTokens":24744,"costUSD":0.0718422}}}"#;
 
