@@ -569,8 +569,8 @@ fn load_or_seed_agent_config(path: &std::path::Path) -> Result<AgentConfigStore>
     }
 }
 
-/// Seed the token price book on first start, and additively fill in any model
-/// added since. Mirrors [`load_or_seed_agent_config`].
+/// Seed the token price book on first start, fill missing models and refresh
+/// recognised old defaults. Mirrors [`load_or_seed_agent_config`].
 ///
 /// Rates are runtime data an operator edits between runs, so nothing here is
 /// held in memory — the gateway reads the file when it prices a session. This
@@ -583,7 +583,7 @@ fn seed_token_rates(path: &std::path::Path) {
                 if let Err(e) = book.save(path) {
                     tracing::warn!(error = %e, path = %path.display(), "could not persist merged token rates");
                 } else {
-                    tracing::info!(path = %path.display(), "filled missing token rates from default seed");
+                    tracing::info!(path = %path.display(), "updated token rates from default seed");
                 }
             }
         }

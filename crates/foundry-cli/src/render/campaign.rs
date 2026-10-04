@@ -192,13 +192,29 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
             stage.running_sessions,
             stage.unmeasured_sessions
         );
+        let partial = stage.unmeasured_sessions > 0
+            || stage.running_sessions > 0
+            || !stage.unpriced_models.is_empty()
+            || !stage.pricing_limitations.is_empty();
+        let _ = writeln!(
+            out,
+            "  Known list estimate ${:.4}{}",
+            stage.known_list_usd,
+            if partial {
+                " (partial, not total spend)"
+            } else {
+                ""
+            }
+        );
         if !stage.unpriced_models.is_empty() {
             let _ = writeln!(
                 out,
-                "  Unpriced: {} (known list estimate ${:.4}; partial, not total spend)",
-                stage.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", "),
-                stage.known_list_usd
+                "  Unpriced: {}",
+                stage.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", ")
             );
+        }
+        for limitation in &stage.pricing_limitations {
+            let _ = writeln!(out, "  Pricing limitation: {limitation}");
         }
     }
     for session in &report.formation_sessions {
@@ -250,6 +266,33 @@ mod tests {
     use foundry_sdk::campaign::{CampaignBudget, CampaignStatus, OwnerDecision};
 
     use super::*;
+
+    #[test]
+    fn cost_reports_show_known_usd_and_missing_billing_dimensions() {
+        use foundry_sdk::campaign::report::{CampaignReport, StageReport};
+        let mut data: CampaignReport = serde_json::from_value(serde_json::json!({
+            "name":"costs", "status":"active", "cycles_dispatched":1, "cycles_landed":0,
+            "stage_limits":{}, "writable_repositories":[], "external_completion_reasons":[],
+            "inferred_stage_sessions":0, "incomplete_log_lines":0, "stages":{}
+        }))
+        .unwrap();
+        data.stages.insert(
+            "formation".into(),
+            StageReport {
+                sessions: 1,
+                known_list_usd: 2.34,
+                pricing_limitations: ["request sizes unknown".into()].into(),
+                ..StageReport::default()
+            },
+        );
+        let rendered = report(&data);
+        assert!(rendered.contains("Known list estimate $2.3400 (partial, not total spend)"));
+        assert!(rendered.contains("Pricing limitation: request sizes unknown"));
+        data.stages.get_mut("formation").unwrap().pricing_limitations.clear();
+        assert!(!report(&data).contains("partial, not total spend"));
+        data.stages.get_mut("formation").unwrap().unmeasured_sessions = 1;
+        assert!(report(&data).contains("partial, not total spend"));
+    }
 
     fn campaign_fixture() -> Campaign {
         Campaign {

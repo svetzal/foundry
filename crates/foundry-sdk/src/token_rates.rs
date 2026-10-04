@@ -29,24 +29,18 @@
 //! split only per session, not per model or per request — so a session mixing
 //! both is apportioned rather than counted.
 //!
-//! This matters less than it looks. Where the provider reports its own cost
-//! (all Claude sessions), [`CostEstimate::best_usd`] returns that number and
-//! the list figure is only a cross-check. The list figure is load-bearing for
-//! Codex, which reports no cost — and Codex bills no cache-write category at
-//! all, so the approximation does not apply there.
+//! Where the provider reports its own cost, [`CostEstimate::best_usd`] prefers
+//! that figure. Codex reports counts, so its list estimate assumes standard
+//! processing. Missing cache-write counts and request context sizes are exposed
+//! as pricing limitations rather than treated as proof that no surcharge applies.
 //!
 //! ## Effective dating
 //!
-//! A rate may carry `until`, an ISO date after which it stops applying, plus a
-//! `then` successor, so introductory and negotiated rates expire on their own
-//! date rather than silently pricing next month's work at last month's number.
-//! [`ModelRate::on`] resolves the rate in force on a given date.
-//!
-//! The seed uses no dated rates. Anthropic publishes introductory pricing for
-//! Claude Sonnet 5 through 2026-08-31, but the provider's own reported cost
-//! across 168 real sessions on 2026-08-04 tracks standard pricing instead — so
-//! seeding the introductory rate would understate a third of the estate's spend.
-//! Set a dated rate in the runtime book if an account actually receives one.
+//! A rate may carry `until`, an inclusive ISO date, and a `then` successor.
+//! [`ModelRate::on`] resolves the rate in force on a given date. Sonnet 5 keeps
+//! Foundry's historical $3/$15 rate through 2026-08-31 and uses the vendor's
+//! now-standard $2/$10 from 2026-09-01. Seed merge refreshes only recognised
+//! untouched old defaults; operator overrides survive.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -76,6 +70,10 @@ pub struct ModelRate {
     /// Cache writes at the 1-hour TTL.
     #[serde(default)]
     pub cache_write_1h: f64,
+    /// Input-token threshold above which request-level long-context rates apply.
+    /// Session totals cannot determine whether an individual request crossed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_context_threshold: Option<u64>,
     /// ISO date this rate was last verified against the vendor's page.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub as_of: String,
@@ -111,18 +109,18 @@ impl ModelRate {
 
 const ANTHROPIC_SRC: &str = "https://platform.claude.com/docs/en/about-claude/pricing";
 const OPENAI_SRC: &str = "https://developers.openai.com/api/docs/pricing";
-const VERIFIED: &str = "2026-08-04";
+const VERIFIED: &str = "2026-10-04";
 
 fn anthropic(input: f64, output: f64) -> ModelRate {
-    // Anthropic's cache rates are fixed multiples of base input: 0.1x read,
-    // 1.25x 5-minute write, 2x 1-hour write. Deriving rather than transcribing
-    // keeps a hand-edited base rate internally consistent.
+    // Most Anthropic models use these multiples. Newer models override the
+    // cache-read price below; write rates remain 1.25x (5m) and 2x (1h).
     ModelRate {
         input,
         output,
         cache_read: input * 0.1,
         cache_write_5m: input * 1.25,
         cache_write_1h: input * 2.0,
+        long_context_threshold: None,
         as_of: VERIFIED.to_string(),
         source: ANTHROPIC_SRC.to_string(),
         until: None,
@@ -135,9 +133,10 @@ fn openai(input: f64, cached_input: f64, output: f64) -> ModelRate {
         input,
         output,
         cache_read: cached_input,
-        // OpenAI does not bill a separate cache-write category.
+        // Models before GPT-5.6 have no separate cache-write charge.
         cache_write_5m: 0.0,
         cache_write_1h: 0.0,
+        long_context_threshold: None,
         as_of: VERIFIED.to_string(),
         source: OPENAI_SRC.to_string(),
         until: None,
@@ -200,7 +199,7 @@ impl RateBook {
         })
     }
 
-    /// The baked-in seed: published list rates verified 2026-08-04.
+    /// The baked-in seed: published standard list rates verified 2026-10-04.
     #[must_use]
     pub fn default_seed() -> Self {
         let mut rates = BTreeMap::new();
@@ -217,21 +216,21 @@ impl RateBook {
         rates.insert("claude-opus-4-5".to_string(), anthropic(5.0, 25.0));
         rates.insert("claude-fable-5".to_string(), anthropic(10.0, 50.0));
 
-        // Sonnet 5 is seeded at standard $3/$15, not the published introductory
-        // $2/$10 that runs through 2026-08-31.
-        //
-        // The introductory rate is real and documented, but it is not what this
-        // estate is billed. Checked against 168 real sessions on 2026-08-04: the
-        // provider's own reported cost matches standard pricing (ratio 0.94)
-        // and disagrees with introductory pricing by 40%. Seeding the
-        // introductory rate would understate every Sonnet 5 session by a third
-        // — an error in the dangerous direction, since it makes the work look
-        // cheaper than it is.
-        //
-        // If an account does get introductory pricing, set it in the runtime
-        // book with `until: "2026-08-31"` and a `then` successor; the machinery
-        // is there and tested.
-        rates.insert("claude-sonnet-5".to_string(), anthropic(3.0, 15.0));
+        let mut fable = anthropic(10.0, 50.0);
+        fable.cache_read = 0.25;
+        rates.insert("claude-fable-5-1".to_string(), fable);
+        let mut opus = anthropic(4.0, 20.0);
+        opus.cache_read = 0.20;
+        rates.insert("claude-opus-5-5".to_string(), opus);
+        rates.insert("claude-sonnet-5-5".to_string(), anthropic(2.0, 10.0));
+
+        // Preserve Foundry's historical accounting; the vendor made $2/$10
+        // standard after the introductory period ended on 2026-08-31.
+        let mut sonnet = anthropic(3.0, 15.0);
+        sonnet.as_of = "2026-08-04".to_string();
+        sonnet.until = Some("2026-08-31".to_string());
+        sonnet.then = Some(Box::new(anthropic(2.0, 10.0)));
+        rates.insert("claude-sonnet-5".to_string(), sonnet);
 
         rates.insert("claude-sonnet-4-6".to_string(), anthropic(3.0, 15.0));
         rates.insert("claude-sonnet-4-5".to_string(), anthropic(3.0, 15.0));
@@ -241,6 +240,30 @@ impl RateBook {
         rates.insert("gpt-5.5".to_string(), openai(5.0, 0.50, 30.0));
         rates.insert("gpt-5.4".to_string(), openai(2.50, 0.25, 15.0));
         rates.insert("gpt-5.4-mini".to_string(), openai(0.75, 0.075, 4.50));
+
+        for id in ["gpt-5.5", "gpt-5.4"] {
+            if let Some(rate) = rates.get_mut(id) {
+                rate.long_context_threshold = Some(272_000);
+                rate.source = format!("https://developers.openai.com/api/docs/models/{id}");
+            }
+        }
+        if let Some(rate) = rates.get_mut("gpt-5.4-mini") {
+            rate.source = "https://developers.openai.com/api/docs/models/gpt-5.4-mini".to_string();
+        }
+        for (id, input, cached, output) in [
+            ("gpt-6-astra", 10.0, 1.0, 50.0),
+            ("gpt-6.1-sol", 2.0, 0.10, 10.0),
+            ("gpt-6-sol", 2.0, 0.20, 10.0),
+            ("gpt-6-luna", 0.10, 0.01, 0.50),
+        ] {
+            let mut rate = openai(input, cached, output);
+            // OpenAI cache writes are mutually exclusive with fresh input,
+            // with one rate regardless of retention duration.
+            rate.cache_write_5m = input * 1.25;
+            rate.cache_write_1h = input * 1.25;
+            rate.long_context_threshold = Some(272_000);
+            rates.insert(id.to_string(), rate);
+        }
 
         Self {
             version: TOKEN_RATES_VERSION,
@@ -268,7 +291,24 @@ impl RateBook {
 
 /// Strip a bracketed mode suffix and a trailing `-YYYYMMDD` snapshot date.
 fn normalize_model_id(model: &str) -> String {
+    let model = model
+        .strip_prefix("openai/")
+        .or_else(|| model.strip_prefix("anthropic/"))
+        .unwrap_or(model);
     let without_mode = model.split('[').next().unwrap_or(model).trim_end();
+    // OpenAI snapshots use -YYYY-MM-DD; Claude snapshots use -YYYYMMDD.
+    if let Some((head, date)) = without_mode.rsplit_once('-')
+        && date.len() == 2
+        && date.bytes().all(|b| b.is_ascii_digit())
+        && let Some((head, month)) = head.rsplit_once('-')
+        && month.len() == 2
+        && month.bytes().all(|b| b.is_ascii_digit())
+        && let Some((base, year)) = head.rsplit_once('-')
+        && year.len() == 4
+        && year.bytes().all(|b| b.is_ascii_digit())
+    {
+        return base.to_string();
+    }
     let parts: Vec<&str> = without_mode.rsplitn(2, '-').collect();
     if let [tail, head] = parts.as_slice()
         && tail.len() == 8
@@ -279,7 +319,8 @@ fn normalize_model_id(model: &str) -> String {
     without_mode.to_string()
 }
 
-/// Seed merge: add rates missing from `book` without touching hand-edited ones.
+/// Seed merge: add missing models and refresh recognised old defaults.
+/// Hand-edited rates, including dates and successors, are retained.
 ///
 /// Returns `true` when anything changed, so the caller can persist. New models
 /// therefore reach existing installs automatically, while a rate an operator
@@ -287,12 +328,39 @@ fn normalize_model_id(model: &str) -> String {
 pub fn merge_default_seed_into(book: &mut RateBook) -> bool {
     let mut changed = false;
     for (model, rate) in RateBook::default_seed().rates {
-        if let std::collections::btree_map::Entry::Vacant(slot) = book.rates.entry(model) {
-            slot.insert(rate);
-            changed = true;
+        match book.rates.entry(model.clone()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(rate);
+                changed = true;
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if is_old_default(&model, slot.get()) {
+                    slot.insert(rate);
+                    changed = true;
+                }
+            }
         }
     }
     changed
+}
+
+// Exact old seed fingerprint, including provenance and every billing field.
+// Matching a price alone would overwrite negotiated or operator-owned rates.
+fn is_old_default(model: &str, rate: &ModelRate) -> bool {
+    let expected = match model {
+        "claude-sonnet-5" | "claude-sonnet-4-6" | "claude-sonnet-4-5" => anthropic(3.0, 15.0),
+        "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6"
+        | "claude-opus-4-5" => anthropic(5.0, 25.0),
+        "claude-fable-5" => anthropic(10.0, 50.0),
+        "claude-haiku-4-5" => anthropic(1.0, 5.0),
+        "gpt-5.5" => openai(5.0, 0.50, 30.0),
+        "gpt-5.4" => openai(2.50, 0.25, 15.0),
+        "gpt-5.4-mini" => openai(0.75, 0.075, 4.50),
+        _ => return false,
+    };
+    let mut expected = expected;
+    expected.as_of = "2026-08-04".to_string();
+    *rate == expected
 }
 
 /// How much of a cost figure rests on evidence rather than assumption.
@@ -303,8 +371,8 @@ pub enum CostBasis {
     ProviderReported,
     /// Computed from token counts times published list rates.
     ListPriced,
-    /// Tokens are known but at least one model is missing from the price book,
-    /// so the figure understates. Never present this as a total.
+    /// Models or billing dimensions are missing. The list figure is incomplete
+    /// and must not be presented as a total.
     PartiallyPriced,
     /// Tokens were spent but no usage record survived. Amount unknown.
     Unmeasured,
@@ -325,13 +393,17 @@ pub struct CostEstimate {
     /// low, and is the signal that the price book needs an entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unpriced_models: Vec<String>,
+    /// Billing dimensions the transcript cannot resolve. The list figure uses
+    /// standard short-context rates when processing tier/context is absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pricing_limitations: Vec<String>,
     /// Total tokens across every billed category.
     pub total_tokens: u64,
 }
 
 impl CostEstimate {
-    /// The figure to bill or budget against: the provider's own number when it
-    /// gave one, else the list-priced estimate.
+    /// The provider's own number when given, else the list-priced estimate.
+    /// Inspect `basis` and `pricing_limitations` before treating it as a total.
     #[must_use]
     pub fn best_usd(&self) -> Option<f64> {
         self.provider_usd.or(self.list_usd)
@@ -345,6 +417,7 @@ impl CostEstimate {
             provider_usd: None,
             basis: CostBasis::Unmeasured,
             unpriced_models: Vec::new(),
+            pricing_limitations: Vec::new(),
             total_tokens: 0,
         }
     }
@@ -382,10 +455,21 @@ pub fn price_model(
 pub fn estimate(usage: &SessionUsage, book: &RateBook, date: &str) -> CostEstimate {
     let mut list = 0.0;
     let mut unpriced = Vec::new();
+    let mut limitations = Vec::new();
 
     for tokens in &usage.models {
         if let Some(rate) = book.lookup(&tokens.model) {
             list += price_model(tokens, rate, usage.cache_write_1h_share, date);
+            if usage.source == crate::token_usage::UsageSource::CodexTurn {
+                let current = rate.on(date);
+                if current.cache_write_5m > 0.0 && !usage.cache_write_tokens_reported {
+                    limitations.push(format!("{}: cache-write tokens not reported", tokens.model));
+                }
+                if let Some(threshold) = current.long_context_threshold {
+                    limitations.push(format!("{}: request sizes not reported; rates above {threshold} input tokens cannot be resolved from session totals", tokens.model));
+                }
+                limitations.push(format!("{}: standard processing assumed; processing tier and regional premiums not reported", tokens.model));
+            }
         } else {
             // An empty id means the provider never named its model (Codex
             // without a tier hint); a non-empty one is simply missing from the
@@ -399,10 +483,10 @@ pub fn estimate(usage: &SessionUsage, book: &RateBook, date: &str) -> CostEstima
         }
     }
 
-    let basis = if !unpriced.is_empty() {
-        CostBasis::PartiallyPriced
-    } else if usage.provider_cost_usd.is_some() {
+    let basis = if usage.provider_cost_usd.is_some() {
         CostBasis::ProviderReported
+    } else if !unpriced.is_empty() || !limitations.is_empty() {
+        CostBasis::PartiallyPriced
     } else {
         CostBasis::ListPriced
     };
@@ -412,6 +496,7 @@ pub fn estimate(usage: &SessionUsage, book: &RateBook, date: &str) -> CostEstima
         provider_usd: usage.provider_cost_usd,
         basis,
         unpriced_models: unpriced,
+        pricing_limitations: limitations,
         total_tokens: usage.total_tokens(),
     }
 }
@@ -427,6 +512,7 @@ mod tests {
             provider_cost_usd: provider,
             cache_write_1h_share: share,
             source: UsageSource::ClaudeResult,
+            cache_write_tokens_reported: true,
         }
     }
 
@@ -437,6 +523,141 @@ mod tests {
             output_tokens: output,
             ..ModelTokens::default()
         }
+    }
+
+    #[test]
+    fn configured_and_default_models_have_verified_rates() {
+        let book = RateBook::default_seed();
+        for provider in [
+            crate::gateway::AgentProvider::Claude,
+            crate::gateway::AgentProvider::Codex,
+            crate::gateway::AgentProvider::Opencode,
+        ] {
+            for model in crate::agent_config::ProviderModels::default_for(provider).models.values()
+            {
+                assert!(book.lookup(model).is_some(), "missing default {model}");
+            }
+        }
+        for (id, input, read, write, hour, output) in [
+            ("claude-fable-5-1", 10.0, 0.25, 12.5, 20.0, 50.0),
+            ("claude-opus-5-5", 4.0, 0.20, 5.0, 8.0, 20.0),
+            ("claude-sonnet-5-5", 2.0, 0.20, 2.5, 4.0, 10.0),
+            ("gpt-6-astra", 10.0, 1.0, 12.5, 12.5, 50.0),
+            ("gpt-6.1-sol", 2.0, 0.10, 2.5, 2.5, 10.0),
+            ("gpt-6-luna", 0.10, 0.01, 0.125, 0.125, 0.50),
+        ] {
+            let rate = book.lookup(id).unwrap().on(VERIFIED);
+            assert_eq!(
+                (
+                    rate.input,
+                    rate.cache_read,
+                    rate.cache_write_5m,
+                    rate.cache_write_1h,
+                    rate.output
+                ),
+                (input, read, write, hour, output),
+                "{id}"
+            );
+            let mut t = tokens(id, 1_000_000, 1_000_000);
+            t.cache_read_tokens = 1_000_000;
+            t.cache_write_tokens = 1_000_000;
+            assert!(
+                (price_model(&t, rate, 0.0, VERIFIED) - (input + read + write + output)).abs()
+                    < 1e-9
+            );
+        }
+    }
+
+    #[test]
+    fn openai_snapshots_and_opencode_prefixes_preserve_exact_overrides() {
+        let mut book = RateBook::default_seed();
+        assert_eq!(book.lookup("openai/gpt-5.5-2026-04-23"), book.lookup("gpt-5.5"));
+        assert_eq!(
+            book.lookup("anthropic/claude-haiku-4-5-20251001[1m]"),
+            book.lookup("claude-haiku-4-5")
+        );
+        book.rates.insert("openai/gpt-5.5".into(), openai(1.0, 0.1, 2.0));
+        assert!((book.lookup("openai/gpt-5.5").unwrap().input - 1.0).abs() < f64::EPSILON);
+        assert!(book.lookup("gpt-6.2-sol").is_none());
+    }
+
+    #[test]
+    fn old_seed_refresh_is_idempotent_and_preserves_customisation() {
+        let mut old = anthropic(3.0, 15.0);
+        old.as_of = "2026-08-04".into();
+        let mut book = RateBook {
+            version: TOKEN_RATES_VERSION,
+            rates: BTreeMap::from([("claude-sonnet-5".into(), old.clone())]),
+        };
+        assert!(merge_default_seed_into(&mut book));
+        assert!(
+            (book.lookup("claude-sonnet-5").unwrap().on(VERIFIED).input - 2.0).abs() < f64::EPSILON
+        );
+        assert!(
+            (book.lookup("claude-sonnet-5").unwrap().on("2026-08-31").input - 3.0).abs()
+                < f64::EPSILON
+        );
+        assert!(!merge_default_seed_into(&mut book));
+        for custom in [
+            {
+                let mut r = old.clone();
+                r.input = 2.9;
+                r
+            },
+            {
+                let mut r = old.clone();
+                r.source = "https://example.org/contract".into();
+                r
+            },
+            {
+                let mut r = old.clone();
+                r.until = Some("2027-01-01".into());
+                r
+            },
+            {
+                let mut r = old;
+                r.as_of = "2026-09-01".into();
+                r
+            },
+        ] {
+            book.rates.insert("claude-sonnet-5".into(), custom.clone());
+            merge_default_seed_into(&mut book);
+            assert_eq!(book.rates["claude-sonnet-5"], custom);
+        }
+    }
+
+    #[test]
+    fn codex_cache_writes_bill_once_and_missing_dimensions_are_visible() {
+        let book = RateBook::default_seed();
+        let u = crate::token_usage::parse_transcript_str(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000000,"cached_input_tokens":400000,"cache_write_input_tokens":200000,"output_tokens":100000,"reasoning_output_tokens":50000}}"#,
+            Some("gpt-6.1-sol")).unwrap();
+        let estimate = estimate(&u, &book, VERIFIED);
+        // $0.8 fresh + $0.04 read + $0.5 write + $1 output; reasoning included.
+        assert!((estimate.list_usd.unwrap() - 2.34).abs() < 1e-9);
+        assert_eq!(estimate.total_tokens, 1_100_000);
+        assert_eq!(estimate.basis, CostBasis::PartiallyPriced);
+        assert!(estimate.unpriced_models.is_empty());
+        assert!(!estimate.pricing_limitations.iter().any(|s| s.contains("cache-write")));
+        assert!(estimate.pricing_limitations.iter().any(|s| s.contains("session totals")));
+        let u = crate::token_usage::parse_transcript_str(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":10}}"#,
+            Some("gpt-6.1-sol")).unwrap();
+        assert!(
+            super::estimate(&u, &book, VERIFIED)
+                .pricing_limitations
+                .iter()
+                .any(|s| s.contains("cache-write"))
+        );
+    }
+
+    #[test]
+    fn reported_cost_remains_authoritative_with_an_unknown_model() {
+        let u = usage(vec![tokens("unknown", 10, 20)], 0.0, Some(0.25));
+        let cost = estimate(&u, &RateBook::default_seed(), VERIFIED);
+        assert_eq!(cost.basis, CostBasis::ProviderReported);
+        assert_eq!(cost.best_usd(), Some(0.25));
+        assert_eq!(cost.unpriced_models, vec!["unknown"]);
     }
 
     #[test]
@@ -490,11 +711,12 @@ mod tests {
     // reported cost tracks standard pricing, not the published introductory
     // rate. Seeding the introductory rate would understate Sonnet 5 by a third.
     #[test]
-    fn sonnet_5_is_seeded_at_standard_not_introductory_pricing() {
+    fn sonnet_5_uses_current_standard_price_and_keeps_historical_accounting() {
         let book = RateBook::default_seed();
         let rate = book.lookup("claude-sonnet-5").expect("seeded");
-        assert!((rate.input - 3.0).abs() < f64::EPSILON);
-        assert!((rate.output - 15.0).abs() < f64::EPSILON);
+        assert!((rate.on("2026-08-31").input - 3.0).abs() < f64::EPSILON);
+        assert!((rate.on("2026-09-01").input - 2.0).abs() < f64::EPSILON);
+        assert!((rate.on(VERIFIED).output - 10.0).abs() < f64::EPSILON);
     }
 
     #[test]
