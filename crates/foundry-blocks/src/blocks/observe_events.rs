@@ -98,8 +98,7 @@ impl TaskBlock for ObserveEvents {
         trigger.event_type == EventType::OpsDigestStarted
             || trigger
                 .parse_payload::<foundry_sdk::payload::WorkReconcileCompletedPayload>()
-                .ok()
-                .is_some_and(|report| report.has_anomaly())
+                .is_ok_and(|report| report.has_anomaly())
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {

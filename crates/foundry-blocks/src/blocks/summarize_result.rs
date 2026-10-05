@@ -25,10 +25,7 @@ fn accepts_summarize(trigger: &Event) -> bool {
     if has_loop_context(&trigger.payload) {
         return false;
     }
-    trigger
-        .parse_payload::<ProjectCompletedPayload>()
-        .ok()
-        .is_some_and(|p| p.success)
+    trigger.parse_payload::<ProjectCompletedPayload>().is_ok_and(|p| p.success)
 }
 
 impl TaskBlock for SummarizeResult {

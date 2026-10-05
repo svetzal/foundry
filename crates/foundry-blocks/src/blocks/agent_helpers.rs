@@ -202,9 +202,7 @@ fn extract_last_fenced_json_object(s: &str) -> Option<String> {
     }
 
     candidates.into_iter().rev().find(|candidate| {
-        serde_json::from_str::<serde_json::Value>(candidate)
-            .ok()
-            .is_some_and(|value| value.is_object())
+        serde_json::from_str::<serde_json::Value>(candidate).is_ok_and(|value| value.is_object())
     })
 }
 
@@ -247,8 +245,7 @@ fn extract_last_structural_json_object(s: &str) -> Option<String> {
                 {
                     let candidate = &s[start..=idx];
                     if serde_json::from_str::<serde_json::Value>(candidate)
-                        .ok()
-                        .is_some_and(|value| value.is_object())
+                        .is_ok_and(|value| value.is_object())
                     {
                         last_valid = Some(candidate.to_string());
                     }
