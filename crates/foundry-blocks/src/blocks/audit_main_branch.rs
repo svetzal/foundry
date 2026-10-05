@@ -21,10 +21,7 @@ task_block_new! {
 }
 
 fn accepts_audit_main(trigger: &Event) -> bool {
-    trigger
-        .parse_payload::<ReleaseTagAuditedPayload>()
-        .ok()
-        .is_some_and(|p| p.vulnerable)
+    trigger.parse_payload::<ReleaseTagAuditedPayload>().is_ok_and(|p| p.vulnerable)
 }
 
 impl TaskBlock for AuditMainBranch {

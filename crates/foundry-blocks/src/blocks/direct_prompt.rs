@@ -26,10 +26,7 @@ fn accepts_direct_prompt(trigger: &Event) -> bool {
     if workflow != WorkflowType::Task && workflow != WorkflowType::Prompt {
         return false;
     }
-    trigger
-        .parse_payload::<PreflightCompletedPayload>()
-        .ok()
-        .is_some_and(|p| p.all_passed)
+    trigger.parse_payload::<PreflightCompletedPayload>().is_ok_and(|p| p.all_passed)
 }
 
 impl TaskBlock for DirectPrompt {

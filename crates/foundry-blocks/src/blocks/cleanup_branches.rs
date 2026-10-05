@@ -166,8 +166,7 @@ async fn cleanup_stale_worktrees(project: &str, path: &Path, shell: &dyn ShellGa
 fn accepts_cleanup(trigger: &Event) -> bool {
     trigger
         .parse_payload::<ProjectValidationCompletedPayload>()
-        .ok()
-        .is_some_and(|p| p.status == "ok")
+        .is_ok_and(|p| p.status == "ok")
 }
 
 impl TaskBlock for CleanupBranches {

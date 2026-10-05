@@ -17,7 +17,7 @@ use super::TriggerContext;
 pub struct RouteValidationResult;
 
 fn accepts_validate(trigger: &Event) -> bool {
-    trigger.parse_payload::<PreflightCompletedPayload>().ok().is_some_and(|p| {
+    trigger.parse_payload::<PreflightCompletedPayload>().is_ok_and(|p| {
         p.workflow.parse::<WorkflowType>().unwrap_or(WorkflowType::Unknown)
             == WorkflowType::Validate
     })

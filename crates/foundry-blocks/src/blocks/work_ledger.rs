@@ -127,8 +127,7 @@ fn accepts_dispatch(trigger: &Event) -> bool {
     }
     trigger
         .parse_payload::<ExecutionRequestedPayload>()
-        .ok()
-        .is_some_and(|p| !p.prompt.is_empty())
+        .is_ok_and(|p| !p.prompt.is_empty())
 }
 
 /// Records a dispatched unit of work in the ledger, `running`, from the root
