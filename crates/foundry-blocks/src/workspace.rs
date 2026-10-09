@@ -205,6 +205,7 @@ pub(crate) async fn remove_workspace(shell: &dyn ShellGateway, checkout: &Path, 
     // Best-effort: a task already landed (or was preserved) by the time we
     // reach here; a leaked worktree is cleaned up on a later run and must
     // not fail an already-completed task.
+    // Owner removal: FinalizeTask or DisposeCampaignWork finalizes its own workspace.
     run_best_effort(shell, checkout, &["worktree", "remove", &worktree_text]).await;
 }
 
@@ -221,6 +222,7 @@ pub(crate) async fn discard_workspace(
     branch: &str,
 ) {
     let worktree_text = worktree.to_string_lossy().to_string();
+    // Owner removal: DisposeCampaignWork discards its cancelled cycle on operator request.
     run_best_effort(shell, checkout, &["worktree", "remove", "--force", &worktree_text]).await;
     run_best_effort(shell, checkout, &["branch", "-D", branch]).await;
 }
