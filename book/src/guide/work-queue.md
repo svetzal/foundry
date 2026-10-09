@@ -491,3 +491,31 @@ settles verified preserved obligations without deleting their evidence. Orphan,
 broken and unresolved findings, including inspection errors, reach the ops
 anomaly path even below the normal pressure threshold. See the
 [work reconciler guide](work-reconciler.md) for proof and failure semantics.
+
+### Worktree housekeeping after validation
+
+Successful validation runs Cleanup Branches, including during nightly maintenance
+and `foundry validate`. It prunes Git metadata for directories that no longer
+exist. An existing secondary worktree is removed only when it is under that
+project's Foundry worktree root (`FOUNDRY_WORKTREES_DIR`, default
+`~/.foundry/worktrees`), has no submitted, queued or running work-item owner or
+active campaign cycle, has no uncommitted files (including ignored files), and
+has no commits absent from every remote-tracking ref. Cleanup uses ordinary
+`git worktree remove`, without force.
+
+Every retained worktree is named in the validation housekeeping summary and
+structured log, with its reason: outside Foundry ownership, owned by live work,
+or holding unpreserved work. A failed safety check also retains the worktree and
+reports the error. Cleanup reloads the daemon-owned ledger for each deletion and
+releases its write gate and campaign store lock before every Git await. Ownership
+is checked again immediately before each individual removal, after inspecting
+worktree contents. A task is admitted on `ExecutionRequested`, before workspace
+creation on `PlanCompleted`; the worktree path is recorded after `git worktree
+add`. Until that path is known, the live dispatch conservatively protects every
+candidate for its project. Creation refuses an existing path, so a later admission
+cannot adopt the existing worktree that cleanup has selected for removal.
+
+Merged branches still use `git branch -d`. Branches used by live work or recorded
+preservation refs are retained. This housekeeping does not dispose of the
+workspace of a task undergoing review; task finalization remains responsible
+for its own workspace after landing or preservation.

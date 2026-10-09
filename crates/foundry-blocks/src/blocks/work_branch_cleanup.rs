@@ -517,6 +517,7 @@ mod tests {
         std::fs::write(worktree.join("new"), "unlanded").unwrap();
         git(&worktree, &["add", "new"]).await.unwrap();
         git(&worktree, &["commit", "-m", "unlanded"]).await.unwrap();
+        // Test fixture owns the worktree it created.
         git(path, &["worktree", "remove", worktree.to_str().unwrap()]).await.unwrap();
         save(&ledger, &item);
         cleanup(&ledger, Some(&registry), &mut item).await;

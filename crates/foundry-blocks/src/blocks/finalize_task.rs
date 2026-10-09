@@ -617,6 +617,7 @@ impl TaskBlock for FinalizeTask {
                 .await;
                 arrivals = landing.arrivals;
                 if let Some((reason, detail)) = landing.blocked {
+                    // FinalizeTask owns the task workspace it is finalizing.
                     remove_workspace(&*shell, checkout, &worktree).await;
                     let mut result = run_completed(
                         &project,
@@ -647,6 +648,7 @@ impl TaskBlock for FinalizeTask {
 
             // Ref deletion belongs to durable ledger settlement, which checks
             // ownership and fresh trunk proof and records each cleanup result.
+            // FinalizeTask owns the task workspace it is finalizing.
             remove_workspace(&*shell, checkout, &worktree).await;
             let summary = task_summary(&verdict, landed, arrivals.len());
             let mut result =
@@ -1598,6 +1600,7 @@ mod tests {
                 .unwrap(),
             "correction"
         );
+        // Test fixture owns this proof archive; this is not a worktree removal.
         std::fs::remove_dir_all(evidence).unwrap();
     }
 }

@@ -9,6 +9,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Cleanup Branches retains live task and campaign worktrees, operator worktrees,
+  and orphaned worktrees with dirty or unpushed work. Ownership is rechecked
+  against durable state immediately before each removal, with ledger and campaign
+  locks released before Git awaits. Admission precedes workspace creation, but
+  the path is recorded afterwards: live items without workspace evidence protect
+  all project candidates, and creation refuses existing paths. Merged branch
+  cleanup protects live work and recorded preservation refs; task finalization
+  and operator-directed campaign disposal retain ownership of their own removals.
+
 - Inference costing includes the configured Claude 5.1/5.5 and GPT-6 models,
   with their published cache rates verified on 2026-10-04. Recognised old seed
   entries refresh without overwriting custom rates. Sonnet 5 uses the current

@@ -136,6 +136,7 @@ async fn preserve_one(
     }
     match workspace::preserve(shell, worktree, project, branch).await {
         Ok(reference) => {
+            // DisposeCampaignWork owns this cancelled campaign cycle workspace.
             workspace::remove_workspace(shell, checkout, worktree).await;
             (format!("{branch}: preserved at {reference}"), Some(reference))
         }
@@ -175,6 +176,7 @@ async fn dispose(
     let mut disposed = Vec::new();
     for (worktree, branch) in workspaces {
         let preservation_ref = if discard_work {
+            // DisposeCampaignWork owns this cancelled campaign cycle workspace.
             workspace::discard_workspace(shell, checkout, &worktree, &branch).await;
             outcomes.push(format!("{branch}: discarded"));
             None
@@ -531,6 +533,7 @@ mod tests {
                     // Best-effort: this fake stands in for git, and a removal it
                     // cannot perform is not the behaviour under test — the
                     // assertion reads the filesystem either way.
+                    // Disposal fake removes the test-owned cancelled campaign workspace.
                     if let Err(error) = std::fs::remove_dir_all(path) {
                         tracing::warn!(%path, error = %error, "fake worktree removal failed");
                     }

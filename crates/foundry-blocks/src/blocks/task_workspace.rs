@@ -338,6 +338,7 @@ mod tests {
         .unwrap();
         assert_eq!(git(&next.path, &["rev-parse", "HEAD"]), expected_commit);
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), expected_commit);
+        // Test fixture owns the worktree it created.
         git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
         git(&checkout, &["branch", "-d", &next.branch]);
     }
@@ -477,8 +478,10 @@ mod tests {
             "preserved work did not reach the next cycle's worktree"
         );
 
+        // Test fixture owns the worktree it created.
         git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
         git(&checkout, &["branch", "-D", &next.branch]);
+        // Test fixture owns these preservation artifacts; this is not a worktree removal.
         let _ = std::fs::remove_dir_all(foundry_sdk::paths::preserved_dir().join(project));
         let _ = std::fs::remove_dir(next.path.parent().unwrap());
     }
@@ -510,6 +513,7 @@ mod tests {
 
         assert_eq!(git(&next.path, &["rev-parse", "HEAD"]), preserved_commit);
 
+        // Test fixture owns the worktree it created.
         git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
         git(&checkout, &["branch", "-D", &next.branch]);
         let _ = std::fs::remove_dir(next.path.parent().unwrap());
