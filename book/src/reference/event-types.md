@@ -232,16 +232,18 @@ that trace, and a `--now` cancellation settles it `cancelled` (see
 
 ## Work-Item Ledger
 
-The four events of the work-item ledger. They report the same durable record at
-different points in its life, so all four share one payload shape; the event type
+The six events of the work-item ledger. They report the same durable record at
+different points in its life, so all six share one payload shape; the event type
 says which point, and `state` says where the item stands.
 
 | Type                  | Description                                                    |
 | --------------------- | -------------------------------------------------------------- |
-| `work_item_submitted` | A unit of work entered the ledger                              |
+| `work_item_submitted` | A unit of work entered the ledger; paced work arrives `queued` with the reason it waits |
 | `work_item_started`   | An agent started on a ledger item                              |
 | `work_item_settled`   | A ledger item reached a settled state, with its disposition     |
 | `work_item_cancelled` | An operator stopped a ledger item                              |
+| `work_item_held`      | An operator took a queued item out of the scheduler's hands    |
+| `work_item_released`  | An operator returned a held or dependency-blocked item to the queue |
 
 `work_item_started` pairs with `work_item_settled` rather than a
 `work_item_completed`: an item does not *complete*, it settles, into a state
@@ -258,9 +260,11 @@ and by `foundry campaign cancel --now` on the aborted cycle's trace.
 | `objective`   | string            | Task description or campaign objective the work serves                            |
 | `kind`        | string            | `task`, `campaign_cycle`, `maintenance`, `major_upgrade`, `release`, `remediation` |
 | `lane`        | string            | `interactive`, `campaign`, or `maintenance`                                        |
-| `state`       | string            | `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, `cancelled` |
+| `state`       | string            | `submitted`, `queued`, `held`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, `cancelled` |
 | `reason`      | string            | Why the item is in that state, in one line                                        |
 | `origin`      | string            | Opaque submitter text; Foundry never interprets it                                |
+| `depends_on`  | array of string   | The items this one waits on (`--after`); omitted when empty                        |
+| `not_before`  | string (optional) | The earliest time the scheduler may start it                                      |
 | `disposition` | object (optional) | How the item ended; present only on a settlement                                  |
 | `operator_action` | object (optional) | Owner command, hostname/context in `origin`, `previous_state`, `previous_reason`, optional `previous_settled_at`; original submission origin and disposition retained |
 
@@ -273,6 +277,24 @@ and by `foundry campaign cancel --now` on the aborted cycle's trace.
 | `preservation_ref` | string (optional) | Branch or `bundle:<path>` holding unlanded work                  |
 | `worktree`         | string (optional) | The isolated worktree the work ran in                            |
 | `worktree_removed` | bool (optional)   | Whether that worktree was gone by settlement time                |
+
+## Pacing
+
+| Type             | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `pacing_paused`  | An operator paused one or more lanes; nothing in them starts |
+| `pacing_resumed` | An operator resumed one or more lanes                       |
+
+Both are emitted for the project `system`, durable and on Watch, after the
+pause state is saved.
+
+**Payload**
+
+| Field             | Type            | Description                                        |
+| ----------------- | --------------- | -------------------------------------------------- |
+| `lanes`           | array of string | The lanes the request named, in lane order          |
+| `paused`          | array of string | Every paused lane after the change, in lane order   |
+| `operator_origin` | string          | The CLI's hostname and any `--origin` text          |
 
 **`campaign_advance_requested` payload**
 

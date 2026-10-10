@@ -126,13 +126,31 @@ that may still hold an obligation (`preserved`, `needs_decision`, `failed`).
 | `WorkItemStarted`   | Lifecycle start |
 | `WorkItemSettled`   | Domain fact     |
 | `WorkItemCancelled` | Domain fact     |
+| `WorkItemHeld`      | Domain fact     |
+| `WorkItemReleased`  | Domain fact     |
 
 Each carries `item_id`, `project`, `objective`, `kind` (`task`,
 `campaign_cycle`, `maintenance`, `major_upgrade`, `release`, `remediation`),
-`lane` (`interactive`, `campaign`, `maintenance`), `state`, `reason` and
-`origin`; a settlement also carries a `disposition` with the verdict, the
-landed commit or preservation ref, the worktree path and whether it was
-removed.
+`lane` (`interactive`, `campaign`, `maintenance`), `state`, `reason`,
+`origin`, and for paced work `depends_on` and `not_before`; a settlement also
+carries a `disposition` with the verdict, the landed commit or preservation
+ref, the worktree path and whether it was removed.
+
+Task-shaped work (`task`, `campaign_cycle`, `major_upgrade`, a resume child)
+is submitted `queued` with the reason it waits on; `WorkItemStarted` comes
+from the pacing scheduler when the rules allow. `WorkItemHeld` and
+`WorkItemReleased` are `foundry queue hold` and `foundry queue release`.
+
+### Pacing
+
+| Event           | Category    |
+| --------------- | ----------- |
+| `PacingPaused`  | Domain fact |
+| `PacingResumed` | Domain fact |
+
+Emitted for the project `system` by `foundry pacing pause | resume | drain`
+after the pause state is saved; each carries `lanes` (the lanes named),
+`paused` (every paused lane afterwards) and `operator_origin`.
 
 `WorkItemCancelled` is also emitted by `foundry queue close` for open items
 and `foundry queue cancel` for submitted/queued items. These select an exact id,

@@ -690,7 +690,7 @@ stands. This RPC never writes and never takes the ledger write gate.
 insertion order:
 
 1. `running` items, by `started_at` ascending
-2. `submitted` and `queued` items, by `submitted_at` ascending
+2. `submitted`, `queued` and `held` items, by `submitted_at` ascending
 3. Open items (`preserved`, `needs_decision`, `failed`), by `settled_at` descending
 4. Terminal items (`landed`, `cancelled`), by `settled_at` descending
 
@@ -698,8 +698,8 @@ Ties within a group break by `id` ascending. A state filter returns the matching
 items in the same relative order as the unfiltered list.
 
 **Errors:** `INVALID_ARGUMENT` when `state` is a non-empty tag that is not one
-of `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`,
-`failed`, `cancelled`; `FAILED_PRECONDITION` when the ledger contains malformed
+of `submitted`, `queued`, `held`, `running`, `landed`, `preserved`,
+`needs_decision`, `failed`, `cancelled`; `FAILED_PRECONDITION` when the ledger contains malformed
 JSON; `INTERNAL` when the ledger path is unreadable. A missing ledger file, or
 one holding `{"version":1,"items":[]}`, is an empty list rather than an error.
 
@@ -740,7 +740,7 @@ Both return an `item: WorkItem` after owner-directed settlement to `cancelled`.
 `CloseWorkItemRequest` carries `id`, a nonblank `reason`, and nonblank
 `operator_origin`; it accepts only `preserved`, `needs_decision`, `failed`.
 `CancelWorkItemRequest` carries `id` and nonblank `operator_origin`; it accepts
-only `submitted`, `queued` and uses `cancelled by operator` as the reason.
+only `submitted`, `queued`, `held` and uses `cancelled by operator` as the reason.
 
 Validation returns `INVALID_ARGUMENT`, unknown exact ids `NOT_FOUND`, refused
 states and malformed ledgers `FAILED_PRECONDITION`, and I/O faults `INTERNAL`.
@@ -752,10 +752,47 @@ remain intact. `operator_action` records command, operator origin, previous
 state, previous reason and optional previous settlement timestamp. Earlier
 lifecycle events remain unchanged. CLI mutations reject `--offline`.
 
+### `HoldWorkItem` and `ReleaseWorkItem`
+
+Both carry `id` and nonblank `operator_origin` and return an `item: WorkItem`.
+`HoldWorkItem` accepts only a `queued` item and moves it to `held` with the
+reason `held by operator`; the scheduler ignores it until released.
+`ReleaseWorkItem` accepts a `held` item, or one in `needs_decision` because a
+dependency settled some way other than `landed`, and returns it to `queued`:
+the settled dependencies are dropped from `depends_on`, and the recorded
+reason is the scheduler's own verdict for the item as it now stands. Validation,
+error codes, write-gate discipline and `operator_action` follow `CloseWorkItem`;
+the emitted event is `work_item_held` or `work_item_released`, on Watch and in
+the durable log, after the ledger is saved. Neither dispatches or aborts work.
+
+### `GetPacing(GetPacingRequest) → GetPacingResponse`
+
+Return the pacing stage as it stands: the host running cap, how many items
+run, the paused lanes, every running item and every waiting item with its
+reason. Loaded from the ledger and the pacing files on every call; never
+writes and never takes the ledger write gate. Running items are listed oldest
+start first; waiting items in the scheduler's priority order, then held items.
+
+**Response:** `pacing: PacingStatus`.
+
+### `PausePacing` and `ResumePacing`
+
+Both carry `lanes` (lane tags `interactive`, `campaign`, `maintenance`, or
+`all`; empty means every lane) and nonblank `operator_origin`, and return
+`pacing: PacingStatus` after the change. `PausePacing` stops new starts in the
+named lanes; running items are untouched. `ResumePacing` allows starts again
+and the next scheduler tick starts the next eligible item. The pause state is
+saved to `FOUNDRY_PACING_STATE_PATH` through an atomic rename and is in force
+after a restart. An unknown lane is `INVALID_ARGUMENT`; a failed save is
+`INTERNAL` and emits nothing. Each emits `pacing_paused` or `pacing_resumed`
+for the project `system`, durable and on Watch, even when the named lanes were
+already in that state.
+
 ### `ListWorkItemEvents(ListWorkItemEventsRequest) → ListWorkItemEventsResponse`
 
 List one work item's `work_item_*` events (`work_item_submitted`,
-`work_item_started`, `work_item_settled`, `work_item_cancelled`) from the
+`work_item_started`, `work_item_settled`, `work_item_cancelled`,
+`work_item_held`, `work_item_released`) from the
 durable event log under `FOUNDRY_EVENTS_DIR` (one `YYYY-MM.jsonl` file per
 month). Additive to `GetWorkItem`: a caller that never sends this request sees
 exactly the `GetWorkItem` and `ListWorkItems` behaviour it saw before. The
@@ -926,18 +963,39 @@ caller can tell "not recorded" from a recorded empty string or `false`.
 | `submitted_at`     | string          | ISO 8601 timestamp the item entered the ledger                                                               |
 | `started_at`       | optional string | ISO 8601 timestamp an agent started on it; absent when it never started                                      |
 | `settled_at`       | optional string | ISO 8601 timestamp it settled; absent while unsettled                                                        |
-| `state`            | string          | `submitted`, `queued`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, or `cancelled`           |
-| `reason`           | string          | Why it is in that state, in one line                                                                         |
+| `state`            | string          | `submitted`, `queued`, `held`, `running`, `landed`, `preserved`, `needs_decision`, `failed`, or `cancelled`   |
+| `reason`           | string          | Why it is in that state, in one line; for a queued item, the scheduler's current verdict                     |
 | `trace_id`         | optional string | The workflow trace the item belongs to; absent when it carries none                                          |
 | `verdict`          | optional string | Settlement: the reviewer's typed verdict tag                                                                 |
 | `landed_commit`    | optional string | Settlement: the trunk commit the work landed as; absent unless it landed                                     |
 | `preservation_ref` | optional string | Settlement: the durable ref (branch or `bundle:<path>`) holding unlanded work                                |
 | `worktree`         | optional string | Settlement: the isolated worktree the work ran in                                                            |
 | `worktree_removed` | optional bool   | Settlement: whether that worktree was gone by settlement time; absent when the item records no worktree       |
+| `depends_on`       | repeated string | Pacing: the items this one waits on; it starts only once every one has settled `landed`. Empty when none      |
+| `not_before`       | optional string | Pacing: the earliest time the scheduler may start it (ISO 8601); absent when unset                            |
 
 `WorkItem.operator_action` is an optional `WorkItemOperatorAction` message with
-`command`, `origin`, `previous_state`, `previous_reason` and optional
-`previous_settled_at`. Absent on items without an owner action.
+`command` (`close`, `cancel`, `resume`, `hold` or `release`), `origin`,
+`previous_state`, `previous_reason` and optional `previous_settled_at`. Absent
+on items without an owner action.
+
+`ResumeWorkItemRequest` also carries additive `depends_on` (repeated string;
+each must be in the ledger) and `not_before` (ISO 8601 string; empty means at
+once).
+
+### `PacingStatus` and `PacingItem`
+
+| Field           | Type                | Description                                                   |
+| --------------- | ------------------- | ------------------------------------------------------------- |
+| `max_running`   | uint64              | The host running cap from `pacing.json` (default 2)           |
+| `running`       | uint64              | How many items run on this host now                           |
+| `paused_lanes`  | repeated string     | The paused lanes, as lane tags, in lane order                 |
+| `running_items` | repeated PacingItem | Every running item, oldest start first                        |
+| `waiting_items` | repeated PacingItem | Queued items in the scheduler's priority order, then held     |
+
+A `PacingItem` carries `id`, `project`, `repository` (the key the
+per-repository rule uses), `kind`, `lane`, `state`, `reason` and `since`
+(`started_at` for a running item, `submitted_at` for a waiting one).
 
 ### `WorkItemEvent`
 
@@ -947,7 +1005,7 @@ returned by `ListWorkItemEvents`.
 | Field         | Type            | Description                                                                  |
 | ------------- | --------------- | ---------------------------------------------------------------------------- |
 | `id`          | string          | The event's own id                                                           |
-| `event_type`  | string          | `work_item_submitted`, `work_item_started`, `work_item_settled`, or `work_item_cancelled` |
+| `event_type`  | string          | `work_item_submitted`, `work_item_started`, `work_item_settled`, `work_item_cancelled`, `work_item_held`, or `work_item_released` |
 | `occurred_at` | string          | ISO 8601 timestamp the event occurred                                        |
 | `state`       | string          | The item's state as of this event (same vocabulary as `WorkItem.state`)      |
 | `reason`      | string          | Why it was in that state, in one line                                        |

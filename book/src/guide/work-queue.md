@@ -7,7 +7,8 @@ and what still needs me?" without reading raw events, worktrees on disk and
 remote branches.
 
 `foundry queue` is the operator's view of that ledger. The overview, `show` and `open`
-read it; `close` and `cancel` let an owner discharge specific items.
+read it; `close` and `cancel` let an owner discharge specific items; `hold`,
+`release` and `foundry pacing` steer what starts next (see [Pacing](#pacing)).
 
 ## What a work item is
 
@@ -139,7 +140,8 @@ which is why the ledger says an item **settles** rather than completes.
 | State | Meaning | Group |
 |-------|---------|-------|
 | `submitted` | Admitted to the ledger, not yet queued | Queued |
-| `queued` | Waiting to start | Queued |
+| `queued` | Waiting for the scheduler to start it; `reason` says why it waits | Queued |
+| `held` | Taken out of the scheduler's hands by `queue hold` until released | Queued |
 | `running` | An agent is working on it | Running |
 | `preserved` | Work is held on a durable ref for a later cycle | **Open** |
 | `needs_decision` | Work stopped on a question only a person can answer | **Open** |
@@ -152,10 +154,15 @@ which is why the ledger says an item **settles** rather than completes.
 carrying something for you to discharge. `foundry queue open` is exactly that
 set.
 
-Foundry does not currently pace work: an item that reaches the ledger is already
-under way, so `submitted` → `queued` → `running` happen together. The `submitted`
-and `queued` states exist in the model and are rendered, but in practice you will
-rarely catch an item sitting in them.
+Task-shaped work (`task`, `campaign_cycle`, `major_upgrade`, and a `queue
+resume` child) enters the ledger `queued` and starts only when the pacing
+scheduler says it may; its `reason` names what it waits on, or `ready`. Run-shaped
+work (`maintenance`, `release`, `remediation`) is already under way when it is
+recorded, so it goes straight to `running`. The `submitted` state exists in the
+model and is rendered, but in practice you will rarely catch an item in it.
+
+Queued and held items survive a daemon restart as they are: the scheduler reads
+them back off the ledger and picks up where it left off.
 
 ### Daemon restarts settle running items as failed
 
@@ -165,28 +172,31 @@ no agent is. On every start `foundryd` settles each item still `running` as
 long-dead work as running is worse than reporting it as failed, and a failed
 item is visible in `foundry queue open` where you can decide what to do with it.
 
-## The four lifecycle events
+## The six lifecycle events
 
-The ledger emits four events. They are the owner-specified exception to
+The ledger emits six events. They are the owner-specified exception to
 Foundry's `*Started`/`*Completed` pairing rule.
 
 | Event | Meaning |
 |-------|---------|
-| `work_item_submitted` | A unit of work entered the ledger |
+| `work_item_submitted` | A unit of work entered the ledger; for paced work, `state` is `queued` and `reason` says why it waits |
 | `work_item_started` | An agent started on a ledger item |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator stopped a ledger item |
+| `work_item_held` | An operator took a queued item out of the scheduler's hands |
+| `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
 
 `work_item_started` pairs with `work_item_settled` rather than a
 `work_item_completed`, because an item does not *complete* — it settles, into a
 state that may still hold an obligation.
 
-`work_item_cancelled` is emitted by exactly one thing today:
-`foundry campaign cancel <name> --reason … --now`, which stops the in-flight
-cycle outright. It carries the item's id, project, kind, lane, state, reason and
-origin, plus the settlement fields, and it rides the **aborted cycle's** trace
-rather than the cancellation's — so it sits with the rest of the events about
-that unit of work. Like the other three it reaches `foundry watch` and the
+`work_item_cancelled` is emitted by `foundry queue close`, `foundry queue
+cancel`, and `foundry campaign cancel <name> --reason … --now`, which stops the
+in-flight cycle outright and cancels the campaign's queued cycles with it. It
+carries the item's id, project, kind, lane, state, reason and origin, plus the
+settlement fields, and for the aborted cycle it rides the **aborted cycle's**
+trace rather than the cancellation's — so it sits with the rest of the events
+about that unit of work. Like the other five it reaches `foundry watch` and the
 durable JSONL event log.
 
 ## Commands
@@ -195,6 +205,8 @@ durable JSONL event log.
 foundry queue [--source <kind>:<ref>] [--json] [--offline]
 foundry queue show <id> [--json] [--offline]
 foundry queue open [--source <kind>:<ref>] [--json] [--offline]
+foundry queue hold <id> [--origin <text>]
+foundry queue release <id> [--origin <text>]
 ```
 
 ### `foundry queue`
@@ -202,7 +214,7 @@ foundry queue open [--source <kind>:<ref>] [--json] [--offline]
 Prints four groups on one screen, in this order:
 
 1. **Running** — items an agent is working on, by start time.
-2. **Queued** — items in `submitted` or `queued`, by submission time.
+2. **Queued** — items in `submitted`, `queued` or `held`, by submission time.
 3. **Open — needs a person** — `preserved`, `needs_decision` and `failed`,
    newest settlement first.
 4. **Settled (last 20)** — the newest 20 terminal (`landed`, `cancelled`)
@@ -378,9 +390,9 @@ foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
 ```
 
 `close` discharges an open obligation in `preserved`, `needs_decision` or
-`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted` or
-`queued` item and records the reason `cancelled by operator`, without requiring
-a reason argument. Both settle exactly the requested id as `cancelled`.
+`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted`,
+`queued` or `held` item and records the reason `cancelled by operator`, without
+requiring a reason argument. Both settle exactly the requested id as `cancelled`.
 
 Both require the daemon, reject `--offline`, and never fall back to local
 writes. They record this CLI's hostname and optional `--origin` in
@@ -402,14 +414,17 @@ Concurrent requests for one item can succeed only once.
 
 ```bash
 foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work"
+foundry queue resume wi_0123456789abcdef01234567 --after wi_89abcdef0123456789abcdef --not-before 30m
 ```
 
 Owner-directed preserved-work continuation uses `foundry queue resume <id>
-[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
-`preserved` item with a usable preservation ref and a registered project can be
-resumed. Foundry dispatches a new task with the original objective and starts
-from the preserved local branch, remote ref or `bundle:<path>` through the
-existing continuation path. The new record and its lifecycle payloads expose
+[--origin <text>] [--after <id>]... [--not-before <RFC3339|duration>]`. It
+requires a live daemon and refuses `--offline`. Only a `preserved` item with a
+usable preservation ref and a registered project can be resumed. Foundry
+records a new task with the original objective, `queued` for the pacing
+scheduler, that starts from the preserved local branch, remote ref or
+`bundle:<path>` through the existing continuation path. `--after` and
+`--not-before` carry the same meaning as on `foundry task`. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON
 output. Submission identity and the parent's prior evidence remain intact;
 the child records the hostname and optional origin in its `resume` operator
@@ -505,9 +520,130 @@ landing-triggered check.
 
 ## What `queue` does not do
 
-`queue close` and `queue cancel` do not stop running work.
-To stop an in-flight campaign cycle use `foundry campaign cancel <name>
---reason … --now`.
+`queue close`, `queue cancel`, `queue hold` and `queue release` do not stop
+running work. To stop an in-flight campaign cycle use `foundry campaign cancel
+<name> --reason … --now`.
+
+## Pacing
+
+Pacing is the stage between a work item's admission and its start. Every
+task-shaped item (`foundry task`, a campaign cycle, a nightly majors-lane
+upgrade, a `queue resume` child) is recorded `queued` with a reason, and a
+scheduler inside `foundryd` starts it when the rules allow. Run-shaped work is
+not paced, but a running maintenance item still occupies its repository.
+
+### The rules
+
+The scheduler evaluates every queued item on each tick, in this order, and
+starts the first items the rules let through:
+
+1. **One mutating item per repository.** A repository is the registered GitHub
+   slug, or the registered checkout path when there is no slug, so two projects
+   on one slug share a repository. A running item of any kind, maintenance
+   included, occupies it.
+2. **Host running cap.** At most `max_running` items (default 2) run on the
+   host at once, whatever their lane.
+3. **`not_before` has passed.**
+4. **Every `depends_on` item has settled `landed`.**
+5. **The item's lane is not paused.**
+
+Candidates are considered interactive lane first, then oldest submission
+first. A start earlier in a tick counts against the repository and host rules
+for the items after it.
+
+A dependency that can never land is not worth waiting for. When a dependency
+settles any way other than `landed`, or names an id that is not in the ledger,
+the dependent settles `needs_decision` with the reason `waits on <id>, which
+settled <state>` (or `which is not in the ledger`). `foundry queue release <id>`
+returns it to the queue: the settled dependencies are dropped from `depends_on`
+and the item runs regardless of them.
+
+### The reasons
+
+A queued item's `reason` is the scheduler's current verdict, refreshed on every
+tick and visible on `foundry queue` rows, `queue show`, `pacing show` and in
+`--json`:
+
+| Reason | Meaning |
+|--------|---------|
+| `repository busy: wi_…` | That running item occupies the repository |
+| `host at capacity N/N` | The host running cap is reached |
+| `not before <time>` | Its `not_before` has not passed |
+| `waits on wi_…` | That item has not yet settled landed |
+| `lane paused` | Its lane is paused |
+| `ready` | Nothing holds it; the next tick starts it |
+| `held by operator` | `queue hold` took it out of the scheduler's hands |
+
+### Scheduling a task
+
+```bash
+foundry task <project> "<description>" --after wi_a --after wi_b --not-before 2h
+foundry queue resume wi_c --after wi_a --not-before 2026-10-11T09:00:00Z
+```
+
+`--after <id>` (repeatable) adds a dependency; every named id must already be
+in the ledger or the dispatch is refused with `INVALID_ARGUMENT`. `--not-before`
+takes an RFC 3339 timestamp or a duration from now: `90s`, `30m`, `2h`, `1d`.
+`foundry task` waits for its own run exactly as before; the wait now includes
+the time the item spends queued.
+
+### Hold and release
+
+```bash
+foundry queue hold wi_0123456789abcdef01234567 --origin "wait for the review"
+foundry queue release wi_0123456789abcdef01234567
+```
+
+`hold` takes a `queued` item out of the scheduler's hands; it sits `held` with
+the reason `held by operator` until released. `release` returns a held item, or
+one in `needs_decision` over a dependency, to `queued` with the scheduler's
+current verdict as its reason. Both require the daemon, reject `--offline`,
+record this CLI's hostname and optional `--origin` in `operator_action`, and
+emit `work_item_held` / `work_item_released` on Watch and in the durable log.
+`queue cancel` also accepts a held item.
+
+### Pausing lanes
+
+```bash
+foundry pacing show [--json] [--offline]
+foundry pacing pause [--lane interactive|campaign|maintenance|all] [--origin <text>]
+foundry pacing resume [--lane interactive|campaign|maintenance|all] [--origin <text>]
+foundry pacing drain [--timeout <duration>] [--origin <text>]
+```
+
+`pacing show` prints the limits in force, every running item with the
+repository it occupies, every waiting item with its reason in the scheduler's
+priority order, and the paused lanes. `--offline` reads the ledger and the
+pacing files directly when the daemon is stopped.
+
+`pacing pause` stops new starts in a lane (default `all`); running items are
+untouched. `pacing resume` allows starts again, and the next tick starts the
+next eligible item. Both emit `pacing_paused` / `pacing_resumed` for the
+project `system`, durable and on Watch. The pause state is persisted through an
+atomic rename and is in force after a daemon restart.
+
+`pacing drain` pauses every lane, then waits until nothing is running, printing
+each item as it settles, and exits 0 when the daemon is idle. With `--timeout`
+it gives up after that long and exits 1 naming what still runs. It does not
+stop the daemon and does not resume the lanes afterwards: run `pacing resume`
+when you are ready for work to start again.
+
+### The two files
+
+| File | Owner | Shape |
+|------|-------|-------|
+| `~/.foundry/pacing.json` (`FOUNDRY_PACING_PATH`) | You | `{"max_running": 2}`; a missing file means the defaults |
+| `~/.foundry/pacing-state.json` (`FOUNDRY_PACING_STATE_PATH`) | `foundryd` | `{"version": 1, "paused": ["campaign"]}`; written by pause and resume |
+
+A malformed `pacing.json` falls back to the defaults with a warning. A
+malformed state file fails closed: every lane is treated as paused until the
+file is repaired or rewritten by a `pacing resume`.
+
+### What pacing does not do
+
+Per-provider caps, starts-per-hour limits, provider-health gating and dashboard
+controls are out of scope. `pacing drain` does not refuse a daemon stop; it only
+tells you when a stop would interrupt nothing.
 
 ### What `campaign cancel --now` does to the cycle's item
 

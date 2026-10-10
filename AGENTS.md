@@ -179,15 +179,20 @@ Rules:
 - **Noun form for compound prefixes** — use `ProjectIterationCompleted` (noun), not `ProjectIterateCompleted` (verb).
 - **Payload boolean results use `success`** — not `passed`, `ok`, or other variants. The one exception is the `passed` field on individual gate results (where "passed" is domain-specific to gates).
 
-The work-item ledger's four event types are the owner-specified exception to
+The work-item ledger's six event types are the owner-specified exception to
 the `*Started`/`*Completed` pairing rule:
 
 | Event | Meaning |
 |-------|---------|
-| `work_item_submitted` | A unit of work entered the ledger |
-| `work_item_started` | An agent started on a ledger item |
+| `work_item_submitted` | A unit of work entered the ledger; paced work arrives `queued` with the reason it waits |
+| `work_item_started` | An agent started on a ledger item (for paced work, the scheduler emits it) |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator stopped a ledger item |
+| `work_item_held` | An operator took a queued item out of the scheduler's hands |
+| `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
+
+The pacing stage adds `pacing_paused` and `pacing_resumed`, emitted for the
+project `system` with `lanes`, `paused` and `operator_origin`.
 
 `WorkItemStarted` pairs with `WorkItemSettled` rather than a
 `WorkItemCompleted`, because an item does not *complete* — it settles, into a
@@ -199,7 +204,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | Command | Purpose |
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
-| `foundry task <project> "<description>" [--agent <provider>] [--origin <text>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname |
+| `foundry task <project> "<description>" [--agent <provider>] [--origin <text>] [--after <id>]... [--not-before <RFC3339\|duration>]` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname. `--after` waits for that item to settle landed; `--not-before` sets the earliest start. The task is recorded `queued` and started by the pacing scheduler |
 | `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
 | `foundry deps <project> [--policy patch\|minor\|major]` | Show outdated dependencies, the maintain brief under the project's update policy, and what the majors lane would dispatch; changes nothing |
 | `foundry scout <project>` | Detect intent drift without changes |
@@ -210,9 +215,14 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
 | `foundry queue [show <id>\|open] [--source <kind>:<ref>]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--source` lists one dispatcher's items (`campaign:<name>`, `sentinel:<name>`, `operator:<host>`, `work_item:<parent id>`); `--json` and `--offline` supported. Read-only |
 | `foundry queue reconcile` | Run the canonical reconciler now through the daemon and print this invocation’s digest; no offline fallback |
-| `foundry queue resume <id> [--origin <text>]` | Resume preserved work through a linked continuation; daemon required |
+| `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Resume preserved work through a linked, queued continuation; daemon required |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
-| `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued items via the daemon |
+| `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued/held items via the daemon |
+| `foundry queue hold <id> [--origin <text>]` | Take a queued item out of the scheduler's hands until released |
+| `foundry queue release <id> [--origin <text>]` | Return a held item, or one in needs_decision over a dependency, to the queue |
+| `foundry pacing show [--json] [--offline]` | The pacing stage: limits in force, running items per repository, waiting items with reasons, paused lanes |
+| `foundry pacing pause\|resume [--lane interactive\|campaign\|maintenance\|all] [--origin <text>]` | Stop or allow new starts in a lane; persisted, in force after restart; emits `pacing_paused`/`pacing_resumed` |
+| `foundry pacing drain [--timeout <duration>] [--origin <text>]` | Pause every lane and wait until nothing is running; exit 0 idle, exit 1 on timeout naming what still runs |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
 ### Campaign commands
@@ -266,13 +276,18 @@ the settled group alone.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`); an unknown kind is INVALID_ARGUMENT. Rows carry a source column, `-` when none was recorded |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`/`held`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`); an unknown kind is INVALID_ARGUMENT. Rows carry a source column, `-` when none was recorded |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
-| `foundry queue resume <id> [--origin <text>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id; rejects `--offline` |
+| `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id, recorded `queued` for the scheduler; an unknown `--after` id or unparsable `--not-before` is INVALID_ARGUMENT; rejects `--offline` |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
-| `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued cancelled with `cancelled by operator`; rejects `--offline` |
+| `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued/held cancelled with `cancelled by operator`; rejects `--offline` |
+| `foundry queue hold <id> [--origin <text>]` | Yes | `HoldWorkItem`: queued → held, reason `held by operator`; emits `work_item_held`; rejects `--offline` |
+| `foundry queue release <id> [--origin <text>]` | Yes | `ReleaseWorkItem`: held or dependency-blocked needs_decision → queued; drops settled dependencies; reason is the scheduler's verdict; emits `work_item_released`; rejects `--offline` |
+| `foundry pacing show` | Yes (or `--offline`) | Renders `GetPacing`; `--offline` reads the ledger and both pacing files through `foundry_sdk::pacing::snapshot`, the same selection and order |
+| `foundry pacing pause\|resume [--lane …]` | Yes | `PausePacing`/`ResumePacing`: persist the lane set to `FOUNDRY_PACING_STATE_PATH` by atomic rename, then emit `pacing_paused`/`pacing_resumed` for project `system`; rejects `--offline` |
+| `foundry pacing drain [--timeout <duration>]` | Yes | `PausePacing` on every lane, then watch `work_item_settled` until no running item remains; on timeout re-reads `GetPacing` and exits 1 naming what still runs; does not resume lanes; rejects `--offline` |
 
 All three take `--json`; the list forms emit an array, `show` emits an object
 (the record's keys unchanged, plus an `events` array), optional fields are
@@ -655,6 +670,8 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
   | `remediation` | a dirty `MainBranchAudited`, or a failing `PipelineChecked` | `RemediationCompleted` |
 
   Recording begins at the **root** of each chain — for a task, the `ExecutionRequested` itself, not preflight — so a dispatch that stops early (a failed charter check, a failed preflight) is still in the ledger and is settled `failed` with that event's own reason. Whether a run-shaped root is recorded is decided by the same predicate the dispatching block's `accepts()` already uses, so an item exists exactly when the run does; a `DryRun` throttle records nothing. Daemon-owned and authoritative — every mutation loads the file, applies the change, and saves it through a same-directory temp-file rename, and every mutation in the daemon process takes the one shared ledger write gate (`foundry_sdk::work_item::ledger_write_gate`) so concurrent workflows cannot interleave a load→modify→save and lose a write. Settlement correlation differs by shape: a task-shaped result correlates by `trace_id` alone (a result naming a trace no running task-shaped item carries settles nothing, and the project-newest-running fallback applies only to a result carrying no trace at all), while a run-shaped terminal correlates on trace, project *and* kind — a cycle's fan-out siblings share one trace, and one per-project run can hold a `maintenance`, a `remediation` and a `release` item at once on that same trace and project. `ReleasePipelineCompleted` and `LocalInstallCompleted` are downstream observation of an already-settled release and change no item. On daemon start every item still `running` is settled `failed` with the reason `daemon restarted`. Owner `queue close`/`queue cancel` settle by exact id independently of chain terminals, preserving original identity and disposition. A `campaign cancel --now` also settles outside its chain's terminal: the abort means no `TaskRunCompleted` will ever arrive, so `DisposeCampaignWork` settles the item carrying the aborted workflow's trace (`CampaignCancelledPayload::aborted_trace_id`) `cancelled` with the operator's `--reason`, recording the disposal it just observed, and emits `work_item_cancelled` on that same trace. It settles there rather than in the `CancelCampaign` RPC because that is the one place the disposal outcome is known; correlation is by trace alone with no project-newest fallback, and a ledger fault never fails the cancellation
+- `~/.foundry/pacing.json` — operator-edited pacing limits: `{"max_running": 2}` (the host running cap). Missing means the defaults; malformed falls back to the defaults with a warning. Read on every scheduler tick and every `GetPacing`; never written by the daemon.
+- `~/.foundry/pacing-state.json` — daemon-owned pause state: `{"version": 1, "paused": ["campaign"]}` in lane order. Written by `PausePacing`/`ResumePacing` through an atomic rename; in force after a restart. A malformed file fails closed: every lane is treated as paused until repaired. The scheduler (`foundryd::pacing::PacingScheduler`) ticks under the ledger write gate: it loads the ledger and both files, runs the pure rules in `foundry_sdk::pacing::evaluate` (dependency settled non-landed or unknown → `needs_decision` first; then repository busy → host at capacity → not before → waits on → lane paused → start; interactive lane first, then oldest submission), saves the ledger once, then announces `work_item_started`/`work_item_settled` and dispatches each started root through `spawn_workflow`. It wakes on every `work_item_*`/`pacing_*` broadcast event, on the resume-admission wake handle, at the earliest `not_before`, and every 15 s. Admission is `AdmitWorkItem` (engine block, `ExecutionRequested` roots that `awaits_admission`) and `admit_resume` (the resume RPC); the started root is a fresh `ExecutionRequested` carrying `admitted_work_item_id`, which `CheckCharter` requires before it accepts a task-shaped root.
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
@@ -684,6 +701,8 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_SENTINELS_PATH` | `~/.foundry/sentinels.json` | Sentinel store file |
 | `FOUNDRY_RECONCILE_DIR` | `~/.foundry/reconcile` | Daily work-reconciliation report directory; reporting is not authoritative state |
 | `FOUNDRY_WORK_ITEMS_PATH` | `~/.foundry/work-items.json` | Durable work-item ledger |
+| `FOUNDRY_PACING_PATH` | `~/.foundry/pacing.json` | Operator-edited pacing limits (`max_running`) |
+| `FOUNDRY_PACING_STATE_PATH` | `~/.foundry/pacing-state.json` | Daemon-owned paused-lane state |
 | `FOUNDRY_EVENTS_DIR` | `~/.foundry/events` | JSONL event output directory |
 | `FOUNDRY_TRACES_DIR` | `~/.foundry/traces` | Persistent trace storage |
 | `FOUNDRY_AUDITS_DIR` | `~/.foundry/audits` | Centralized audit logs |

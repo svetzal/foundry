@@ -9,6 +9,45 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A pacing stage between a work item's admission and its start. Every
+  task-shaped item (`foundry task`, a campaign cycle, a nightly majors-lane
+  upgrade, a `queue resume` child) is recorded `queued` with a reason, and a
+  scheduler inside `foundryd` starts it when the rules allow, evaluated each
+  tick in order: one mutating item per repository (a running maintenance item
+  counts), the host running cap from `~/.foundry/pacing.json`
+  (`{"max_running": 2}` by default), `not_before` passed, every `depends_on`
+  item settled `landed`, the lane not paused; interactive work first, then
+  oldest submission first. The queued reason is the scheduler's current
+  verdict (`repository busy: wi_…`, `host at capacity N/N`,
+  `not before <time>`, `waits on wi_…`, `lane paused`, `ready`) and shows on
+  queue rows, `queue show`, `pacing show` and in `--json`. A dependency that
+  settles any way other than landed moves the dependent to `needs_decision`
+  with `waits on <id>, which settled <state>`. Queued and held items survive a
+  restart as they are; running items still settle `failed`.
+- `foundry task --after <id>` (repeatable) and `--not-before <RFC3339|duration>`,
+  also on `foundry queue resume`. An `--after` id not in the ledger is refused.
+- `foundry queue hold <id>` and `foundry queue release <id>`, with the new
+  `held` state and the `work_item_held` / `work_item_released` events;
+  `queue cancel` also accepts a held item.
+- `foundry pacing show [--json] [--offline]`, `pacing pause` and
+  `pacing resume [--lane interactive|campaign|maintenance|all]`, and
+  `pacing drain [--timeout <duration>]`. Pause state is persisted to
+  `~/.foundry/pacing-state.json` through an atomic rename and is in force after
+  a restart; `pacing_paused` / `pacing_resumed` are durable and on Watch.
+- Additive proto: `WorkItem.depends_on` and `not_before`,
+  `ResumeWorkItemRequest.depends_on` and `not_before`, and the `HoldWorkItem`,
+  `ReleaseWorkItem`, `GetPacing`, `PausePacing` and `ResumePacing` RPCs.
+- `FOUNDRY_PACING_PATH` and `FOUNDRY_PACING_STATE_PATH`.
+
+### Changed
+
+- `foundry campaign cancel` also cancels the campaign's queued cycles.
+- The nightly majors lane no longer re-dispatches an upgrade that is already
+  queued or held in the ledger.
+- A `queue resume` child is recorded `queued` and started by the scheduler;
+  admission appends only `work_item_submitted`, and `work_item_started` comes
+  from the start.
+
 - Every work item records a typed `source` at submission, beside the untouched
   free-text `origin`: `campaign` (the campaign name and cycle number),
   `sentinel` (the sentinel name), `operator` (the submitting CLI's hostname)
