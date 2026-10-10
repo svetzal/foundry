@@ -72,6 +72,42 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
     out
 }
 
+/// The heading above a campaign's cycles as the work-item ledger records them.
+pub const CYCLES_HEADING: &str = "Cycles in the ledger:";
+
+/// The line printed under [`CYCLES_HEADING`] when the ledger records no cycle
+/// for the campaign: a campaign never advanced, or one whose cycles predate
+/// the typed source.
+pub const NO_CYCLES_LINE: &str = "  (none recorded)";
+
+/// A campaign's cycles as the ledger records them, one line each in the order
+/// they arrived: the cycle number, the item id, its state, the timestamp of
+/// its settlement or start, and its one-line reason.
+///
+/// `items` is the `ListWorkItems` response for `source campaign:<name>`,
+/// already in the daemon's reading order (running first, then open, then
+/// settled newest first); nothing here re-sorts it.
+#[must_use]
+pub fn campaign_cycles(items: &[crate::proto::WorkItem]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{CYCLES_HEADING}");
+    if items.is_empty() {
+        let _ = writeln!(out, "{NO_CYCLES_LINE}");
+        return out;
+    }
+    for item in items {
+        let cycle = item
+            .source
+            .as_ref()
+            .and_then(|source| source.cycle)
+            .map_or_else(|| "cycle ?".to_string(), |cycle| format!("cycle {cycle}"));
+        let stamp = item.settled_at.as_deref().or(item.started_at.as_deref()).unwrap_or("-");
+        let _ =
+            writeln!(out, "  {cycle:<9} {}  {:<14} {stamp}  {}", item.id, item.state, item.reason);
+    }
+    out
+}
+
 pub fn campaign_table(campaigns: &[Campaign]) -> String {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -461,6 +497,63 @@ mod tests {
         assert!(out.contains("2026-07-18T12:00:00+00:00"), "got: {out}");
         assert!(out.contains("[stacey]"), "got: {out}");
         assert!(out.contains("Proceed with the gRPC path."), "got: {out}");
+    }
+
+    // -- campaign_cycles (ledger-backed cycle list) --
+
+    fn cycle_item(
+        id: &str,
+        cycle: Option<u64>,
+        state: &str,
+        settled: Option<&str>,
+    ) -> crate::proto::WorkItem {
+        crate::proto::WorkItem {
+            id: id.to_string(),
+            project: "p".to_string(),
+            objective: "do the thing".to_string(),
+            kind: "campaign_cycle".to_string(),
+            lane: "campaign".to_string(),
+            origin: "campaign c cycle n".to_string(),
+            submitted_at: "2026-10-01T00:00:00+00:00".to_string(),
+            started_at: Some("2026-10-01T00:00:01+00:00".to_string()),
+            settled_at: settled.map(str::to_string),
+            state: state.to_string(),
+            reason: format!("{state} reason"),
+            trace_id: None,
+            verdict: None,
+            landed_commit: None,
+            preservation_ref: None,
+            worktree: None,
+            worktree_removed: None,
+            operator_action: None,
+            resumes: None,
+            source: Some(crate::proto::WorkSource {
+                kind: "campaign".to_string(),
+                r#ref: "c".to_string(),
+                cycle,
+            }),
+        }
+    }
+
+    #[test]
+    fn campaign_cycles_lists_each_cycle_in_the_order_given_with_its_number_and_state() {
+        let out = campaign_cycles(&[
+            cycle_item("wi_c2", Some(2), "running", None),
+            cycle_item("wi_c1", Some(1), "landed", Some("2026-10-01T01:00:00+00:00")),
+        ]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], CYCLES_HEADING);
+        assert!(lines[1].starts_with("  cycle 2"), "got: {}", lines[1]);
+        assert!(lines[1].contains("wi_c2") && lines[1].contains("running"), "got: {}", lines[1]);
+        assert!(lines[2].starts_with("  cycle 1"), "got: {}", lines[2]);
+        assert!(lines[2].contains("2026-10-01T01:00:00+00:00"), "settled stamp: {}", lines[2]);
+        assert!(lines[2].contains("landed reason"), "got: {}", lines[2]);
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn campaign_cycles_says_so_when_the_ledger_records_none() {
+        assert_eq!(campaign_cycles(&[]), format!("{CYCLES_HEADING}\n{NO_CYCLES_LINE}\n"));
     }
 
     // -- campaign_detail_proto (proto-typed path) --

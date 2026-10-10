@@ -1759,6 +1759,8 @@ mod tests {
             .list_work_items(Request::new(ListWorkItemsRequest {
                 project: project.to_string(),
                 state: state.to_string(),
+                source_kind: String::new(),
+                source_ref: String::new(),
             }))
             .await
             .expect("list_work_items should succeed")
@@ -1895,6 +1897,8 @@ mod tests {
             .list_work_items(Request::new(ListWorkItemsRequest {
                 project: String::new(),
                 state: "in_progress".to_string(),
+                source_kind: String::new(),
+                source_ref: String::new(),
             }))
             .await
             .unwrap_err();
@@ -1953,6 +1957,8 @@ mod tests {
             .list_work_items(Request::new(ListWorkItemsRequest {
                 project: String::new(),
                 state: String::new(),
+                source_kind: String::new(),
+                source_ref: String::new(),
             }))
             .await
             .unwrap_err();
@@ -1975,6 +1981,8 @@ mod tests {
             .list_work_items(Request::new(ListWorkItemsRequest {
                 project: String::new(),
                 state: String::new(),
+                source_kind: String::new(),
+                source_ref: String::new(),
             }))
             .await
             .unwrap_err();

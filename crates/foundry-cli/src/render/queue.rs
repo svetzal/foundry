@@ -10,9 +10,35 @@
 use std::fmt::Write as _;
 
 use foundry_sdk::work_item::WorkItemState;
+use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 use serde::Serialize;
 
 use crate::proto::{WorkItem, WorkItemEvent};
+
+/// One wire source as text: `kind:ref`, with ` cycle <n>` when recorded.
+///
+/// Rendered through the SDK's own display so the ledger, the daemon log and
+/// this CLI all spell a source the same way. A kind this build does not know
+/// (a newer daemon) is shown as sent rather than dropped.
+fn source_text(source: &crate::proto::WorkSource) -> String {
+    WorkSourceKind::from_tag(&source.kind).map_or_else(
+        || format!("{}:{}", source.kind, source.r#ref),
+        |kind| {
+            WorkSource {
+                kind,
+                reference: source.r#ref.clone(),
+                cycle: source.cycle,
+            }
+            .to_string()
+        },
+    )
+}
+
+/// The source column of one row: the recorded source, or `-` when the item
+/// records none.
+fn source_column(item: &WorkItem) -> String {
+    item.source.as_ref().map_or_else(|| "-".to_string(), source_text)
+}
 
 /// How many settled items the overview shows.
 ///
@@ -117,6 +143,7 @@ struct Widths {
     project: usize,
     kind: usize,
     lane: usize,
+    source: usize,
     state: usize,
     stamp: usize,
 }
@@ -128,6 +155,7 @@ impl Widths {
             project: 0,
             kind: 0,
             lane: 0,
+            source: 0,
             state: 0,
             stamp: 0,
         };
@@ -136,6 +164,7 @@ impl Widths {
             widths.project = widths.project.max(item.project.len());
             widths.kind = widths.kind.max(item.kind.len());
             widths.lane = widths.lane.max(item.lane.len());
+            widths.source = widths.source.max(source_column(item).len());
             widths.state = widths.state.max(item.state.len());
             widths.stamp = widths.stamp.max(group_stamp(item).len());
         }
@@ -143,16 +172,17 @@ impl Widths {
     }
 }
 
-/// One item as a single unwrapped line: id, project, kind, lane, state, the
-/// timestamp that placed it in its group, then the one-line reason.
+/// One item as a single unwrapped line: id, project, kind, lane, source,
+/// state, the timestamp that placed it in its group, then the one-line reason.
 fn item_line(item: &WorkItem, widths: &Widths) -> String {
     let resumes = item.resumes.as_ref().map_or_else(String::new, |id| format!(" (resumes {id})"));
     format!(
-        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}{resumes}",
+        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {source:<source_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}{resumes}",
         id = item.id,
         project = item.project,
         kind = item.kind,
         lane = item.lane,
+        source = source_column(item),
         state = item.state,
         stamp = group_stamp(item),
         reason = item.reason,
@@ -160,6 +190,7 @@ fn item_line(item: &WorkItem, widths: &Widths) -> String {
         project_w = widths.project,
         kind_w = widths.kind,
         lane_w = widths.lane,
+        source_w = widths.source,
         state_w = widths.state,
         stamp_w = widths.stamp,
     )
@@ -238,6 +269,7 @@ pub fn item_detail(item: &WorkItem) -> String {
     let _ = writeln!(out, "{:<18}{}", "Kind:", item.kind);
     let _ = writeln!(out, "{:<18}{}", "Lane:", item.lane);
     let _ = writeln!(out, "{:<18}{}", "Origin:", item.origin);
+    optional_field(&mut out, "Source:", item.source.as_ref().map(source_text).as_deref());
     let _ = writeln!(out, "{:<18}{}", "State:", item.state);
     let _ = writeln!(out, "{:<18}{}", "Reason:", item.reason);
     let _ = writeln!(out, "{:<18}{}", "Submitted:", item.submitted_at);
@@ -351,6 +383,8 @@ struct JsonItem<'a> {
     kind: &'a str,
     lane: &'a str,
     origin: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<JsonSource<'a>>,
     submitted_at: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     started_at: Option<&'a str>,
@@ -374,6 +408,26 @@ struct JsonItem<'a> {
     operator_action: Option<JsonOperatorAction<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resumes: Option<&'a str>,
+}
+
+/// JSON projection of a recorded source: the same keys the ledger writes.
+#[derive(Serialize)]
+struct JsonSource<'a> {
+    kind: &'a str,
+    #[serde(rename = "ref")]
+    reference: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle: Option<u64>,
+}
+
+impl<'a> From<&'a crate::proto::WorkSource> for JsonSource<'a> {
+    fn from(source: &'a crate::proto::WorkSource) -> Self {
+        Self {
+            kind: &source.kind,
+            reference: &source.r#ref,
+            cycle: source.cycle,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -408,6 +462,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
             kind: &item.kind,
             lane: &item.lane,
             origin: &item.origin,
+            source: item.source.as_ref().map(JsonSource::from),
             submitted_at: &item.submitted_at,
             started_at: item.started_at.as_deref(),
             settled_at: item.settled_at.as_deref(),
@@ -849,6 +904,71 @@ mod tests {
         assert!(
             item_detail(&stored).contains("campaign tidy-cli cycle 4 (host workbench: by hand)")
         );
+    }
+
+    // ── typed source ──────────────────────────────────────────────────────────
+
+    fn wire_source(kind: &str, reference: &str, cycle: Option<u64>) -> crate::proto::WorkSource {
+        crate::proto::WorkSource {
+            kind: kind.to_string(),
+            r#ref: reference.to_string(),
+            cycle,
+        }
+    }
+
+    #[test]
+    fn a_row_shows_the_recorded_source_and_a_dash_when_none_was_recorded() {
+        let mut cycle = item("wi_cycle", "running");
+        cycle.source = Some(wire_source("campaign", "tidy-cli", Some(3)));
+        let unsourced = item("wi_old", "running");
+        let out = queue_overview(&[cycle, unsourced]);
+        let cycle_line = out.lines().find(|line| line.contains("wi_cycle")).expect("row");
+        assert!(cycle_line.contains("campaign:tidy-cli cycle 3"), "got: {cycle_line}");
+        let old_line = out.lines().find(|line| line.contains("wi_old")).expect("row");
+        assert!(old_line.contains("  -  "), "an unrecorded source reads as a dash: {old_line}");
+    }
+
+    #[test]
+    fn detail_prints_a_source_line_only_when_one_was_recorded() {
+        let mut nightly = item("wi_nightly", "running");
+        nightly.source = Some(wire_source("sentinel", "nightly-maintenance", None));
+        let out = item_detail(&nightly);
+        assert!(out.contains("Source:           sentinel:nightly-maintenance"), "got:\n{out}");
+
+        let out = item_detail(&item("wi_old", "running"));
+        assert!(!out.contains("Source:"), "no recorded source, no line:\n{out}");
+    }
+
+    #[test]
+    fn a_kind_this_build_does_not_know_is_shown_as_sent() {
+        let mut strange = item("wi_strange", "running");
+        strange.source = Some(wire_source("dashboard", "kiosk", None));
+        assert!(item_detail(&strange).contains("Source:           dashboard:kiosk"));
+    }
+
+    #[test]
+    fn json_carries_the_source_with_the_ledgers_keys_and_omits_it_when_none() {
+        let mut cycle = item("wi_cycle", "running");
+        cycle.source = Some(wire_source("campaign", "tidy-cli", Some(3)));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&item_with_events_json(&cycle, &[])).expect("parses");
+        assert_eq!(
+            parsed["source"],
+            serde_json::json!({"kind": "campaign", "ref": "tidy-cli", "cycle": 3})
+        );
+
+        let mut host = item("wi_task", "running");
+        host.source = Some(wire_source("operator", "workbench", None));
+        let listed: serde_json::Value = serde_json::from_str(&items_json(&[host])).expect("parses");
+        assert_eq!(
+            listed[0]["source"],
+            serde_json::json!({"kind": "operator", "ref": "workbench"})
+        );
+
+        let old: serde_json::Value =
+            serde_json::from_str(&item_with_events_json(&item("wi_old", "running"), &[]))
+                .expect("parses");
+        assert!(old.get("source").is_none(), "no recorded source, no key: {old}");
     }
 
     // ── item events ───────────────────────────────────────────────────────────

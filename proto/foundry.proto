@@ -720,6 +720,15 @@ message ListWorkItemsRequest {
     // Exact-match state filter, given as the item state's serialized tag.
     // Empty means every state; an unknown tag is INVALID_ARGUMENT.
     string state = 2;
+    // Exact-match source filter: the source kind's tag and the reference (see
+    // WorkSource). Both empty means every source, and an item that records no
+    // source is then listed like any other. A kind and ref select exactly the
+    // items whose recorded source is that kind with that reference — every
+    // cycle of a campaign, say — in the same deterministic order; an item with
+    // no recorded source never matches. An unknown kind, or a kind without a
+    // ref, is INVALID_ARGUMENT. Additive.
+    string source_kind = 3;
+    string source_ref = 4;
 }
 
 message ListWorkItemsResponse {

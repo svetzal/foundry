@@ -97,12 +97,33 @@ pub async fn list(store_path: &Path, addr: &str, offline: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn show(store_path: &Path, addr: &str, offline: bool, name: &str) -> Result<()> {
+/// Show one campaign, then its cycles as the work-item ledger records them.
+///
+/// The cycles come from the ledger through the `ListWorkItems` source filter
+/// (`campaign:<name>`), never by inferring them from traces. Offline, the
+/// ledger file is read through the same selection `foundry queue --offline`
+/// applies, so the two paths differ only in transport.
+pub async fn show(
+    store_path: &Path,
+    work_items_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+) -> Result<()> {
+    let cycles = crate::queue_commands::SourceFilter::campaign(name);
     if offline {
         let store = CampaignStore::load(store_path)?;
         let campaign =
             store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-        print!("{}", render::campaign::campaign_detail(campaign));
+        let items = crate::queue_commands::filter_by_source(
+            crate::queue_commands::load_offline(work_items_path)?,
+            Some(&cycles),
+        );
+        print!(
+            "{}\n{}",
+            render::campaign::campaign_detail(campaign),
+            render::campaign::campaign_cycles(&items)
+        );
         return Ok(());
     }
 
@@ -117,7 +138,17 @@ pub async fn show(store_path: &Path, addr: &str, offline: bool, name: &str) -> R
         .into_inner()
         .campaign
         .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?;
-    print!("{}", render::campaign::campaign_detail_proto(&detail));
+    let items = client
+        .list_work_items(crate::queue_commands::list_request(Some(&cycles)))
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .items;
+    print!(
+        "{}\n{}",
+        render::campaign::campaign_detail_proto(&detail),
+        render::campaign::campaign_cycles(&items)
+    );
     Ok(())
 }
 
@@ -691,7 +722,10 @@ mod tests {
         );
         add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
         list(&store, "http://127.0.0.1:0", true).await.unwrap();
-        show(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
+        // No ledger file yet: the offline show renders the campaign with no
+        // recorded cycles rather than failing on the absent ledger.
+        let ledger = dir.path().join("work-items.json");
+        show(&store, &ledger, "http://127.0.0.1:0", true, "c").await.unwrap();
         pause(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,

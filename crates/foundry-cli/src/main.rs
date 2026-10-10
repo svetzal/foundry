@@ -280,6 +280,13 @@ enum Commands {
         /// Emit machine-readable JSON instead of human output
         #[arg(long)]
         json: bool,
+
+        /// List only the items one source dispatched, as `<kind>:<ref>`:
+        /// `campaign:<name>` (every cycle), `sentinel:<name>`,
+        /// `operator:<host>` or `work_item:<parent id>`. Applies to the list
+        /// forms.
+        #[arg(long, value_name = "KIND:REF")]
+        source: Option<String>,
     },
 
     /// Manage the project registry
@@ -703,15 +710,21 @@ async fn handle_registry_command(
 /// Dispatch one `foundry queue` invocation.
 ///
 /// A bare `foundry queue` (no subcommand) is the overview, so `--json` is
-/// accepted both on the parent and on each subcommand.
+/// accepted both on the parent and on each subcommand. `--source` selects
+/// one dispatcher's items in the two list forms and is refused elsewhere
+/// rather than silently ignored.
 async fn handle_queue_command(
     command: Option<QueueCommands>,
     parent_json: bool,
-    work_items_path: &std::path::Path,
-    events_dir: &std::path::Path,
+    source: Option<&str>,
     addr: &str,
     offline: bool,
 ) -> Result<()> {
+    if source.is_some() && !matches!(command, None | Some(QueueCommands::Open { .. })) {
+        anyhow::bail!("--source applies to `foundry queue` and `foundry queue open` only");
+    }
+    let work_items_path = &foundry_sdk::paths::work_items_path();
+    let events_dir = &foundry_sdk::paths::events_dir();
     match command {
         None => {
             queue_commands::list(
@@ -720,6 +733,7 @@ async fn handle_queue_command(
                 offline,
                 queue_commands::View::Overview,
                 parent_json,
+                source,
             )
             .await
         }
@@ -740,6 +754,7 @@ async fn handle_queue_command(
                 offline,
                 queue_commands::View::Open,
                 json || parent_json,
+                source,
             )
             .await
         }
@@ -799,7 +814,14 @@ async fn handle_campaign_command(
         }
         CampaignCommands::List => campaign_commands::list(campaigns_path, addr, offline).await,
         CampaignCommands::Show { name } => {
-            campaign_commands::show(campaigns_path, addr, offline, &name).await
+            campaign_commands::show(
+                campaigns_path,
+                &foundry_sdk::paths::work_items_path(),
+                addr,
+                offline,
+                &name,
+            )
+            .await
         }
         CampaignCommands::Advance { name, origin } => {
             campaign_commands::advance(addr, campaigns_path, offline, &name, origin.as_deref())
@@ -914,17 +936,11 @@ async fn main() -> Result<()> {
                 gates_commands::show(&project_dir)
             }
         }
-        Commands::Queue { command, json } => {
-            handle_queue_command(
-                command,
-                json,
-                &foundry_sdk::paths::work_items_path(),
-                &foundry_sdk::paths::events_dir(),
-                &addr,
-                cli.offline,
-            )
-            .await
-        }
+        Commands::Queue {
+            command,
+            json,
+            source,
+        } => handle_queue_command(command, json, source.as_deref(), &addr, cli.offline).await,
         Commands::Registry(sub) => {
             handle_registry_command(*sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)
                 .await
