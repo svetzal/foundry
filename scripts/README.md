@@ -60,3 +60,11 @@ bash -n scripts/deprecation-bridge.sh
 # With foundryd stopped — should print the fallback info message:
 ./scripts/deprecation-bridge.sh
 ```
+
+## dev-home.sh
+
+Seeds the development Foundry home on the Mac: creates `~/.foundry/sandbox/`
+with a local bare origin and a checkout of the synthetic `sample-rs` project,
+and registers it with the daemon at `FOUNDRY_ADDR` (default
+`http://127.0.0.1:50051`). Idempotent. See "Production and development
+daemons" in AGENTS.md.
