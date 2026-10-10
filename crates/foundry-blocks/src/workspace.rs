@@ -141,38 +141,49 @@ pub(crate) async fn run_best_effort(shell: &dyn ShellGateway, cwd: &Path, args: 
     }
 }
 
-/// The directory in a task worktree where Foundry and its agents keep
-/// task-scoped files.
+/// The directory in a task worktree that is Foundry scratch: proof, logs,
+/// screenshots, harness output, anything an agent writes there.
+///
+/// Nothing under it lands in a task commit. The single exception is a
+/// deletion of a file HEAD tracks there, so a task can remove legacy content a
+/// project committed before this rule. Finalization archives everything else
+/// under it to Foundry's evidence store and then removes it.
 pub(crate) const FOUNDRY_DIR: &str = ".foundry";
 
-/// Foundry's own early-proof scratch in a task worktree: the proof record and
-/// the directory of logs it names.
-///
-/// These are the only paths under [`FOUNDRY_DIR`] that are not project work.
-/// They are archived outside the repository (see `archive_proof` in
-/// `blocks::finalize_task`) and kept out of the task commit, unless HEAD
-/// already tracks them. Every other file under [`FOUNDRY_DIR`] is committed
-/// like any other project file.
+/// The early-proof record in a task worktree. `archive_proof` in
+/// `blocks::finalize_task` keeps an interpreted, portable copy of it.
 pub(crate) const PROOF_FILE: &str = ".foundry/proof.json";
-/// See [`PROOF_FILE`].
-pub(crate) const PROOF_LOG_DIR: &str = ".foundry/logs";
 
-/// Whether a repository-relative path is Foundry-internal scratch rather than
-/// project work. The commit pathspecs below and this classifier name the same
-/// two paths.
-pub(crate) fn is_foundry_internal(path: &str) -> bool {
-    path == PROOF_FILE
-        || path
-            .strip_prefix(PROOF_LOG_DIR)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+/// Run a git command that lists paths with `-z` and return them, empty
+/// entries dropped. Not [`checked`]: trimming the output could alter a name.
+async fn nul_separated_paths(
+    shell: &dyn ShellGateway,
+    worktree: &Path,
+    args: &[&str],
+) -> Result<Vec<String>> {
+    let listing = run(shell, worktree, args).await?;
+    if !listing.success {
+        bail!(
+            "git {} failed ({}): {}",
+            args.join(" "),
+            listing.exit_code,
+            listing.stderr.trim()
+        );
+    }
+    Ok(listing
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Commit whatever the agent left in the worktree. `Ok(false)` when the tree
-/// was already clean.
+/// was already clean or nothing committable remained.
 ///
-/// Everything is staged except Foundry-internal scratch ([`PROOF_FILE`] and
-/// [`PROOF_LOG_DIR`]). Internal paths HEAD already tracks stay tracked: their
-/// modifications and deletions are committed, but new internal files are not.
+/// Everything outside [`FOUNDRY_DIR`] is staged. Under it, only deletions of
+/// files HEAD tracks are staged: new files and modifications never land, even
+/// when the agent staged them.
 pub(crate) async fn commit_worktree(
     shell: &dyn ShellGateway,
     worktree: &Path,
@@ -182,33 +193,29 @@ pub(crate) async fn commit_worktree(
     if status.is_empty() {
         return Ok(false);
     }
-    // Unstage internal scratch the agent may have staged by accident, stage
-    // everything else, then restore modifications to internal paths HEAD
-    // already tracks. Staging the tracked files by name keeps `add -u` from
-    // failing on an internal pathspec HEAD does not track.
-    checked(shell, worktree, &["reset", "HEAD", "--", PROOF_FILE, PROOF_LOG_DIR]).await?;
-    let exclude_proof = format!(":(exclude){PROOF_FILE}");
-    let exclude_logs = format!(":(exclude){PROOF_LOG_DIR}");
-    checked(shell, worktree, &["add", "-A", "--", ".", &exclude_proof, &exclude_logs]).await?;
-    let tracked = checked(
+    // Return the index under .foundry to HEAD, whatever the agent staged,
+    // then stage everything else.
+    checked(shell, worktree, &["reset", "HEAD", "--", FOUNDRY_DIR]).await?;
+    let exclude = format!(":(exclude){FOUNDRY_DIR}");
+    checked(shell, worktree, &["add", "-A", "--", ".", &exclude]).await?;
+    // With the index at HEAD, an index-to-worktree deletion is a file HEAD
+    // tracks that the agent removed (or replaced with a directory).
+    let deleted = nul_separated_paths(
         shell,
         worktree,
         &[
-            "ls-tree",
-            "-r",
-            "-z",
+            "diff",
             "--name-only",
-            "HEAD",
+            "-z",
+            "--diff-filter=D",
             "--",
-            PROOF_FILE,
-            PROOF_LOG_DIR,
+            FOUNDRY_DIR,
         ],
     )
     .await?;
-    let tracked: Vec<&str> = tracked.split('\0').filter(|path| !path.is_empty()).collect();
-    if !tracked.is_empty() {
-        let mut args = vec!["add", "-u", "--"];
-        args.extend(tracked);
+    if !deleted.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "rm", "--cached", "--quiet", "--"];
+        args.extend(deleted.iter().map(String::as_str));
         checked(shell, worktree, &args).await?;
     }
     let diff = run(shell, worktree, &["diff", "--cached", "--quiet"]).await?;
@@ -222,41 +229,76 @@ pub(crate) async fn commit_worktree(
     Ok(true)
 }
 
-/// Every file [`clean_foundry_dir`] would remove: untracked and ignored files
-/// under [`FOUNDRY_DIR`], listed individually even inside untracked
-/// directories. Paths are repository-relative.
-///
-/// A nested repository is listed as a directory (`path/`) and skipped, because
-/// `git clean` without a second `-f` leaves it in place too.
-pub(crate) async fn uncommitted_foundry_files(
-    shell: &dyn ShellGateway,
-    worktree: &Path,
-) -> Result<Vec<String>> {
-    let args = ["ls-files", "--others", "-z", "--", FOUNDRY_DIR];
-    // Not `checked`: trimming the output could alter a file name.
-    let listing = run(shell, worktree, &args).await?;
-    if !listing.success {
-        bail!(
-            "git {} failed ({}): {}",
-            args.join(" "),
-            listing.exit_code,
-            listing.stderr.trim()
-        );
-    }
-    Ok(listing
-        .stdout
-        .split('\0')
-        .filter(|path| !path.is_empty() && !path.ends_with('/'))
-        .map(str::to_string)
-        .collect())
+/// The files under [`FOUNDRY_DIR`] that did not land, as repository-relative
+/// paths. [`clean_foundry_dir`] removes or restores exactly these.
+#[derive(Debug, Default)]
+pub(crate) struct UnlandedFoundryFiles {
+    /// Untracked and ignored files, listed individually even inside
+    /// untracked directories.
+    pub(crate) untracked: Vec<String>,
+    /// Files HEAD tracks whose working-tree content differs from HEAD.
+    pub(crate) modified: Vec<String>,
 }
 
-/// Remove every untracked and ignored file under [`FOUNDRY_DIR`] so the
-/// worktree can be removed. Tracked content is left alone.
+impl UnlandedFoundryFiles {
+    /// Every unlanded file, untracked first.
+    pub(crate) fn all(&self) -> Vec<String> {
+        self.untracked.iter().chain(&self.modified).cloned().collect()
+    }
+}
+
+/// List what [`commit_worktree`] kept out of the commit under
+/// [`FOUNDRY_DIR`]. Call it after committing, so HEAD is the task commit.
 ///
-/// Callers archive [`uncommitted_foundry_files`] first: this is the only place
-/// task files are deleted rather than committed.
-pub(crate) async fn clean_foundry_dir(shell: &dyn ShellGateway, worktree: &Path) -> Result<()> {
+/// A nested repository is listed by git as a directory (`path/`) and skipped,
+/// because `git clean` without a second `-f` leaves it in place too.
+pub(crate) async fn unlanded_foundry_files(
+    shell: &dyn ShellGateway,
+    worktree: &Path,
+) -> Result<UnlandedFoundryFiles> {
+    let untracked =
+        nul_separated_paths(shell, worktree, &["ls-files", "--others", "-z", "--", FOUNDRY_DIR])
+            .await?
+            .into_iter()
+            .filter(|path| !path.ends_with('/'))
+            .collect();
+    let modified = nul_separated_paths(
+        shell,
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=MT",
+            "HEAD",
+            "--",
+            FOUNDRY_DIR,
+        ],
+    )
+    .await?;
+    Ok(UnlandedFoundryFiles {
+        untracked,
+        modified,
+    })
+}
+
+/// Restore the modified tracked files in `unlanded` to HEAD and remove every
+/// untracked and ignored file under [`FOUNDRY_DIR`], so the worktree can be
+/// removed.
+///
+/// Callers archive `unlanded` first: this is the only place task files are
+/// discarded rather than committed.
+pub(crate) async fn clean_foundry_dir(
+    shell: &dyn ShellGateway,
+    worktree: &Path,
+    unlanded: &UnlandedFoundryFiles,
+) -> Result<()> {
+    if !unlanded.modified.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "checkout", "HEAD", "--"];
+        args.extend(unlanded.modified.iter().map(String::as_str));
+        checked(shell, worktree, &args).await?;
+    }
     checked(shell, worktree, &["clean", "-fdx", "--", FOUNDRY_DIR]).await?;
     Ok(())
 }
@@ -379,23 +421,6 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("c-c3-"));
         assert!(second.starts_with("c-c3-"));
-    }
-
-    /// Only the proof record and its log directory are Foundry's own; every
-    /// other file under `.foundry/` is project work and is committed.
-    #[test]
-    fn only_the_proof_record_and_its_logs_are_foundry_internal() {
-        assert!(is_foundry_internal(".foundry/proof.json"));
-        assert!(is_foundry_internal(".foundry/logs/rejecting.log"));
-        assert!(is_foundry_internal(".foundry/logs/nested/corrected.log"));
-
-        assert!(!is_foundry_internal(".foundry/armature/result.json"));
-        assert!(!is_foundry_internal(".foundry/armature/shots/a.png"));
-        assert!(!is_foundry_internal(".foundry/project.json"));
-        assert!(!is_foundry_internal(".foundry/proof.json.bak"));
-        assert!(!is_foundry_internal(".foundry/logs-summary.md"));
-        assert!(!is_foundry_internal(".foundry/runtime/logs/x.log"));
-        assert!(!is_foundry_internal("docs/proof.json"));
     }
 
     #[test]

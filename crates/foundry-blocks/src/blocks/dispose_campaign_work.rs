@@ -427,7 +427,7 @@ mod tests {
         let root = worktrees_root_with(dir.path(), &["ship-billing-c1-abcdef"]);
 
         // Report a dirty tree and then a non-empty staged diff after the
-        // artifact exclusion; later calls use the repeated success result.
+        // .foundry exclusion; later calls use the repeated success result.
         let success = foundry_sdk::gateway::CommandResult {
             stdout: String::new(),
             stderr: String::new(),
@@ -439,9 +439,9 @@ mod tests {
                 stdout: " M src/main.rs".to_string(),
                 ..success.clone()
             },
-            success.clone(), // unstage proof scratch
-            success.clone(), // stage everything else
-            success.clone(), // HEAD tracks no proof scratch
+            success.clone(), // return the .foundry index to HEAD
+            success.clone(), // stage everything outside .foundry
+            success.clone(), // no tracked .foundry file was deleted
             foundry_sdk::gateway::CommandResult {
                 exit_code: 1,
                 success: false,
@@ -455,17 +455,19 @@ mod tests {
         let issued: Vec<String> =
             shell.invocations().iter().map(|inv| inv.args.join(" ")).collect();
         assert!(summary.contains("preserved at"), "{summary}");
+        assert!(issued.iter().any(|a| a == "reset HEAD -- .foundry"), "{issued:?}");
         assert!(
-            issued.iter().any(|a| a == "reset HEAD -- .foundry/proof.json .foundry/logs"),
-            "{issued:?}"
+            issued.iter().any(|a| a == "add -A -- . :(exclude).foundry"),
+            "nothing under .foundry is staged: {issued:?}"
         );
         assert!(
-            issued
-                .iter()
-                .any(|a| a == "add -A -- . :(exclude).foundry/proof.json :(exclude).foundry/logs"),
-            "only proof scratch is kept out of the commit: {issued:?}"
+            issued.iter().any(|a| a == "diff --name-only -z --diff-filter=D -- .foundry"),
+            "only deletions of tracked .foundry files are looked for: {issued:?}"
         );
-        assert!(!issued.iter().any(|a| a.starts_with("add -u")), "{issued:?}");
+        assert!(
+            !issued.iter().any(|a| a.contains(" rm --cached")),
+            "no tracked .foundry file was deleted, so no deletion is staged: {issued:?}"
+        );
         assert!(issued.iter().any(|a| a.starts_with("commit -m")), "{issued:?}");
         assert!(
             issued

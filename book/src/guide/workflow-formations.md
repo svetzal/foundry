@@ -177,6 +177,34 @@ reviewer gaps remain in the typed result. `defect`, `blocked_on_decision`, and
 `runner_error` never land. Non-landing work is committed and preserved on a
 remote task branch or in a Git bundle.
 
+#### What lands from a task
+
+Finalize Task commits every change the executor left in the worktree, except
+under `.foundry/`. In a task worktree, `.foundry/` is Foundry scratch for
+execution evidence: proof, logs, screenshots, harness output. Nothing under it
+lands, on trunk or on the preserved branch, even when the executor staged it.
+The one exception is a deletion of a file that HEAD tracks under `.foundry/`.
+That deletion is committed, so a task can remove legacy content. A project that
+already tracks files under `.foundry/` keeps them until a task or a person
+deletes them. An executor's edits to those files do not land.
+
+Before Finalize Task removes the worktree, it copies every `.foundry` file that
+did not land to
+`~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/<repository path>`.
+This includes new files, gitignored files, and the executor's version of
+edited tracked files. The task result's `uncommitted_artifacts` field names that
+`worktree` directory. The field is absent when there was nothing to copy. Then
+Finalize Task restores the edited tracked files to HEAD and removes the other
+files. If a copy fails, finalization stops before it removes or restores a
+file.
+
+So a task puts anything the project must keep in a normal project path, for
+example `docs/` or the test tree. Evidence under `.foundry/` lives in the
+evidence store and is referenced from the work item, not from repository
+files. The execution prompt tells every task executor this. The reviewer
+treats a deliverable that leaves project material only under `.foundry/`, or
+that cites `.foundry/` paths as repository content, as a defect.
+
 ### Campaign Formation
 
 Entry event: `campaign_advance_requested`

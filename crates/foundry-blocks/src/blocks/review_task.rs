@@ -106,7 +106,7 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
-         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a real or generated boundary, at least one test must exercise that boundary itself and assert its observable request or response; a mock, fake, or stub installed above that boundary is insufficient. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a real or generated boundary, at least one test must exercise that boundary itself and assert its observable request or response; a mock, fake, or stub installed above that boundary is insufficient. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
          {{\"verdict\":\"complete\"}}\n\
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
@@ -593,6 +593,24 @@ mod tests {
         assert!(
             prompt.contains("mock, fake, or stub installed above that boundary is insufficient")
         );
+    }
+
+    /// Finalize Task commits nothing under `.foundry/`, so every task review,
+    /// not only a campaign's, treats project material left there as missing.
+    #[test]
+    fn every_task_review_treats_dot_foundry_deliverables_as_a_defect() {
+        for campaign in [false, true] {
+            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            assert!(
+                prompt.contains("Files under .foundry/ are Foundry scratch and never land"),
+                "{prompt}"
+            );
+            assert!(prompt.contains("cites .foundry/ paths as repository content"), "{prompt}");
+            assert!(
+                prompt.contains("durable project material only under .foundry/, is a defect"),
+                "{prompt}"
+            );
+        }
     }
 
     // A reviewer that backgrounds a command and ends its turn waiting for a
