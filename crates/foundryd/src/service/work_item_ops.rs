@@ -113,16 +113,31 @@ fn sort_key(item: &WorkItem) -> (u8, i64, &str) {
     (group, stamp, item.id.as_str())
 }
 
+/// An exact source to select on: the kind and its reference.
+type SourceFilter = (WorkSourceKind, String);
+
 /// Every item the request selects, in the RPC's deterministic order.
 ///
 /// Pure over the loaded store, so the ordering and filtering rules are
-/// testable without a service or a filesystem.
-fn selected(store: &WorkItemStore, project: &str, state: Option<WorkItemState>) -> Vec<WorkItem> {
+/// testable without a service or a filesystem. An item that records no
+/// source never matches a source filter, and is listed like any other
+/// without one.
+fn selected(
+    store: &WorkItemStore,
+    project: &str,
+    state: Option<WorkItemState>,
+    source: Option<&SourceFilter>,
+) -> Vec<WorkItem> {
     let mut items: Vec<WorkItem> = store
         .items
         .iter()
         .filter(|item| project.is_empty() || item.project == project)
         .filter(|item| state.is_none_or(|wanted| item.state == wanted))
+        .filter(|item| {
+            source.is_none_or(|(kind, reference)| {
+                item.source.as_ref().is_some_and(|recorded| recorded.matches(*kind, reference))
+            })
+        })
         .cloned()
         .collect();
     items.sort_by(|left, right| sort_key(left).cmp(&sort_key(right)));
@@ -177,14 +192,39 @@ fn parse_state_filter(tag: &str) -> Result<Option<WorkItemState>, Status> {
     })
 }
 
+/// Parse the request's source filter. Both fields empty means "every source";
+/// an unknown kind, or a kind that names no reference, is the caller's
+/// mistake.
+fn parse_source_filter(kind: &str, reference: &str) -> Result<Option<SourceFilter>, Status> {
+    if kind.is_empty() && reference.is_empty() {
+        return Ok(None);
+    }
+    let kind = WorkSourceKind::from_tag(kind).ok_or_else(|| {
+        Status::invalid_argument(format!(
+            "unknown work-source kind '{kind}'; expected one of {}",
+            known_source_kinds()
+        ))
+    })?;
+    if reference.trim().is_empty() {
+        return Err(Status::invalid_argument(
+            "a work-source filter names a ref beside its kind, as <kind>:<ref>",
+        ));
+    }
+    Ok(Some((kind, reference.to_string())))
+}
+
 pub(super) fn list(
     work_items_path: &Path,
     request: Request<ListWorkItemsRequest>,
 ) -> Result<Response<ListWorkItemsResponse>, Status> {
     let request = request.into_inner();
     let state = parse_state_filter(&request.state)?;
+    let source = parse_source_filter(&request.source_kind, &request.source_ref)?;
     let store = load_store(work_items_path)?;
-    let items = selected(&store, &request.project, state).iter().map(item_to_proto).collect();
+    let items = selected(&store, &request.project, state, source.as_ref())
+        .iter()
+        .map(item_to_proto)
+        .collect();
     Ok(Response::new(ListWorkItemsResponse { items }))
 }
 
@@ -588,10 +628,11 @@ fn validate_preservation(repo: &str, base: &str) -> Result<(), Status> {
 mod tests {
     use chrono::{DateTime, Utc};
 
-    use super::{order_group, parse_state_filter, selected};
+    use super::{order_group, parse_source_filter, parse_state_filter, selected};
     use foundry_sdk::work_item::{
         WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
     };
+    use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
@@ -696,8 +737,52 @@ mod tests {
                 item("wi_a", "alpha", WorkItemState::Running),
             ],
         };
-        let ordered = selected(&store, "", None);
+        let ordered = selected(&store, "", None, None);
         let ids: Vec<&str> = ordered.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, vec!["wi_a", "wi_b"], "equal keys break by id ascending");
+    }
+
+    #[test]
+    fn a_source_filter_needs_a_known_kind_and_a_ref_and_both_empty_means_every_source() {
+        assert!(parse_source_filter("", "").expect("empty is every source").is_none());
+        assert_eq!(
+            parse_source_filter("campaign", "tidy-cli").expect("known kind"),
+            Some((WorkSourceKind::Campaign, "tidy-cli".to_string()))
+        );
+        for (kind, reference) in [
+            ("dashboard", "x"),
+            ("", "x"),
+            ("campaign", ""),
+            ("campaign", " "),
+        ] {
+            let status = parse_source_filter(kind, reference).expect_err("rejected");
+            assert_eq!(status.code(), tonic::Code::InvalidArgument, "{kind}:{reference}");
+        }
+    }
+
+    #[test]
+    fn a_source_filter_selects_exactly_that_campaigns_cycles_in_the_documented_order() {
+        let mut cycle_one = item("wi_c1", "alpha", WorkItemState::Landed);
+        cycle_one.source = Some(WorkSource::campaign("tidy-cli", 1));
+        cycle_one.settled_at = Some(at(10));
+        let mut cycle_two = item("wi_c2", "alpha", WorkItemState::Running);
+        cycle_two.source = Some(WorkSource::campaign("tidy-cli", 2));
+        let mut other_campaign = item("wi_other", "alpha", WorkItemState::Running);
+        other_campaign.source = Some(WorkSource::campaign("tidy", 1));
+        let mut sentinel = item("wi_nightly", "alpha", WorkItemState::Running);
+        sentinel.source = Some(WorkSource::sentinel("nightly-maintenance"));
+        let unsourced = item("wi_old", "alpha", WorkItemState::Running);
+        let store = WorkItemStore {
+            version: 1,
+            items: vec![cycle_one, cycle_two, other_campaign, sentinel, unsourced],
+        };
+
+        let filter = (WorkSourceKind::Campaign, "tidy-cli".to_string());
+        let cycles = selected(&store, "", None, Some(&filter));
+        let ids: Vec<&str> = cycles.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["wi_c2", "wi_c1"], "running first, then settled; nothing else");
+
+        let everything = selected(&store, "", None, None);
+        assert_eq!(everything.len(), 5, "without a filter an unsourced item is listed too");
     }
 }

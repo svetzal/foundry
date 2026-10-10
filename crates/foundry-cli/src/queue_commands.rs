@@ -21,7 +21,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
 use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
-use foundry_sdk::work_source::WorkSource;
+use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
@@ -52,36 +52,123 @@ fn render_list(items: &[ProtoWorkItem], view: View, json: bool) -> String {
     }
 }
 
-/// List the ledger in `view`.
+/// An exact source to select on, as `--source <kind>:<ref>` names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFilter {
+    /// The source kind.
+    pub kind: WorkSourceKind,
+    /// The reference: a campaign or sentinel name, a host, or a parent item id.
+    pub reference: String,
+}
+
+impl SourceFilter {
+    /// Parse `<kind>:<ref>`. The kind is one of the closed set of tags and the
+    /// ref is nonblank; anything else is the operator's mistake, named.
+    pub fn parse(text: &str) -> Result<Self> {
+        let (kind, reference) = text.split_once(':').with_context(|| {
+            format!("--source takes <kind>:<ref>, e.g. campaign:tidy-cli; got '{text}'")
+        })?;
+        let kind = WorkSourceKind::from_tag(kind).with_context(|| {
+            format!("unknown work-source kind '{kind}'; expected one of {}", known_source_kinds())
+        })?;
+        anyhow::ensure!(
+            !reference.trim().is_empty(),
+            "--source names a ref beside its kind, as <kind>:<ref>; got '{text}'"
+        );
+        Ok(Self {
+            kind,
+            reference: reference.to_string(),
+        })
+    }
+
+    /// The exact cycles of the campaign `name`.
+    #[must_use]
+    pub fn campaign(name: &str) -> Self {
+        Self {
+            kind: WorkSourceKind::Campaign,
+            reference: name.to_string(),
+        }
+    }
+
+    /// Whether a wire record's recorded source is this one. A record with no
+    /// source never matches.
+    fn matches(&self, item: &ProtoWorkItem) -> bool {
+        item.source
+            .as_ref()
+            .is_some_and(|source| source.kind == self.kind.tag() && source.r#ref == self.reference)
+    }
+
+    /// The `--source <kind>:<ref>` text that names this filter.
+    fn flag_text(&self) -> String {
+        format!("--source {}:{}", self.kind.tag(), self.reference)
+    }
+}
+
+/// The source kinds an operator may name, for error messages.
+fn known_source_kinds() -> String {
+    WorkSourceKind::ALL.iter().map(|kind| kind.tag()).collect::<Vec<_>>().join(", ")
+}
+
+/// List the ledger in `view`, optionally only the items from one source.
 pub async fn list(
     work_items_path: &Path,
     addr: &str,
     offline: bool,
     view: View,
     json: bool,
+    source: Option<&str>,
 ) -> Result<()> {
+    let source = source.map(SourceFilter::parse).transpose()?;
     let items = if offline {
-        load_offline(work_items_path)?
+        filter_by_source(load_offline(work_items_path)?, source.as_ref())
     } else {
-        fetch_online(addr, view).await?
+        fetch_online(addr, view, source.as_ref()).await?
     };
 
     print!("{}", render_list(&items, view, json));
     Ok(())
 }
 
-/// Fetch every ledger record from the daemon, in the RPC's documented order.
-async fn fetch_online(addr: &str, view: View) -> Result<Vec<ProtoWorkItem>> {
-    let mut client = connect_daemon_required(addr, &offline_hint(view_suffix(view))).await?;
-    let response = client
-        .list_work_items(ListWorkItemsRequest {
-            project: String::new(),
-            state: String::new(),
-        })
-        .await
-        .map_err(status_to_anyhow)?
-        .into_inner();
-    Ok(response.items)
+/// Only the items whose recorded source is `source`, in the order given;
+/// every item when there is no filter.
+///
+/// The offline counterpart of the daemon's source filter, so `--offline`
+/// differs from the online path only in transport.
+pub(crate) fn filter_by_source(
+    items: Vec<ProtoWorkItem>,
+    source: Option<&SourceFilter>,
+) -> Vec<ProtoWorkItem> {
+    match source {
+        Some(filter) => items.into_iter().filter(|item| filter.matches(item)).collect(),
+        None => items,
+    }
+}
+
+/// Fetch the ledger records from the daemon, in the RPC's documented order,
+/// optionally selected by source.
+async fn fetch_online(
+    addr: &str,
+    view: View,
+    source: Option<&SourceFilter>,
+) -> Result<Vec<ProtoWorkItem>> {
+    let suffix = match source {
+        Some(filter) => format!("{} {}", view_suffix(view), filter.flag_text()),
+        None => view_suffix(view).to_string(),
+    };
+    let mut client = connect_daemon_required(addr, &offline_hint(suffix.trim())).await?;
+    let response = client.list_work_items(list_request(source)).await.map_err(status_to_anyhow)?;
+    Ok(response.into_inner().items)
+}
+
+/// The `ListWorkItems` request selecting every project and state, and
+/// `source` when given.
+pub(crate) fn list_request(source: Option<&SourceFilter>) -> ListWorkItemsRequest {
+    ListWorkItemsRequest {
+        project: String::new(),
+        state: String::new(),
+        source_kind: source.map(|filter| filter.kind.tag().to_string()).unwrap_or_default(),
+        source_ref: source.map(|filter| filter.reference.clone()).unwrap_or_default(),
+    }
 }
 
 /// Show one item's full durable record, followed by its `work_item_*` events.
@@ -178,7 +265,7 @@ fn view_suffix(view: View) -> &'static str {
 
 /// Read the ledger file directly and put it in the order `ListWorkItems`
 /// documents.
-fn load_offline(work_items_path: &Path) -> Result<Vec<ProtoWorkItem>> {
+pub(crate) fn load_offline(work_items_path: &Path) -> Result<Vec<ProtoWorkItem>> {
     let store = WorkItemStore::load(work_items_path).with_context(|| {
         format!("could not read the work-item ledger at {}", work_items_path.display())
     })?;
@@ -528,12 +615,81 @@ mod tests {
             .expect("save ledger");
 
         // An unroutable address: reaching for it would fail the test.
-        list(tmp.path(), "http://127.0.0.1:0", true, View::Overview, false)
+        list(tmp.path(), "http://127.0.0.1:0", true, View::Overview, false, None)
             .await
             .expect("offline overview should succeed");
-        list(tmp.path(), "http://127.0.0.1:0", true, View::Open, true)
+        list(tmp.path(), "http://127.0.0.1:0", true, View::Open, true, None)
             .await
             .expect("offline open --json should succeed");
+        list(
+            tmp.path(),
+            "http://127.0.0.1:0",
+            true,
+            View::Overview,
+            false,
+            Some("operator:desk"),
+        )
+        .await
+        .expect("offline overview with a source filter should succeed");
+    }
+
+    // ── source filter ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_source_filter_parses_kind_colon_ref_and_names_what_it_rejects() {
+        assert_eq!(
+            SourceFilter::parse("campaign:tidy-cli").expect("valid"),
+            SourceFilter::campaign("tidy-cli")
+        );
+        assert_eq!(
+            SourceFilter::parse("work_item:wi_abc").expect("valid").kind,
+            WorkSourceKind::WorkItem
+        );
+        let no_colon = SourceFilter::parse("campaign").expect_err("no ref");
+        assert!(no_colon.to_string().contains("<kind>:<ref>"), "got: {no_colon}");
+        let unknown = SourceFilter::parse("dashboard:x").expect_err("unknown kind");
+        assert!(
+            unknown.to_string().contains("campaign, sentinel, operator, work_item"),
+            "got: {unknown}"
+        );
+        assert!(SourceFilter::parse("sentinel:").is_err(), "a blank ref names nothing");
+    }
+
+    #[test]
+    fn a_list_request_carries_the_filter_or_leaves_both_fields_empty() {
+        let bare = list_request(None);
+        assert_eq!((bare.source_kind.as_str(), bare.source_ref.as_str()), ("", ""));
+        let filtered = list_request(Some(&SourceFilter::campaign("tidy-cli")));
+        assert_eq!(
+            (filtered.source_kind.as_str(), filtered.source_ref.as_str()),
+            ("campaign", "tidy-cli")
+        );
+    }
+
+    #[test]
+    fn offline_source_filtering_keeps_only_that_source_in_the_given_order() {
+        let mut cycle_two = item("wi_c2", "alpha", WorkItemState::Running, 0);
+        cycle_two.source = Some(WorkSource::campaign("tidy-cli", 2));
+        let mut cycle_one = item("wi_c1", "alpha", WorkItemState::Landed, 2_000);
+        cycle_one.source = Some(WorkSource::campaign("tidy-cli", 1));
+        let mut nightly = item("wi_nightly", "alpha", WorkItemState::Running, 0);
+        nightly.source = Some(WorkSource::sentinel("nightly-maintenance"));
+        let unsourced = item("wi_old", "alpha", WorkItemState::Running, 0);
+        let items: Vec<ProtoWorkItem> =
+            ordered(&store(vec![cycle_one, cycle_two, nightly, unsourced]))
+                .iter()
+                .map(item_to_proto)
+                .collect();
+
+        let cycles = filter_by_source(items.clone(), Some(&SourceFilter::campaign("tidy-cli")));
+        assert_eq!(ids(&cycles), vec!["wi_c2", "wi_c1"]);
+        assert_eq!(cycles[1].source.as_ref().map(|s| s.cycle), Some(Some(1)));
+
+        assert_eq!(filter_by_source(items.clone(), None).len(), 4, "no filter, every item");
+        assert!(
+            filter_by_source(items, Some(&SourceFilter::campaign("tidy"))).is_empty(),
+            "the ref is an exact match, not a prefix"
+        );
     }
 
     #[tokio::test]
@@ -632,5 +788,9 @@ mod tests {
         assert_eq!(offline_hint(view_suffix(View::Overview)), "foundry queue --offline");
         assert_eq!(offline_hint(view_suffix(View::Open)), "foundry queue open --offline");
         assert_eq!(offline_hint("show wi_abc"), "foundry queue show wi_abc --offline");
+        assert_eq!(
+            offline_hint(&SourceFilter::campaign("tidy-cli").flag_text()),
+            "foundry queue --source campaign:tidy-cli --offline"
+        );
     }
 }
