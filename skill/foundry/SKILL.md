@@ -225,6 +225,12 @@ foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
 ```
 
+`foundry campaign show <name>` prints the campaign and then its cycles as the
+work-item ledger records them (`Cycles in the ledger:`), read through the
+`ListWorkItems` source filter `campaign:<name>` — the same list
+`foundry queue --source campaign:<name>` prints — never inferred from traces.
+Cycles that predate the typed source print `(none recorded)`.
+
 Campaign definitions live in the daemon-owned campaign store. By default,
 `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all go
 through typed gRPC and do not read or mutate the client-side
@@ -438,12 +444,29 @@ foundry queue show wi_0123456789abcdef01234567
 # Machine-readable
 foundry queue --json
 foundry queue show wi_0123456789abcdef01234567 --json
+
+# Only what one dispatcher started, as <kind>:<ref>
+foundry queue --source campaign:bedrock-gated-trials-v1   # every cycle of that campaign
+foundry queue --source sentinel:nightly-maintenance       # what the nightly started
+foundry queue open --source operator:workbench            # open work asked for from that host
 ```
 
 The four groups are **running**, **queued** (`submitted` or `queued`), **open**
 (`preserved`, `needs_decision`, `failed` — settled but still owing something to
 a person), and the newest 20 **settled** items (`landed`, `cancelled`). The
 20-item cap applies to the settled group alone.
+
+Every item records a typed `source` beside its free-text `origin`: what
+dispatched it, as a closed kind with one ref — `campaign:<name>` with the
+`cycle` number, `sentinel:<name>` (the nightly's per-project runs, its majors
+lane, a remediation it reaches), `operator:<host>` (the CLI's `task`,
+`iterate`, `run`, `release` and `pipeline`), or `work_item:<parent id>` (a
+`queue resume` child, or a release cut after a remediation). Rows show it as a
+column (`-` when none was recorded), `show` prints a `Source:` line only when
+one was recorded, and `--json` carries a `source` object with `kind`, `ref` and
+`cycle` or no key at all. Items recorded before the source existed have none;
+read that as "not recorded", never as a kind. `--source` is an exact match on
+kind and ref; an unknown kind, or a kind with no ref, is refused.
 
 Start with `foundry queue open` when you want the shortest answer to "what is
 waiting on me?" — those three states are settled but unfinished.

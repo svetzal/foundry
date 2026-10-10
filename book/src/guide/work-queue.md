@@ -17,9 +17,10 @@ that stops early is still in the ledger rather than invisible.
 
 Each item carries a stable id (`wi_` followed by 24 hex characters), the project
 it belongs to, the objective it serves, its kind, its lane, an opaque origin
-string Foundry never interprets, the timestamps of its life, its state, a
-one-line reason for that state, the workflow `trace_id` it runs under, and —
-once it settles — its settlement fields.
+string Foundry never interprets, a typed source saying what dispatched it, the
+timestamps of its life, its state, a one-line reason for that state, the
+workflow `trace_id` it runs under, and — once it settles — its settlement
+fields.
 
 The ledger lives in a single JSON file, `~/.foundry/work-items.json`
 (override with `FOUNDRY_WORK_ITEMS_PATH`). It is owned by `foundryd` and
@@ -85,6 +86,50 @@ altered because of what its origin says — an empty `--origin` is accepted and
 simply adds nothing. Cycles dispatched by the automatic post-result advance
 carry no operator context, because no operator issued them.
 
+## Source: what dispatched the work
+
+Origin is text for a person. `source` is the typed answer to the same
+question, recorded at submission and never changed, so the ledger alone can
+answer "everything this campaign dispatched" or "what did the nightly start"
+without reading the event log to recover a campaign from a trace.
+
+A source is a `kind` from a closed set, the one `ref` that names the
+dispatcher, and, for a campaign, the `cycle` number:
+
+| Kind | `ref` | Recorded when |
+|------|-------|---------------|
+| `campaign` | the campaign name | a campaign advance dispatches a cycle; `cycle` is the cycle number, whoever asked for the advance |
+| `sentinel` | the sentinel name | a sentinel-fired chain dispatches an item: the nightly's per-project maintenance runs, its majors-lane upgrades, a remediation or release it reaches |
+| `operator` | the hostname of the CLI that asked | `foundry task`, `foundry iterate`, `foundry run`, `foundry release`, `foundry pipeline`, and any item a chain they start reaches |
+| `work_item` | the parent item id | an item created from another item: a `queue resume` child or a nightly continuation (its `resumes` link is unchanged), or a release cut after a remediation on the same run |
+
+The kinds are a closed enum; adding one is a code change, never a free
+string. The source travels on the event envelope: whatever emits a root event
+names it there, and every event below the root inherits it verbatim (see
+[Tracing](../architecture/tracing.md)), which is how a per-project run three
+hops below the nightly's root still knows which sentinel fired it. A release
+that follows a remediation is the one case resolved from the ledger instead:
+the newest remediation item on the same trace and project is its parent.
+
+An item recorded before the source existed has none, and so does one whose
+root named none (a raw `foundry emit`). Every reader treats that as **not
+recorded**, exactly as `worktree_removed` is handled: `queue show` prints no
+`Source:` line, `--json` emits no `source` key, and a row shows `-`. The
+free-text `origin` is untouched by any of this; the two sit side by side.
+
+To list one source's items:
+
+```bash
+foundry queue --source campaign:bedrock-gated-trials-v1   # every cycle of that campaign
+foundry queue --source sentinel:nightly-maintenance       # what the nightly started
+foundry queue open --source operator:workbench            # open work asked for from that host
+```
+
+The filter is an exact match on kind and ref, applied by the daemon's
+`ListWorkItems` (and by the same selection offline); an unknown kind, or a kind
+with no ref, is refused. `foundry campaign show <name>` lists the campaign's
+cycles through this same filter.
+
 ## The states
 
 An item moves through unsettled states, then settles. Settled does not mean
@@ -147,9 +192,9 @@ durable JSONL event log.
 ## Commands
 
 ```bash
-foundry queue [--json] [--offline]
+foundry queue [--source <kind>:<ref>] [--json] [--offline]
 foundry queue show <id> [--json] [--offline]
-foundry queue open [--json] [--offline]
+foundry queue open [--source <kind>:<ref>] [--json] [--offline]
 ```
 
 ### `foundry queue`
@@ -164,25 +209,28 @@ Prints four groups on one screen, in this order:
    items. Older terminal items are omitted; the terminal group grows forever, so
    the overview shows only its newest page. The cap applies to this group alone.
 
-Each line shows the item's id, project, kind, lane, state, the timestamp that
-placed it in its group, and the one-line reason:
+Each line shows the item's id, project, kind, lane, source (`-` when none was
+recorded), state, the timestamp that placed it in its group, and the one-line
+reason:
 
 ```text
 Running
-  wi_aaa1  alpha  task  interactive  running  2026-09-30T01:00:05+00:00  running
+  wi_aaa1  alpha  task  interactive  operator:workbench  running  2026-09-30T01:00:05+00:00  running
 
 Queued
   (none)
 
 Open — needs a person
-  wi_ccc3  beta  major_upgrade  maintenance  preserved  2026-09-29T03:10:00+00:00  gates red after the bump
+  wi_ccc3  beta  major_upgrade  maintenance  sentinel:nightly-maintenance  preserved  2026-09-29T03:10:00+00:00  gates red after the bump
 
 Settled (last 20)
-  wi_ddd4  alpha  release  maintenance  landed  2026-09-28T02:40:00+00:00  released v1.2.0
+  wi_ddd4  alpha  release  maintenance  -  landed  2026-09-28T02:40:00+00:00  released v1.2.0
 ```
 
 The group order and the order within each group come from the daemon's
-`ListWorkItems` response. The CLI groups by state; it never re-sorts.
+`ListWorkItems` response. The CLI groups by state; it never re-sorts. With
+`--source <kind>:<ref>` the daemon returns only that source's items, in the
+same order, and the groups show those.
 
 ### `foundry queue show <id>`
 
@@ -191,7 +239,9 @@ settlement field, then a blank line and the item's own `work_item_*` events.
 An optional field the ledger never recorded produces **no line at all**, so you
 never have to tell a recorded empty string from an unset field.
 `worktree_removed` is the sharpest case: a recorded `false` prints
-`Worktree removed: no`, while "no worktree recorded" prints nothing.
+`Worktree removed: no`, while "no worktree recorded" prints nothing. `Source:`
+follows the same rule: an item recorded before the source existed prints no
+`Source:` line.
 
 ```text
 Id:               wi_ccc3
@@ -200,6 +250,7 @@ Objective:        bump serde to 2.0
 Kind:             major_upgrade
 Lane:             maintenance
 Origin:           nightly majors lane
+Source:           sentinel:nightly-maintenance
 State:            preserved
 Reason:           gates red after the bump; work held on a branch
 Submitted:        2026-09-29T02:00:00+00:00
@@ -265,6 +316,7 @@ or `false`, so the JSON round-trips the same facts the record carries:
     "kind": "major_upgrade",
     "lane": "maintenance",
     "origin": "nightly majors lane",
+    "source": { "kind": "sentinel", "ref": "nightly-maintenance" },
     "submitted_at": "2026-09-29T02:00:00+00:00",
     "started_at": "2026-09-29T02:00:01+00:00",
     "settled_at": "2026-09-29T03:10:00+00:00",
@@ -280,17 +332,18 @@ or `false`, so the JSON round-trips the same facts the record carries:
 ```
 
 Note what is *not* there: `landed_commit`. The item did not land, so the field
-was never recorded, so it is absent. The `--json` array is the fetched list
-unchanged — neither grouped nor capped at 20 — so a consumer can apply its own
-rules.
+was never recorded, so it is absent. A `source` has the same keys the ledger
+writes (`kind`, `ref`, and `cycle` for a campaign); an item that records none
+has no `source` key. The `--json` array is the fetched list unchanged — neither
+grouped nor capped at 20 — so a consumer can apply its own rules.
 
 ## Online versus offline
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`; `--source` is its exact-match source filter |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem`, then `ListWorkItemEvents` |
-| `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+| `foundry queue open [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
 
 **Online** is the default and is daemon-authoritative. All three commands render
 the daemon's response directly and never read, create or mutate the client-side
@@ -313,6 +366,8 @@ differs from the online path only in transport, never in reading order.
   the normal starting state, not a fault, and a read never creates the file.
 - A malformed ledger file is an error: the command exits non-zero and names the
   parse failure.
+- `--source` applies the same exact-match selection to the file the daemon
+  applies to its store, so a filtered `--offline` read lists the same items.
 
 
 ### Close or cancel an item

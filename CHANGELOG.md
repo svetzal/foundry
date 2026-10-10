@@ -7,6 +7,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Every work item records a typed `source` at submission, beside the untouched
+  free-text `origin`: `campaign` (the campaign name and cycle number),
+  `sentinel` (the sentinel name), `operator` (the submitting CLI's hostname)
+  or `work_item` (the parent item id, for a resume child and for a release cut
+  after a remediation). The source rides the event envelope from the root a
+  submitter emits and propagates like `trace_id` and `gather_id`, so the
+  ledger records it off whichever event opens an item's chain. Items recorded
+  before the field existed have none, and every reader treats that as not
+  recorded.
+- `WorkItem` and `EmitRequest` on the wire carry the source as an additive
+  message; `ListWorkItems` takes an exact-match source filter (an unknown kind
+  is `INVALID_ARGUMENT`). `foundry queue --source <kind>:<ref>` uses it in both
+  list forms, online and offline; rows show a source column, `queue show`
+  prints a `Source:` line only when one was recorded, and `--json` carries a
+  `source` object or no key.
+- `foundry campaign show` lists the campaign's cycles from the ledger through
+  that filter, rather than by trace inference.
+
 ## [0.41.2] - 2026-10-09
 
 ### Fixed

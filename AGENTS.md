@@ -189,7 +189,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry gates <project>` | Auto-discover quality gates |
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
-| `foundry queue [show <id>\|open]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--json` and `--offline` supported. Read-only |
+| `foundry queue [show <id>\|open] [--source <kind>:<ref>]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--source` lists one dispatcher's items (`campaign:<name>`, `sentinel:<name>`, `operator:<host>`, `work_item:<parent id>`); `--json` and `--offline` supported. Read-only |
 | `foundry queue reconcile` | Run the canonical reconciler now through the daemon and print this invocation’s digest; no offline fallback |
 | `foundry queue resume <id> [--origin <text>]` | Resume preserved work through a linked continuation; daemon required |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
@@ -227,7 +227,7 @@ are legal.
 |---------|-----------------|-------|
 | `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign list` | Yes (or `--offline`) | Reads daemon-owned campaign state via `ListCampaigns`; `--offline` reads the file directly |
-| `foundry campaign show <name>` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`; `--offline` reads the file directly |
+| `foundry campaign show <name>` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`, then lists the campaign's cycles from the work-item ledger via `ListWorkItems` with the source filter `campaign:<name>` (never by trace inference); `--offline` reads both files directly |
 | `foundry campaign advance <name> [--origin <text>]` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback. `--origin` records a free-text operator note on the dispatched cycle's work item, beside the CLI client's hostname |
 | `foundry campaign pause <name>` | Yes (or `--offline`) | Mutates via `PauseCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
@@ -247,7 +247,7 @@ the settled group alone.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`) |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`); an unknown kind is INVALID_ARGUMENT. Rows carry a source column, `-` when none was recorded |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
@@ -624,7 +624,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 
 - `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
 - `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; owned by `foundryd` for normal online reads and mutations, with direct file access reserved for explicit `--offline` recovery
-- `~/.foundry/work-items.json` — the work-item ledger: one durable record per unit of work Foundry dispatched, with its kind, lane, origin, state and settlement disposition. All six kinds are recorded, each from the root of its own chain and settled from that chain's own typed terminal:
+- `~/.foundry/work-items.json` — the work-item ledger: one durable record per unit of work Foundry dispatched, with its kind, lane, origin, typed source, state and settlement disposition. The source (`foundry_sdk::work_source::WorkSource`) is a closed enum — `campaign` (name, with the cycle number), `sentinel` (name), `operator` (the submitting CLI's hostname), `work_item` (the parent item id: a resume child, or a release cut after a remediation on the same trace) — recorded at submission beside the opaque `origin` and never changed. It rides the `Event` envelope (`Event::source`), stamped on the root by whatever emits it and propagated set-if-unset like `trace_id`/`gather_id`, so the recording blocks read it off the event that opens the item's chain; a root that names none (a raw `foundry emit`, a pre-source record) leaves it absent, and every reader treats absence as "not recorded". All six kinds are recorded, each from the root of its own chain and settled from that chain's own typed terminal:
 
   | Kind | Recorded at | Settled from |
   |------|-------------|--------------|
