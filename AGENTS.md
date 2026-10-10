@@ -78,6 +78,37 @@ starting anything — they are safe beside a live daemon. Any other flag or
 argument is a usage error (non-zero exit). To check the installed version,
 `foundryd --version` and `foundry --version` are both harmless.
 
+### Production and development daemons
+
+`foundryd` on `mojility-ops-01.local` is **production Foundry**. It runs the
+nightly, the sentinels, the work-item ledger and every registered project's
+tasks and campaigns, and the `foundry` CLI on the Mac targets it through
+`FOUNDRY_DAEMON_ADDR`. The daemon on the Mac (`com.mojility.foundryd` under
+launchd, its own `~/.foundry`) is the **development daemon**.
+
+Work on Foundry itself happens on the Mac and is promoted to ops-01
+(Stacey, 2026-10-10):
+
+- Build and run changes here first: `./install.sh`, reload the Mac daemon
+  with the `launchctl` pair under "CI / Release", and drive it with
+  `foundry --addr http://127.0.0.1:50051 …` (the plain CLI targets
+  production). Exercise the change against the Mac daemon's own registry and
+  ledger before any release.
+- Promote by the manual release procedure under "CI / Release", at a quiet
+  point on ops-01: `foundry status` says no active workflows, and never during
+  the 02:00 UTC nightly. The ops-01 restart kills any running agent session.
+- **Never dispatch a `foundry task` or a campaign against the `foundry`
+  project on the production daemon.** A Foundry change produced by production
+  Foundry means a daemon restart under other projects' running work, and a
+  defective change breaks the executor for every project at once. Foundry
+  development is a session on the Mac, with the stack's craftsperson agent,
+  landing on `main` by ordinary commits. The nightly dependency maintenance
+  of the `foundry` registry entry is unaffected: it lands dependency commits
+  and restarts nothing.
+
+The same split holds for anything that must be deployed onto ops-01's daemon
+host: design and iterate on the Mac, promote at a quiet point.
+
 ### Linux daemon setup
 
 For Linux infrastructure, install the release tarball binaries to
