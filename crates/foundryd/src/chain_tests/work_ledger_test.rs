@@ -1613,6 +1613,8 @@ fn assert_resume_admission(
         assert_eq!(event.payload["operator_action"]["command"], "resume");
         assert_eq!(event.payload["operator_action"]["origin"], "owner-host (finish it)");
         assert_eq!(event.payload["operator_action"]["previous_reason"], parent.reason);
+        assert_eq!(event.payload["source"]["kind"], "work_item");
+        assert_eq!(event.payload["source"]["ref"], parent.id);
     }
     assert_eq!(
         store
@@ -1623,6 +1625,21 @@ fn assert_resume_admission(
             .collect::<Vec<_>>(),
         vec![child.id.as_str()]
     );
+    // The child names its parent as its typed source, on the wire and in the
+    // ledger, while `resumes` carries the same link unchanged and the parent's
+    // own source is untouched.
+    let wire_source = child.source.as_ref().expect("a resume child names its parent");
+    assert_eq!(
+        (wire_source.kind.as_str(), wire_source.r#ref.as_str(), wire_source.cycle),
+        ("work_item", parent.id.as_str(), None)
+    );
+    let child_item = store.find(&child.id).unwrap();
+    assert_eq!(
+        child_item.source,
+        Some(foundry_sdk::work_source::WorkSource::work_item(parent.id.clone()))
+    );
+    assert_eq!(child_item.resumes.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(store.find(&parent.id).unwrap().source, parent.source);
 }
 
 fn assert_rejected_resume_record<'a>(
