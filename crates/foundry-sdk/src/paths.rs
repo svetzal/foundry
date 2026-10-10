@@ -107,6 +107,36 @@ pub fn work_items_path() -> PathBuf {
     }
 }
 
+/// Returns the pacing limits file path.
+///
+/// The operator-edited limits the scheduler reads on every tick (see
+/// [`crate::pacing::Limits`]). Absent means the defaults. Foundry never writes
+/// it.
+///
+/// Override with `FOUNDRY_PACING_PATH`.
+pub fn pacing_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_PACING_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("pacing.json")
+    }
+}
+
+/// Returns the pacing state file path.
+///
+/// Daemon-owned: which lanes an operator has paused (see
+/// [`crate::pacing::PauseState`]), saved through a same-directory temp-file
+/// rename so a pause survives a restart.
+///
+/// Override with `FOUNDRY_PACING_STATE_PATH`.
+pub fn pacing_state_path() -> PathBuf {
+    if let Ok(p) = env::var("FOUNDRY_PACING_STATE_PATH") {
+        PathBuf::from(p)
+    } else {
+        foundry_home().join("pacing-state.json")
+    }
+}
+
 /// Returns the root used for isolated one-shot task worktrees.
 ///
 /// Override with `FOUNDRY_WORKTREES_DIR`.

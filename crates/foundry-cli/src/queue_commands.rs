@@ -279,7 +279,7 @@ pub(crate) fn load_offline(work_items_path: &Path) -> Result<Vec<ProtoWorkItem>>
 fn order_group(state: WorkItemState) -> u8 {
     match state {
         WorkItemState::Running => 0,
-        WorkItemState::Submitted | WorkItemState::Queued => 1,
+        WorkItemState::Submitted | WorkItemState::Queued | WorkItemState::Held => 1,
         WorkItemState::Preserved | WorkItemState::NeedsDecision | WorkItemState::Failed => 2,
         WorkItemState::Landed | WorkItemState::Cancelled => 3,
     }
@@ -291,7 +291,9 @@ fn order_group(state: WorkItemState) -> u8 {
 fn sort_key(item: &WorkItem) -> (u8, i64, &str) {
     let stamp = match item.state {
         WorkItemState::Running => item.started_at.map_or(0, |at| at.timestamp_micros()),
-        WorkItemState::Submitted | WorkItemState::Queued => item.submitted_at.timestamp_micros(),
+        WorkItemState::Submitted | WorkItemState::Queued | WorkItemState::Held => {
+            item.submitted_at.timestamp_micros()
+        }
         WorkItemState::Preserved
         | WorkItemState::NeedsDecision
         | WorkItemState::Failed
@@ -340,6 +342,8 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
             }
         }),
         source: item.source.as_ref().map(source_to_proto),
+        depends_on: item.depends_on.clone(),
+        not_before: item.not_before.map(|at| at.to_rfc3339()),
     }
 }
 
@@ -404,13 +408,29 @@ pub async fn cancel_item(
 }
 
 /// Resume preserved work via the daemon; never read or write client stores.
-pub async fn resume_item(addr: &str, offline: bool, id: &str, origin: Option<&str>) -> Result<()> {
+///
+/// `after` and `not_before` are the owner's pacing constraints for the new
+/// item: the ids it waits on, and the earliest time (RFC 3339, or a duration
+/// from now such as `2h`) the scheduler may start it.
+pub async fn resume_item(
+    addr: &str,
+    offline: bool,
+    id: &str,
+    origin: Option<&str>,
+    after: &[String],
+    not_before: Option<&str>,
+) -> Result<()> {
     anyhow::ensure!(!offline, "queue resume requires foundryd; --offline is not supported");
+    let not_before = not_before
+        .map(|text| crate::commands::parse_not_before(text, chrono::Utc::now()))
+        .transpose()?;
     let mut client = crate::daemon::connect_daemon_online(addr).await?;
     let item = client
         .resume_work_item(crate::proto::ResumeWorkItemRequest {
             id: id.to_string(),
             operator_origin: crate::origin::local_operator_origin(origin),
+            depends_on: after.to_vec(),
+            not_before: not_before.map(|at| at.to_rfc3339()).unwrap_or_default(),
         })
         .await
         .map_err(status_to_anyhow)?
@@ -418,6 +438,45 @@ pub async fn resume_item(addr: &str, offline: bool, id: &str, origin: Option<&st
         .item
         .context("daemon returned no resumed work item")?;
     print!("{}", render::queue::item_detail(&item));
+    Ok(())
+}
+
+/// Take a queued item out of the scheduler's hands, or give it back
+/// (`release` also returns an item the scheduler moved to `needs_decision`
+/// for a dependency). Daemon only; no offline path.
+pub async fn hold_or_release_item(
+    addr: &str,
+    offline: bool,
+    id: &str,
+    origin: Option<&str>,
+    release: bool,
+) -> Result<()> {
+    anyhow::ensure!(!offline, "queue hold/release require foundryd; --offline is not supported");
+    let mut client = crate::daemon::connect_daemon_online(addr).await?;
+    let operator_origin = crate::origin::local_operator_origin(origin);
+    let item = if release {
+        client
+            .release_work_item(crate::proto::ReleaseWorkItemRequest {
+                id: id.to_string(),
+                operator_origin,
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .item
+    } else {
+        client
+            .hold_work_item(crate::proto::HoldWorkItemRequest {
+                id: id.to_string(),
+                operator_origin,
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .item
+    }
+    .context("daemon returned no work item")?;
+    print!("{}", render::queue::transition_notice(&item));
     Ok(())
 }
 
@@ -524,6 +583,7 @@ mod tests {
         assert_eq!(order_group(WorkItemState::Running), 0);
         assert_eq!(order_group(WorkItemState::Submitted), 1);
         assert_eq!(order_group(WorkItemState::Queued), 1);
+        assert_eq!(order_group(WorkItemState::Held), 1);
         assert_eq!(order_group(WorkItemState::Preserved), 2);
         assert_eq!(order_group(WorkItemState::NeedsDecision), 2);
         assert_eq!(order_group(WorkItemState::Failed), 2);

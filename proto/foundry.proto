@@ -640,6 +640,13 @@ message WorkItem {
     // field existed — and a client built from the previous proto parses the
     // record exactly as before. Additive.
     WorkSource source = 20;
+    // Pacing: the items this one waits on (`foundry task --after`). It starts
+    // only once every one has settled `landed`. Empty when it waits on none.
+    // Additive.
+    repeated string depends_on = 21;
+    // Pacing: the earliest time the scheduler may start it (ISO 8601). Absent
+    // when unset. Additive.
+    optional string not_before = 22;
 }
 
 // Owner controls retain submission origin, trace, disposition and prior settlement.
@@ -663,13 +670,89 @@ message CloseWorkItemRequest {
 }
 message CloseWorkItemResponse { WorkItem item = 1; }
 
-// Cancel only submitted/queued items with the reason "cancelled by operator".
-// Same validation, persistence and event contract as CloseWorkItem.
+// Cancel only submitted/queued/held items with the reason "cancelled by
+// operator". Same validation, persistence and event contract as CloseWorkItem.
 message CancelWorkItemRequest {
     string id = 1;
     string operator_origin = 2;
 }
 message CancelWorkItemResponse { WorkItem item = 1; }
+
+// Hold a queued item: it leaves the scheduler's hands until released. Only a
+// `queued` item can be held; any other state is FAILED_PRECONDITION. Same
+// validation and persistence contract as CloseWorkItem, then work_item_held
+// on Watch and in the durable log. Additive.
+message HoldWorkItemRequest {
+    string id = 1;
+    string operator_origin = 2;
+}
+message HoldWorkItemResponse { WorkItem item = 1; }
+
+// Release a held item, or one the scheduler moved to needs_decision because a
+// dependency settled some way other than landed, back to the queue. A released
+// dependent runs regardless of that dependency: the settled dependencies are
+// dropped from depends_on, and the recorded reason is the scheduler's own
+// verdict for the item as it now stands. Any other state is
+// FAILED_PRECONDITION. Emits work_item_released. Additive.
+message ReleaseWorkItemRequest {
+    string id = 1;
+    string operator_origin = 2;
+}
+message ReleaseWorkItemResponse { WorkItem item = 1; }
+
+// One item as the pacing view lists it: what it occupies (running) or why it
+// waits (queued, held).
+message PacingItem {
+    string id = 1;
+    string project = 2;
+    // The repository the per-repository rule keys the item on.
+    string repository = 3;
+    string kind = 4;
+    string lane = 5;
+    string state = 6;
+    string reason = 7;
+    // started_at for a running item, submitted_at for a waiting one (ISO 8601).
+    string since = 8;
+}
+
+// The pacing stage as it stands: the limits in force, what is running per
+// repository and on the host, every waiting item with its reason, and which
+// lanes are paused. Loaded from the ledger and the pacing files on every call.
+message PacingStatus {
+    // The host running cap from pacing.json (default 2).
+    uint64 max_running = 1;
+    // How many items are running on this host now.
+    uint64 running = 2;
+    // The paused lanes, as lane tags, in lane order.
+    repeated string paused_lanes = 3;
+    repeated PacingItem running_items = 4;
+    // Queued items in the scheduler's priority order, then held items.
+    repeated PacingItem waiting_items = 5;
+}
+
+message GetPacingRequest {}
+message GetPacingResponse { PacingStatus pacing = 1; }
+
+// Pause the named lanes (`interactive`, `campaign`, `maintenance`; empty means
+// every lane): nothing in them starts until resumed. Running items are
+// untouched. The pause is persisted through an atomic rename and is in force
+// after a restart. An unknown lane is INVALID_ARGUMENT; a failed save is
+// INTERNAL and emits nothing. Emits pacing_paused for the project `system`,
+// durable and on Watch, even when every named lane was already paused.
+message PausePacingRequest {
+    repeated string lanes = 1;
+    string operator_origin = 2;
+}
+message PausePacingResponse { PacingStatus pacing = 1; }
+
+// Resume the named lanes (empty means every lane). The next scheduler tick
+// starts the next eligible item. Emits pacing_resumed. Same contract as
+// PausePacing.
+message ResumePacingRequest {
+    repeated string lanes = 1;
+    string operator_origin = 2;
+}
+message ResumePacingResponse { PacingStatus pacing = 1; }
 
 // Online-only reconciliation. Runs the canonical work_reconcile_started workflow
 // against daemon-owned state and returns this invocation's digest, never a client file.
@@ -681,21 +764,29 @@ message ReconcileWorkResponse {
 }
 
 // Resume only preserved work with usable preservation evidence. Persists a new
-// linked task before dispatch; the original stays open until actual landing.
-// Admission stages a failed child with reason "resume admission incomplete;
-// execution not dispatched", no started_at and a settled_at. It becomes running
-// only after submitted/started roots are durably appended and the ledger saved.
+// linked task, queued for the pacing scheduler; the original stays open until
+// actual landing. Admission stages a failed child with reason "resume admission
+// incomplete; execution not dispatched", no started_at and a settled_at. It
+// becomes queued only after the work_item_submitted root is durably appended
+// and the ledger saved; the scheduler starts it and emits work_item_started.
 // Initial ledger-save failure creates no child or lifecycle events. Later failure
 // leaves the staged failed child, preserves parent/siblings and dispatches nothing.
 // Successful earlier appends remain in history (even a partial append is never
 // repaired by rewriting/truncation). Watch publishes a lifecycle root only after
 // its append succeeds; a rejected admission may therefore have submitted evidence
-// (or both lifecycle roots if the final ledger save fails), never a failed write.
-// INVALID_ARGUMENT: blank input; NOT_FOUND: unknown id; FAILED_PRECONDITION:
-// ineligible state/project/evidence; INTERNAL: persistence or I/O failure.
+// if the final ledger save fails, never a failed write.
+// INVALID_ARGUMENT: blank input, an unknown depends_on id, or an unparsable
+// not_before; NOT_FOUND: unknown id; FAILED_PRECONDITION: ineligible
+// state/project/evidence; INTERNAL: persistence or I/O failure.
 message ResumeWorkItemRequest {
     string id = 1;
     string operator_origin = 2;
+    // Pacing: items the child waits on (`--after`). Each must be in the ledger.
+    // Additive.
+    repeated string depends_on = 3;
+    // Pacing: the earliest start time (`--not-before`), ISO 8601. Empty means
+    // at once. Additive.
+    string not_before = 4;
 }
 message ResumeWorkItemResponse { WorkItem item = 1; }
 
@@ -888,6 +979,16 @@ service Foundry {
     // or missing completion. Verified settlements may already be durable on failure.
     rpc ReconcileWork(ReconcileWorkRequest) returns (ReconcileWorkResponse);
     rpc CancelWorkItem(CancelWorkItemRequest) returns (CancelWorkItemResponse);
+    // Pacing owner controls on one item. Additive.
+    rpc HoldWorkItem(HoldWorkItemRequest) returns (HoldWorkItemResponse);
+    rpc ReleaseWorkItem(ReleaseWorkItemRequest) returns (ReleaseWorkItemResponse);
+
+    // The pacing stage: limits, running per repository and host, waiting
+    // items with reasons, paused lanes. Read-only; loaded at request time.
+    rpc GetPacing(GetPacingRequest) returns (GetPacingResponse);
+    // Pause or resume pacing lanes. Persisted; in force after a restart.
+    rpc PausePacing(PausePacingRequest) returns (PausePacingResponse);
+    rpc ResumePacing(ResumePacingRequest) returns (ResumePacingResponse);
 
     // List one work item's `work_item_*` events from the durable event log,
     // selected by exact item id and in chronological order, loaded at request

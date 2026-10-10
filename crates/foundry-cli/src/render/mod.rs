@@ -10,6 +10,7 @@ pub mod campaign;
 pub mod capture;
 pub mod dependencies;
 pub mod event;
+pub mod pacing;
 pub mod queue;
 pub mod registry;
 pub mod sentinel;

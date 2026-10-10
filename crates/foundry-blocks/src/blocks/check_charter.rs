@@ -11,9 +11,14 @@ use super::TriggerContext;
 
 /// Validates that a project has intent documentation before the iterate workflow proceeds.
 ///
-/// Observer — sinks on `ProjectIterationRequested`.
+/// Observer — sinks on `ProjectIterationRequested` and `ExecutionRequested`.
 /// Emits `CharterCheckCompleted` with `success: true/false`.
 /// If the charter check fails, the chain stops (`ResolveGates` checks for `success=true`).
+///
+/// As the task chain's entry, it declines a task dispatch that still awaits
+/// admission (see [`super::work_ledger::awaits_admission`]): that root is for
+/// the ledger to queue, and the chain runs from the started root the pacing
+/// scheduler emits once the item may start.
 pub struct CheckCharter {
     registry: Arc<RwLock<Registry>>,
 }
@@ -40,7 +45,7 @@ impl TaskBlock for CheckCharter {
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        not_strategic(trigger)
+        not_strategic(trigger) && !super::work_ledger::awaits_admission(trigger, &self.registry)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
@@ -226,6 +231,41 @@ mod tests {
         );
 
         assert!(!block.accepts(&trigger), "should not accept strategic events");
+    }
+
+    #[test]
+    fn accepts_returns_false_for_a_task_dispatch_that_awaits_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = CheckCharter::new(registry);
+        let unadmitted = Event::new(
+            EventType::ExecutionRequested,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "my-project", "workflow": "task", "prompt": "do it"}),
+        );
+        assert!(!block.accepts(&unadmitted), "the ledger queues it; the scheduler starts it");
+
+        let mut started = unadmitted.clone();
+        started.payload["admitted_work_item_id"] = serde_json::json!("wi_abc");
+        assert!(block.accepts(&started), "the started root runs the chain");
+
+        let mut dry_run = unadmitted.clone();
+        dry_run.throttle = Throttle::DryRun;
+        assert!(block.accepts(&dry_run), "a dry run admits nothing, so it is not held");
+
+        let mut prompt = unadmitted.clone();
+        prompt.payload["workflow"] = serde_json::json!("prompt");
+        assert!(block.accepts(&prompt), "the prompt workflow is not paced");
+
+        let mut unregistered = unadmitted;
+        unregistered.project = "absent".to_string();
+        unregistered.payload["project"] = serde_json::json!("absent");
+        assert!(
+            block.accepts(&unregistered),
+            "an unregistered project is refused by the chain, as it always was"
+        );
     }
 
     #[test]

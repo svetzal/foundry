@@ -16,6 +16,7 @@ use foundry_sdk::sentinel::{SentinelStore, merge_default_seed_into};
 mod instance_lock;
 mod legacy_event_check;
 mod orchestrator;
+mod pacing;
 mod scheduler;
 mod service;
 mod trace_store;
@@ -199,23 +200,7 @@ async fn main() -> Result<()> {
     }
 
     let registry_path = foundry_sdk::paths::registry_path();
-    let registry = match foundry_sdk::registry::Registry::load(&registry_path) {
-        Ok(r) => {
-            tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
-            Arc::new(RwLock::new(r))
-        }
-        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
-            tracing::warn!(path = %registry_path.display(), "registry not found, using empty registry");
-            Arc::new(RwLock::new(foundry_sdk::registry::Registry {
-                version: 2,
-                projects: vec![],
-            }))
-        }
-        Err(e) => {
-            tracing::error!(path = %registry_path.display(), error = %e, "registry file is corrupt or unreadable — refusing to start with an empty registry to prevent data loss");
-            std::process::exit(2);
-        }
-    };
+    let registry = load_registry_or_exit(&registry_path);
 
     let event_writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir.clone()));
 
@@ -284,6 +269,7 @@ async fn main() -> Result<()> {
 
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
+    let (pacing, pacing_wake) = spawn_pacing(&ctx);
 
     let service = service::FoundryService::new(
         ctx,
@@ -296,7 +282,8 @@ async fn main() -> Result<()> {
             sentinels_path,
             scheduler_reload,
         },
-    );
+    )
+    .with_pacing(pacing, pacing_wake);
 
     tracing::info!("foundryd listening on {addr}");
 
@@ -602,6 +589,49 @@ fn seed_token_rates(path: &std::path::Path) {
     }
 }
 
+/// Load the registry, or start with an empty one when there is none yet. A
+/// corrupt or unreadable file exits: starting with an empty registry in its
+/// place would look like every project had been removed.
+fn load_registry_or_exit(
+    registry_path: &std::path::Path,
+) -> Arc<RwLock<foundry_sdk::registry::Registry>> {
+    match foundry_sdk::registry::Registry::load(registry_path) {
+        Ok(r) => {
+            tracing::info!(path = %registry_path.display(), projects = r.active_projects().len(), "registry loaded");
+            Arc::new(RwLock::new(r))
+        }
+        Err(foundry_sdk::error::StoreError::NotFound { .. }) => {
+            tracing::warn!(path = %registry_path.display(), "registry not found, using empty registry");
+            Arc::new(RwLock::new(foundry_sdk::registry::Registry {
+                version: 2,
+                projects: vec![],
+            }))
+        }
+        Err(e) => {
+            tracing::error!(path = %registry_path.display(), error = %e, "registry file is corrupt or unreadable — refusing to start with an empty registry to prevent data loss");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Start the pacing scheduler over the daemon's ledger and return the pacing
+/// files it reads and the wake handle the service pokes.
+///
+/// Called after the restart sweeps, so a queued item left by the previous
+/// process is re-evaluated on the scheduler's first tick rather than racing
+/// the restart settlement.
+fn spawn_pacing(ctx: &service::RuntimeContext) -> (foundry_sdk::pacing::PacingPaths, Arc<Notify>) {
+    let pacing = foundry_sdk::pacing::PacingPaths::from_env();
+    let wake = Arc::new(Notify::new());
+    service::spawn_pacing_scheduler(
+        ctx,
+        foundry_sdk::paths::work_items_path(),
+        pacing.clone(),
+        Arc::clone(&wake),
+    );
+    (pacing, wake)
+}
+
 fn spawn_scheduler(
     ctx: &service::RuntimeContext,
     sentinels: &Arc<RwLock<SentinelStore>>,
@@ -894,14 +924,15 @@ fn register_iterate_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
-    // The ledger blocks bracket the task chain: `RecordWorkItem` opens the item
-    // from the workflow's root `ExecutionRequested`, so it is in the file
-    // `running` before any later event can fail, `SettleFailedDispatch` closes
-    // it when the chain stops ahead of the coding agent, and `SettleWorkItem`
+    // The ledger blocks bracket the task chain: `AdmitWorkItem` queues the item
+    // from the workflow's root `ExecutionRequested`, holding that root for the
+    // pacing scheduler to start it from; `SettleFailedDispatch` closes it when
+    // the started chain stops ahead of the coding agent, and `SettleWorkItem`
     // closes it from the terminal task result.
-    engine.register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(
+    engine.register(Box::new(foundry_blocks::blocks::AdmitWorkItem::new(
         foundry_sdk::paths::work_items_path(),
         registry.clone(),
+        foundry_sdk::pacing::PacingPaths::from_env(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         foundry_sdk::paths::work_items_path(),

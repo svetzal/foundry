@@ -450,6 +450,7 @@ pub(super) fn complete(
 /// state is re-read under the lock regardless.
 pub(super) async fn cancel(
     campaigns_path: &Path,
+    work_items_path: &Path,
     ctx: &super::RuntimeContext,
     request: Request<CancelCampaignRequest>,
 ) -> Result<Response<CancelCampaignResponse>, Status> {
@@ -482,9 +483,10 @@ pub(super) async fn cancel(
     let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
 
     let campaigns_path = campaigns_path.to_path_buf();
-    let ctx = ctx.clone();
-    blocking(move || {
-        let (detail, event) = {
+    let work_items_path = work_items_path.to_path_buf();
+    let spawn_ctx = ctx.clone();
+    let (response, waiting_cycles) = blocking(move || {
+        let (detail, event, waiting_cycles) = {
             let mut guard = lock_store_exclusive(&campaigns_path)?;
             let campaign = guard
                 .store
@@ -494,12 +496,34 @@ pub(super) async fn cancel(
             if campaign.cancel(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
                 == Transition::AlreadySettled
             {
-                return Ok(Response::new(CancelCampaignResponse {
-                    campaign: Some(campaign_to_detail(campaign)),
-                    event_id: String::new(),
-                }));
+                return Ok((
+                    Response::new(CancelCampaignResponse {
+                        campaign: Some(campaign_to_detail(campaign)),
+                        event_id: String::new(),
+                    }),
+                    Vec::new(),
+                ));
             }
             let detail = campaign_to_detail(campaign);
+
+            // A cycle the scheduler has not started yet must not start after
+            // the campaign is gone. The ledger is settled here, beside the
+            // campaign, so the two never disagree about whether a cycle is
+            // still coming.
+            let waiting_cycles = match super::work_item_ops::cancel_waiting_campaign_cycles(
+                &work_items_path,
+                &campaign.name,
+                &reason,
+            ) {
+                Ok(cancelled) => cancelled,
+                Err(error) => {
+                    // Best-effort: the ledger is bookkeeping beside the
+                    // cancellation, never a precondition for it; a queued
+                    // cycle left behind is visible in `foundry queue`.
+                    tracing::warn!(%error, campaign = %campaign.name, "could not cancel the campaign's waiting cycles");
+                    Vec::new()
+                }
+            };
 
             let payload = Event::serialize_payload(&CampaignCancelledPayload {
                 terminal: CampaignTerminalPayload {
@@ -529,17 +553,22 @@ pub(super) async fn cancel(
             .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
             .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
             guard.save().map_err(map_save_error)?;
-            (detail, event)
+            (detail, event, waiting_cycles)
         };
 
         let event_id = event.id.clone();
-        super::spawn_workflow(event, &ctx);
-        Ok(Response::new(CancelCampaignResponse {
-            campaign: Some(detail),
-            event_id,
-        }))
+        super::spawn_workflow(event, &spawn_ctx);
+        Ok((
+            Response::new(CancelCampaignResponse {
+                campaign: Some(detail),
+                event_id,
+            }),
+            waiting_cycles,
+        ))
     })
-    .await
+    .await?;
+    super::work_item_ops::announce_cancelled(ctx, &waiting_cycles).await;
+    Ok(response)
 }
 
 /// Dispatch one manual advance iteration for an active (or staged) campaign.

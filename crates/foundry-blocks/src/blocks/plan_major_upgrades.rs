@@ -360,8 +360,11 @@ impl TaskBlock for PlanMajorUpgrades {
                     serde_json::Map::new()
                 }
             };
-            let (prior, mut history_warning) =
+            let (mut prior, mut history_warning) =
                 prior_tasks(events_dir, &paths, shell.as_ref(), now, &resumes).await;
+            if let Ok(store) = &ledger {
+                prior.extend(waiting_upgrade_tasks(store));
+            }
             if let Err(error) = &ledger {
                 let warning = format!("work-item ledger unreadable: {error}; dispatch disabled");
                 history_warning = Some(match history_warning {
@@ -489,6 +492,28 @@ fn planned_resumes(
         }
     }
     resumes
+}
+
+/// Upgrade tasks the ledger holds admitted but not yet started, which block a
+/// repeat dispatch of the same upgrade.
+///
+/// The event-log history sees a task only once it starts; a task the pacing
+/// scheduler still has `queued` or `held` (a paused lane, a busy repository)
+/// has no `task_run_started` to find, and the next nightly would plan it
+/// again. The ledger is the record of what is waiting, so it is read here.
+fn waiting_upgrade_tasks(store: &foundry_sdk::work_item::WorkItemStore) -> Vec<PriorTask> {
+    store
+        .items
+        .iter()
+        .filter(|item| {
+            item.state.is_waiting() && majors::parse_objective(&item.objective).is_some()
+        })
+        .map(|item| PriorTask {
+            project: item.project.clone(),
+            objective: item.objective.clone(),
+            blocking: format!("a task for this upgrade is {} ({})", item.state.tag(), item.id),
+        })
+        .collect()
 }
 
 /// Earlier upgrade tasks that still block a dispatch, and a warning when the
@@ -999,5 +1024,65 @@ mod tests {
         let p: MajorUpgradesPlannedPayload = result.events[0].parse_payload().unwrap();
         assert_eq!(p.upgrades[0].status, MajorUpgradeStatus::Deduped);
         assert!(p.upgrades[0].reason.as_deref().unwrap().contains("in flight"));
+    }
+
+    /// A queued upgrade has not started, so the event log cannot dedupe it;
+    /// the ledger can, and must, or every nightly would plan it again.
+    #[tokio::test]
+    async fn a_queued_upgrade_in_the_ledger_dedupes_the_nightly_dispatch() {
+        let traces = tempfile::tempdir().unwrap();
+        let events = tempfile::tempdir().unwrap();
+        let tw = TraceWriter::new(traces.path().to_str().unwrap());
+        write_trace(
+            &tw,
+            "evt_a",
+            vec![
+                classified(
+                    "alpha",
+                    ClassificationPhase::Before,
+                    UpdatePolicy::Major,
+                    vec![major("x"), major("y")],
+                ),
+                maintenance_done("alpha", true),
+            ],
+        );
+        let root = Event::new(
+            EventType::ExecutionRequested,
+            "alpha".to_string(),
+            Throttle::Full,
+            serde_json::json!({"project": "alpha", "workflow": "task", "prompt": "x"}),
+        );
+        let mut queued = foundry_sdk::work_item::WorkItem::queued(
+            foundry_sdk::work_item::WorkItemSpec {
+                project: "alpha".to_string(),
+                objective: objective("alpha", &major("x")),
+                kind: foundry_sdk::work_item::WorkItemKind::MajorUpgrade,
+                lane: foundry_sdk::work_item::WorkLane::Maintenance,
+                origin: "nightly majors lane".to_string(),
+                trace_id: None,
+            },
+            root,
+            Utc::now(),
+        );
+        queued.id = "wi_waiting".to_string();
+        foundry_sdk::work_item::WorkItemStore {
+            version: 1,
+            items: vec![queued],
+        }
+        .save(&events.path().join("work-items.json"))
+        .unwrap();
+        let b = block(traces.path(), events.path(), Caps::default());
+
+        let result = b
+            .execute(&summary_request(&[("alpha", "evt_a")], Throttle::Full))
+            .await
+            .unwrap();
+
+        let p: MajorUpgradesPlannedPayload = result.events[0].parse_payload().unwrap();
+        let x = p.upgrades.iter().find(|m| m.package == "x").unwrap();
+        assert_eq!(x.status, MajorUpgradeStatus::Deduped);
+        assert_eq!(x.reason.as_deref(), Some("a task for this upgrade is queued (wi_waiting)"));
+        let y = p.upgrades.iter().find(|m| m.package == "y").unwrap();
+        assert_eq!(y.status, MajorUpgradeStatus::Dispatch, "only the waiting upgrade is held");
     }
 }

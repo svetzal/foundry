@@ -158,16 +158,28 @@ pub(crate) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
         .collect()
 }
 
+/// What one planned major became once admitted.
+#[derive(Debug)]
+pub(crate) enum MajorAdmission {
+    /// A fresh task: this root goes through the engine, where the admission
+    /// block queues it.
+    Fresh(Box<Event>),
+    /// A continuation of preserved work: already queued by the resume path.
+    Resumed(Box<foundry_sdk::work_item::WorkItem>),
+}
+
 /// Resolve the planner's exact parent through the same fail-closed admission
-/// used by owner resumes. The caller awaits execution in nightly plan order.
+/// used by owner resumes. Either way the item ends up `queued`, for the
+/// pacing scheduler to start.
 pub(crate) async fn prepare_major_dispatch(
     event: Event,
     ctx: &super::RuntimeContext,
     path: &std::path::Path,
-) -> Result<Event, tonic::Status> {
+    pacing: &foundry_sdk::pacing::PacingPaths,
+) -> Result<MajorAdmission, tonic::Status> {
     let Some(id) = event.payload.get("nightly_resume_item_id").and_then(serde_json::Value::as_str)
     else {
-        return Ok(event);
+        return Ok(MajorAdmission::Fresh(Box::new(event)));
     };
     let (package, target, project) = event
         .payload
@@ -183,8 +195,16 @@ pub(crate) async fn prepare_major_dispatch(
         package,
         target,
     };
-    let (_, root) = super::work_item_ops::admit_resume(path, ctx, id.to_string(), source).await?;
-    Ok(root)
+    let child = super::work_item_ops::admit_resume(
+        path,
+        ctx,
+        pacing,
+        id.to_string(),
+        source,
+        super::work_item_ops::ScheduleHints::default(),
+    )
+    .await?;
+    Ok(MajorAdmission::Resumed(Box::new(child)))
 }
 
 /// A boxed `run_workflow`, so a workflow can start further workflows (the
@@ -204,16 +224,23 @@ fn run_workflow_boxed(
     ))
 }
 
-/// Run the planned major-upgrade tasks one after another, each as its own
-/// tracked workflow. Sequential on purpose: each task builds, tests and may
-/// land on trunk, and two at once on one project would race to land.
+/// Admit the planned major-upgrade tasks to the queue, each as its own
+/// tracked workflow root, in plan order. The pacing scheduler starts them:
+/// two on one repository run one after the other, since each builds, tests
+/// and may land on trunk, and two at once would race to land.
 fn dispatch_major_upgrades(dispatches: Vec<Event>, ctx: super::RuntimeContext) {
     if dispatches.is_empty() {
         return;
     }
-    tracing::info!(count = dispatches.len(), "dispatching major-upgrade tasks");
+    tracing::info!(count = dispatches.len(), "admitting major-upgrade tasks");
     tokio::spawn(async move {
-        run_major_upgrades(dispatches, ctx, &foundry_sdk::paths::work_items_path()).await;
+        run_major_upgrades(
+            dispatches,
+            ctx,
+            &foundry_sdk::paths::work_items_path(),
+            &foundry_sdk::pacing::PacingPaths::from_env(),
+        )
+        .await;
     });
 }
 
@@ -221,24 +248,28 @@ pub(crate) async fn run_major_upgrades(
     dispatches: Vec<Event>,
     ctx: super::RuntimeContext,
     path: &std::path::Path,
+    pacing: &foundry_sdk::pacing::PacingPaths,
 ) {
     for event in dispatches {
         let project = event.project.clone();
         let parent = event.payload.get("nightly_resume_item_id").cloned();
-        let event = match prepare_major_dispatch(event, &ctx, path).await {
-            Ok(event) => event,
+        match prepare_major_dispatch(event, &ctx, path, pacing).await {
+            Ok(MajorAdmission::Fresh(event)) => {
+                tracing::info!(project = %event.project, event_id = %event.id, "admitting a major-upgrade task");
+                super::track_workflow(&event, &ctx.workflow_tracker);
+                run_workflow_boxed(*event, ctx.clone()).await;
+            }
+            Ok(MajorAdmission::Resumed(child)) => {
+                tracing::info!(project = %child.project, item_id = %child.id, "queued a major-upgrade continuation");
+            }
             Err(error) => {
                 // Best-effort: independent planned upgrades can still run after
                 // this admission failure is reported; the selected obligation
                 // and any staged failed child remain in the authoritative ledger.
                 tracing::error!(%error, %project, parent_id = ?parent,
                     "nightly major continuation admission failed; execution not dispatched");
-                continue;
             }
-        };
-        tracing::info!(project = %event.project, event_id = %event.id, "starting major-upgrade task");
-        super::track_workflow(&event, &ctx.workflow_tracker);
-        run_workflow_boxed(event, ctx.clone()).await;
+        }
     }
 }
 
@@ -429,11 +460,40 @@ pub(super) async fn run_workflow_result(
     result
 }
 
+/// Refuse a task dispatch whose pacing fields could never be honoured: a
+/// `--after` id that is not in the ledger, or a `--not-before` that is not a
+/// time. Checked here so the submitter is told now, not left watching a
+/// queued item that never starts. Every other root passes through untouched.
+fn check_pacing_fields(event: &Event, work_items_path: &std::path::Path) -> Result<(), Status> {
+    if event.event_type != EventType::ExecutionRequested {
+        return Ok(());
+    }
+    if let Some(not_before) = event.payload.get("not_before") {
+        let text = not_before.as_str().ok_or_else(|| {
+            Status::invalid_argument("not_before must be an RFC 3339 time as a string")
+        })?;
+        super::work_item_ops::parse_not_before(text)?;
+    }
+    let Some(depends_on) = event.payload.get("depends_on") else {
+        return Ok(());
+    };
+    let ids: Vec<String> = serde_json::from_value(depends_on.clone())
+        .map_err(|_| Status::invalid_argument("depends_on must be an array of work item ids"))?;
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let store = foundry_sdk::work_item::WorkItemStore::load(work_items_path)
+        .map_err(|error| Status::internal(format!("work-item ledger is unreadable: {error}")))?;
+    super::work_item_ops::require_known_dependencies(&store, &ids)
+}
+
 pub(super) fn emit_rpc(
     ctx: &super::RuntimeContext,
+    work_items_path: &std::path::Path,
     request: Request<EmitRequest>,
 ) -> Result<Response<EmitResponse>, Status> {
     let event = parse_emit_request(request.into_inner())?;
+    check_pacing_fields(&event, work_items_path)?;
     let event_id = event.id.clone();
 
     tracing::info!(

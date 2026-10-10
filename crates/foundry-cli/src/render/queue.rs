@@ -49,6 +49,12 @@ pub const SETTLED_SHOWN: usize = 20;
 
 /// Confirmation of one daemon-authoritative owner settlement.
 pub fn cancellation_notice(item: &WorkItem) -> String {
+    transition_notice(item)
+}
+
+/// Confirmation of one daemon-authoritative owner transition: the item, the
+/// state it is now in and why.
+pub fn transition_notice(item: &WorkItem) -> String {
     format!("{}: {} — {}\n", item.id, item.state, item.reason)
 }
 
@@ -77,7 +83,9 @@ enum Group {
 fn group_of(state: &str) -> Group {
     match WorkItemState::from_tag(state) {
         Some(WorkItemState::Running) => Group::Running,
-        Some(WorkItemState::Submitted | WorkItemState::Queued) => Group::Queued,
+        Some(WorkItemState::Submitted | WorkItemState::Queued | WorkItemState::Held) => {
+            Group::Queued
+        }
         Some(WorkItemState::Landed | WorkItemState::Cancelled) => Group::Settled,
         Some(WorkItemState::Preserved | WorkItemState::NeedsDecision | WorkItemState::Failed)
         | None => Group::Open,
@@ -276,6 +284,10 @@ pub fn item_detail(item: &WorkItem) -> String {
     optional_field(&mut out, "Started:", item.started_at.as_deref());
     optional_field(&mut out, "Settled:", item.settled_at.as_deref());
     optional_field(&mut out, "Resumes:", item.resumes.as_deref());
+    if !item.depends_on.is_empty() {
+        let _ = writeln!(out, "{:<18}{}", "Depends on:", item.depends_on.join(", "));
+    }
+    optional_field(&mut out, "Not before:", item.not_before.as_deref());
     optional_field(&mut out, "Trace:", item.trace_id.as_deref());
     optional_field(&mut out, "Verdict:", item.verdict.as_deref());
     optional_field(&mut out, "Landed commit:", item.landed_commit.as_deref());
@@ -408,6 +420,10 @@ struct JsonItem<'a> {
     operator_action: Option<JsonOperatorAction<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resumes: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    depends_on: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_before: Option<&'a str>,
 }
 
 /// JSON projection of a recorded source: the same keys the ledger writes.
@@ -475,6 +491,8 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
             worktree: item.worktree.as_deref(),
             worktree_removed: item.worktree_removed,
             operator_action: item.operator_action.as_ref().map(JsonOperatorAction::from),
+            depends_on: &item.depends_on,
+            not_before: item.not_before.as_deref(),
         }
     }
 }
@@ -551,6 +569,8 @@ mod tests {
             operator_action: None,
             resumes: None,
             source: None,
+            depends_on: Vec::new(),
+            not_before: None,
         }
     }
 
@@ -574,6 +594,7 @@ mod tests {
             item("wi_running", "running"),
             item("wi_submitted", "submitted"),
             item("wi_queued", "queued"),
+            item("wi_held", "held"),
             item("wi_preserved", "preserved"),
             item("wi_needs", "needs_decision"),
             item("wi_failed", "failed"),
@@ -590,7 +611,7 @@ mod tests {
         let groups = group(&items);
 
         assert_eq!(ids(&groups.running), vec!["wi_running"]);
-        assert_eq!(ids(&groups.queued), vec!["wi_submitted", "wi_queued"]);
+        assert_eq!(ids(&groups.queued), vec!["wi_submitted", "wi_queued", "wi_held"]);
         assert_eq!(ids(&groups.open), vec!["wi_preserved", "wi_needs", "wi_failed"]);
         assert_eq!(ids(&groups.settled), vec!["wi_landed", "wi_cancelled"]);
     }
@@ -762,9 +783,34 @@ mod tests {
             assert!(!out.contains(omitted), "'{omitted}' must be absent from:\n{out}");
         }
         assert!(!out.contains("false"), "no optional may render as 'false':\n{out}");
+        assert!(!out.contains("Depends on:"), "no dependencies, no line:\n{out}");
+        assert!(!out.contains("Not before:"), "no not_before, no line:\n{out}");
         for line in out.lines() {
             assert!(!line.ends_with(':'), "line '{line}' rendered a label with no value");
         }
+    }
+
+    #[test]
+    fn detail_and_json_carry_a_queued_items_reason_dependencies_and_not_before() {
+        let mut queued = item("wi_queued", "queued");
+        queued.started_at = None;
+        queued.reason = "waits on wi_dep".to_string();
+        queued.depends_on = vec!["wi_dep".to_string(), "wi_other".to_string()];
+        queued.not_before = Some("2026-10-11T09:00:00+00:00".to_string());
+
+        let out = item_detail(&queued);
+        assert!(out.contains("Reason:           waits on wi_dep"), "got:\n{out}");
+        assert!(out.contains("Depends on:       wi_dep, wi_other"), "got:\n{out}");
+        assert!(out.contains("Not before:       2026-10-11T09:00:00+00:00"), "got:\n{out}");
+
+        let row = queue_overview(&[queued.clone()]);
+        assert!(row.contains("waits on wi_dep"), "the row carries the reason:\n{row}");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&items_json(&[queued])).expect("items_json must parse");
+        assert_eq!(parsed[0]["reason"], "waits on wi_dep");
+        assert_eq!(parsed[0]["depends_on"], serde_json::json!(["wi_dep", "wi_other"]));
+        assert_eq!(parsed[0]["not_before"], "2026-10-11T09:00:00+00:00");
     }
 
     #[test]
@@ -843,6 +889,8 @@ mod tests {
             "preservation_ref",
             "worktree",
             "worktree_removed",
+            "depends_on",
+            "not_before",
         ] {
             assert!(!object.contains_key(absent), "'{absent}' must be absent from {parsed}");
         }

@@ -272,6 +272,8 @@ async fn task_workflow_happy_path() {
 
     let engine = prompt_engine(test_helpers::passing_shell(), agent.clone(), registry);
 
+    // The started root, as the pacing scheduler emits it: it names its ledger
+    // item, which is what lets the task chain run from it.
     let trigger = Event::new(
         EventType::ExecutionRequested,
         "test-project".to_string(),
@@ -280,6 +282,7 @@ async fn task_workflow_happy_path() {
             "project": "test-project",
             "workflow": "task",
             "prompt": "Add a --quiet flag to the CLI.",
+            "admitted_work_item_id": "wi_started",
         }),
     );
 

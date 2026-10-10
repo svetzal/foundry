@@ -134,15 +134,116 @@ fn task_engine(
     engine
 }
 
+/// The pacing files kept beside a test ledger, so every test has its own
+/// limits and lane pauses.
+pub(super) fn pacing_paths_beside(store_path: &Path) -> foundry_sdk::pacing::PacingPaths {
+    let dir = store_path.parent().expect("a ledger has a directory");
+    foundry_sdk::pacing::PacingPaths {
+        limits: dir.join("pacing.json"),
+        state: dir.join("pacing-state.json"),
+    }
+}
+
+/// A runtime context over `engine`, for the pacing scheduler.
+pub(super) fn runtime_context(
+    engine: Arc<Engine>,
+    registry: Arc<RwLock<Registry>>,
+    dir: &Path,
+) -> crate::service::RuntimeContext {
+    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
+        dir.join("traces").to_str().unwrap(),
+    ));
+    crate::service::RuntimeContext {
+        engine,
+        trace_store: Arc::new(crate::trace_store::TraceStore::with_trace_writer(
+            std::time::Duration::from_secs(60),
+            trace_writer.clone(),
+        )),
+        workflow_tracker: Arc::new(crate::workflow_tracker::WorkflowTracker::new()),
+        trace_writer,
+        event_tx,
+        registry,
+    }
+}
+
+/// Admit `root` through `engine`, then do what the daemon's pacing scheduler
+/// does: one tick that starts whatever the rules allow, each started root
+/// processed through the same engine. Returns every event, admission first.
+pub(super) async fn admit_and_run(
+    engine: &Arc<Engine>,
+    registry: &Arc<RwLock<Registry>>,
+    store_path: &Path,
+    root: Event,
+) -> Vec<Event> {
+    let mut events = engine.process(root).await.events;
+    let dispatched: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&dispatched);
+    let scheduler = crate::pacing::PacingScheduler::new(
+        runtime_context(Arc::clone(engine), registry.clone(), store_path.parent().unwrap()),
+        store_path.to_path_buf(),
+        pacing_paths_beside(store_path),
+        Arc::new(tokio::sync::Notify::new()),
+    )
+    .with_dispatch(Arc::new(move |event| recorder.lock().unwrap().push(event)));
+    scheduler.tick().await;
+    let started: Vec<Event> = std::mem::take(&mut *dispatched.lock().unwrap());
+    for root in started {
+        events.extend(engine.process(root).await.events);
+    }
+    events
+}
+
+/// Park every seeded `queued` record in `items` so a running scheduler leaves
+/// the ledger byte-for-byte alone: each holds a root to start from, may not
+/// start until 2099, and already carries the reason the scheduler would record
+/// over exactly this ledger.
+pub(super) fn settle_queued_reasons(items: &mut [WorkItem]) {
+    let not_before = "2099-01-01T00:00:00Z".parse().unwrap();
+    for item in items.iter_mut().filter(|item| item.is_queued()) {
+        item.pending_root =
+            Some(task_dispatch(&item.project, &item.objective, &serde_json::json!({})));
+        item.not_before = Some(not_before);
+    }
+    let verdicts = foundry_sdk::pacing::evaluate(
+        items,
+        &foundry_sdk::pacing::Limits::default(),
+        &foundry_sdk::pacing::PauseState::default(),
+        chrono::Utc::now(),
+        &|project: &str| project.to_string(),
+    );
+    for verdict in verdicts {
+        if let foundry_sdk::pacing::Decision::Wait(reason) = verdict.decision {
+            items.iter_mut().find(|item| item.id == verdict.id).unwrap().reason = reason;
+        }
+    }
+}
+
+/// Register `other-project` on its own checkout beside the first project.
+///
+/// One repository runs one item at a time, so a task that must settle while
+/// another runs needs a second registered repository.
+fn register_other_repository(dir: &Path, registry: &Arc<RwLock<Registry>>) {
+    let other_dir = dir.join("other");
+    std::fs::create_dir(&other_dir).unwrap();
+    let other_checkout = task_project(&other_dir);
+    let mut registry = registry.write().unwrap();
+    let mut other = registry.projects[0].clone();
+    other.name = "other-project".into();
+    other.path = other_checkout.to_str().unwrap().into();
+    registry.projects.push(other);
+}
+
 /// The ledger blocks that bracket the task chain.
 fn register_ledger_blocks(
     engine: &mut Engine,
     store_path: &Path,
     registry: &Arc<RwLock<Registry>>,
 ) {
-    engine.register(Box::new(foundry_blocks::blocks::RecordWorkItem::new(
+    engine.register(Box::new(foundry_blocks::blocks::AdmitWorkItem::new(
         store_path.to_path_buf(),
         registry.clone(),
+        pacing_paths_beside(store_path),
     )));
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         store_path.to_path_buf(),
@@ -186,10 +287,16 @@ async fn run_dispatch(
             "```json\n{\"verdict\":\"complete\"}\n```",
         ],
     );
-    let engine = task_engine(agent.clone(), registry, &store_path);
-    let result = engine.process(task_dispatch("test-project", prompt, extra)).await;
+    let engine = Arc::new(task_engine(agent.clone(), registry.clone(), &store_path));
+    let events = admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", prompt, extra),
+    )
+    .await;
     let store = WorkItemStore::load(&store_path).unwrap();
-    (agent, store, result.events)
+    (agent, store, events)
 }
 
 #[tokio::test]
@@ -205,6 +312,7 @@ async fn a_task_dispatch_is_running_in_the_ledger_before_the_agent_is_invoked() 
         "the ledger must already hold the item when the agent is first invoked"
     );
     assert_eq!(at_first_call[0].state, WorkItemState::Running);
+    assert_eq!(at_first_call[0].pending_root, None, "a started item has handed its root over");
     assert_eq!(at_first_call[0].kind, WorkItemKind::Task);
     assert_eq!(at_first_call[0].lane, WorkLane::Interactive);
     assert_eq!(at_first_call[0].objective, "Add a --quiet flag to the CLI.");
@@ -277,18 +385,17 @@ async fn a_dispatch_that_fails_before_the_agent_runs_settles_failed_with_the_rea
     let store_path = dir.path().join("work-items.json");
     let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
     let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
-    let engine = task_engine(agent.clone(), registry, &store_path);
+    let engine = Arc::new(task_engine(agent.clone(), registry.clone(), &store_path));
 
-    let result = engine
-        .process(task_dispatch(
-            "test-project",
-            "Add a --quiet flag to the CLI.",
-            &serde_json::json!({}),
-        ))
-        .await;
+    let events = admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", "Add a --quiet flag to the CLI.", &serde_json::json!({})),
+    )
+    .await;
 
-    let completed = result
-        .events
+    let completed = events
         .iter()
         .find(|e| e.event_type == EventType::TaskRunCompleted)
         .expect("a pre-agent fault still reports a terminal task result");
@@ -327,17 +434,19 @@ async fn one_dispatch_broadcasts_and_logs_its_three_work_item_events() {
 
     let (tx, mut rx) = tokio::sync::broadcast::channel(256);
     let writer = Arc::new(foundry_engine::event_writer::EventWriter::new(events_dir.clone()));
-    let engine = task_engine(agent, registry, &store_path)
-        .with_event_broadcaster(tx)
-        .with_event_writer(writer);
+    let engine = Arc::new(
+        task_engine(agent, registry.clone(), &store_path)
+            .with_event_broadcaster(tx)
+            .with_event_writer(writer),
+    );
 
-    engine
-        .process(task_dispatch(
-            "test-project",
-            "Add a --quiet flag to the CLI.",
-            &serde_json::json!({}),
-        ))
-        .await;
+    admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", "Add a --quiet flag to the CLI.", &serde_json::json!({})),
+    )
+    .await;
 
     let mut broadcast = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -459,24 +568,24 @@ async fn a_charter_failed_dispatch_settles_failed_without_ever_invoking_the_agen
     let store_path = dir.path().join("work-items.json");
     let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
     let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
-    let engine = task_engine(agent.clone(), registry, &store_path);
+    let engine = Arc::new(task_engine(agent.clone(), registry.clone(), &store_path));
 
-    let result = engine
-        .process(task_dispatch(
-            "test-project",
-            "Add a --quiet flag to the CLI.",
-            &serde_json::json!({}),
-        ))
-        .await;
+    let events = admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", "Add a --quiet flag to the CLI.", &serde_json::json!({})),
+    )
+    .await;
 
     assert!(
-        result.events.iter().any(|e| {
+        events.iter().any(|e| {
             e.event_type == EventType::CharterCheckCompleted && e.payload["success"] == false
         }),
         "the charter check must have failed"
     );
     assert!(
-        !result.events.iter().any(|e| e.event_type == EventType::PreflightCompleted),
+        !events.iter().any(|e| e.event_type == EventType::PreflightCompleted),
         "the chain must stop before preflight"
     );
     assert_eq!(
@@ -519,18 +628,19 @@ async fn a_preflight_failed_dispatch_settles_failed_naming_the_gate_without_invo
         agent.clone(),
         registry.clone(),
     )));
-    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry)));
+    engine.register(Box::new(foundry_blocks::blocks::FinalizeTask::new(registry.clone())));
+    let engine = Arc::new(engine);
 
-    let result = engine
-        .process(task_dispatch(
-            "test-project",
-            "Add a --quiet flag to the CLI.",
-            &serde_json::json!({}),
-        ))
-        .await;
+    let events = admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", "Add a --quiet flag to the CLI.", &serde_json::json!({})),
+    )
+    .await;
 
     assert!(
-        !result.events.iter().any(|e| e.event_type == EventType::PlanCompleted),
+        !events.iter().any(|e| e.event_type == EventType::PlanCompleted),
         "a failed preflight must not forward the prompt to execution"
     );
     assert_eq!(
@@ -557,15 +667,16 @@ async fn a_charter_failed_dispatch_broadcasts_its_three_work_item_events() {
     let agent = LedgerReadingAgent::new(store_path.clone(), vec!["never reached"]);
 
     let (tx, mut rx) = tokio::sync::broadcast::channel(256);
-    let engine = task_engine(agent, registry, &store_path).with_event_broadcaster(tx);
+    let engine =
+        Arc::new(task_engine(agent, registry.clone(), &store_path).with_event_broadcaster(tx));
 
-    engine
-        .process(task_dispatch(
-            "test-project",
-            "Add a --quiet flag to the CLI.",
-            &serde_json::json!({}),
-        ))
-        .await;
+    admit_and_run(
+        &engine,
+        &registry,
+        &store_path,
+        task_dispatch("test-project", "Add a --quiet flag to the CLI.", &serde_json::json!({})),
+    )
+    .await;
 
     let mut broadcast = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -700,10 +811,20 @@ async fn resume_service_tracked(
         registry,
     };
     let tracker = ctx.workflow_tracker.clone();
+    let ledger = dir.join("work-items.json");
+    // The real pacing scheduler, as the daemon runs it: a queued child
+    // starts through `spawn_workflow` when the rules allow.
+    let wake = Arc::new(tokio::sync::Notify::new());
+    crate::service::spawn_pacing_scheduler(
+        &ctx,
+        ledger.clone(),
+        pacing_paths_beside(&ledger),
+        Arc::clone(&wake),
+    );
     let service = FoundryService::new(
         ctx,
         StoreConfig {
-            work_items_path: dir.join("work-items.json"),
+            work_items_path: ledger.clone(),
             events_dir: dir.join("events"),
             campaigns_path: dir.join("campaigns.json"),
             registry_path: dir.join("registry.json"),
@@ -711,7 +832,8 @@ async fn resume_service_tracked(
             sentinels_path: dir.join("sentinels.json"),
             scheduler_reload: Arc::new(tokio::sync::Notify::new()),
         },
-    );
+    )
+    .with_pacing(pacing_paths_beside(&ledger), wake);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -861,6 +983,8 @@ async fn assert_resume_landing(source: &str) {
         .resume_work_item(crate::proto::ResumeWorkItemRequest {
             id: parent.id.clone(),
             operator_origin: "owner-host (finish it)".to_string(),
+            depends_on: vec![],
+            not_before: String::new(),
         })
         .await
         .unwrap()
@@ -957,6 +1081,7 @@ async fn resume_generated_client_refuses_every_other_state_and_failed_admission_
     unknown_project.id = "wi_unregistered".to_string();
     unknown_project.project = "absent".to_string();
     items.push(unknown_project);
+    settle_queued_reasons(&mut items);
     WorkItemStore {
         version: 1,
         items: items.clone(),
@@ -971,6 +1096,8 @@ async fn resume_generated_client_refuses_every_other_state_and_failed_admission_
             .resume_work_item(crate::proto::ResumeWorkItemRequest {
                 id: other.id.clone(),
                 operator_origin: "host desk".to_string(),
+                depends_on: vec![],
+                not_before: String::new(),
             })
             .await
             .unwrap_err();
@@ -986,7 +1113,9 @@ async fn resume_generated_client_refuses_every_other_state_and_failed_admission_
             client
                 .resume_work_item(crate::proto::ResumeWorkItemRequest {
                     id: id.to_string(),
-                    operator_origin: origin.to_string()
+                    operator_origin: origin.to_string(),
+                    depends_on: vec![],
+                    not_before: String::new(),
                 })
                 .await
                 .unwrap_err()
@@ -999,7 +1128,9 @@ async fn resume_generated_client_refuses_every_other_state_and_failed_admission_
         client
             .resume_work_item(crate::proto::ResumeWorkItemRequest {
                 id: parent.id,
-                operator_origin: "host desk".to_string()
+                operator_origin: "host desk".to_string(),
+                depends_on: vec![],
+                not_before: String::new(),
             })
             .await
             .unwrap_err()
@@ -1084,6 +1215,8 @@ async fn resume_nonlanding_results_and_pre_agent_failure_keep_parent_open() {
             .resume_work_item(crate::proto::ResumeWorkItemRequest {
                 id: parent.id.clone(),
                 operator_origin: "host desk".to_string(),
+                depends_on: vec![],
+                not_before: String::new(),
             })
             .await
             .unwrap()
@@ -1206,6 +1339,7 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
         .join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m")));
     let history = std::fs::read(&log_path).unwrap();
     let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    register_other_repository(dir.path(), &registry);
     let agent = Arc::new(HeldContinuationAgent {
         started: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
@@ -1218,6 +1352,8 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
         .resume_work_item(crate::proto::ResumeWorkItemRequest {
             id: parent.id.clone(),
             operator_origin: "host desk".to_string(),
+            depends_on: vec![],
+            not_before: String::new(),
         })
         .await
         .unwrap()
@@ -1228,8 +1364,8 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
         .await
         .unwrap();
     let unrelated_trace = mint_trace_id();
-    client.emit(crate::proto::EmitRequest { event_type: "execution_requested".to_string(), project: parent.project.clone(), throttle: 0,
-        payload_json: serde_json::json!({"project": parent.project, "workflow": "task", "prompt": "Unrelated objective"}).to_string(),
+    client.emit(crate::proto::EmitRequest { event_type: "execution_requested".to_string(), project: "other-project".to_string(), throttle: 0,
+        payload_json: serde_json::json!({"project": "other-project", "workflow": "task", "prompt": "Unrelated objective"}).to_string(),
         trace_id: unrelated_trace.clone(), span_id: String::new(), parent_span_id: String::new(), source: None }).await.unwrap();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let unrelated = loop {
@@ -1343,6 +1479,8 @@ async fn resume_settlement_save_failure_emits_no_false_child_or_parent_settlemen
         .resume_work_item(crate::proto::ResumeWorkItemRequest {
             id: parent.id.clone(),
             operator_origin: "host desk".to_string(),
+            depends_on: vec![],
+            not_before: String::new(),
         })
         .await
         .unwrap()
@@ -1433,7 +1571,9 @@ fn assert_lifecycle_log_matches(events_dir: &Path, id: &str, observed: &[Event])
     }
 }
 
-/// Break a real persistence destination after an earlier lifecycle append succeeds.
+/// Break a real persistence destination once the lifecycle append succeeds:
+/// the events log (so a later append fails) or the ledger (so the final
+/// admission save fails).
 struct BreakResumeLog {
     events: PathBuf,
     ledger: Option<PathBuf>,
@@ -1447,11 +1587,7 @@ impl foundry_sdk::task_block::TaskBlock for BreakResumeLog {
         foundry_sdk::task_block::BlockKind::Observer
     }
     fn sinks_on(&self) -> &[EventType] {
-        if self.ledger.is_some() {
-            &[EventType::WorkItemStarted]
-        } else {
-            &[EventType::WorkItemSubmitted]
-        }
+        &[EventType::WorkItemSubmitted]
     }
     fn execute(
         &self,
@@ -1481,9 +1617,8 @@ impl foundry_sdk::task_block::TaskBlock for BreakResumeLog {
 }
 
 #[tokio::test]
-async fn resume_generated_client_rejects_first_and_partial_lifecycle_persistence_failure() {
-    for failure in ["first", "partial", "final-ledger-save"] {
-        let partial = failure == "partial";
+async fn resume_generated_client_rejects_first_append_and_final_save_persistence_failure() {
+    for failure in ["first", "final-ledger-save"] {
         let final_save = failure == "final-ledger-save";
         let dir = tempfile::tempdir().unwrap();
         let checkout = task_project(dir.path());
@@ -1530,7 +1665,7 @@ async fn resume_generated_client_rejects_first_and_partial_lifecycle_persistence
             verdict: r#"{"verdict":"complete"}"#,
         });
         let mut engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
-        if partial || final_save {
+        if final_save {
             engine.register(Box::new(BreakResumeLog {
                 events: events_dir.clone(),
                 ledger: final_save.then(|| ledger.clone()),
@@ -1549,6 +1684,8 @@ async fn resume_generated_client_rejects_first_and_partial_lifecycle_persistence
             .resume_work_item(crate::proto::ResumeWorkItemRequest {
                 id: parent.id.clone(),
                 operator_origin: "owner-host (persistence regression)".to_string(),
+                depends_on: vec![],
+                not_before: String::new(),
             })
             .await
             .unwrap_err();
@@ -1605,6 +1742,8 @@ fn assert_resume_admission(
         admission.iter().map(|event| event.event_type.clone()).collect::<Vec<_>>(),
         vec![EventType::WorkItemSubmitted, EventType::WorkItemStarted]
     );
+    assert_eq!(admission[0].payload["state"], "queued", "admitted to the queue, not started");
+    assert_eq!(admission[1].payload["state"], "running");
     for event in admission {
         assert_eq!(event.trace_id, child.trace_id);
         assert_eq!(event.payload["resumes"], parent.id);
@@ -1735,24 +1874,13 @@ fn assert_rejected_resume_history(
     lifecycle: &[&Event],
     observed: &[Event],
 ) {
-    if failure == "partial" {
-        assert_eq!(lifecycle.len(), 1);
-        let submitted = lifecycle[0];
-        assert_eq!(submitted.event_type, EventType::WorkItemSubmitted);
-        assert_eq!(submitted.payload["item_id"], child.id);
-        assert_eq!(submitted.payload["resumes"], parent.id);
-        assert_eq!(submitted.trace_id, child.trace_id);
-        let bytes = std::fs::read_to_string(events_dir.join("retained.jsonl")).unwrap();
-        let durable: Event = serde_json::from_str(bytes.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            serde_json::to_value(durable).unwrap(),
-            serde_json::to_value(submitted).unwrap()
-        );
-    } else if failure == "final-ledger-save" {
+    if failure == "final-ledger-save" {
         assert_eq!(
             lifecycle.iter().map(|event| event.event_type.clone()).collect::<Vec<_>>(),
-            vec![EventType::WorkItemSubmitted, EventType::WorkItemStarted]
+            vec![EventType::WorkItemSubmitted],
+            "the queue placement was announced; the start never was"
         );
+        assert_eq!(lifecycle[0].payload["state"], "queued");
         assert_lifecycle_log_matches(events_dir, &child.id, observed);
         for event in lifecycle {
             assert_eq!(event.payload["item_id"], child.id);

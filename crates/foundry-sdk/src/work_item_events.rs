@@ -3,9 +3,9 @@
 //! The ledger ([`crate::work_item`]) holds each item's current record; the
 //! event log (`{FOUNDRY_EVENTS_DIR}/YYYY-MM.jsonl`, see
 //! [`crate::paths::events_dir`]) holds the history of how it got there — one
-//! `work_item_submitted`, `work_item_started`, `work_item_settled` or
-//! `work_item_cancelled` event per transition, each carrying a
-//! [`WorkItemEventPayload`] naming the item.
+//! `work_item_submitted`, `work_item_started`, `work_item_settled`,
+//! `work_item_cancelled`, `work_item_held` or `work_item_released` event per
+//! transition, each carrying a [`WorkItemEventPayload`] naming the item.
 //!
 //! [`read_work_item_events`] is the single selection rule both the daemon's
 //! `ListWorkItemEvents` RPC and `foundry queue show --offline` apply, so the two
@@ -41,7 +41,7 @@ use crate::payload::WorkItemEventPayload;
 pub struct WorkItemEventRecord {
     /// The event's own id.
     pub event_id: String,
-    /// Which of the four `work_item_*` event types this is.
+    /// Which of the `work_item_*` event types this is.
     pub event_type: EventType,
     /// When the event occurred.
     pub occurred_at: DateTime<Utc>,
@@ -62,7 +62,7 @@ pub struct EventLogReadError {
     pub source: std::io::Error,
 }
 
-/// Whether `event_type` is one of the four work-item lifecycle events.
+/// Whether `event_type` is one of the six work-item lifecycle events.
 #[must_use]
 pub fn is_work_item_event(event_type: &EventType) -> bool {
     matches!(
@@ -71,6 +71,8 @@ pub fn is_work_item_event(event_type: &EventType) -> bool {
             | EventType::WorkItemStarted
             | EventType::WorkItemSettled
             | EventType::WorkItemCancelled
+            | EventType::WorkItemHeld
+            | EventType::WorkItemReleased
     )
 }
 
@@ -340,11 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_lifecycle_types_are_work_item_events() {
+    fn only_the_six_lifecycle_types_are_work_item_events() {
         assert!(is_work_item_event(&EventType::WorkItemSubmitted));
         assert!(is_work_item_event(&EventType::WorkItemStarted));
         assert!(is_work_item_event(&EventType::WorkItemSettled));
         assert!(is_work_item_event(&EventType::WorkItemCancelled));
+        assert!(is_work_item_event(&EventType::WorkItemHeld));
+        assert!(is_work_item_event(&EventType::WorkItemReleased));
+        assert!(!is_work_item_event(&EventType::PacingPaused));
         assert!(!is_work_item_event(&EventType::TaskRunCompleted));
     }
 }

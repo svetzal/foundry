@@ -8,7 +8,7 @@ use crate::throttle::Throttle;
 use crate::work_source::WorkSource;
 
 /// A Foundry event — an immutable fact that something happened.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Deterministic ID derived from content (excluding `recorded_at`).
     pub id: String,
@@ -402,6 +402,16 @@ pub enum EventType {
     WorkItemSettled,
     /// An operator stopped a ledger item.
     WorkItemCancelled,
+    /// An operator took a queued item out of the scheduler's hands.
+    WorkItemHeld,
+    /// An operator returned a held item, or one waiting on a decision about
+    /// a dependency, to the queue.
+    WorkItemReleased,
+    /// An operator paused one or more pacing lanes: nothing in them starts
+    /// until a `PacingResumed`. Running items are untouched.
+    PacingPaused,
+    /// An operator resumed one or more pacing lanes.
+    PacingResumed,
     /// Scheduled or operator-invoked inventory and supersession check.
     WorkReconcileStarted,
     /// Reconciliation report, including explicit inspection failures.
@@ -632,6 +642,10 @@ impl EventType {
             | EventType::WorkItemSettled
             | EventType::WorkReconcileCompleted
             | EventType::WorkItemCancelled
+            | EventType::WorkItemHeld
+            | EventType::WorkItemReleased
+            | EventType::PacingPaused
+            | EventType::PacingResumed
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
             | EventType::ProjectRunCompleted
@@ -763,6 +777,10 @@ mod tests {
             (EventType::WorkItemStarted, "work_item_started"),
             (EventType::WorkItemSettled, "work_item_settled"),
             (EventType::WorkItemCancelled, "work_item_cancelled"),
+            (EventType::WorkItemHeld, "work_item_held"),
+            (EventType::WorkItemReleased, "work_item_released"),
+            (EventType::PacingPaused, "pacing_paused"),
+            (EventType::PacingResumed, "pacing_resumed"),
             (EventType::WorkReconcileStarted, "work_reconcile_started"),
             (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
@@ -858,6 +876,10 @@ mod tests {
             (EventType::WorkItemStarted, "work_item_started"),
             (EventType::WorkItemSettled, "work_item_settled"),
             (EventType::WorkItemCancelled, "work_item_cancelled"),
+            (EventType::WorkItemHeld, "work_item_held"),
+            (EventType::WorkItemReleased, "work_item_released"),
+            (EventType::PacingPaused, "pacing_paused"),
+            (EventType::PacingResumed, "pacing_resumed"),
             (EventType::WorkReconcileStarted, "work_reconcile_started"),
             (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
@@ -1345,6 +1367,10 @@ mod tests {
         assert!(!EventType::WorkItemStarted.is_span_opener());
         assert!(!EventType::WorkItemSettled.is_span_opener());
         assert!(!EventType::WorkItemCancelled.is_span_opener());
+        assert!(!EventType::WorkItemHeld.is_span_opener());
+        assert!(!EventType::WorkItemReleased.is_span_opener());
+        assert!(!EventType::PacingPaused.is_span_opener());
+        assert!(!EventType::PacingResumed.is_span_opener());
         assert!(EventType::WorkReconcileStarted.is_span_opener());
         assert!(!EventType::WorkReconcileCompleted.is_span_opener());
 

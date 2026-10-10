@@ -12,9 +12,11 @@
 //! every mutation loads the file, applies the change, and saves it. Nothing
 //! caches items between mutations.
 //!
-//! This first slice records the work; it paces nothing. Every item goes
-//! `submitted` → `queued` → `running` immediately, exactly matching the
-//! dispatch behaviour that already exists.
+//! The task-shaped kinds are *paced*: admission records them `queued`, holding
+//! the root event that will start them, and the daemon's scheduler moves them
+//! to `running` when the rules in [`crate::pacing`] allow. The run-shaped
+//! kinds keep their own orchestration and go `submitted` → `queued` →
+//! `running` in one step, exactly as before.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +24,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
+use crate::event::Event;
 use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
 use crate::work_source::WorkSource;
 
@@ -67,14 +70,19 @@ pub enum WorkLane {
 ///
 /// `Landed` and `Cancelled` are terminal. `Preserved`, `NeedsDecision` and
 /// `Failed` are *open*: they are settled, but they still hold an obligation a
-/// person has to discharge.
+/// person has to discharge. `Queued` and `Held` are *waiting*: the item has
+/// not started, and the scheduler (for `Queued`) or an operator (for `Held`)
+/// decides when it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemState {
     /// Admitted to the ledger, not yet queued.
     Submitted,
-    /// Waiting to start.
+    /// Waiting for the scheduler to start it.
     Queued,
+    /// Taken out of the scheduler's hands by an operator; `queue release`
+    /// returns it to `Queued`.
+    Held,
     /// An agent is working on it.
     Running,
     /// The work reached trunk.
@@ -96,6 +104,13 @@ impl WorkItemState {
         matches!(self, Self::Preserved | Self::NeedsDecision | Self::Failed)
     }
 
+    /// Whether the item has been admitted but has not started: an operator
+    /// may still cancel it, and nothing of its work exists yet.
+    #[must_use]
+    pub fn is_waiting(self) -> bool {
+        matches!(self, Self::Submitted | Self::Queued | Self::Held)
+    }
+
     /// The serialized tag this state is written to disk and to the wire as.
     ///
     /// Kept in lockstep with the `snake_case` serde renaming above so a caller
@@ -105,6 +120,7 @@ impl WorkItemState {
         match self {
             Self::Submitted => "submitted",
             Self::Queued => "queued",
+            Self::Held => "held",
             Self::Running => "running",
             Self::Landed => "landed",
             Self::Preserved => "preserved",
@@ -117,19 +133,21 @@ impl WorkItemState {
     /// Parse a serialized state tag, returning `None` for anything unknown.
     #[must_use]
     pub fn from_tag(tag: &str) -> Option<Self> {
-        [
-            Self::Submitted,
-            Self::Queued,
-            Self::Running,
-            Self::Landed,
-            Self::Preserved,
-            Self::NeedsDecision,
-            Self::Failed,
-            Self::Cancelled,
-        ]
-        .into_iter()
-        .find(|state| state.tag() == tag)
+        Self::ALL.into_iter().find(|state| state.tag() == tag)
     }
+
+    /// Every state, in declaration order.
+    pub const ALL: [Self; 9] = [
+        Self::Submitted,
+        Self::Queued,
+        Self::Held,
+        Self::Running,
+        Self::Landed,
+        Self::Preserved,
+        Self::NeedsDecision,
+        Self::Failed,
+        Self::Cancelled,
+    ];
 }
 
 impl WorkItemKind {
@@ -148,6 +166,9 @@ impl WorkItemKind {
 }
 
 impl WorkLane {
+    /// Every lane, in declaration order.
+    pub const ALL: [Self; 3] = [Self::Interactive, Self::Campaign, Self::Maintenance];
+
     /// The serialized tag this lane is written to disk and to the wire as.
     #[must_use]
     pub fn tag(self) -> &'static str {
@@ -156,6 +177,12 @@ impl WorkLane {
             Self::Campaign => "campaign",
             Self::Maintenance => "maintenance",
         }
+    }
+
+    /// Parse a serialized lane tag, returning `None` for anything unknown.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|lane| lane.tag() == tag)
     }
 }
 
@@ -208,7 +235,7 @@ pub struct WorkDisposition {
 /// An owner action, separate from the item's original submission and settlement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItemOperatorAction {
-    /// `close` or `cancel`.
+    /// `close`, `cancel`, `resume`, `hold` or `release`.
     pub command: String,
     /// CLI hostname and optional operator context.
     pub origin: String,
@@ -268,6 +295,19 @@ pub struct WorkItem {
     /// Latest owner action. Absent on records predating owner controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<WorkItemOperatorAction>,
+    /// Items this one waits on. It starts only once every one of them has
+    /// settled `landed`; one that settles any other way moves this item to
+    /// `needs_decision` instead (see [`crate::pacing`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// The earliest time the scheduler may start the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<DateTime<Utc>>,
+    /// The root event that starts the item, held while it waits. The
+    /// scheduler builds the started root from it and clears it on start, so a
+    /// queued item survives a daemon restart with everything it needs to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_root: Option<Event>,
 }
 
 /// Generate a fresh work-item id as `wi_` followed by 24 lowercase hex
@@ -321,6 +361,9 @@ impl WorkItem {
             disposition: None,
             operator_action: None,
             resumes: None,
+            depends_on: Vec::new(),
+            not_before: None,
+            pending_root: None,
         }
     }
 
@@ -330,24 +373,62 @@ impl WorkItem {
         self.reason = "queued".to_string();
     }
 
-    /// Move the item to `running`.
+    /// Admit `spec` to the ledger as `queued`, holding `root` to start it
+    /// from. The caller sets the reason it waits with (see
+    /// [`crate::pacing::evaluate`]).
+    #[must_use]
+    pub fn queued(spec: WorkItemSpec, root: Event, at: DateTime<Utc>) -> Self {
+        let mut item = Self::submitted(spec, at);
+        item.queue();
+        item.pending_root = Some(root);
+        item
+    }
+
+    /// Move the item to `running`, dropping the held root: the started root
+    /// is on its way into the engine and the ledger no longer needs a copy.
     pub fn start(&mut self, at: DateTime<Utc>) {
         self.state = WorkItemState::Running;
         self.started_at = Some(at);
         self.reason = "running".to_string();
+        self.pending_root = None;
+    }
+
+    /// Take a `queued` item out of the scheduler's hands.
+    pub fn hold(&mut self) {
+        self.state = WorkItemState::Held;
+        self.reason = HELD_REASON.to_string();
+    }
+
+    /// Return a held item, or one the scheduler moved to `needs_decision` for
+    /// a dependency, to `queued`. The caller recomputes the reason it waits
+    /// with; `settled_at` is cleared because the item is unsettled again.
+    pub fn release(&mut self) {
+        self.state = WorkItemState::Queued;
+        self.reason = "released".to_string();
+        self.settled_at = None;
     }
 
     /// Admit, queue and start an item in one step.
     ///
-    /// This slice paces nothing: a dispatch that reaches the ledger is already
-    /// under way, so the three transitions happen together rather than a
-    /// scheduler moving the item between them.
+    /// The run-shaped kinds (a maintenance run, a release, a remediation) are
+    /// not paced: the chain that records them is already running them, so the
+    /// three transitions happen together rather than a scheduler moving the
+    /// item between them.
     #[must_use]
     pub fn dispatched(spec: WorkItemSpec, at: DateTime<Utc>) -> Self {
         let mut item = Self::submitted(spec, at);
         item.queue();
         item.start(at);
         item
+    }
+
+    /// Settle a waiting item `needs_decision` with `reason`, before it ever
+    /// started: a dependency settled some way other than `landed`, and only
+    /// the owner can say whether the item should run regardless.
+    pub fn settle_needs_decision(&mut self, reason: &str, at: DateTime<Utc>) {
+        self.state = WorkItemState::NeedsDecision;
+        self.reason = one_line(reason);
+        self.settled_at = Some(at);
     }
 
     /// Record what dispatched the item (builder pattern).
@@ -364,6 +445,13 @@ impl WorkItem {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.state == WorkItemState::Running
+    }
+
+    /// Whether the item is `queued`: admitted, not started, and the
+    /// scheduler's to start.
+    #[must_use]
+    pub fn is_queued(&self) -> bool {
+        self.state == WorkItemState::Queued
     }
 
     /// Settle the item from the task runner's typed terminal result.
@@ -477,6 +565,10 @@ impl WorkItem {
         self.settled_at = Some(at);
     }
 }
+
+/// The reason a held item carries. Stable text: an operator reading the ledger
+/// sees the same phrase every time.
+pub const HELD_REASON: &str = "held by operator";
 
 /// Collapse `text` to a single line, so a `reason` never breaks a one-item-
 /// per-line rendering.
@@ -606,6 +698,11 @@ impl WorkItemStore {
     /// Every item still `running`.
     pub fn running(&self) -> impl Iterator<Item = &WorkItem> {
         self.items.iter().filter(|item| item.is_running())
+    }
+
+    /// Every item waiting for the scheduler (`queued`).
+    pub fn queued(&self) -> impl Iterator<Item = &WorkItem> {
+        self.items.iter().filter(|item| item.is_queued())
     }
 
     /// The `running` item a task run's terminal result settles.
@@ -984,21 +1081,103 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_item_holds_its_root_until_it_starts() {
+        let root = Event::new(
+            crate::event::EventType::ExecutionRequested,
+            "alpha".to_string(),
+            crate::throttle::Throttle::Full,
+            serde_json::json!({"project": "alpha", "workflow": "task", "prompt": "x"}),
+        );
+        let at = now();
+        let mut item = WorkItem::queued(spec(), root.clone(), at);
+        assert_eq!(item.state, WorkItemState::Queued);
+        assert_eq!(item.started_at, None);
+        assert_eq!(item.pending_root.as_ref().map(|e| e.id.as_str()), Some(root.id.as_str()));
+
+        item.start(at);
+        assert_eq!(item.state, WorkItemState::Running);
+        assert_eq!(item.started_at, Some(at));
+        assert_eq!(item.pending_root, None, "a started item no longer needs its root");
+    }
+
+    #[test]
+    fn hold_and_release_move_between_held_and_queued_without_a_start() {
+        let mut item = WorkItem::queued(spec(), sample_root(), now());
+        item.hold();
+        assert_eq!(item.state, WorkItemState::Held);
+        assert_eq!(item.reason, HELD_REASON);
+        item.release();
+        assert_eq!(item.state, WorkItemState::Queued);
+        assert_eq!(item.started_at, None);
+        assert!(item.pending_root.is_some(), "the root survives a hold");
+    }
+
+    #[test]
+    fn a_dependency_decision_settles_a_waiting_item_and_release_unsettles_it() {
+        let mut item = WorkItem::queued(spec(), sample_root(), now());
+        item.settle_needs_decision("waits on wi_x, which settled failed", now());
+        assert_eq!(item.state, WorkItemState::NeedsDecision);
+        assert!(item.settled_at.is_some());
+        assert_eq!(item.started_at, None);
+        item.release();
+        assert_eq!(item.state, WorkItemState::Queued);
+        assert_eq!(item.settled_at, None);
+    }
+
+    #[test]
+    fn waiting_states_are_the_ones_that_never_started() {
+        assert!(WorkItemState::Submitted.is_waiting());
+        assert!(WorkItemState::Queued.is_waiting());
+        assert!(WorkItemState::Held.is_waiting());
+        assert!(!WorkItemState::Running.is_waiting());
+        assert!(!WorkItemState::NeedsDecision.is_waiting());
+        assert!(!WorkItemState::Landed.is_waiting());
+    }
+
+    fn sample_root() -> Event {
+        Event::new(
+            crate::event::EventType::ExecutionRequested,
+            "alpha".to_string(),
+            crate::throttle::Throttle::Full,
+            serde_json::json!({"project": "alpha", "workflow": "task", "prompt": "x"}),
+        )
+    }
+
+    #[test]
+    fn a_queued_item_round_trips_its_root_dependencies_and_not_before_through_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let mut item = WorkItem::queued(spec(), sample_root(), now());
+        item.depends_on = vec!["wi_a".to_string()];
+        item.not_before = Some(now());
+        let mut store = WorkItemStore::default();
+        store.upsert(item.clone());
+        store.save(&path).unwrap();
+
+        let loaded = WorkItemStore::load(&path).unwrap();
+        assert_eq!(loaded.items, vec![item]);
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["items"][0]["state"], "queued");
+        assert_eq!(json["items"][0]["depends_on"], serde_json::json!(["wi_a"]));
+        assert!(json["items"][0]["pending_root"].is_object());
+
+        let plain = WorkItem::dispatched(spec(), now());
+        let json = serde_json::to_value(&plain).unwrap();
+        for absent in ["depends_on", "not_before", "pending_root"] {
+            assert!(json.get(absent).is_none(), "{absent} writes no key when unset");
+        }
+    }
+
+    #[test]
     fn every_state_kind_and_lane_tag_matches_its_serde_representation() {
-        for state in [
-            WorkItemState::Submitted,
-            WorkItemState::Queued,
-            WorkItemState::Running,
-            WorkItemState::Landed,
-            WorkItemState::Preserved,
-            WorkItemState::NeedsDecision,
-            WorkItemState::Failed,
-            WorkItemState::Cancelled,
-        ] {
+        for state in WorkItemState::ALL {
             let serialized = serde_json::to_value(state).unwrap();
             assert_eq!(serialized, state.tag(), "tag must match serde for {state:?}");
             assert_eq!(WorkItemState::from_tag(state.tag()), Some(state));
         }
+        assert_eq!(WorkItemState::from_tag("held"), Some(WorkItemState::Held));
         for kind in [
             WorkItemKind::Task,
             WorkItemKind::CampaignCycle,
@@ -1009,13 +1188,11 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), kind.tag());
         }
-        for lane in [
-            WorkLane::Interactive,
-            WorkLane::Campaign,
-            WorkLane::Maintenance,
-        ] {
+        for lane in WorkLane::ALL {
             assert_eq!(serde_json::to_value(lane).unwrap(), lane.tag());
+            assert_eq!(WorkLane::from_tag(lane.tag()), Some(lane));
         }
+        assert_eq!(WorkLane::from_tag("all"), None);
     }
 
     #[test]

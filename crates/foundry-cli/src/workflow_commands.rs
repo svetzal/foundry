@@ -9,9 +9,38 @@ use crate::proto::{EmitRequest, WatchRequest, WatchResponse, foundry_client::Fou
 use crate::render;
 
 /// Connect, emit, and stream watch events until `is_terminal` returns true.
+///
+/// Only events on the emitted root's own trace are printed and offered to
+/// `is_terminal`: the stream carries every workflow on the project, and a
+/// paced task may wait while another one on the same project finishes.
 pub(crate) struct WorkflowRunner {
     addr: String,
     project: String,
+}
+
+/// What a watched run produced: the root's id, every event on its trace, and
+/// the root the pacing scheduler started it from, when it was paced.
+pub(crate) struct WatchedRun {
+    pub(crate) event_id: String,
+    pub(crate) events: Vec<WatchResponse>,
+}
+
+impl WatchedRun {
+    /// The event whose trace `foundry trace` should show: the started root
+    /// the scheduler emitted for a paced task, else the root this client
+    /// emitted.
+    pub(crate) fn trace_root_id(&self) -> &str {
+        self.events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.event_type == "execution_requested"
+                    && event.event_id != self.event_id
+                    && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                        .is_ok_and(|v| v.get("admitted_work_item_id").is_some())
+            })
+            .map_or(self.event_id.as_str(), |event| event.event_id.as_str())
+    }
 }
 
 impl WorkflowRunner {
@@ -62,7 +91,14 @@ impl WorkflowRunner {
         println!();
 
         let mut events = Vec::new();
+        let mut own_trace: Option<String> = None;
         while let Some(event) = stream.message().await? {
+            if event.event_id == response.event_id {
+                own_trace = Some(event.trace_id.clone());
+            }
+            if !on_own_trace(own_trace.as_deref(), &event) {
+                continue;
+            }
             let done = is_terminal(&event.event_type, &event.payload_json);
             print!("{}", render::workflow::watch_event_line(&event));
             events.push(event);
@@ -165,14 +201,15 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
 
 /// The `execution_requested` payload for one `foundry task` dispatch.
 ///
-/// `operator_origin` is written only when there is operator context to carry, so
-/// a dispatch without it is byte-for-byte the payload this command has always
-/// sent.
+/// `operator_origin`, `depends_on` and `not_before` are written only when
+/// there is something to carry, so a dispatch without them is byte-for-byte
+/// the payload this command has always sent.
 fn task_payload(
     project: &str,
     description: &str,
     agent_provider: Option<&str>,
     operator_origin: Option<&str>,
+    schedule: &TaskSchedule<'_>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "project": project,
@@ -184,6 +221,12 @@ fn task_payload(
     }
     if let Some(origin) = operator_origin {
         payload["operator_origin"] = serde_json::json!(origin);
+    }
+    if !schedule.after.is_empty() {
+        payload["depends_on"] = serde_json::json!(schedule.after);
+    }
+    if let Some(at) = schedule.not_before {
+        payload["not_before"] = serde_json::json!(at.to_rfc3339());
     }
     payload
 }
@@ -220,25 +263,54 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
     Ok(())
 }
 
+/// Whether `event` belongs to the run this client emitted.
+///
+/// Until the root's own trace is known (its root has not been seen yet) every
+/// event passes, exactly as before pacing; after that only the trace's events
+/// do. A paced task's started root inherits the admitted root's trace, so the
+/// whole chain still shows.
+fn on_own_trace(own_trace: Option<&str>, event: &WatchResponse) -> bool {
+    own_trace.is_none_or(|trace| trace.is_empty() || event.trace_id == trace)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn task(
     addr: &str,
     project: &str,
     description: &str,
     agent: Option<&str>,
     origin: Option<&str>,
+    after: &[String],
+    not_before: Option<&str>,
 ) -> Result<()> {
     let agent_provider = resolve_agent_override(agent)?;
     let operator_origin = crate::origin::local_operator_origin(origin);
-    let payload =
-        task_payload(project, description, agent_provider.as_deref(), Some(&operator_origin));
+    let not_before = not_before
+        .map(|text| crate::commands::parse_not_before(text, chrono::Utc::now()))
+        .transpose()?;
+    let payload = task_payload(
+        project,
+        description,
+        agent_provider.as_deref(),
+        Some(&operator_origin),
+        &TaskSchedule { after, not_before },
+    );
     let runner = WorkflowRunner::new(addr, project);
     println!("Running task for {project}...");
-    let (event_id, _events) = runner
+    let (event_id, events) = runner
         .run_workflow("execution_requested", payload, |t, _| t == "task_run_completed")
         .await?;
 
-    runner.show_trace(&event_id).await?;
+    let run = WatchedRun { event_id, events };
+    runner.show_trace(run.trace_root_id()).await?;
     Ok(())
+}
+
+/// The owner's pacing constraints on a `foundry task` dispatch.
+#[derive(Debug, Default)]
+struct TaskSchedule<'a> {
+    after: &'a [String],
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<()> {
@@ -483,7 +555,8 @@ mod tests {
     #[test]
     fn task_payload_carries_the_hostname_and_the_origin_text_verbatim() {
         let origin = crate::origin::operator_origin(Some("workbench"), Some("asked by Stacey"));
-        let payload = super::task_payload("p", "do the thing", None, Some(&origin));
+        let payload =
+            super::task_payload("p", "do the thing", None, Some(&origin), &TaskSchedule::default());
 
         assert_eq!(payload["operator_origin"], "host workbench: asked by Stacey");
         assert_eq!(payload["prompt"], "do the thing");
@@ -495,7 +568,8 @@ mod tests {
         // The lookup failing yields `None` for the hostname; the dispatch still
         // carries its prompt and gains a stated origin rather than no origin.
         let origin = crate::origin::operator_origin(None, Some("by hand"));
-        let payload = super::task_payload("p", "do the thing", None, Some(&origin));
+        let payload =
+            super::task_payload("p", "do the thing", None, Some(&origin), &TaskSchedule::default());
 
         assert_eq!(payload["operator_origin"], "host unknown host: by hand");
         assert_eq!(payload["prompt"], "do the thing");
@@ -503,11 +577,77 @@ mod tests {
 
     #[test]
     fn task_payload_without_operator_origin_is_unchanged() {
-        let payload = super::task_payload("p", "do the thing", None, None);
+        let payload =
+            super::task_payload("p", "do the thing", None, None, &TaskSchedule::default());
 
         assert_eq!(
             payload,
             serde_json::json!({ "project": "p", "workflow": "task", "prompt": "do the thing" })
         );
+    }
+
+    #[test]
+    fn task_payload_carries_after_and_not_before_only_when_given() {
+        let after = vec!["wi_a".to_string(), "wi_b".to_string()];
+        let not_before: chrono::DateTime<chrono::Utc> = "2026-10-11T09:00:00Z".parse().unwrap();
+        let payload = super::task_payload(
+            "p",
+            "do the thing",
+            None,
+            None,
+            &TaskSchedule {
+                after: &after,
+                not_before: Some(not_before),
+            },
+        );
+        assert_eq!(payload["depends_on"], serde_json::json!(["wi_a", "wi_b"]));
+        assert_eq!(payload["not_before"], "2026-10-11T09:00:00+00:00");
+    }
+
+    fn watched(event_id: &str, event_type: &str, trace: &str, payload: &str) -> WatchResponse {
+        WatchResponse {
+            event_id: event_id.to_string(),
+            event_type: event_type.to_string(),
+            project: "p".to_string(),
+            payload_json: payload.to_string(),
+            trace_id: trace.to_string(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_paced_run_shows_the_trace_of_the_started_root() {
+        let run = WatchedRun {
+            event_id: "evt_admitted".to_string(),
+            events: vec![
+                watched("evt_admitted", "execution_requested", "t", "{}"),
+                watched("evt_submitted", "work_item_submitted", "t", "{}"),
+                watched(
+                    "evt_started",
+                    "execution_requested",
+                    "t",
+                    r#"{"admitted_work_item_id":"wi_x"}"#,
+                ),
+                watched("evt_done", "task_run_completed", "t", "{}"),
+            ],
+        };
+        assert_eq!(run.trace_root_id(), "evt_started");
+
+        let unpaced = WatchedRun {
+            event_id: "evt_root".to_string(),
+            events: vec![watched("evt_root", "execution_requested", "t", "{}")],
+        };
+        assert_eq!(unpaced.trace_root_id(), "evt_root");
+    }
+
+    #[test]
+    fn only_the_runs_own_trace_passes_once_the_root_is_seen() {
+        let mine = watched("evt_1", "task_run_completed", "mine", "{}");
+        let other = watched("evt_2", "task_run_completed", "other", "{}");
+        assert!(super::on_own_trace(None, &other), "before the root is seen, everything passes");
+        assert!(super::on_own_trace(Some("mine"), &mine));
+        assert!(!super::on_own_trace(Some("mine"), &other), "another run's terminal is not ours");
+        assert!(super::on_own_trace(Some(""), &other), "a traceless root filters nothing");
     }
 }

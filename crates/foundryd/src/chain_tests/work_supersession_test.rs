@@ -78,7 +78,13 @@ fn supersession_fixture(
     ] {
         let mut item = preserved.clone();
         item.id = format!("wi_{}", state.tag());
-        item.state = state;
+        // A queued sibling is the scheduler's to start and re-reason; a held
+        // one waits exactly as seeded, which is what "untouched" needs here.
+        item.state = if state == WorkItemState::Queued {
+            WorkItemState::Held
+        } else {
+            state
+        };
         item.trace_id = Some(mint_trace_id());
         untouched.push(item);
     }
@@ -132,6 +138,38 @@ fn prior_history(dir: &Path, item: &WorkItem) -> (Event, PathBuf, Vec<u8>) {
     (previous, path, bytes)
 }
 
+/// Register `test-project` on `integration-trunk` and `another-project` on
+/// its own repository, park the running sibling on the latter so it does not
+/// hold the fresh task back under the per-repository pacing rule, and save
+/// `items` as the ledger.
+fn two_repositories(
+    checkout: &Path,
+    items: &mut [WorkItem],
+    ledger: &Path,
+) -> Arc<RwLock<Registry>> {
+    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+    {
+        let mut registry = registry.write().unwrap();
+        registry.projects[0].branch = "integration-trunk".into();
+        let mut other = registry.projects[0].clone();
+        other.name = "another-project".into();
+        other.repo = "another/repository".into();
+        registry.projects.push(other);
+    }
+    for item in items.iter_mut() {
+        if item.state == WorkItemState::Running {
+            item.project = "another-project".into();
+        }
+    }
+    WorkItemStore {
+        version: 1,
+        items: items.to_vec(),
+    }
+    .save(ledger)
+    .unwrap();
+    registry
+}
+
 async fn assert_supersession(proof: &str, source: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (checkout, preserved, untouched, before_landing, preserved_hash) =
@@ -139,16 +177,10 @@ async fn assert_supersession(proof: &str, source: &str) {
     let ledger = dir.path().join("work-items.json");
     let mut items = untouched.clone();
     items.push(preserved.clone());
-    WorkItemStore { version: 1, items }.save(&ledger).unwrap();
     let (previous, history_path, history) = prior_history(dir.path(), &preserved);
-    let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
-    {
-        let mut registry = registry.write().unwrap();
-        registry.projects[0].branch = "integration-trunk".into();
-        let mut other = registry.projects[0].clone();
-        other.name = "another-project".into();
-        registry.projects.push(other);
-    }
+    let registry = two_repositories(&checkout, &mut items, &ledger);
+    let untouched: Vec<WorkItem> =
+        items.iter().filter(|item| item.id != preserved.id).cloned().collect();
     let agent = Arc::new(LandingAgent(Mutex::new(0)));
     let engine = continuation_engine(agent.clone(), registry.clone(), &ledger);
     let (mut client, server, mut events) =
