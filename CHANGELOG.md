@@ -11,6 +11,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Cleanup resolves path aliases before checking Foundry roots and live worktree
+  ownership. This preserves ownership across macOS temporary paths and symlinks.
 - Work reconciliation recognizes landed work against either local trunk or a
   freshly fetched origin trunk. It retains ambiguous and unmatched work.
 - Landed task branches are cleaned up only after fresh Git proof and ownership
