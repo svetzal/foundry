@@ -491,7 +491,9 @@ To cut a release:
 git tag v0.X.Y
 git push origin main --tags
 
-# 5. Wait for the Release workflow to publish tarballs to the GitHub release page.
+# 5. Build, validate, and deploy locally from this source revision while the
+#    Release workflow publishes distribution tarballs. Do not wait for GitHub
+#    publication before deploying a locally validated build.
 # 6. Swap the running daemon onto the new binary. Use ./install.sh — it does
 #    `cargo install` for both binary crates AND re-signs them on macOS with
 #    stable code-signing identifiers. Do NOT run a bare `cargo install`:
@@ -508,11 +510,14 @@ launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 #### On the Linux ops host (`mojility-ops-01.local`)
 
 Build the Linux release on the host itself, from the tag, and install the
-binaries it produced:
+binaries it produced. Use the same Rust toolchain as release CI for packaging;
+the host's newer default can introduce lint rules that CI does not yet use.
+GitHub publication runs in parallel and does not gate this deployment:
 
 ```bash
 cd ~/Work/Projects/Mojility/foundry && git pull --ff-only
-scripts/build-linux-release.sh v0.X.Y   # gates, release build, tarball; prints the SHA-256
+RUSTUP_TOOLCHAIN=1.94.0 scripts/build-linux-release.sh v0.X.Y
+# gates, release build, tarball; prints the SHA-256 (match release.yml toolchain)
 foundry status                          # must say "No active workflows"; never restart during the 02:00 nightly
 tar -C /tmp/f -xzf ~/.cache/foundry-release/foundry-0.X.Y-linux-x64.tar.gz
 sudo install -m 0755 /tmp/f/foundry /tmp/f/foundryd /usr/local/bin/
@@ -527,7 +532,10 @@ release build output is tens of gigabytes, and leftover target directories
 filled the root filesystem on 2026-09-25. Log the install in
 `Automation/infrastructure/servers/mojility-ops-01.md` in the Operations repo.
 
-Steps 5–6 are required — without them the daemon keeps serving the old binary even after the GitHub release publishes, so the fix doesn't take effect. The reload must come *after* `install.sh`, so the live process inherits the stable signature rather than the one it launched with. See `launchd/README.md` for the canonical load/unload commands.
+Local build validation, installation, and daemon reload are required for the
+fix to take effect. Verify GitHub publication separately before calling the
+release complete. The reload must come after `install.sh`, so the live process
+uses the stable signature. See `launchd/README.md` for the load/unload commands.
 
 The repo is public under `svetzal/foundry`. Homebrew distribution via `svetzal/homebrew-tap` — the release workflow auto-updates the formula.
 
