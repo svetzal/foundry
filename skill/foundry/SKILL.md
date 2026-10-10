@@ -32,16 +32,19 @@ drift detection across them.
 
 ## Which daemon you are talking to
 
-The `foundry` CLI targets **production Foundry** on `mojility-ops-01.local`
-through `FOUNDRY_DAEMON_ADDR`. Production runs the nightly, the sentinels, the
-ledger and every other project's work. The daemon on the Mac is the
-development instance; reach it with `foundry --addr http://127.0.0.1:50051`.
+**Production Foundry** is `foundryd` on `mojility-ops-01.local`: the nightly,
+the sentinels, the ledger and every real project's work. Reach it over SSH
+(`ssh mojility-ops-01.local foundry queue`). On the Mac, plain `foundry`
+targets the **development daemon**, whose registry holds only synthetic
+sandbox projects under `~/.foundry/sandbox/` (`sample-rs`); never register a
+real project with it.
 
-Work on Foundry itself is designed and iterated on the Mac and promoted to
-ops-01 by the manual release in the repository's `AGENTS.md`, at a quiet
-point. **Never dispatch a `foundry task` or a campaign against the `foundry`
-project on production**: the restart that follows kills other projects'
-running sessions, and a defective change breaks the executor for everyone.
+Work on Foundry itself is designed and iterated on the Mac against that
+daemon and promoted to ops-01 by the manual release in the repository's
+`AGENTS.md`, at a quiet point. **Never dispatch a `foundry task` or a
+campaign against the `foundry` project on production**: the restart that
+follows kills other projects' running sessions, and a defective change
+breaks the executor for everyone.
 
 ## Architecture at a Glance
 
