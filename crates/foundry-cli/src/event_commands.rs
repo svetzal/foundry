@@ -31,6 +31,11 @@ pub async fn emit(
         trace_id: env_trace_id.unwrap_or_default(),
         span_id: String::new(), // daemon mints
         parent_span_id: env_parent_span_id.unwrap_or_default(),
+        // A raw emit replays or hand-builds any event, possibly inside another
+        // chain's trace (TRACEPARENT), so what dispatched the work is not
+        // known here. Naming no source is the honest record; the typed
+        // commands name theirs.
+        source: None,
     };
 
     let response = client.emit(request).await?.into_inner();

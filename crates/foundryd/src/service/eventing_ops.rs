@@ -55,9 +55,11 @@ pub(super) fn parse_emit_request(req: EmitRequest) -> Result<Event, Status> {
     } else {
         Some(req.parent_span_id)
     };
+    let source = req.source.map(super::work_item_ops::source_from_proto).transpose()?;
     Ok(Event::new(event_type, req.project, throttle, payload)
         .with_trace_id(Some(trace_id))
-        .with_span_ids(request_span_id, request_parent_span_id))
+        .with_span_ids(request_span_id, request_parent_span_id)
+        .with_source(source))
 }
 
 /// Extract per-project sub-traces from a system-level maintenance `ProcessResult`.
@@ -111,6 +113,10 @@ fn extract_per_project_traces(result: &ProcessResult) -> HashMap<String, Process
 /// Empty unless the plan enabled dispatch (nightly, full throttle). Each event
 /// describes a workflow root. A matching ledger obligation carries its exact
 /// parent id for admission; otherwise the root is a fresh `foundry task`.
+///
+/// Each root is its own trace, so the plan event's source (the sentinel that
+/// fired the cycle whose summary planned these) is copied onto it explicitly;
+/// nothing else would carry it across the trace boundary.
 pub(crate) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
     summary
         .events
@@ -146,6 +152,7 @@ pub(crate) fn planned_major_dispatches(summary: &ProcessResult) -> Vec<Event> {
                     Event::new(EventType::ExecutionRequested, m.project, Throttle::Full, payload)
                         .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
                         .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+                        .with_source(event.source.clone())
                 })
         })
         .collect()
@@ -235,6 +242,24 @@ pub(crate) async fn run_major_upgrades(
     }
 }
 
+/// The work source the cycle's root event carried, for the summary phase to
+/// inherit.
+///
+/// The summary phase is a fresh trace, and the source is the one envelope
+/// field it must carry over: it plans the majors lane, and each major-upgrade
+/// task it dispatches records what fired the cycle — the sentinel, or the
+/// operator who ran `foundry run` — not nothing.
+fn cycle_root_source(
+    result: &ProcessResult,
+    root_event_id: &str,
+) -> Option<foundry_sdk::work_source::WorkSource> {
+    result
+        .events
+        .iter()
+        .find(|event| event.id == root_event_id)
+        .and_then(|event| event.source.clone())
+}
+
 /// After a system-level maintenance cycle completes, write per-project sub-traces
 /// to disk and emit `MaintenanceSummaryRequested` for the summary phase. When
 /// the summary phase plans major-upgrade tasks for dispatch, start them.
@@ -311,7 +336,8 @@ pub(super) async fn finalise_system_maintenance(
         }),
     )
     .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
-    .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
+    .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+    .with_source(cycle_root_source(result, root_event_id));
 
     let summary_result = engine.process(summary_event.clone()).await;
 
@@ -517,7 +543,45 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         }
+    }
+
+    #[test]
+    fn parse_emit_request_without_a_source_names_none() {
+        let event = parse_emit_request(basic_emit_request()).expect("should parse");
+        assert!(event.source.is_none(), "an older client's request names no source");
+    }
+
+    #[test]
+    fn parse_emit_request_carries_the_operator_source_onto_the_root() {
+        let mut req = basic_emit_request();
+        req.source = Some(crate::proto::WorkSource {
+            kind: "operator".to_string(),
+            r#ref: "workbench".to_string(),
+            cycle: None,
+        });
+        let event = parse_emit_request(req).expect("should parse");
+        assert_eq!(event.source, Some(foundry_sdk::work_source::WorkSource::operator("workbench")));
+    }
+
+    #[test]
+    fn parse_emit_request_rejects_an_unknown_source_kind_or_blank_ref() {
+        let mut unknown = basic_emit_request();
+        unknown.source = Some(crate::proto::WorkSource {
+            kind: "dashboard".to_string(),
+            r#ref: "x".to_string(),
+            cycle: None,
+        });
+        assert_eq!(parse_emit_request(unknown).unwrap_err().code(), tonic::Code::InvalidArgument);
+
+        let mut blank = basic_emit_request();
+        blank.source = Some(crate::proto::WorkSource {
+            kind: "operator".to_string(),
+            r#ref: "  ".to_string(),
+            cycle: None,
+        });
+        assert_eq!(parse_emit_request(blank).unwrap_err().code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
@@ -675,6 +739,24 @@ mod tests {
         assert!(dispatches[1].payload["prompt"].as_str().unwrap().starts_with("Upgrade z from"));
         assert_ne!(dispatches[0].trace_id, dispatches[1].trace_id, "each task is its own trace");
         assert!(dispatches[0].parent_span_id.is_none(), "each task is a root");
+    }
+
+    #[test]
+    fn planned_dispatches_carry_the_plan_events_source_across_the_trace_boundary() {
+        use foundry_sdk::work_source::WorkSource;
+        let plan =
+            plan_event(true, false).with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+        let dispatches = planned_major_dispatches(&summary_with(vec![plan]));
+        assert_eq!(dispatches.len(), 2);
+        assert!(
+            dispatches
+                .iter()
+                .all(|e| e.source == Some(WorkSource::sentinel("nightly-maintenance"))),
+            "a fresh root carries nothing unless the plan's source is copied onto it"
+        );
+
+        let unsourced = planned_major_dispatches(&summary_with(vec![plan_event(true, false)]));
+        assert!(unsourced.iter().all(|e| e.source.is_none()));
     }
 
     #[test]

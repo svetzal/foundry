@@ -21,6 +21,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
 use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
+use foundry_sdk::work_source::WorkSource;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
@@ -251,6 +252,16 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
                 previous_settled_at: action.previous_settled_at.map(|at| at.to_rfc3339()),
             }
         }),
+        source: item.source.as_ref().map(source_to_proto),
+    }
+}
+
+/// Wire form of a typed source, matching what the daemon would have sent.
+fn source_to_proto(source: &WorkSource) -> crate::proto::WorkSource {
+    crate::proto::WorkSource {
+        kind: source.kind.tag().to_string(),
+        r#ref: source.reference.clone(),
+        cycle: source.cycle,
     }
 }
 

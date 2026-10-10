@@ -235,6 +235,7 @@ fn campaign_root() -> EmitRequest {
         trace_id: String::new(),
         span_id: String::new(),
         parent_span_id: String::new(),
+        source: None,
     }
 }
 

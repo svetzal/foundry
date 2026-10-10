@@ -171,6 +171,7 @@ async fn assert_supersession(proof: &str, source: &str) {
             trace_id: trace.clone(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         })
         .await
         .unwrap();
@@ -462,7 +463,7 @@ async fn automatic_supersession_respects_concurrent_owner_cancellation_and_unrel
     client.emit(crate::proto::EmitRequest {
         event_type: "execution_requested".into(), project: preserved.project.clone(), throttle: 0,
         payload_json: serde_json::json!({"project":preserved.project, "workflow":"task", "prompt":"fresh task"}).to_string(),
-        trace_id: trace.clone(), span_id: String::new(), parent_span_id: String::new(),
+        trace_id: trace.clone(), span_id: String::new(), parent_span_id: String::new(), source: None,
     }).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(30), agent.started.notified())
         .await
@@ -674,6 +675,7 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
                     trace_id: trace.clone(),
                     span_id: String::new(),
                     parent_span_id: String::new(),
+                    source: None,
                 })
                 .await
                 .unwrap();

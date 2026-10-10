@@ -495,6 +495,7 @@ mod tests {
             worktree_removed: None,
             operator_action: None,
             resumes: None,
+            source: None,
         }
     }
 

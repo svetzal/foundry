@@ -37,6 +37,7 @@ use tracing::{info, warn};
 
 use foundry_sdk::event::{Event, mint_span_id, mint_trace_id};
 use foundry_sdk::sentinel::{Schedule as SentinelSchedule, SentinelEntry, SentinelStore};
+use foundry_sdk::work_source::WorkSource;
 
 /// Fire-and-forget hook for handing a freshly-built root event to whatever
 /// machinery actually runs it. In production this calls
@@ -241,6 +242,12 @@ fn expand_to_six_field(expr: &str) -> String {
 /// Build the root event a sentinel fires. Mints fresh trace and span IDs so
 /// downstream stamping treats this as a root, exactly like the gRPC `emit()`
 /// path does for events with no incoming trace context.
+///
+/// The root names the sentinel as its work source. Every event the chain
+/// emits below it inherits that name, so a per-project maintenance run, a
+/// majors-lane upgrade or a supply-chain remediation the chain dispatches is
+/// recorded in the work-item ledger as `sentinel:<name>` rather than looking
+/// identical to the same run started by hand.
 fn build_event(entry: &SentinelEntry) -> Event {
     Event::new(
         entry.emit.event_type.clone(),
@@ -250,6 +257,7 @@ fn build_event(entry: &SentinelEntry) -> Event {
     )
     .with_trace_id(Some(mint_trace_id()))
     .with_span_ids(Some(mint_span_id()), None)
+    .with_source(Some(WorkSource::sentinel(entry.name.clone())))
 }
 
 #[cfg(test)]
@@ -432,6 +440,12 @@ mod tests {
         let span_id = event.span_id.as_ref().expect("span_id minted");
         assert_eq!(span_id.len(), 16, "span_id should be 16 hex chars");
         assert!(event.parent_span_id.is_none(), "root events have no parent span");
+    }
+
+    #[test]
+    fn build_event_names_the_sentinel_as_the_work_source() {
+        let event = build_event(&entry("nightly-maintenance", "0 2 * * *", true));
+        assert_eq!(event.source, Some(WorkSource::sentinel("nightly-maintenance")));
     }
 
     // ---------------------------------------------------------------------

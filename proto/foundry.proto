@@ -42,6 +42,24 @@ message TaskBlockStatus {
     bool throttled = 5;       // true if emission was suppressed by throttle
 }
 
+// What dispatched a unit of work, typed. A closed set of kinds, each with the
+// one reference that names the dispatcher; never a free string.
+//
+//   kind        ref                         cycle
+//   campaign    the campaign name           the cycle number
+//   sentinel    the sentinel name           absent
+//   operator    the submitting client host  absent
+//   work_item   the parent work item id     absent
+//
+// Rides the event envelope from the root a submitter emits down every hop of
+// its chain, and is recorded on the work item the chain opens. An unknown kind
+// is INVALID_ARGUMENT wherever a WorkSource is accepted.
+message WorkSource {
+    string kind = 1;
+    string ref = 2;
+    optional uint64 cycle = 3;
+}
+
 // Request/response for emitting an event.
 message EmitRequest {
     string event_type = 1;
@@ -51,6 +69,11 @@ message EmitRequest {
     string trace_id = 5;      // Optional; auto-minted if empty
     string span_id = 6;         // Optional. Auto-minted if empty.
     string parent_span_id = 7;  // Optional. Empty ⇒ root span.
+    // Optional. What dispatched the work this root starts; the CLI sends
+    // `operator` with its hostname. Absent means the root names no source,
+    // which is exactly what a request from an older client sends, and every
+    // work item the chain records then carries no source. Additive.
+    WorkSource source = 8;
 }
 
 message EmitResponse {
@@ -611,6 +634,12 @@ message WorkItem {
     optional bool worktree_removed = 17;
     WorkItemOperatorAction operator_action = 18;
     optional string resumes = 19;
+    // What dispatched the work, typed (see WorkSource): recorded at
+    // submission beside the untouched free-text `origin`, never changed.
+    // Absent when the item records none — every item written before this
+    // field existed — and a client built from the previous proto parses the
+    // record exactly as before. Additive.
+    WorkSource source = 20;
 }
 
 // Owner controls retain submission origin, trace, disposition and prior settlement.

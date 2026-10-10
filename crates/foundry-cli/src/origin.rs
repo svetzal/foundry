@@ -3,15 +3,31 @@
 //! A ledger item records *how* the work reached Foundry. For work an automation
 //! dispatched that is the lane itself, but for work a person asked for by hand
 //! the useful fact is which machine they typed it on and, when they say so, why.
-//! This module builds that one opaque string; the daemon carries it to the
-//! ledger without parsing it, and no dispatch is refused, delayed or altered
-//! because of what it says.
+//! This module builds two things from that: the one opaque origin string the
+//! daemon carries to the ledger without parsing, and the typed `operator`
+//! work source naming this host, which every root event this CLI emits
+//! carries. No dispatch is refused, delayed or altered because of either.
 
 /// What the CLI reports as its host when the hostname cannot be read.
 ///
 /// A stated fallback rather than an omission: "the lookup failed" is a more
 /// honest origin than silence, which reads as "no operator was involved".
 const UNKNOWN_HOST: &str = "unknown host";
+
+/// This machine's hostname, or [`UNKNOWN_HOST`] when it cannot be read.
+pub fn local_hostname() -> String {
+    hostname().unwrap_or_else(|| UNKNOWN_HOST.to_string())
+}
+
+/// The typed `operator` work source for a dispatch from this client, in wire
+/// form: this host is what dispatched the work.
+pub fn operator_source() -> crate::proto::WorkSource {
+    crate::proto::WorkSource {
+        kind: foundry_sdk::work_source::WorkSourceKind::Operator.tag().to_string(),
+        r#ref: local_hostname(),
+        cycle: None,
+    }
+}
 
 /// Build the opaque operator origin for a dispatch from this client.
 ///
