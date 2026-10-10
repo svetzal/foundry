@@ -68,6 +68,14 @@ fn same_ref(reference: &str, branch: &str) -> bool {
         || reference.strip_prefix("origin/") == Some(branch)
 }
 
+fn same_worktree(left: &Path, right: &Path) -> bool {
+    left == right
+        || match (left.canonicalize(), right.canonicalize()) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+}
+
 fn protection(
     store: &WorkItemStore,
     project: &str,
@@ -81,7 +89,9 @@ fn protection(
             // workspace evidence cannot prove that this candidate is unowned.
             let owns = disposition.map_or(item.project == project, |d| {
                 worktree.is_some_and(|path| {
-                    d.worktree.as_ref().map_or(item.project == project, |w| Path::new(w) == path)
+                    d.worktree
+                        .as_ref()
+                        .map_or(item.project == project, |w| same_worktree(Path::new(w), path))
                 }) || branch.is_some_and(|b| {
                     d.task_branch.as_ref().map_or(item.project == project, |r| same_ref(r, b))
                 })
@@ -273,7 +283,11 @@ async fn remove_worktrees(
         };
         let wt = Path::new(wt_path);
         let root = paths.worktrees.join(crate::workspace::slug(project));
-        let reason = if !wt.starts_with(&root) || wt == root {
+        let owned = match (wt.canonicalize(), root.canonicalize()) {
+            (Ok(wt), Ok(root)) => wt != root && wt.starts_with(root),
+            _ => false,
+        };
+        let reason = if !owned {
             Some("not Foundry-owned".to_string())
         } else {
             match guarded_delete(
@@ -690,6 +704,12 @@ mod tests {
             return false;
         }
         let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        if name.starts_with("aliased_") {
+            let actual = root.path().join("actual-worktrees");
+            std::fs::create_dir_all(&actual).unwrap();
+            std::os::unix::fs::symlink(actual, root.path().join("worktrees")).unwrap();
+        }
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -919,7 +939,7 @@ mod tests {
                 _ => "owned by live work item wi_live",
             };
             assert!(result.summary.contains(reason), "{}", result.summary);
-            assert!(result.summary.contains(wt.to_str().unwrap()));
+            assert!(result.summary.contains(wt.canonicalize().unwrap().to_str().unwrap()));
             if scenario == "running" || scenario == "race" {
                 // Review/finalization can still spawn Git after validation.
                 assert!(!git(&wt, &["rev-parse", "HEAD"]).is_empty());
@@ -971,5 +991,21 @@ mod tests {
     async fn exact_live_worktree_reference_is_protected_across_registrations() {
         regression("exact_live_worktree_reference_is_protected_across_registrations", "referenced")
             .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aliased_clean_foundry_orphan_is_removed() {
+        regression("aliased_clean_foundry_orphan_is_removed", "orphan").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aliased_live_worktree_reference_is_protected_across_registrations() {
+        regression(
+            "aliased_live_worktree_reference_is_protected_across_registrations",
+            "referenced",
+        )
+        .await;
     }
 }
