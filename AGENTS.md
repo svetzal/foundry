@@ -589,6 +589,7 @@ tar -C /tmp/f -xzf ~/.cache/foundry-release/foundry-0.X.Y-linux-x64.tar.gz
 sudo install -m 0755 /tmp/f/foundry /tmp/f/foundryd /usr/local/bin/
 systemctl --user restart foundryd
 foundry pacing resume --lane all        # the drain's pause survives the restart; lift it
+foundry init --global --force           # the skill is bundled in the binary; install the new one for every agent on this host
 which foundry && foundry --version && foundry status && foundry sentinel list
 ```
 
