@@ -284,7 +284,12 @@ Coding sessions should run verbose checks through `foundry capture -- <command>`
 It needs no daemon, keeps full stdout/stderr logs, returns the actual exit code,
 and prints a bounded failure tail. New campaign tasks must record early real
 acceptance proof in `.foundry/proof.json` before broad expansion. See the
-campaign guide for the behavioral/direct proof schema.
+campaign guide for the behavioral/direct proof schema. A task's files under
+`.foundry/` land with its change, except `.foundry/proof.json`,
+`.foundry/logs/` and gitignored files. Finalize copies those to
+`~/.foundry/evidence/<trace>/<attempt>/worktree/` before cleanup and records
+the directory in the result's `uncommitted_artifacts` field. So a brief that
+wants evidence on trunk names a path such as `.foundry/<topic>/` or `docs/`.
 
 Each advance mints trace and cycle-span identity. Task-side events carry
 `campaign_cycle`, and `CampaignAdvanceCompleted` retains the exact formation

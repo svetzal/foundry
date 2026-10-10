@@ -215,6 +215,7 @@ fn active_campaign_with_pending_result(name: &str) -> Campaign {
             preservation_ref: Some("foundry-task/pause-generated-client-test-ref".to_string()),
             land_blocked: None,
             proof_evidence: None,
+            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::BlockedOnDecision {
                 finding: "boundary choice required".to_string(),

@@ -196,6 +196,7 @@ async fn online_pause_preserves_pending_run_result_and_status() {
         preservation_ref: Some("foundry-task/cli-pause-grpc-test-ref".to_string()),
         land_blocked: None,
         proof_evidence: None,
+        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Remainder {
             gaps: vec!["exercise the CLI pause gRPC boundary".to_string()],

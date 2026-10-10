@@ -32,6 +32,7 @@ For a non-behavioral objective, use this exact direct shape with the smallest pa
   "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
 }
 Validate the file's JSON, field types, actual exit codes, and existence of each log before finishing. The reviewer must inspect this evidence.
+.foundry/proof.json and .foundry/logs/ are archived outside the repository and do not land. Any other file you create under .foundry/ (for example .foundry/<topic>/) is committed with your change, unless the project gitignores it.
 WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
 "#;
 
@@ -184,6 +185,7 @@ impl TaskBlock for ExecutePlan {
                                 preservation_ref: None,
                                 land_blocked: None,
                                 proof_evidence: None,
+                                uncommitted_artifacts: None,
                                 trunk_arrivals: Vec::new(),
                                 verdict: TaskVerdict::RunnerError {
                                     detail: error.to_string(),

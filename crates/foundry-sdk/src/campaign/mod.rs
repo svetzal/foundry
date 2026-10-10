@@ -855,6 +855,7 @@ mod tests {
             preservation_ref: None,
             land_blocked: None,
             proof_evidence: None,
+            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Remainder {
                 gaps: vec![gap.to_string()],
