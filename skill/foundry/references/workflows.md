@@ -111,12 +111,23 @@ ValidationRequested
 
 ## Task Workflow
 
-Triggered by `foundry task <project> "<description>"`. Mutating, immediate,
-isolated, and intentionally not retried. The user-provided description is the
-single objective.
+Triggered by `foundry task <project> "<description>"`. Mutating, isolated, and
+intentionally not retried. The user-provided description is the single
+objective.
+
+The `ExecutionRequested` a submitter emits is admitted, not run: `AdmitWorkItem`
+records the item `queued` with the reason it waits on, holding that root, and
+`CheckCharter` declines it. The pacing scheduler inside `foundryd` starts the
+item when the rules allow by emitting a fresh `ExecutionRequested` that names
+the item (`admitted_work_item_id`) on the same trace; that started root runs
+the chain below. Campaign cycles, nightly majors-lane upgrades and `queue
+resume` children pass through the same stage.
 
 ```text
-ExecutionRequested {workflow: "task", prompt: "..."}
+ExecutionRequested {workflow: "task", prompt: "..."}            — admitted root
+  └─ AdmitWorkItem → WorkItemSubmitted {state: queued, reason}
+       … pacing scheduler: WorkItemStarted …
+ExecutionRequested {workflow: "task", admitted_work_item_id}   — started root
   └─ CheckCharter (Observer)
        └─ CharterCheckCompleted {success: true, workflow: "task"}
             └─ ResolveGates (Observer)
@@ -383,21 +394,31 @@ Both paths share the same `AgentRelease` work block (ComposedStep architecture)
 
 Use `foundry queue close <id> --reason "reviewed; obligation discharged"`
 for `preserved`, `needs_decision` and `failed` items, or
-`foundry queue cancel <id>` for `submitted` and `queued` items. Optional
+`foundry queue cancel <id>` for `submitted`, `queued` and `held` items. Optional
 `--origin "owner review"` records context beside the CLI hostname.
 Both require the daemon and reject `--offline`. They settle exactly that id
 `cancelled`, recording an owner action separately from submission origin and
 retaining prior settlement evidence and disposition. The cancellation appears
 on Watch and in the durable event history; earlier events remain intact.
 Neither command starts agents, stops running workflows or removes preserved
-work. Use campaign cancellation for an in-flight campaign, as described above.
+work. Use campaign cancellation for an in-flight campaign, as described above;
+`campaign cancel` also cancels the campaign's queued cycles.
+
+`foundry queue hold <id>` takes a `queued` item out of the scheduler's hands
+(`held`, reason `held by operator`); `foundry queue release <id>` returns a held
+item, or one in `needs_decision` over a dependency that settled some way other
+than landed, to `queued` with the scheduler's current verdict as its reason.
+They emit `work_item_held` / `work_item_released`. `foundry pacing show |
+pause | resume | drain` read and steer the stage itself; see the skill's
+"Pace the work" section.
 
 Owner-directed preserved-work continuation uses `foundry queue resume <id>
-[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
-`preserved` item with a usable preservation ref and a registered project can be
-resumed. Foundry dispatches a new task with the original objective and starts
-from the preserved local branch, remote ref or `bundle:<path>` through the
-existing continuation path. The new record and its lifecycle payloads expose
+[--origin <text>] [--after <id>]... [--not-before <when>]`. It requires a live
+daemon and refuses `--offline`. Only a `preserved` item with a usable
+preservation ref and a registered project can be resumed. Foundry records a
+new task with the original objective, `queued` for the pacing scheduler, that
+starts from the preserved local branch, remote ref or `bundle:<path>` through
+the existing continuation path. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON
 output. Submission identity and the parent's prior evidence remain intact;
 the child records the hostname and optional origin in its `resume` operator
@@ -414,10 +435,11 @@ states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
 If the initial ledger save fails, no child or lifecycle events are created.
 Otherwise admission stages a child in `failed` with reason `resume admission incomplete;
 execution not dispatched`, no `started_at`, a `settled_at`, no disposition, and
-`resumes` set to the exact preserved parent's id. Execution starts only after both
-`work_item_submitted` and `work_item_started` lifecycle roots persist and the final
-ledger save succeeds, making the child `running`. A subsequent failure leaves the
-staged failed child and preserves the parent and unrelated records.
+`resumes` set to the exact preserved parent's id. The child becomes `queued`
+only after the `work_item_submitted` lifecycle root persists and the final
+ledger save succeeds; the scheduler then starts it and emits
+`work_item_started`. A subsequent failure leaves the staged failed child and
+preserves the parent and unrelated records.
 
 Successful lifecycle appends remain in durable history and are delivered on
 Watch, even when admission later fails. Failed writes are never advertised on

@@ -150,15 +150,23 @@ completes.
 Run one concrete coding objective against a registered project.
 
 ```bash
-foundry task <project> "<description>" [--agent <provider>] [--origin <text>]
+foundry task <project> "<description>" [--agent <provider>] [--origin <text>] [--after <id>]... [--not-before <RFC3339|duration>]
 ```
 
-| Argument      | Required | Description                                             |
-| ------------- | -------- | ------------------------------------------------------- |
-| `project`     | Yes      | Registered project name                                 |
-| `description` | Yes      | One concrete objective, supplied as a positional string |
-| `--agent`     | No       | Override the registered agent provider for this task    |
-| `--origin`    | No       | Free-text note recorded with the work item, beside this machine's hostname |
+| Argument       | Required | Description                                             |
+| -------------- | -------- | ------------------------------------------------------- |
+| `project`      | Yes      | Registered project name                                 |
+| `description`  | Yes      | One concrete objective, supplied as a positional string |
+| `--agent`      | No       | Override the registered agent provider for this task    |
+| `--origin`     | No       | Free-text note recorded with the work item, beside this machine's hostname |
+| `--after`      | No       | Start only after this work item has settled `landed`; repeatable. An id not in the ledger is refused |
+| `--not-before` | No       | Earliest start: an RFC 3339 timestamp, or a duration from now (`90s`, `30m`, `2h`, `1d`) |
+
+The task is recorded `queued` and the pacing scheduler starts it when the rules
+allow: one mutating item per repository, the host running cap, `--not-before`,
+`--after`, and the lane not paused. The command waits through that queue time;
+`work_item_submitted` on its trace carries the reason it waits on. See
+[Pacing](../guide/work-queue.md#pacing).
 
 The work item this dispatch records always carries the CLI client's hostname in
 its `origin`, plus any `--origin` text verbatim. Origin is opaque: it changes
@@ -325,6 +333,8 @@ work Foundry dispatched. The overview, `show` and `open` are read-only.
 foundry queue [--json] [--offline]
 foundry queue show <id> [--json] [--offline]
 foundry queue open [--json] [--offline]
+foundry queue hold <id> [--origin <text>]
+foundry queue release <id> [--origin <text>]
 ```
 
 | Subcommand | Daemon required?       | Description                                                                   |
@@ -333,18 +343,21 @@ foundry queue open [--json] [--offline]
 | `show`     | Yes unless `--offline` | Print one item's full durable record, then its `work_item_*` events           |
 | `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed`         |
 | `close <id> --reason <text> [--origin <text>]` | Yes | Discharge an open obligation; `--offline` refused |
-| `cancel <id> [--origin <text>]` | Yes | Cancel submitted/queued work; `--offline` refused |
+| `cancel <id> [--origin <text>]` | Yes | Cancel submitted/queued/held work; `--offline` refused |
+| `hold <id> [--origin <text>]` | Yes | Take a `queued` item out of the scheduler's hands; `--offline` refused |
+| `release <id> [--origin <text>]` | Yes | Return a `held` item, or one in `needs_decision` over a dependency, to the queue; `--offline` refused |
+| `resume <id> [--origin <text>] [--after <id>]... [--not-before <RFC3339\|duration>]` | Yes | Resume preserved work through a queued continuation; `--offline` refused |
 
 | Argument   | Description                                                 |
 | ---------- | ----------------------------------------------------------- |
-| `<id>`     | Work-item id, e.g. `wi_0123456789abcdef01234567` (`show`, `close`, `cancel`) |
+| `<id>`     | Work-item id, e.g. `wi_0123456789abcdef01234567` (`show`, `close`, `cancel`, `hold`, `release`, `resume`) |
 
 | Option      | Description                                                        |
 | ----------- | ------------------------------------------------------------------ |
 | `--json`    | Emit machine-readable JSON instead of human output                 |
 | `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` (and, for `show`, `FOUNDRY_EVENTS_DIR`) directly instead of calling the daemon |
 
-The four groups are **running**, **queued** (`submitted` or `queued`), **open**
+The four groups are **running**, **queued** (`submitted`, `queued` or `held`), **open**
 (`preserved`, `needs_decision`, `failed` — settled but still needing a person),
 and the newest 20 **settled** items (`landed`, `cancelled`). The 20-item cap
 applies to the settled group alone; older terminal items are omitted. Each line
@@ -356,7 +369,9 @@ and never re-sorts.
 `show` renders every durable field, and an optional field the ledger never
 recorded produces no line at all rather than an empty string or `false`. A
 recorded `worktree_removed: false` therefore prints `Worktree removed: no`,
-while an unrecorded one prints nothing. After the record, `show` prints an
+while an unrecorded one prints nothing. A `Depends on:` line lists the
+`--after` ids when there are any, and a `Not before:` line the earliest start
+when one was set; `--json` carries them as `depends_on` and `not_before`. After the record, `show` prints an
 `Events:` heading and the item's own `work_item_*` events, one line each
 (occurred at, event type, state, event id, reason), oldest first. They are
 selected from the durable event log by the item id in the event payload — never
@@ -396,9 +411,9 @@ foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
 ```
 
 `close` discharges an open obligation in `preserved`, `needs_decision` or
-`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted` or
-`queued` item and records the reason `cancelled by operator`, without requiring
-a reason argument. Both settle exactly the requested id as `cancelled`.
+`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted`,
+`queued` or `held` item and records the reason `cancelled by operator`, without
+requiring a reason argument. Both settle exactly the requested id as `cancelled`.
 
 Both require the daemon, reject `--offline`, and never fall back to local
 writes. They record this CLI's hostname and optional `--origin` in
@@ -416,18 +431,39 @@ blank input returns `INVALID_ARGUMENT`, and other states return
 read or save failures return `INTERNAL` and a failed save emits no cancellation.
 Concurrent requests for one item can succeed only once.
 
+### Hold or release an item
+
+```bash
+foundry queue hold wi_0123456789abcdef01234567 --origin "wait for the review"
+foundry queue release wi_0123456789abcdef01234567
+```
+
+`hold` takes a `queued` item out of the scheduler's hands: it sits `held` with
+the reason `held by operator` until released, and nothing starts it. `release`
+returns a `held` item, or one the scheduler settled `needs_decision` because a
+dependency settled some way other than `landed`, to `queued`; the settled
+dependencies are dropped from `depends_on`, and the recorded reason is the
+scheduler's verdict for the item as it now stands. Any other state is
+`FAILED_PRECONDITION`. Both require the daemon, reject `--offline`, record
+`operator_action` as `close` and `cancel` do, and emit `work_item_held` or
+`work_item_released` on Watch and in the durable log after the ledger is saved.
+
 ### Resume preserved work
 
 ```bash
 foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work"
+foundry queue resume wi_0123456789abcdef01234567 --after wi_89abcdef0123456789abcdef --not-before 30m
 ```
 
 Owner-directed preserved-work continuation uses `foundry queue resume <id>
-[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
-`preserved` item with a usable preservation ref and a registered project can be
-resumed. Foundry dispatches a new task with the original objective and starts
-from the preserved local branch, remote ref or `bundle:<path>` through the
-existing continuation path. The new record and its lifecycle payloads expose
+[--origin <text>] [--after <id>]... [--not-before <RFC3339|duration>]`. It
+requires a live daemon and refuses `--offline`. Only a `preserved` item with a
+usable preservation ref and a registered project can be resumed. Foundry
+records a new task with the original objective, `queued` for the pacing
+scheduler, that starts from the preserved local branch, remote ref or
+`bundle:<path>` through the existing continuation path. `--after` and
+`--not-before` mean what they mean on `foundry task`; an `--after` id not in
+the ledger, or an unparsable `--not-before`, is `INVALID_ARGUMENT`. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON
 output. Submission identity and the parent's prior evidence remain intact;
 the child records the hostname and optional origin in its `resume` operator
@@ -443,14 +479,55 @@ states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
 An initial ledger-save failure creates no child or lifecycle events. Otherwise,
 admission stages a `failed` child with reason `resume admission incomplete;
 execution not dispatched`, no `started_at`, a `settled_at` and no disposition.
-The child becomes `running` only after both admission lifecycle roots are
-persisted and the final ledger save succeeds. Later failures leave that failed
-child and preserve the parent and unrelated records. Successfully written roots
-remain in history and on Watch even if a later admission step fails; failed
-writes are never advertised on Watch. Earlier bytes, including partial appends,
-are never truncated or rewritten.
+The child becomes `queued` only after the `work_item_submitted` root is
+persisted and the final ledger save succeeds; the scheduler then starts it and
+emits `work_item_started`. Later failures leave that failed child and preserve
+the parent and unrelated records. Successfully written roots remain in history
+and on Watch even if a later admission step fails; failed writes are never
+advertised on Watch. Earlier bytes, including partial appends, are never
+truncated or rewritten.
 
 See [The Work Queue](../guide/work-queue.md) for the full model.
+
+## `foundry pacing`
+
+Inspect and steer the pacing stage: the scheduler that starts queued work.
+
+```bash
+foundry pacing show [--json] [--offline]
+foundry pacing pause [--lane interactive|campaign|maintenance|all] [--origin <text>]
+foundry pacing resume [--lane interactive|campaign|maintenance|all] [--origin <text>]
+foundry pacing drain [--timeout <duration>] [--origin <text>]
+```
+
+| Subcommand | Daemon required?       | Description                                                                   |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------- |
+| `show`     | Yes unless `--offline` | Print the limits in force, every running item with the repository it occupies, every waiting item with its reason, and the paused lanes |
+| `pause`    | Yes                    | Stop new starts in a lane (default `all`); running items are untouched; emits `pacing_paused` |
+| `resume`   | Yes                    | Allow starts in a lane again (default `all`); emits `pacing_resumed`         |
+| `drain`    | Yes                    | Pause every lane, then wait until nothing is running, printing each item as it settles; exit 0 when idle |
+
+| Option      | Description                                                        |
+| ----------- | ------------------------------------------------------------------ |
+| `--json`    | `show` only: emit the `PacingStatus` as JSON                      |
+| `--offline` | `show` only: read the ledger and the pacing files directly instead of calling the daemon |
+| `--lane`    | `pause`/`resume`: `interactive`, `campaign`, `maintenance` or `all` |
+| `--timeout` | `drain`: give up after this duration (`30m`, `2h`) and exit 1 naming what still runs |
+| `--origin`  | Operator context recorded beside this CLI's hostname               |
+
+`show` lists running items oldest start first and waiting items in the
+scheduler's priority order (interactive lane first, then oldest submission),
+then held items. A waiting item's reason is the scheduler's current verdict:
+`repository busy: wi_…`, `host at capacity N/N`, `not before <time>`,
+`waits on wi_…`, `lane paused`, `ready`, or `held by operator`.
+
+The pause state is persisted to `~/.foundry/pacing-state.json`
+(`FOUNDRY_PACING_STATE_PATH`) through an atomic rename and is in force after a
+daemon restart. The host running cap is read from `~/.foundry/pacing.json`
+(`FOUNDRY_PACING_PATH`, `{"max_running": 2}`); a missing file means the default.
+
+`drain` does not stop the daemon and does not resume the lanes when it finishes;
+run `pacing resume` when work may start again. It refuses `--offline`.
 
 ## `foundry sentinel`
 

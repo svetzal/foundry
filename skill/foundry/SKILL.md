@@ -4,7 +4,8 @@ description: >
   How to use the Foundry workflow engine for engineering automation. Use this
   skill whenever the user mentions foundry, foundryd, foundry iterate, foundry
   scout, foundry validate, foundry run, foundry pipeline, foundry release,
-  foundry gates, foundry campaign, campaigns, foundry registry, foundry
+  foundry gates, foundry campaign, campaigns, foundry queue, foundry pacing,
+  the work queue, pacing, foundry registry, foundry
   sentinel, sentinels, scheduled triggers, quality gates, maintenance runs,
   drift assessment, pipeline health, CI remediation, release automation, or
   wants to automate code quality workflows across projects. Also use when the
@@ -173,10 +174,20 @@ Run one concrete user-provided coding task against a registered project:
 foundry task <project-name> "Add a --quiet flag to the CLI and cover it with tests"
 foundry task <project-name> "Fix the failing parser regression" --agent codex
 foundry task <project-name> "Add retries to the uploader" --origin "asked by Stacey in standup"
+foundry task <project-name> "Bump the API client" --after wi_0123456789abcdef01234567 --not-before 2h
 ```
 
 `--origin <text>` is a free-text note recorded on the work item beside the CLI
 client's hostname. It is opaque — it changes nothing about how the task runs.
+
+`--after <id>` (repeatable) makes the task wait until that work item has
+settled `landed`; an id not in the ledger is refused. `--not-before` takes an
+RFC 3339 timestamp or a duration from now (`90s`, `30m`, `2h`, `1d`).
+
+The task is recorded `queued` and the pacing scheduler starts it when the rules
+allow (one mutating item per repository, the host running cap, `--not-before`,
+`--after`, lane not paused); the command waits through that queue time, and
+`foundry pacing show` says why it waits. See "Pace the work" below.
 
 The task runs inside an isolated Git worktree, checks the project charter,
 resolves and verifies gates, and performs a skeptical read-only review. It ends
@@ -454,7 +465,7 @@ foundry queue --source sentinel:nightly-maintenance       # what the nightly sta
 foundry queue open --source operator:workbench            # open work asked for from that host
 ```
 
-The four groups are **running**, **queued** (`submitted` or `queued`), **open**
+The four groups are **running**, **queued** (`submitted`, `queued` or `held`), **open**
 (`preserved`, `needs_decision`, `failed` — settled but still owing something to
 a person), and the newest 20 **settled** items (`landed`, `cancelled`). The
 20-item cap applies to the settled group alone.
@@ -475,11 +486,12 @@ Start with `foundry queue open` when you want the shortest answer to "what is
 waiting on me?" — those three states are settled but unfinished.
 
 `show` prints every durable field, including `verdict`, `landed_commit`,
-`preservation_ref`, `worktree`, `worktree_removed` and `trace_id`. An optional
+`preservation_ref`, `worktree`, `worktree_removed`, `trace_id`, and for paced
+work `Depends on:` and `Not before:`. An optional
 field the ledger never recorded prints no line at all, so a recorded
 `worktree_removed: false` reads `no` while an unrecorded one is silent. After
 the record, `show` lists the item's own `work_item_*` events (submitted,
-started, settled, cancelled), oldest first, one line each — selected by the
+started, settled, cancelled, held, released), oldest first, one line each — selected by the
 item id in the event payload, never by trace or project, from every monthly
 event log however old. An item with none prints `(no events)`; `--json` adds an
 `events` array beside the unchanged record keys.
@@ -497,18 +509,28 @@ On every start `foundryd` settles each item still `running` as `failed` with the
 reason `daemon restarted`, so after a restart look in `foundry queue open` for
 work that needs re-dispatching.
 
-### Close or cancel an item
+### Close, cancel, hold or release an item
 
 ```bash
-foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work"
+foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work" [--after <id>]... [--not-before <when>]
 foundry queue close wi_0123456789abcdef01234567 --reason "Reviewed; no further work required" --origin "owner review"
 foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
+foundry queue hold wi_0123456789abcdef01234567 --origin "wait for the review"
+foundry queue release wi_0123456789abcdef01234567
 ```
 
 `close` discharges an open obligation in `preserved`, `needs_decision` or
-`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted` or
-`queued` item and records the reason `cancelled by operator`, without requiring
-a reason argument. Both settle exactly the requested id as `cancelled`.
+`failed`; it requires a nonblank `--reason`. `cancel` stops a `submitted`,
+`queued` or `held` item and records the reason `cancelled by operator`, without
+requiring a reason argument. Both settle exactly the requested id as `cancelled`.
+
+`hold` takes a `queued` item out of the scheduler's hands; it sits `held` with
+the reason `held by operator` until released. `release` returns a held item, or
+one in `needs_decision` because a dependency settled some way other than
+`landed`, to `queued`; the settled dependencies are dropped and the item runs
+regardless of them. Both emit `work_item_held` / `work_item_released` on Watch
+and in the durable log, and follow the same daemon-only, `operator_action`
+contract as `close` and `cancel`.
 
 Both require the daemon, reject `--offline`, and never fall back to local
 writes. They record this CLI's hostname and optional `--origin` in
@@ -525,6 +547,37 @@ blank input returns `INVALID_ARGUMENT`, and other states return
 `FAILED_PRECONDITION`. Malformed ledgers also return `FAILED_PRECONDITION`;
 read or save failures return `INTERNAL` and a failed save emits no cancellation.
 Concurrent requests for one item can succeed only once.
+
+### 12. Pace the work
+
+Every task-shaped item (`foundry task`, a campaign cycle, a nightly majors-lane
+upgrade, a `queue resume` child) is recorded `queued` with a reason, and the
+scheduler inside `foundryd` starts it when, in this order: no running item of
+any kind (maintenance included) occupies its repository; the host running cap
+(`max_running`, default 2) is not reached; its `--not-before` has passed;
+every `--after` item has settled `landed`; its lane is not paused. Interactive
+work is considered first, then oldest submission first. A queued item's reason
+is the scheduler's current verdict (`repository busy: wi_…`,
+`host at capacity N/N`, `not before <time>`, `waits on wi_…`, `lane paused`,
+`ready`), shown on queue rows, `queue show`, `pacing show` and in `--json`.
+A dependency that settles any way other than landed moves the dependent to
+`needs_decision` with `waits on <id>, which settled <state>`; `queue release`
+returns it to the queue.
+
+```bash
+foundry pacing show [--json] [--offline]                   # limits, running, waiting with reasons, paused lanes
+foundry pacing pause --lane campaign --origin "quiet hours" # stop new starts in one lane; running items untouched
+foundry pacing resume                                       # every lane (the default) may start again
+foundry pacing drain --timeout 30m                          # pause all, wait until idle; exit 1 naming what still runs
+```
+
+`pause`/`resume` emit `pacing_paused`/`pacing_resumed` for the project
+`system`; the pause state is persisted to `~/.foundry/pacing-state.json` and
+is in force after a restart. The host cap lives in `~/.foundry/pacing.json`
+(`{"max_running": 2}`); a missing file means the default. Queued and held
+items survive a restart as they are; running items still settle `failed` with
+`daemon restarted`. `drain` neither stops the daemon nor resumes the lanes
+afterwards.
 
 ### Prefer convenience commands over raw emit
 
@@ -670,11 +723,12 @@ For detailed workflow descriptions including which blocks execute at each step,
 read `references/workflows.md`.
 
 Owner-directed preserved-work continuation uses `foundry queue resume <id>
-[--origin <text>]`. It requires a live daemon and refuses `--offline`. Only a
-`preserved` item with a usable preservation ref and a registered project can be
-resumed. Foundry dispatches a new task with the original objective and starts
-from the preserved local branch, remote ref or `bundle:<path>` through the
-existing continuation path. The new record and its lifecycle payloads expose
+[--origin <text>] [--after <id>]... [--not-before <when>]`. It requires a live
+daemon and refuses `--offline`. Only a `preserved` item with a usable
+preservation ref and a registered project can be resumed. Foundry records a
+new task with the original objective, `queued` for the pacing scheduler, that
+starts from the preserved local branch, remote ref or `bundle:<path>` through
+the existing continuation path. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON
 output. Submission identity and the parent's prior evidence remain intact;
 the child records the hostname and optional origin in its `resume` operator
@@ -684,17 +738,19 @@ The original obligation stays preserved until the linked task actually lands.
 Then Foundry records its landing commit and appends `work_item_settled` for the
 original. Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
-Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
-states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
-`INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
+Unknown ids return `NOT_FOUND`, blank inputs, an unknown `--after` id or an
+unparsable `--not-before` `INVALID_ARGUMENT`, ineligible states or unusable
+evidence `FAILED_PRECONDITION`, and persistence failures `INTERNAL`. A
+rejected admission dispatches no execution and invokes no agent.
 
 If the initial ledger save fails, no child or lifecycle events are created.
 Otherwise admission stages a child in `failed` with reason `resume admission incomplete;
 execution not dispatched`, no `started_at`, a `settled_at`, no disposition, and
-`resumes` set to the exact preserved parent's id. Execution starts only after both
-`work_item_submitted` and `work_item_started` lifecycle roots persist and the final
-ledger save succeeds, making the child `running`. A subsequent failure leaves the
-staged failed child and preserves the parent and unrelated records.
+`resumes` set to the exact preserved parent's id. The child becomes `queued`
+only after the `work_item_submitted` lifecycle root persists and the final
+ledger save succeeds; the scheduler then starts it and emits
+`work_item_started`. A subsequent failure leaves the staged failed child and
+preserves the parent and unrelated records.
 
 Successful lifecycle appends remain in durable history and are delivered on
 Watch, even when admission later fails. Failed writes are never advertised on
