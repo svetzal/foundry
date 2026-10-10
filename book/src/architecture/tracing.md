@@ -81,6 +81,10 @@ tree and any fan-out coordination:
 - **`gather_id`** — identifies the fan-out (scatter/gather) group an event
   belongs to, or `None` when the event is not part of a fan-out. Propagates
   verbatim like `trace_id` (see below).
+- **`source`** — what dispatched the unit of work the event belongs to: a
+  campaign cycle, a sentinel, a person at a client, or a parent work item
+  (see [the work queue](../guide/work-queue.md)). `None` when the root named
+  none. Propagates verbatim like `trace_id` (see below).
 
 A canonical event therefore carries something like:
 
@@ -90,6 +94,7 @@ span_id         00f067aa0ba902b7
 parent_span_id  b9c7c989f97918e1
 causation_id    evt_a1b2c3d4e5f6
 gather_id       gth_9f8e7d6c5b4a
+source          sentinel:nightly-maintenance
 ```
 
 ### Spans Versus Causation
@@ -182,6 +187,28 @@ satisfied: some child's chain ended in a failed block before its completion.
 The engine then closes the innermost such group itself and delivers its reduce
 event, whose `missing` field names each child that did not arrive and the block
 that stopped it. One failed child therefore never stops the fan-in.
+
+### Work-source propagation
+
+`source` propagates by the same rule as `gather_id`: every emitted event
+inherits the trigger's source verbatim, across span-opener boundaries and
+into scattered children and the synthesized reduce event, set if unset. A
+submitter names the source once, on the root it emits — the CLI's typed
+commands name `operator` with their host, the scheduler names the sentinel
+that fired, a campaign advance names the campaign and cycle on the cycle's
+`ExecutionRequested` — and the work-item ledger records it off whichever event
+opens an item's chain, however many hops below the root that is. This is why
+the source lives on the envelope rather than in a payload: the maintenance
+fan-out builds each per-project root with an empty payload, and the hops from
+there to a `PipelineChecked` or `MainBranchAudited` do not forward payload
+context.
+
+Two places copy it across a trace boundary explicitly, because a fresh trace
+inherits nothing: the maintenance summary phase takes the cycle root's source,
+and each majors-lane task takes the plan event's. A block that sets an explicit
+source on an event it emits keeps it; that is how a cycle dispatched by a
+manual `foundry campaign advance` names the campaign rather than the operator
+whose root triggered the advance.
 
 ## Span-Opener Registry
 

@@ -440,6 +440,16 @@ foundry campaign resume parite-phase-2d
 foundry campaign resume parite-phase-2d --add-cycles 1
 ```
 
+`foundry campaign show <name>` prints the campaign, then its cycles as the
+[work-item ledger](work-queue.md) records them under `Cycles in the ledger:`,
+one line per cycle with the cycle number, the item id, its state, its
+settlement or start time and its reason. The cycles come from the ledger
+through the `ListWorkItems` source filter (`campaign:<name>`), the same list
+`foundry queue --source campaign:<name>` prints, in the daemon's reading order
+(running first, then open, then settled newest first). Nothing is inferred
+from traces. A campaign whose cycles predate the typed source, or that never
+advanced, prints `(none recorded)`.
+
 New definitions start as `staged`. An authorized staged campaign becomes
 `active` on its first advance. Each advance re-runs mechanical done-evidence,
 reviews the repository and context artifacts, then makes exactly one decision:
