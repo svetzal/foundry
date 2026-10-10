@@ -14,7 +14,8 @@
 /// honest origin than silence, which reads as "no operator was involved".
 const UNKNOWN_HOST: &str = "unknown host";
 
-/// This machine's hostname, or [`UNKNOWN_HOST`] when it cannot be read.
+/// This machine's hostname, or the stated `unknown host` fallback when it
+/// cannot be read.
 pub fn local_hostname() -> String {
     hostname().unwrap_or_else(|| UNKNOWN_HOST.to_string())
 }
