@@ -9,23 +9,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Task finalization no longer destroys new files an agent writes under
-  `.foundry/`. Before, only files HEAD already tracked there were committed,
-  and `git clean` then deleted everything else when the worktree was removed,
-  so evidence a brief asked for (screenshots, JSON results, harnesses, logs
-  under `.foundry/<topic>/`) never reached trunk or the preserved branch. Now
-  only `.foundry/proof.json` and `.foundry/logs/` are kept out of the task
-  commit (unless HEAD already tracks them, in which case their changes are
-  committed as before). For evidence to land, a task writes it under any
-  repository path that is not gitignored and is not `.foundry/proof.json` or
-  `.foundry/logs/`, for example `.foundry/<topic>/` or `docs/`. Proof files and
-  gitignored files under `.foundry/` never land. Before cleanup, finalize
-  copies every file it is about to remove into
-  `~/.foundry/evidence/<trace>/<attempt>/worktree/`, at its repository path,
-  and records that directory in the task result's new `uncommitted_artifacts`
-  field. A failed copy stops finalization before anything is deleted. The
-  proof archive in the parent directory (`proof_evidence`) is unchanged. The
-  early-proof prompt now tells the executor which files land.
+- Task finalization no longer destroys files under `.foundry/` without a
+  record. Before, it committed only the `.foundry` paths HEAD already tracked
+  and then ran `git clean`, so evidence an agent wrote there (screenshots,
+  JSON results, harnesses, logs under `.foundry/<topic>/`) disappeared. Now
+  `.foundry/` in a task worktree is Foundry scratch and nothing under it lands
+  in a task commit, on trunk or on the preserved branch. The one exception is
+  a deletion of a file HEAD tracks there, which is committed so a task can
+  remove legacy content. Projects that already track content under `.foundry/`
+  keep it until a task or a person deletes it; an agent's edits to those files
+  do not land. Before cleanup, finalize copies every `.foundry` file that did
+  not land (new files, gitignored files, and the agent's version of edited
+  tracked files) to `~/.foundry/evidence/<trace>/<attempt>/worktree/`, at its
+  repository path, and names that directory in the task result's new
+  `uncommitted_artifacts` field. It then restores the edited tracked files and
+  removes the rest. A failed copy stops finalization before anything is
+  removed or restored. The proof archive in the parent directory
+  (`proof_evidence`) is unchanged. A task that must keep something in the
+  project puts it in a normal project path, such as `docs/` or the test tree.
+  Evidence under `.foundry/` lives in the evidence store and is referenced
+  from the work item, not from repository files. Every task execution prompt
+  now says this, and every task review treats project material left only
+  under `.foundry/`, or repository files that cite `.foundry/` paths as
+  committed, as a defect.
 
 ## [0.42.0] - 2026-10-10
 

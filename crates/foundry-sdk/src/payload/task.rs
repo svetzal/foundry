@@ -154,10 +154,12 @@ pub struct TaskRunCompletedPayload {
     /// Durable directory holding early acceptance proof and its copied logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_evidence: Option<String>,
-    /// Durable directory holding a copy of every file worktree cleanup removed
-    /// from the task's `.foundry` directory because it was not committed:
-    /// gitignored files and Foundry's own proof scratch. Files sit at their
-    /// repository-relative paths. Absent when cleanup removed nothing.
+    /// Durable directory holding a copy of every file under the task's
+    /// `.foundry` directory that did not land: new and gitignored files, and
+    /// the agent's version of tracked files it modified. `.foundry` is Foundry
+    /// scratch, so only deletions of tracked files there are committed. Files
+    /// sit at their repository-relative paths. Absent when there was nothing
+    /// to archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncommitted_artifacts: Option<String>,
     #[serde(flatten)]

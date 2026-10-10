@@ -14,6 +14,15 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
+/// Every task execution, standalone or campaign cycle, gets this. Task
+/// finalization commits nothing under `.foundry/` (see
+/// `crate::workspace::FOUNDRY_DIR`), so the executor must know where durable
+/// work belongs.
+const TASK_SCRATCH_PROMPT: &str = "
+
+FOUNDRY SCRATCH: files under .foundry/ are Foundry scratch for execution evidence (logs, screenshots, harness output, proof). They never land in the repository; Foundry archives them to its evidence store. Put anything the project must keep in a normal project path, for example docs/ or the test tree, and do not make repository files reference .foundry/ paths as if they were committed.
+";
+
 const EARLY_PROOF_PROMPT: &str = r#"
 
 PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the real boundary. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
@@ -32,7 +41,6 @@ For a non-behavioral objective, use this exact direct shape with the smallest pa
   "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
 }
 Validate the file's JSON, field types, actual exit codes, and existence of each log before finishing. The reviewer must inspect this evidence.
-.foundry/proof.json and .foundry/logs/ are archived outside the repository and do not land. Any other file you create under .foundry/ (for example .foundry/<topic>/) is committed with your change, unless the project gitignores it.
 WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
 "#;
 
@@ -205,9 +213,10 @@ impl TaskBlock for ExecutePlan {
             let principle = &plan_payload.principle;
             let gates = plan_payload.chain.gates.as_ref();
             let mut prompt = build_execution_prompt(&project, plan, principle, gates);
-            if execution_payload.get("campaign").is_some() {
-                prompt.push_str(EARLY_PROOF_PROMPT);
-            }
+            prompt.push_str(&task_prompt_suffix(
+                workflow,
+                execution_payload.get("campaign").is_some(),
+            ));
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),
                 project: &project,
@@ -261,6 +270,20 @@ fn build_no_correction_result(
         summary: format!("{project}: {summary}"),
         ..Default::default()
     })
+}
+
+/// What a task adds to the plan prompt: the `.foundry` scratch rule for every
+/// task, then early proof for a campaign cycle. Iterate, maintain and prompt
+/// runs commit through other paths and get neither.
+fn task_prompt_suffix(workflow: WorkflowType, campaign: bool) -> String {
+    let mut suffix = String::new();
+    if workflow == WorkflowType::Task {
+        suffix.push_str(TASK_SCRATCH_PROMPT);
+    }
+    if campaign {
+        suffix.push_str(EARLY_PROOF_PROMPT);
+    }
+    suffix
 }
 
 fn build_execution_prompt(
@@ -748,6 +771,35 @@ mod tests {
         );
         assert!(prompt.contains("SRP"), "expected principle 'SRP' in:\n{prompt}");
         assert!(prompt.contains("1. Do the thing"), "expected plan content in:\n{prompt}");
+    }
+
+    /// Task finalization commits nothing under `.foundry/`, so every task,
+    /// standalone or campaign, is told so; other workflows are not.
+    #[test]
+    fn every_task_prompt_says_dot_foundry_is_scratch_and_only_campaigns_require_proof() {
+        use foundry_sdk::workflow::WorkflowType;
+
+        let standalone = super::task_prompt_suffix(WorkflowType::Task, false);
+        assert!(standalone.contains("files under .foundry/ are Foundry scratch"), "{standalone}");
+        assert!(standalone.contains("never land in the repository"), "{standalone}");
+        assert!(standalone.contains("docs/ or the test tree"), "{standalone}");
+        assert!(!standalone.contains("PROOF FIRST"), "{standalone}");
+
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        assert!(campaign.contains("files under .foundry/ are Foundry scratch"), "{campaign}");
+        assert!(campaign.contains("PROOF FIRST"), "{campaign}");
+        assert!(
+            !campaign.contains("committed with your change"),
+            "no prompt may say .foundry files land: {campaign}"
+        );
+
+        for workflow in [
+            WorkflowType::Iterate,
+            WorkflowType::Maintain,
+            WorkflowType::Prompt,
+        ] {
+            assert!(super::task_prompt_suffix(workflow, false).is_empty(), "{workflow}");
+        }
     }
 
     #[test]
