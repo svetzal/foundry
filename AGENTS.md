@@ -104,6 +104,14 @@ Work on Foundry itself happens on the Mac and is promoted to ops-01
   against the sandbox: `foundry validate sample-rs`, a `foundry task
   sample-rs "…"`, a `queue resume`. A wiped or new home is one
   `scripts/dev-home.sh` away.
+- The daemon resolves agent CLIs from the plist's `PATH`, not from your
+  shell's. On this Mac that means `/opt/homebrew/bin/codex` (the Homebrew
+  node's global), while an interactive shell under nvm may resolve a
+  different copy. Update the one the daemon sees
+  (`/opt/homebrew/bin/npm install -g @openai/codex@latest`) and check with
+  `PATH=<plist PATH> sh -c 'codex --version'`. A model "not supported" error
+  from a task that works in your shell is this, not the account. (Found
+  2026-10-10: the daemon ran 0.157.1 while the shell ran 0.162.1.)
 - Promote by the manual release procedure under "CI / Release", at a quiet
   point on ops-01: `foundry status` there says no active workflows, and never
   during the 02:00 UTC nightly. The ops-01 restart kills any running agent
