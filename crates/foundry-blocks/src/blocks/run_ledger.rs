@@ -31,7 +31,10 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkLane};
+use foundry_sdk::work_item::{
+    WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+};
+use foundry_sdk::work_source::WorkSource;
 
 use super::SimulatedSuccess;
 use super::work_ledger::{ledger_lock, load_ledger, save_ledger, work_item_event};
@@ -185,24 +188,58 @@ impl RecordRunWorkItem {
         }
     }
 
-    /// Add `item` to the ledger. Returns whether it reached the file.
-    fn write(&self, item: &WorkItem) -> bool {
-        let Some(_guard) = ledger_lock() else {
-            return false;
-        };
-        let Some(mut store) = load_ledger(&self.store_path) else {
-            return false;
-        };
+    /// Add `item` to the ledger, and return it as recorded.
+    ///
+    /// A release cut after a remediation on the same run is work that arose
+    /// from that remediation item, so its source is resolved here, where the
+    /// ledger is already loaded under the gate, rather than guessed from the
+    /// trigger. `None` when the item did not reach the file.
+    fn write(&self, mut item: WorkItem, trigger: &Event) -> Option<WorkItem> {
+        let _guard = ledger_lock()?;
+        let mut store = load_ledger(&self.store_path)?;
+        if let Some(parent) = remediation_parent(&store, trigger, &item) {
+            item.source = Some(WorkSource::work_item(parent));
+        }
         store.upsert(item.clone());
-        save_ledger(&store, &self.store_path)
+        save_ledger(&store, &self.store_path).then_some(item)
     }
+}
+
+/// The remediation item a release follows, when it follows one.
+///
+/// A vulnerability chain remediates main, pushes, re-audits it clean and then
+/// cuts the release, all on one trace and project. The clean `MainBranchAudited`
+/// that opens the release therefore has a remediation item already in the
+/// ledger on that same trace; the newest one is the parent. A clean audit
+/// with no remediation before it (main was already fixed) has no parent and
+/// keeps the source its trigger carried. Traceless items are never
+/// correlated: the trace is the whole basis of the match.
+fn remediation_parent(store: &WorkItemStore, trigger: &Event, item: &WorkItem) -> Option<String> {
+    if item.kind != WorkItemKind::Release || trigger.event_type != EventType::MainBranchAudited {
+        return None;
+    }
+    let trace = item.trace_id.as_deref()?;
+    store
+        .items
+        .iter()
+        .rev()
+        .find(|candidate| {
+            candidate.kind == WorkItemKind::Remediation
+                && candidate.project == item.project
+                && candidate.trace_id.as_deref() == Some(trace)
+        })
+        .map(|parent| parent.id.clone())
 }
 
 impl SimulatedSuccess for RecordRunWorkItem {
     type Outcome = Option<WorkItem>;
 
+    /// The item without I/O: a release that follows a remediation resolves
+    /// its parent only when it is written, so the simulation carries the
+    /// trigger's own source.
     fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
-        self.planned(trigger).map(|spec| WorkItem::dispatched(spec, Utc::now()))
+        self.planned(trigger)
+            .map(|spec| WorkItem::dispatched(spec, Utc::now()).with_source(trigger.source.clone()))
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
@@ -238,17 +275,12 @@ impl TaskBlock for RecordRunWorkItem {
             let summary = format!("{}: no run to record", trigger.project);
             return skip!(summary);
         };
-        let item = WorkItem::dispatched(spec, Utc::now());
-        let stored = self.write(&item);
-        let events = if stored {
-            self.success_events(trigger, &Some(item.clone()))
-        } else {
-            vec![]
-        };
-        let summary = if stored {
-            format!("{}: recorded work item {}", trigger.project, item.id)
-        } else {
-            format!("{}: work item not recorded (ledger unavailable)", trigger.project)
+        let item = WorkItem::dispatched(spec, Utc::now()).with_source(trigger.source.clone());
+        let stored = self.write(item, trigger);
+        let events = self.success_events(trigger, &stored);
+        let summary = match &stored {
+            Some(item) => format!("{}: recorded work item {}", trigger.project, item.id),
+            None => format!("{}: work item not recorded (ledger unavailable)", trigger.project),
         };
         Box::pin(async move { Ok(TaskBlockResult::success(summary, events)) })
     }
@@ -382,7 +414,8 @@ impl SimulatedSuccess for SettleRunWorkItem {
         let mut item = WorkItem::dispatched(
             spec(trigger, settlement.kind, lane_for(trigger), String::new(), "simulated"),
             Utc::now(),
-        );
+        )
+        .with_source(trigger.source.clone());
         apply(&mut item, &settlement);
         Some(item)
     }
@@ -441,6 +474,7 @@ mod tests {
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
     use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkLane};
+    use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
     use super::{RecordRunWorkItem, SettleRunWorkItem, read_items};
@@ -597,6 +631,109 @@ mod tests {
             serde_json::json!({"passing": true, "conclusion": "success"}),
         );
         assert!(!block.accepts(&trigger));
+    }
+
+    // --- the typed source, read back from the file ---------------------------
+
+    fn dirty_audit() -> Event {
+        event(
+            EventType::MainBranchAudited,
+            serde_json::json!({"project": "alpha", "cve": "CVE-2026-1", "vulnerable": true, "dirty": true}),
+        )
+    }
+
+    fn clean_audit() -> Event {
+        event(
+            EventType::MainBranchAudited,
+            serde_json::json!({"project": "alpha", "cve": "CVE-2026-1", "vulnerable": true, "dirty": false}),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_nightly_per_project_run_records_the_sentinel_as_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let trigger =
+            cycle_run_started().with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+
+        let result = recorder(&path).execute(&trigger).await.unwrap();
+
+        let items = read_items(&path);
+        assert_eq!(items[0].kind, WorkItemKind::Maintenance);
+        assert_eq!(items[0].source, Some(WorkSource::sentinel("nightly-maintenance")));
+        assert_eq!(items[0].origin, "maintenance cycle", "origin is untouched");
+        assert_eq!(result.events[0].payload["source"]["kind"], "sentinel");
+        assert_eq!(result.events[0].payload["source"]["ref"], "nightly-maintenance");
+    }
+
+    #[tokio::test]
+    async fn a_run_started_by_hand_records_the_operator_and_one_naming_none_records_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let recorder = recorder(&path);
+
+        recorder
+            .execute(&cycle_run_started().with_source(Some(WorkSource::operator("workbench"))))
+            .await
+            .unwrap();
+        let result = recorder.execute(&cycle_run_started()).await.unwrap();
+
+        let items = read_items(&path);
+        assert_eq!(items[0].source, Some(WorkSource::operator("workbench")));
+        assert_eq!(items[1].source, None);
+        assert!(result.events[0].payload.get("source").is_none(), "no source, no key");
+    }
+
+    #[tokio::test]
+    async fn a_release_cut_after_a_remediation_records_that_remediation_as_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let recorder = recorder(&path);
+        let source = Some(WorkSource::sentinel("nightly-maintenance"));
+
+        recorder.execute(&dirty_audit().with_source(source.clone())).await.unwrap();
+        let remediation = read_items(&path).remove(0);
+        assert_eq!(remediation.kind, WorkItemKind::Remediation);
+        assert_eq!(remediation.source, source, "the remediation itself names the sentinel");
+
+        let result = recorder.execute(&clean_audit().with_source(source)).await.unwrap();
+
+        let items = read_items(&path);
+        let release = items.iter().find(|item| item.kind == WorkItemKind::Release).unwrap();
+        assert_eq!(release.source, Some(WorkSource::work_item(remediation.id.clone())));
+        assert_eq!(result.events[0].payload["source"]["kind"], "work_item");
+        assert_eq!(result.events[0].payload["source"]["ref"], remediation.id);
+    }
+
+    #[tokio::test]
+    async fn a_release_with_no_remediation_before_it_keeps_the_triggers_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let recorder = recorder(&path);
+
+        // A remediation on another trace is not this release's parent.
+        let mut elsewhere = dirty_audit();
+        elsewhere.trace_id = Some("c".repeat(32));
+        recorder.execute(&elsewhere).await.unwrap();
+
+        recorder
+            .execute(&clean_audit().with_source(Some(WorkSource::operator("workbench"))))
+            .await
+            .unwrap();
+
+        let items = read_items(&path);
+        let release = items.iter().find(|item| item.kind == WorkItemKind::Release).unwrap();
+        assert_eq!(release.source, Some(WorkSource::operator("workbench")));
+    }
+
+    #[test]
+    fn dry_run_of_a_release_carries_the_triggers_source_without_reading_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = recorder(&dir.path().join("work-items.json"));
+        let trigger = clean_audit().with_source(Some(WorkSource::operator("workbench")));
+        let item = super::SimulatedSuccess::simulate(&block, &trigger).unwrap();
+        assert_eq!(item.kind, WorkItemKind::Release);
+        assert_eq!(item.source, Some(WorkSource::operator("workbench")));
     }
 
     #[tokio::test]

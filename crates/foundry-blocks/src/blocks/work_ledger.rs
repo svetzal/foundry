@@ -93,6 +93,11 @@ fn classify_dispatch(
 }
 
 /// The item a task dispatch opens, read off its root `ExecutionRequested`.
+///
+/// The typed source is whatever the root carries: `foundry task` names the
+/// operator's host, a campaign advance names the campaign and cycle, the
+/// majors lane names the sentinel that fired the nightly. A root that names
+/// none (a raw emit, an older client) records none.
 fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
     let (kind, lane, origin) = classify(
         &payload.prompt,
@@ -111,6 +116,7 @@ fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> W
         },
         Utc::now(),
     )
+    .with_source(trigger.source.clone())
 }
 
 /// Whether `trigger` is the root event of a real task dispatch.
@@ -206,6 +212,7 @@ impl SimulatedSuccess for RecordWorkItem {
                     },
                     Utc::now(),
                 )
+                .with_source(trigger.source.clone())
             },
             |payload| item_from_dispatch(trigger, &payload),
         ))
@@ -343,7 +350,8 @@ impl SimulatedSuccess for SettleFailedDispatch {
                 trace_id: trigger.trace_id.clone(),
             },
             Utc::now(),
-        );
+        )
+        .with_source(trigger.source.clone());
         item.settle_failed(&reason, Utc::now());
         Some(item)
     }
@@ -598,7 +606,8 @@ impl SimulatedSuccess for SettleWorkItem {
                 trace_id: trigger.trace_id.clone(),
             },
             Utc::now(),
-        );
+        )
+        .with_source(trigger.source.clone());
         item.settle_from_task_run(&result, worktree_removed(&result), Utc::now());
         Some((item, None))
     }
@@ -745,6 +754,7 @@ mod tests {
     use foundry_sdk::work_item::{
         WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
     };
+    use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
     use super::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
@@ -1013,6 +1023,116 @@ mod tests {
         assert_eq!(item.kind, WorkItemKind::CampaignCycle);
         assert_eq!(item.lane, WorkLane::Campaign);
         assert_eq!(item.origin, "campaign tidy-cli cycle 3");
+    }
+
+    // --- the typed source, one test per kind, each read back from the file ---
+
+    #[tokio::test]
+    async fn a_foundry_task_dispatch_records_the_operator_host_as_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let trigger = dispatch(&serde_json::json!({"operator_origin": "host workbench"}))
+            .with_source(Some(WorkSource::operator("workbench")));
+
+        let result = recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.source, Some(WorkSource::operator("workbench")));
+        assert_eq!(item.origin, "foundry task (host workbench)", "origin is untouched");
+        for event in &result.events {
+            assert_eq!(event.payload["source"]["kind"], "operator");
+            assert_eq!(event.payload["source"]["ref"], "workbench");
+            assert!(event.payload["source"].get("cycle").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_campaign_cycle_records_the_campaign_and_its_cycle_number_as_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let trigger = dispatch(&serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3}))
+            .with_source(Some(WorkSource::campaign("tidy-cli", 3)));
+
+        let result = recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.source, Some(WorkSource::campaign("tidy-cli", 3)));
+        assert_eq!(item.kind, WorkItemKind::CampaignCycle);
+        assert_eq!(item.origin, "campaign tidy-cli cycle 3");
+        assert_eq!(result.events[0].payload["source"]["cycle"], 3);
+    }
+
+    #[tokio::test]
+    async fn a_majors_lane_upgrade_records_the_sentinel_that_fired_the_nightly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let objective = crate::dependency_updates::majors::objective(
+            "alpha",
+            &foundry_sdk::payload::PlannedUpdate {
+                ecosystem: foundry_sdk::payload::Ecosystem::Cargo,
+                manifest: ".".to_string(),
+                package: "serde".to_string(),
+                from: "1.0.0".to_string(),
+                to: "2.0.0".to_string(),
+                class: foundry_sdk::payload::UpdateClass::Major,
+                change: foundry_sdk::payload::ChangeKind::Manifest,
+                security: None,
+                beyond_policy: false,
+                beyond_hold: false,
+            },
+        );
+        let trigger = dispatch(&serde_json::json!({"prompt": objective}))
+            .with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+
+        recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.kind, WorkItemKind::MajorUpgrade);
+        assert_eq!(item.source, Some(WorkSource::sentinel("nightly-maintenance")));
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_whose_root_names_no_source_records_none_and_announces_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+
+        let result = recorder(path.to_str().unwrap())
+            .execute(&dispatch(&serde_json::json!({})))
+            .await
+            .unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.source, None);
+        for event in &result.events {
+            assert!(event.payload.get("source").is_none(), "no source, no key: {}", event.payload);
+        }
+    }
+
+    #[test]
+    fn dry_run_and_the_settlement_simulations_carry_the_triggers_source() {
+        let block = recorder("/tmp/never-written.json");
+        let trigger =
+            dispatch(&serde_json::json!({})).with_source(Some(WorkSource::operator("workbench")));
+        assert_eq!(
+            block.simulate(&trigger).unwrap().source,
+            Some(WorkSource::operator("workbench"))
+        );
+
+        let settle = SettleWorkItem::new("/tmp/never-written.json".into());
+        let done = completion(TaskVerdict::Complete, true, None)
+            .with_source(Some(WorkSource::campaign("tidy-cli", 2)));
+        assert_eq!(
+            settle.simulate(&done).unwrap().0.source,
+            Some(WorkSource::campaign("tidy-cli", 2))
+        );
+
+        let failed = SettleFailedDispatch::new("/tmp/never-written.json".into());
+        let stopped =
+            charter_failed(false).with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+        assert_eq!(
+            failed.simulate(&stopped).unwrap().source,
+            Some(WorkSource::sentinel("nightly-maintenance"))
+        );
     }
 
     #[tokio::test]
