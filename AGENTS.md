@@ -112,10 +112,11 @@ Work on Foundry itself happens on the Mac and is promoted to ops-01
   `PATH=<plist PATH> sh -c 'codex --version'`. A model "not supported" error
   from a task that works in your shell is this, not the account. (Found
   2026-10-10: the daemon ran 0.157.1 while the shell ran 0.162.1.)
-- Promote by the manual release procedure under "CI / Release", at a quiet
-  point on ops-01: `foundry status` there says no active workflows, and never
-  during the 02:00 UTC nightly. The ops-01 restart kills any running agent
-  session.
+- Promote by the manual release procedure under "CI / Release". The quiet
+  point is made, not found: `foundry pacing drain` on ops-01 holds every lane
+  and waits for running work to settle, the restart follows, and
+  `foundry pacing resume --lane all` lifts the hold. Never during the 02:00
+  UTC nightly.
 - **Never dispatch a `foundry task` or a campaign against the `foundry`
   project on the production daemon.** A Foundry change produced by production
   Foundry means a daemon restart under other projects' running work, and a
@@ -583,10 +584,11 @@ GitHub publication runs in parallel and does not gate this deployment:
 cd ~/Work/Projects/Mojility/foundry && git pull --ff-only
 RUSTUP_TOOLCHAIN=1.94.0 scripts/build-linux-release.sh v0.X.Y
 # gates, release build, tarball; prints the SHA-256 (match release.yml toolchain)
-foundry status                          # must say "No active workflows"; never restart during the 02:00 nightly
+foundry pacing drain --timeout 30m      # holds every lane, waits for running work to settle, exits 0 when idle; never during the 02:00 nightly
 tar -C /tmp/f -xzf ~/.cache/foundry-release/foundry-0.X.Y-linux-x64.tar.gz
 sudo install -m 0755 /tmp/f/foundry /tmp/f/foundryd /usr/local/bin/
 systemctl --user restart foundryd
+foundry pacing resume --lane all        # the drain's pause survives the restart; lift it
 which foundry && foundry --version && foundry status && foundry sentinel list
 ```
 
