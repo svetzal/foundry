@@ -7,7 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.41.2] - 2026-10-09
+
 ### Fixed
+
+- Work reconciliation recognizes landed work against either local trunk or a
+  freshly fetched origin trunk. It retains ambiguous and unmatched work.
+- Landed task branches are cleaned up only after fresh Git proof and ownership
+  checks. Unlanded preservation refs, checked-out branches, and refs owned by
+  other open work remain protected.
 
 - Cleanup Branches retains live task and campaign worktrees, operator worktrees,
   and orphaned worktrees with dirty or unpushed work. Ownership is rechecked
