@@ -1224,6 +1224,81 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn source_propagates_verbatim_through_chain_and_none_stays_none() {
+        use foundry_sdk::work_source::WorkSource;
+        let mut engine = Engine::new();
+        engine.register(Box::new(TestObserver));
+        engine.register(Box::new(TestMutator));
+
+        let sourced = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+        let result = engine.process(sourced).await;
+        assert!(result.events.len() > 1, "the chain must emit beyond the root");
+        for event in &result.events {
+            assert_eq!(
+                event.source,
+                Some(WorkSource::sentinel("nightly-maintenance")),
+                "event {} should carry the root's source verbatim",
+                event.event_type,
+            );
+        }
+
+        let unsourced = Event::new(
+            EventType::GreetingRequested,
+            "test-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let result = engine.process(unsourced).await;
+        for event in &result.events {
+            assert!(
+                event.source.is_none(),
+                "event {} should have no source when the root names none",
+                event.event_type,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn source_survives_span_opener_boundary() {
+        use foundry_sdk::work_source::WorkSource;
+        let trigger = Event::new(
+            EventType::PipelineChecked,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
+        .with_source(Some(WorkSource::operator("workbench")));
+
+        let block = emitting_block(
+            "B",
+            EventType::PipelineChecked,
+            vec![EventType::ProjectIterationRequested],
+        );
+        let mut engine = Engine::new();
+        engine.register(Box::new(block));
+        let result = engine.process(trigger).await;
+
+        let opener = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::ProjectIterationRequested)
+            .expect("opener must be emitted");
+        assert_eq!(
+            opener.source,
+            Some(WorkSource::operator("workbench")),
+            "source must propagate across a span-opener boundary",
+        );
+    }
+
     // -- Scatter/gather integration tests --
 
     /// Test block: scatters `child_count` children of a fixed type, gathering
@@ -1587,6 +1662,50 @@ mod tests {
             .find(|e| e.event_type == EventType::MaintenanceCycleCompleted)
             .unwrap();
         assert!(reduce.gather_id.is_none(), "top-level reduce has no parent gather");
+    }
+
+    /// The maintenance fan-out is where a payload-level marker would be lost:
+    /// the scatter builds each per-project root with an empty payload. The
+    /// envelope source has to reach every child, every child's completion and
+    /// the synthesized reduce event.
+    #[tokio::test]
+    async fn scatter_children_completions_and_reduce_inherit_the_root_source() {
+        use foundry_sdk::work_source::WorkSource;
+        let mut engine = Engine::new();
+        engine.register(Box::new(ScatterBlock {
+            name: "Scatterer",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 2,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        engine.register(Box::new(ChildWorker));
+
+        let trigger = Event::new(
+            EventType::GreetingRequested,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+        let result = engine.process(trigger).await;
+
+        let expected = Some(WorkSource::sentinel("nightly-maintenance"));
+        for wanted in [
+            EventType::ProjectRunStarted,
+            EventType::ProjectRunCompleted,
+            EventType::MaintenanceCycleCompleted,
+        ] {
+            let matching: Vec<&Event> =
+                result.events.iter().filter(|e| e.event_type == wanted).collect();
+            assert!(!matching.is_empty(), "{wanted} must be emitted");
+            assert!(
+                matching.iter().all(|e| e.source == expected),
+                "every {wanted} must carry the root's source",
+            );
+        }
     }
 
     #[tokio::test]

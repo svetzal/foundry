@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemState, WorkLane};
+use crate::work_source::WorkSource;
 
 /// Payload for every work-item lifecycle event — `work_item_submitted`,
 /// `work_item_started`, `work_item_settled` and `work_item_cancelled`.
@@ -27,6 +28,9 @@ pub struct WorkItemEventPayload {
     pub reason: String,
     /// Opaque submitter text.
     pub origin: String,
+    /// What dispatched the work, typed. Absent when the item records none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WorkSource>,
     /// How the item ended. Present only on a settlement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
@@ -51,6 +55,7 @@ impl WorkItemEventPayload {
             state: item.state,
             reason: item.reason.clone(),
             origin: item.origin.clone(),
+            source: item.source.clone(),
             disposition: item.disposition.clone(),
             operator_action: item.operator_action.clone(),
             resumes: item.resumes.clone(),
@@ -64,6 +69,7 @@ mod tests {
 
     use super::WorkItemEventPayload;
     use crate::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkLane};
+    use crate::work_source::WorkSource;
 
     fn item() -> WorkItem {
         WorkItem::dispatched(
@@ -92,6 +98,21 @@ mod tests {
         assert_eq!(json["objective"], "Add a --quiet flag.");
         assert!(json["item_id"].as_str().unwrap().starts_with("wi_"));
         assert!(json.get("disposition").is_none(), "an unsettled item has no disposition");
+        assert!(json.get("source").is_none(), "an item with no recorded source writes no key");
+    }
+
+    #[test]
+    fn a_recorded_source_is_reported_beside_the_untouched_origin() {
+        let sourced = item().with_source(Some(WorkSource::campaign("tidy-cli", 3)));
+        let payload = WorkItemEventPayload::from_item(&sourced);
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["origin"], "campaign tidy-cli cycle 3");
+        assert_eq!(
+            json["source"],
+            serde_json::json!({"kind": "campaign", "ref": "tidy-cli", "cycle": 3})
+        );
+        let round_tripped: WorkItemEventPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, payload);
     }
 
     #[test]
