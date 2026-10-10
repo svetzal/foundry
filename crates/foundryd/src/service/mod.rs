@@ -567,6 +567,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -614,6 +615,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -662,6 +664,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -707,6 +710,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         });
 
         let response = service.emit(request).await.expect("emit should succeed");
@@ -800,6 +804,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         });
 
         service.emit(request).await.expect("emit should succeed");

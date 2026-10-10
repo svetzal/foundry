@@ -1230,7 +1230,7 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
     let unrelated_trace = mint_trace_id();
     client.emit(crate::proto::EmitRequest { event_type: "execution_requested".to_string(), project: parent.project.clone(), throttle: 0,
         payload_json: serde_json::json!({"project": parent.project, "workflow": "task", "prompt": "Unrelated objective"}).to_string(),
-        trace_id: unrelated_trace.clone(), span_id: String::new(), parent_span_id: String::new() }).await.unwrap();
+        trace_id: unrelated_trace.clone(), span_id: String::new(), parent_span_id: String::new(), source: None }).await.unwrap();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let unrelated = loop {
         let event = tokio::time::timeout_at(deadline, events.recv()).await.unwrap().unwrap();

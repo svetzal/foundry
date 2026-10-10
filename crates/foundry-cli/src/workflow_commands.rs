@@ -54,6 +54,7 @@ impl WorkflowRunner {
                 trace_id: String::new(),
                 span_id: String::new(),
                 parent_span_id: String::new(),
+                source: Some(crate::origin::operator_source()),
             })
             .await?
             .into_inner();
@@ -121,6 +122,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         trace_id: String::new(),
         span_id: String::new(),
         parent_span_id: String::new(),
+        source: Some(crate::origin::operator_source()),
     };
 
     let response = emit_client.emit(request).await?.into_inner();

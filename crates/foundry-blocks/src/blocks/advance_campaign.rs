@@ -13,6 +13,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::work_source::WorkSource;
 
 use crate::gateway::{
     AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
@@ -676,7 +677,13 @@ fn execution_event(
     if let Some(origin) = operator_origin {
         payload["operator_origin"] = serde_json::json!(origin);
     }
+    // The cycle's typed source is the campaign, whoever asked for the advance:
+    // set explicitly so a manual advance's operator-rooted trigger does not
+    // propagate its own source onto the cycle, and so the ledger records the
+    // campaign name and cycle number without reading them back out of the
+    // payload.
     Event::new(EventType::ExecutionRequested, campaign.project.clone(), throttle, payload)
+        .with_source(Some(WorkSource::campaign(campaign.name.clone(), campaign.cycles_completed)))
 }
 
 fn terminal_error_result(
@@ -1335,6 +1342,7 @@ mod tests {
     };
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::work_source::WorkSource;
 
     use crate::gateway::fakes::{FakeAgentGateway, FakeShellGateway};
     use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
@@ -2100,7 +2108,8 @@ mod tests {
                 run_result: None,
             })
             .unwrap(),
-        );
+        )
+        .with_source(Some(WorkSource::operator("workbench")));
         let result = block.execute(&manual_trigger).await.unwrap();
 
         let execution = result
@@ -2111,6 +2120,11 @@ mod tests {
         assert_eq!(
             execution.payload.get("base_ref").and_then(serde_json::Value::as_str),
             Some("4a855db")
+        );
+        assert_eq!(
+            execution.source,
+            Some(WorkSource::campaign("c", 2)),
+            "the cycle names the campaign and its number, not the operator who advanced it"
         );
         let invocations = agent.invocations();
         assert_eq!(invocations.len(), 1);

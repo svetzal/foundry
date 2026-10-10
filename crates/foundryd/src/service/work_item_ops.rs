@@ -13,6 +13,7 @@ use tonic::{Request, Response, Status};
 use foundry_sdk::error::StoreError;
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
 use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
+use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
 use crate::proto::{
     GetWorkItemRequest, GetWorkItemResponse, ListWorkItemEventsRequest, ListWorkItemEventsResponse,
@@ -39,6 +40,42 @@ fn map_store_error(error: StoreError) -> Status {
 
 fn load_store(path: &Path) -> Result<WorkItemStore, Status> {
     WorkItemStore::load(path).map_err(map_store_error)
+}
+
+/// Parse a wire `WorkSource` into the typed source.
+///
+/// The kind is a closed enum, so an unknown tag is the caller's mistake, as is
+/// a blank reference: a source that names nothing is not a source.
+pub(super) fn source_from_proto(source: crate::proto::WorkSource) -> Result<WorkSource, Status> {
+    let kind = WorkSourceKind::from_tag(&source.kind).ok_or_else(|| {
+        Status::invalid_argument(format!(
+            "unknown work-source kind '{}'; expected one of {}",
+            source.kind,
+            known_source_kinds()
+        ))
+    })?;
+    if source.r#ref.trim().is_empty() {
+        return Err(Status::invalid_argument("work-source ref must be nonblank"));
+    }
+    Ok(WorkSource {
+        kind,
+        reference: source.r#ref,
+        cycle: source.cycle,
+    })
+}
+
+/// Wire form of a typed source.
+pub(super) fn source_to_proto(source: &WorkSource) -> crate::proto::WorkSource {
+    crate::proto::WorkSource {
+        kind: source.kind.tag().to_string(),
+        r#ref: source.reference.clone(),
+        cycle: source.cycle,
+    }
+}
+
+/// The source kinds a caller may name, for error messages.
+fn known_source_kinds() -> String {
+    WorkSourceKind::ALL.iter().map(|kind| kind.tag()).collect::<Vec<_>>().join(", ")
 }
 
 /// Which ordering group an item's state puts it in.
@@ -123,6 +160,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
                 previous_settled_at: action.previous_settled_at.map(|at| at.to_rfc3339()),
             }
         }),
+        source: item.source.as_ref().map(source_to_proto),
     }
 }
 
@@ -389,19 +427,35 @@ pub(super) async fn admit_resume(
     })
     .await
     .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
-    let event = foundry_sdk::event::Event::new(
+    let event = continuation_root(&item, &base);
+    Ok((item, event))
+}
+
+/// The task-workflow root that runs an admitted continuation `item` from the
+/// preservation ref `base`.
+///
+/// It names the admitted item so `RecordWorkItem` does not mint a second
+/// identity on the same trace, and it carries the item's typed source so the
+/// chain below it says what dispatched the work.
+fn continuation_root(item: &WorkItem, base: &str) -> foundry_sdk::event::Event {
+    foundry_sdk::event::Event::new(
         foundry_sdk::event::EventType::ExecutionRequested,
         item.project.clone(),
         foundry_sdk::throttle::Throttle::Full,
         serde_json::json!({"project": item.project, "prompt": item.objective,
             "workflow": "task", "base_ref": base, "admitted_work_item_id": item.id}),
     )
-    .with_trace_id(item.trace_id.clone());
-    Ok((item, event))
+    .with_trace_id(item.trace_id.clone())
+    .with_source(item.source.clone())
 }
 
 /// Submission identity reflects who is continuing the obligation, while the
 /// original record and its evidence remain untouched.
+///
+/// The child's typed source is the parent item, for an owner resume and a
+/// nightly continuation alike: it is work created from another item, and
+/// `resumes` already carries the same link. Who asked is recorded in the
+/// child's operator action (owner) or its lane and origin (nightly).
 fn resume_child(parent: &WorkItem, operator_origin: Option<String>) -> WorkItem {
     let nightly = operator_origin.is_none();
     let mut child = WorkItem::dispatched(
@@ -426,7 +480,8 @@ fn resume_child(parent: &WorkItem, operator_origin: Option<String>) -> WorkItem 
             trace_id: Some(foundry_sdk::event::mint_trace_id()),
         },
         chrono::Utc::now(),
-    );
+    )
+    .with_source(Some(WorkSource::work_item(parent.id.clone())));
     child.resumes = Some(parent.id.clone());
     child.operator_action =
         operator_origin.map(|origin| foundry_sdk::work_item::WorkItemOperatorAction {
@@ -580,6 +635,55 @@ mod tests {
         );
         let status = parse_state_filter("in_progress").expect_err("unknown tag");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn a_resume_child_records_its_parent_as_the_source_and_keeps_the_resumes_link() {
+        use foundry_sdk::work_source::WorkSource;
+        let mut parent = item("wi_parent", "alpha", WorkItemState::Preserved);
+        parent.source = Some(WorkSource::operator("workbench"));
+
+        let owner = super::resume_child(&parent, Some("host desk".to_string()));
+        assert_eq!(owner.source, Some(WorkSource::work_item("wi_parent")));
+        assert_eq!(owner.resumes.as_deref(), Some("wi_parent"));
+        assert_eq!(owner.operator_action.as_ref().map(|a| a.command.as_str()), Some("resume"));
+
+        let nightly = super::resume_child(&parent, None);
+        assert_eq!(nightly.source, Some(WorkSource::work_item("wi_parent")));
+        assert_eq!(nightly.resumes.as_deref(), Some("wi_parent"));
+        assert_eq!(nightly.kind, WorkItemKind::MajorUpgrade);
+
+        assert_eq!(parent.source, Some(WorkSource::operator("workbench")), "parent untouched");
+    }
+
+    #[test]
+    fn a_wire_source_round_trips_and_an_unknown_kind_or_blank_ref_is_invalid() {
+        use foundry_sdk::work_source::WorkSource;
+        let campaign = WorkSource::campaign("tidy-cli", 3);
+        let wire = super::source_to_proto(&campaign);
+        assert_eq!(wire.kind, "campaign");
+        assert_eq!(wire.r#ref, "tidy-cli");
+        assert_eq!(wire.cycle, Some(3));
+        assert_eq!(super::source_from_proto(wire).expect("known kind"), campaign);
+
+        let unknown = crate::proto::WorkSource {
+            kind: "dashboard".to_string(),
+            r#ref: "x".to_string(),
+            cycle: None,
+        };
+        let status = super::source_from_proto(unknown).expect_err("unknown kind");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("campaign, sentinel, operator, work_item"));
+
+        let blank = crate::proto::WorkSource {
+            kind: "sentinel".to_string(),
+            r#ref: String::new(),
+            cycle: None,
+        };
+        assert_eq!(
+            super::source_from_proto(blank).expect_err("blank ref").code(),
+            tonic::Code::InvalidArgument
+        );
     }
 
     #[test]

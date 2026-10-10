@@ -141,6 +141,7 @@ async fn system_cycle_dispatches_a_traceable_summary_root_event() {
             trace_id: String::new(),
             span_id: String::new(),
             parent_span_id: String::new(),
+            source: None,
         })
         .await
         .expect("emit of MaintenanceCycleStarted must be accepted");
