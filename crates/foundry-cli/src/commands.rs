@@ -5,6 +5,37 @@ pub(crate) fn parse_throttle(s: &str) -> i32 {
     }
 }
 
+/// Parse a `--not-before` value: an RFC 3339 time, or a duration from `now`
+/// such as `30m`, `2h` or `1d` (units `s`, `m`, `h`, `d`).
+pub(crate) fn parse_not_before(
+    text: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+    let text = text.trim();
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(at.with_timezone(&chrono::Utc));
+    }
+    let duration = parse_duration(text).ok_or_else(|| {
+        anyhow::anyhow!(
+            "--not-before takes an RFC 3339 time (2026-10-11T09:00:00Z) or a duration such as 2h; got '{text}'"
+        )
+    })?;
+    Ok(now + duration)
+}
+
+/// Parse a duration like `90s`, `30m`, `2h` or `1d`.
+fn parse_duration(text: &str) -> Option<chrono::Duration> {
+    let (digits, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit())?);
+    let amount: i64 = digits.parse().ok()?;
+    match unit {
+        "s" => Some(chrono::Duration::seconds(amount)),
+        "m" => Some(chrono::Duration::minutes(amount)),
+        "h" => Some(chrono::Duration::hours(amount)),
+        "d" => Some(chrono::Duration::days(amount)),
+        _ => None,
+    }
+}
+
 /// Parse a W3C traceparent header value into `(trace_id, parent_span_id)`.
 ///
 /// Format: `00-<trace_id 32 hex>-<span_id 16 hex>-<flags 2 hex>`.
@@ -102,5 +133,45 @@ mod tests {
     #[test]
     fn parse_traceparent_short_fields() {
         assert_eq!(parse_traceparent("00-tooshort-also-01"), (None, None));
+    }
+
+    // -- parse_not_before tests --
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        "2026-10-10T12:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn not_before_accepts_an_rfc3339_time_in_any_offset() {
+        let at = parse_not_before("2026-10-11T09:00:00-04:00", now()).unwrap();
+        assert_eq!(at.to_rfc3339(), "2026-10-11T13:00:00+00:00");
+    }
+
+    #[test]
+    fn not_before_accepts_a_duration_from_now() {
+        assert_eq!(
+            parse_not_before("2h", now()).unwrap().to_rfc3339(),
+            "2026-10-10T14:00:00+00:00"
+        );
+        assert_eq!(
+            parse_not_before("30m", now()).unwrap().to_rfc3339(),
+            "2026-10-10T12:30:00+00:00"
+        );
+        assert_eq!(
+            parse_not_before("90s", now()).unwrap().to_rfc3339(),
+            "2026-10-10T12:01:30+00:00"
+        );
+        assert_eq!(
+            parse_not_before("1d", now()).unwrap().to_rfc3339(),
+            "2026-10-11T12:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn not_before_names_what_it_rejects() {
+        for bad in ["tomorrow", "2h30m", "", "h2", "10"] {
+            let err = parse_not_before(bad, now()).unwrap_err();
+            assert!(err.to_string().contains("--not-before takes"), "{bad}: {err}");
+        }
     }
 }

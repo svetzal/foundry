@@ -15,6 +15,7 @@
 #![allow(dead_code, unused_imports)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod pacing;
 pub mod service;
 pub mod trace_store;
 pub mod workflow_tracker;

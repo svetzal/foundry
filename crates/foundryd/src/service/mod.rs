@@ -7,6 +7,7 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use foundry_sdk::event::Event;
+use foundry_sdk::pacing::PacingPaths;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 
@@ -15,13 +16,15 @@ use crate::proto::{
     CampaignReportResponse, CancelCampaignRequest, CancelCampaignResponse, CancelWorkItemRequest,
     CancelWorkItemResponse, CloseWorkItemRequest, CloseWorkItemResponse, CompleteCampaignRequest,
     CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
-    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetWorkItemRequest, GetWorkItemResponse,
-    HistoryRequest, HistoryResponse, ListCampaignsRequest, ListCampaignsResponse,
-    ListWorkItemEventsRequest, ListWorkItemEventsResponse, ListWorkItemsRequest,
-    ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse, RegistryAddRequest,
+    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetPacingRequest, GetPacingResponse,
+    GetWorkItemRequest, GetWorkItemResponse, HistoryRequest, HistoryResponse, HoldWorkItemRequest,
+    HoldWorkItemResponse, ListCampaignsRequest, ListCampaignsResponse, ListWorkItemEventsRequest,
+    ListWorkItemEventsResponse, ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest,
+    PauseCampaignResponse, PausePacingRequest, PausePacingResponse, RegistryAddRequest,
     RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
     RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
-    RegistryShowResponse, ResumeCampaignRequest, ResumeCampaignResponse, SentinelDisableRequest,
+    RegistryShowResponse, ReleaseWorkItemRequest, ReleaseWorkItemResponse, ResumeCampaignRequest,
+    ResumeCampaignResponse, ResumePacingRequest, ResumePacingResponse, SentinelDisableRequest,
     SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest,
     SentinelListResponse, SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse,
     StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
@@ -34,6 +37,7 @@ use foundry_engine::engine::Engine;
 
 mod campaign_ops;
 pub(crate) mod eventing_ops;
+mod pacing_ops;
 mod recovery;
 mod registry_ops;
 mod sentinel_ops;
@@ -79,6 +83,12 @@ pub struct FoundryService {
     sentinels: Arc<RwLock<SentinelStore>>,
     sentinels_path: PathBuf,
     scheduler_reload: Arc<Notify>,
+    /// The pacing limits and lane-pause files the pacing RPCs and the owner
+    /// controls read and write.
+    pacing: PacingPaths,
+    /// Poked after an admission whose ledger write follows its own
+    /// announcement, so the scheduler ticks at once (see `crate::pacing`).
+    pacing_wake: Arc<Notify>,
 }
 
 impl FoundryService {
@@ -93,6 +103,9 @@ impl FoundryService {
         campaign_ops::blocking(move || operation(&path, &ctx)).await
     }
 
+    /// A service over `stores`, reading the pacing files the environment
+    /// names (see [`PacingPaths::from_env`]) until [`Self::with_pacing`]
+    /// says otherwise.
     pub fn new(ctx: RuntimeContext, stores: StoreConfig) -> Self {
         Self {
             campaigns_path: stores.campaigns_path,
@@ -103,8 +116,35 @@ impl FoundryService {
             sentinels: stores.sentinels,
             sentinels_path: stores.sentinels_path,
             scheduler_reload: stores.scheduler_reload,
+            pacing: PacingPaths::from_env(),
+            pacing_wake: Arc::new(Notify::new()),
         }
     }
+
+    /// Read and write the pacing files at `pacing`, and poke `wake` (the
+    /// handle given to [`spawn_pacing_scheduler`]) after an admission the
+    /// scheduler would otherwise learn of only on its next interval.
+    #[must_use]
+    pub fn with_pacing(mut self, pacing: PacingPaths, wake: Arc<Notify>) -> Self {
+        self.pacing = pacing;
+        self.pacing_wake = wake;
+        self
+    }
+}
+
+/// Run the pacing scheduler over the ledger at `work_items_path` on the
+/// tokio runtime: queued items start through `spawn_workflow` when the rules
+/// in `foundry_sdk::pacing` allow, and `wake` ticks it early. Call once at
+/// start, after the restart sweeps and before the daemon serves traffic.
+pub fn spawn_pacing_scheduler(
+    ctx: &RuntimeContext,
+    work_items_path: PathBuf,
+    pacing: PacingPaths,
+    wake: Arc<Notify>,
+) {
+    tokio::spawn(
+        crate::pacing::PacingScheduler::new(ctx.clone(), work_items_path, pacing, wake).run(),
+    );
 }
 
 /// Record a root event as an active workflow, so `foundry status` shows it.
@@ -192,7 +232,7 @@ pub(crate) fn spawn_workflow(event: Event, ctx: &RuntimeContext) {
 #[tonic::async_trait]
 impl Foundry for FoundryService {
     async fn emit(&self, request: Request<EmitRequest>) -> Result<Response<EmitResponse>, Status> {
-        eventing_ops::emit_rpc(&self.ctx, request)
+        eventing_ops::emit_rpc(&self.ctx, &self.work_items_path, request)
     }
 
     async fn status(
@@ -336,7 +376,7 @@ impl Foundry for FoundryService {
         &self,
         request: Request<CancelCampaignRequest>,
     ) -> Result<Response<CancelCampaignResponse>, Status> {
-        campaign_ops::cancel(&self.campaigns_path, &self.ctx, request).await
+        campaign_ops::cancel(&self.campaigns_path, &self.work_items_path, &self.ctx, request).await
     }
 
     async fn close_work_item(
@@ -361,14 +401,73 @@ impl Foundry for FoundryService {
         request: Request<crate::proto::ResumeWorkItemRequest>,
     ) -> Result<Response<crate::proto::ResumeWorkItemResponse>, Status> {
         let request = request.into_inner();
+        let hints =
+            work_item_ops::ScheduleHints::from_wire(request.depends_on, &request.not_before)?;
         let item = work_item_ops::resume_item(
+            &self.work_items_path,
+            &self.ctx,
+            &self.pacing,
+            request.id,
+            request.operator_origin,
+            hints,
+        )
+        .await?;
+        // The child's `work_item_submitted` was announced before the ledger
+        // save that queued it, so the scheduler is told again now.
+        self.pacing_wake.notify_one();
+        Ok(Response::new(crate::proto::ResumeWorkItemResponse { item: Some(item) }))
+    }
+
+    async fn hold_work_item(
+        &self,
+        request: Request<HoldWorkItemRequest>,
+    ) -> Result<Response<HoldWorkItemResponse>, Status> {
+        let request = request.into_inner();
+        let item = work_item_ops::hold_item(
             &self.work_items_path,
             &self.ctx,
             request.id,
             request.operator_origin,
         )
         .await?;
-        Ok(Response::new(crate::proto::ResumeWorkItemResponse { item: Some(item) }))
+        Ok(Response::new(HoldWorkItemResponse { item: Some(item) }))
+    }
+
+    async fn release_work_item(
+        &self,
+        request: Request<ReleaseWorkItemRequest>,
+    ) -> Result<Response<ReleaseWorkItemResponse>, Status> {
+        let request = request.into_inner();
+        let item = work_item_ops::release_item(
+            &self.work_items_path,
+            &self.ctx,
+            &self.pacing,
+            request.id,
+            request.operator_origin,
+        )
+        .await?;
+        Ok(Response::new(ReleaseWorkItemResponse { item: Some(item) }))
+    }
+
+    async fn get_pacing(
+        &self,
+        request: Request<GetPacingRequest>,
+    ) -> Result<Response<GetPacingResponse>, Status> {
+        pacing_ops::get(&self.work_items_path, &self.pacing, &self.ctx, request)
+    }
+
+    async fn pause_pacing(
+        &self,
+        request: Request<PausePacingRequest>,
+    ) -> Result<Response<PausePacingResponse>, Status> {
+        pacing_ops::pause(&self.work_items_path, &self.pacing, &self.ctx, request).await
+    }
+
+    async fn resume_pacing(
+        &self,
+        request: Request<ResumePacingRequest>,
+    ) -> Result<Response<ResumePacingResponse>, Status> {
+        pacing_ops::resume(&self.work_items_path, &self.pacing, &self.ctx, request).await
     }
 
     #[tracing::instrument(skip(self, _request))]
@@ -1741,6 +1840,9 @@ mod tests {
             disposition: None,
             operator_action: None,
             resumes: None,
+            depends_on: Vec::new(),
+            not_before: None,
+            pending_root: None,
         }
     }
 
@@ -2056,6 +2158,9 @@ mod tests {
             trace_id: Some("a".repeat(32)),
             operator_action: None,
             resumes: None,
+            depends_on: Vec::new(),
+            not_before: None,
+            pending_root: None,
             disposition: Some(WorkDisposition {
                 task_branch: None,
                 branch_cleanup: Vec::new(),

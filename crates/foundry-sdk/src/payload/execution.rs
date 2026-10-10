@@ -20,6 +20,15 @@ pub struct ExecutionRequestedPayload {
     /// and displayed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_origin: Option<String>,
+    /// Work items this dispatch waits on (`foundry task --after`). The
+    /// scheduler starts it only once every one has settled `landed`.
+    /// Additive: absent means no dependencies, exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// The earliest time the scheduler may start this dispatch
+    /// (`foundry task --not-before`). Additive: absent means at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(flatten)]
     pub chain: ChainContext,
 }

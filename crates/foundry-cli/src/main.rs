@@ -11,6 +11,7 @@ mod event_commands;
 mod gates_commands;
 mod init_commands;
 mod origin;
+mod pacing_commands;
 mod queue_commands;
 mod registry_commands;
 mod render;
@@ -43,6 +44,17 @@ struct TaskArgs {
     /// the task runs.
     #[arg(long)]
     origin: Option<String>,
+
+    /// Start only after this work item has settled landed (repeatable). A
+    /// dependency that settles any other way moves this task to
+    /// `needs_decision`, where `queue release` runs it regardless.
+    #[arg(long, value_name = "WORK_ITEM_ID")]
+    after: Vec<String>,
+
+    /// Start no earlier than this time: RFC 3339, or a duration from now such
+    /// as 30m, 2h or 1d
+    #[arg(long, value_name = "TIME|DURATION")]
+    not_before: Option<String>,
 }
 
 impl TaskArgs {
@@ -53,6 +65,8 @@ impl TaskArgs {
             &self.description,
             self.agent.as_deref(),
             self.origin.as_deref(),
+            &self.after,
+            self.not_before.as_deref(),
         )
         .await
     }
@@ -266,13 +280,14 @@ enum Commands {
         init: bool,
     },
 
-    /// Inspect or control work items (queue, queue show, queue open, queue close, queue cancel)
+    /// Inspect or control work items (queue, queue show, queue open, queue close, queue cancel, queue hold, queue release, queue resume)
     ///
     /// `foundry queue` prints running, queued, open and recently settled work
     /// on one screen; `foundry queue show <id>` prints one item's full durable
     /// record followed by its `work_item_*` events; `foundry queue open` prints
     /// only the items that still need a person. `close` discharges an open
-    /// obligation; `cancel` withdraws submitted or queued work.
+    /// obligation; `cancel` withdraws waiting work; `hold` and `release` take a
+    /// queued item out of the scheduler's hands and give it back.
     Queue {
         #[command(subcommand)]
         command: Option<QueueCommands>,
@@ -300,6 +315,56 @@ enum Commands {
     /// Manage durable objective campaigns
     #[command(subcommand)]
     Campaign(CampaignCommands),
+
+    /// Inspect or control the pacing stage between admission and execution
+    ///
+    /// `pacing show` prints the limits in force, what is running per
+    /// repository and on this host, every waiting item with its reason, and
+    /// which lanes are paused. `pause` and `resume` stop and restart new
+    /// starts in a lane (running items are untouched; the pause survives a
+    /// daemon restart). `drain` pauses every lane and waits until nothing is
+    /// running: the quiet point a daemon restart or a release promotion needs.
+    #[command(subcommand)]
+    Pacing(PacingCommands),
+}
+
+#[derive(Subcommand)]
+enum PacingCommands {
+    /// Show the limits, running and waiting items, and paused lanes
+    Show {
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop new starts in a lane; running items are untouched
+    Pause {
+        /// Which lane: interactive, campaign, maintenance or all (the default)
+        #[arg(long, default_value = "all")]
+        lane: String,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
+    /// Allow new starts in a lane again
+    Resume {
+        /// Which lane: interactive, campaign, maintenance or all (the default)
+        #[arg(long, default_value = "all")]
+        lane: String,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
+    /// Pause every lane, then wait until nothing is running, printing each
+    /// item as it settles; exits 0 when the daemon is idle
+    Drain {
+        /// Give up after this long (a duration such as 30m or 2h) and exit
+        /// non-zero naming what still runs
+        #[arg(long, value_name = "DURATION")]
+        timeout: Option<String>,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -366,9 +431,32 @@ enum CampaignCommands {
 enum QueueCommands {
     /// Reconcile work now and print this invocation’s digest (daemon required)
     Reconcile,
-    /// Continue preserved work through a new linked task
+    /// Continue preserved work through a new linked task, queued for the
+    /// pacing scheduler
     Resume {
         id: String,
+        #[arg(long)]
+        origin: Option<String>,
+        /// Start only after this work item has settled landed (repeatable)
+        #[arg(long, value_name = "WORK_ITEM_ID")]
+        after: Vec<String>,
+        /// Start no earlier than this time: RFC 3339, or a duration from now
+        /// such as 30m, 2h or 1d
+        #[arg(long, value_name = "TIME|DURATION")]
+        not_before: Option<String>,
+    },
+    /// Take a queued item out of the scheduler's hands until released
+    Hold {
+        id: String,
+        /// Operator context recorded beside this CLI's hostname
+        #[arg(long)]
+        origin: Option<String>,
+    },
+    /// Return a held item, or one waiting on a decision about a dependency,
+    /// to the queue
+    Release {
+        id: String,
+        /// Operator context recorded beside this CLI's hostname
         #[arg(long)]
         origin: Option<String>,
     },
@@ -382,7 +470,7 @@ enum QueueCommands {
         #[arg(long)]
         origin: Option<String>,
     },
-    /// Cancel submitted or queued work before it starts
+    /// Cancel submitted, queued or held work before it starts
     Cancel {
         id: String,
         /// Operator context recorded beside this CLI's hostname
@@ -741,8 +829,27 @@ async fn handle_queue_command(
         Some(QueueCommands::Close { id, reason, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, Some(&reason), origin.as_deref()).await
         }
-        Some(QueueCommands::Resume { id, origin }) => {
-            queue_commands::resume_item(addr, offline, &id, origin.as_deref()).await
+        Some(QueueCommands::Resume {
+            id,
+            origin,
+            after,
+            not_before,
+        }) => {
+            queue_commands::resume_item(
+                addr,
+                offline,
+                &id,
+                origin.as_deref(),
+                &after,
+                not_before.as_deref(),
+            )
+            .await
+        }
+        Some(QueueCommands::Hold { id, origin }) => {
+            queue_commands::hold_or_release_item(addr, offline, &id, origin.as_deref(), false).await
+        }
+        Some(QueueCommands::Release { id, origin }) => {
+            queue_commands::hold_or_release_item(addr, offline, &id, origin.as_deref(), true).await
         }
         Some(QueueCommands::Cancel { id, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, None, origin.as_deref()).await
@@ -953,6 +1060,23 @@ async fn main() -> Result<()> {
             handle_sentinel_command(sub, &foundry_sdk::paths::sentinels_path(), &addr, cli.offline)
                 .await
         }
+        Commands::Pacing(sub) => handle_pacing_command(sub, &addr, cli.offline).await,
+    }
+}
+
+/// Dispatch one `foundry pacing` invocation.
+async fn handle_pacing_command(sub: PacingCommands, addr: &str, offline: bool) -> Result<()> {
+    match sub {
+        PacingCommands::Show { json } => pacing_commands::show(addr, offline, json).await,
+        PacingCommands::Pause { lane, origin } => {
+            pacing_commands::pause(addr, offline, &lane, origin.as_deref()).await
+        }
+        PacingCommands::Resume { lane, origin } => {
+            pacing_commands::resume(addr, offline, &lane, origin.as_deref()).await
+        }
+        PacingCommands::Drain { timeout, origin } => {
+            pacing_commands::drain(addr, offline, timeout.as_deref(), origin.as_deref()).await
+        }
     }
 }
 
@@ -1001,6 +1125,103 @@ mod cli_surface_tests {
             }
             _ => panic!("expected the campaign advance subcommand"),
         }
+    }
+
+    #[test]
+    fn task_accepts_repeatable_after_and_a_not_before() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "task",
+            "acme",
+            "do the thing",
+            "--after",
+            "wi_a",
+            "--after",
+            "wi_b",
+            "--not-before",
+            "2h",
+        ])
+        .expect("parse");
+
+        match cli.command {
+            Commands::Task(args) => {
+                assert_eq!(args.after, vec!["wi_a".to_string(), "wi_b".to_string()]);
+                assert_eq!(args.not_before.as_deref(), Some("2h"));
+            }
+            _ => panic!("expected the task subcommand"),
+        }
+    }
+
+    #[test]
+    fn queue_resume_hold_release_and_pacing_parse() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "queue",
+            "resume",
+            "wi_p",
+            "--after",
+            "wi_a",
+            "--not-before",
+            "30m",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::Queue {
+                command:
+                    Some(QueueCommands::Resume {
+                        after, not_before, ..
+                    }),
+                ..
+            } => {
+                assert_eq!(after, vec!["wi_a".to_string()]);
+                assert_eq!(not_before.as_deref(), Some("30m"));
+            }
+            _ => panic!("expected queue resume"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["foundry", "queue", "hold", "wi_q"])
+                .expect("parse")
+                .command,
+            Commands::Queue {
+                command: Some(QueueCommands::Hold { .. }),
+                ..
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["foundry", "queue", "release", "wi_q"])
+                .expect("parse")
+                .command,
+            Commands::Queue {
+                command: Some(QueueCommands::Release { .. }),
+                ..
+            }
+        ));
+        match Cli::try_parse_from(["foundry", "pacing", "pause", "--lane", "campaign"])
+            .expect("parse")
+            .command
+        {
+            Commands::Pacing(PacingCommands::Pause { lane, .. }) => assert_eq!(lane, "campaign"),
+            _ => panic!("expected pacing pause"),
+        }
+        match Cli::try_parse_from(["foundry", "pacing", "resume"]).expect("parse").command {
+            Commands::Pacing(PacingCommands::Resume { lane, .. }) => assert_eq!(lane, "all"),
+            _ => panic!("expected pacing resume"),
+        }
+        match Cli::try_parse_from(["foundry", "pacing", "drain", "--timeout", "10m"])
+            .expect("parse")
+            .command
+        {
+            Commands::Pacing(PacingCommands::Drain { timeout, .. }) => {
+                assert_eq!(timeout.as_deref(), Some("10m"));
+            }
+            _ => panic!("expected pacing drain"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["foundry", "pacing", "show", "--json"])
+                .expect("parse")
+                .command,
+            Commands::Pacing(PacingCommands::Show { json: true })
+        ));
     }
 
     #[test]

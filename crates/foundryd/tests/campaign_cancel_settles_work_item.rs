@@ -212,7 +212,7 @@ fn seed_campaign(path: &Path, status: CampaignStatus) {
     .expect("seed campaign store");
 }
 
-/// A `running` campaign-cycle item on `trace`, as `RecordWorkItem` would have
+/// A `running` campaign-cycle item on `trace`, as the pacing scheduler would have
 /// left it when the cycle was dispatched.
 fn seed_running_cycle(path: &Path, trace: &str) -> String {
     let item = WorkItem::dispatched(
@@ -490,6 +490,83 @@ async fn a_graceful_cancel_changes_no_item_and_records_no_cancellation() {
     assert_eq!(std::fs::read(&ledger).unwrap(), before, "the ledger file is byte-identical");
     assert_eq!(item_state(&ledger, &item_id), WorkItemState::Running);
     assert!(cancelled_events(&mut harness.events).is_empty());
+}
+
+/// A cycle the pacing scheduler has not started yet, queued for this campaign.
+fn seed_queued_cycle(path: &Path) -> String {
+    let root = Event::new(
+        EventType::ExecutionRequested,
+        PROJECT.to_string(),
+        foundry_sdk::throttle::Throttle::Full,
+        serde_json::json!({"project": PROJECT, "workflow": "task", "prompt": "next cycle",
+            "campaign": CAMPAIGN, "campaign_cycle": 3}),
+    );
+    let item = WorkItem::queued(
+        WorkItemSpec {
+            project: PROJECT.to_string(),
+            objective: "next cycle".to_string(),
+            kind: WorkItemKind::CampaignCycle,
+            lane: WorkLane::Campaign,
+            origin: "campaign cancel-ledger-campaign cycle 3".to_string(),
+            trace_id: Some("d".repeat(32)),
+        },
+        root,
+        Utc::now(),
+    )
+    .with_source(Some(foundry_sdk::work_source::WorkSource::campaign(CAMPAIGN, 3)));
+    let id = item.id.clone();
+    let mut store = WorkItemStore::load(path).unwrap_or_default();
+    store.upsert(item);
+    store.save(path).expect("seed work-item ledger");
+    id
+}
+
+/// A queued cycle must not start after its campaign is gone: either form of
+/// cancellation settles it `cancelled` with the operator's reason and records
+/// `work_item_cancelled` on the cycle's own trace.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancellation_also_cancels_the_campaigns_queued_cycles() {
+    for terminate_now in [false, true] {
+        let mut harness = make_harness(None);
+        seed_campaign(&harness.campaigns_path, CampaignStatus::Active);
+        let running_id = seed_running_cycle(&harness.work_items_path, TRACE);
+        let queued_id = seed_queued_cycle(&harness.work_items_path);
+        let ledger = harness.work_items_path.clone();
+
+        let addr = start_server(harness.service).await;
+        let mut client = FoundryClient::connect(addr).await.expect("connect");
+        client.emit(campaign_root(TRACE)).await.expect("emit the campaign root");
+        client
+            .cancel_campaign(cancel(terminate_now, false))
+            .await
+            .expect("cancel must succeed");
+
+        assert!(
+            wait_for("the queued cycle to settle", || item_state(&ledger, &queued_id)
+                == WorkItemState::Cancelled)
+            .await,
+            "terminate_now={terminate_now}: the queued cycle stayed {:?}",
+            item_state(&ledger, &queued_id)
+        );
+        let record = WorkItemStore::load(&ledger).unwrap().find(&queued_id).unwrap().clone();
+        assert_eq!(record.reason, REASON, "the operator's reason, verbatim");
+        assert_eq!(record.started_at, None, "it never started");
+        assert_eq!(record.pending_root, None, "nothing is left to start it from");
+        let cancelled = wait_for_cancelled_events(&mut harness.events).await;
+        let for_queued = cancelled
+            .iter()
+            .find(|event| event.payload["item_id"] == queued_id)
+            .expect("work_item_cancelled for the queued cycle");
+        assert_eq!(for_queued.payload["state"], "cancelled");
+        assert_eq!(for_queued.trace_id.as_deref(), Some("d".repeat(32).as_str()));
+        if !terminate_now {
+            assert_eq!(
+                item_state(&ledger, &running_id),
+                WorkItemState::Running,
+                "a graceful cancel lets the running cycle finish"
+            );
+        }
+    }
 }
 
 /// A `--now` cancel whose aborted trace matches no running item settles

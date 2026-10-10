@@ -532,6 +532,8 @@ mod tests {
                 r#ref: "c".to_string(),
                 cycle,
             }),
+            depends_on: Vec::new(),
+            not_before: None,
         }
     }
 

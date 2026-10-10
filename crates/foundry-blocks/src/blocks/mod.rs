@@ -205,7 +205,10 @@ pub use triage_assessment::TriageAssessment;
 pub use triage_maintenance::TriageMaintenance;
 pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
-pub use work_ledger::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem};
+pub use work_ledger::{
+    ADMITTED_WORK_ITEM_KEY, AdmitWorkItem, SettleFailedDispatch, SettleWorkItem, awaits_admission,
+    queued_reason,
+};
 pub use write_commit_digest::WriteCommitDigest;
 pub use write_ops_digest::WriteOpsDigest;
 pub use write_supply_chain_digest::WriteSupplyChainDigest;

@@ -1,11 +1,15 @@
 //! The blocks that keep the work-item ledger in step with a task dispatch.
 //!
-//! [`RecordWorkItem`] opens the record from the task-workflow root event — the
+//! [`AdmitWorkItem`] opens the record from the task-workflow root event — the
 //! `ExecutionRequested` that `foundry task`, a campaign cycle and the nightly
-//! majors lane all emit — so a dispatch is in the ledger before anything in the
-//! chain can fail. [`SettleFailedDispatch`] closes it when the chain stops
-//! before the coding agent starts, and [`SettleWorkItem`] closes it from the
-//! task runner's typed terminal result.
+//! majors lane all emit — recording it `queued` with the root held on the
+//! item, so the daemon's pacing scheduler can start it when the rules allow
+//! (see [`foundry_sdk::pacing`]). The chain itself does not run from that
+//! root: the task chain's entry declines a root that
+//! [`awaits_admission`], and runs only the started root the scheduler emits,
+//! which names the admitted item. [`SettleFailedDispatch`] closes the record
+//! when the chain stops before the coding agent starts, and
+//! [`SettleWorkItem`] closes it from the task runner's typed terminal result.
 //!
 //! None of them changes a dispatch. They observe the chain that already exists
 //! and write a record beside it, and a ledger fault is absorbed rather than
@@ -22,6 +26,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::pacing::{self, Decision, PacingPaths};
 use foundry_sdk::payload::{
     CharterCheckCompletedPayload, ExecutionRequestedPayload, PreflightCompletedPayload,
     TaskRunCompletedPayload, WorkItemEventPayload,
@@ -32,6 +37,13 @@ use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
 };
 use foundry_sdk::workflow::WorkflowType;
+
+/// The payload key a started root carries to name the ledger item it runs.
+///
+/// Admission records the item from a root that lacks it; the scheduler's
+/// started root carries it, so the task chain runs and nothing records the
+/// item a second time. A resume child's root carries it for the same reason.
+pub const ADMITTED_WORK_ITEM_KEY: &str = "admitted_work_item_id";
 
 use super::SimulatedSuccess;
 use super::work_supersession::{prove_supersession, verified_commit};
@@ -92,12 +104,14 @@ fn classify_dispatch(
     (WorkItemKind::Task, WorkLane::Interactive, "foundry task".to_string())
 }
 
-/// The item a task dispatch opens, read off its root `ExecutionRequested`.
+/// The item a task dispatch opens, read off its root `ExecutionRequested`,
+/// `queued` and holding that root to start from.
 ///
 /// The typed source is whatever the root carries: `foundry task` names the
 /// operator's host, a campaign advance names the campaign and cycle, the
 /// majors lane names the sentinel that fired the nightly. A root that names
-/// none (a raw emit, an older client) records none.
+/// none (a raw emit, an older client) records none. The reason it waits with
+/// is the caller's to set, from the ledger it is admitted into.
 fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
     let (kind, lane, origin) = classify(
         &payload.prompt,
@@ -105,7 +119,7 @@ fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> W
         payload.chain.campaign_cycle,
         payload.operator_origin.as_deref(),
     );
-    WorkItem::dispatched(
+    let mut item = WorkItem::queued(
         WorkItemSpec {
             project: trigger.project.clone(),
             objective: payload.prompt.clone(),
@@ -114,9 +128,13 @@ fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> W
             origin,
             trace_id: trigger.trace_id.clone(),
         },
+        trigger.clone(),
         Utc::now(),
     )
-    .with_source(trigger.source.clone())
+    .with_source(trigger.source.clone());
+    item.depends_on.clone_from(&payload.depends_on);
+    item.not_before = payload.not_before;
+    item
 }
 
 /// Whether `trigger` is the root event of a real task dispatch.
@@ -136,72 +154,93 @@ fn accepts_dispatch(trigger: &Event) -> bool {
         .is_ok_and(|p| !p.prompt.is_empty())
 }
 
-/// Records a dispatched unit of work in the ledger, `running`, from the root
+/// Whether the dispatch names a project in the registry.
+///
+/// The task chain's first block fails a dispatch for an unknown project
+/// without emitting any domain event, so nothing downstream could ever
+/// settle an item recorded for one: it would sit in the ledger until a
+/// restart closed it with the wrong reason. Admission is therefore declined
+/// here rather than settled later, and the chain is left to refuse the
+/// dispatch the way it always has.
+fn project_is_registered(registry: &Arc<RwLock<Registry>>, project: &str) -> bool {
+    match super::read_registry(registry) {
+        Ok(guard) => guard.find_project(project).is_some(),
+        Err(error) => {
+            // Best-effort: a poisoned registry lock is not the ledger's
+            // fault, and declining every record would hide real work. Record
+            // and let the restart sweep be the backstop.
+            tracing::warn!(
+                error = %error,
+                "could not read the registry to check a dispatch; recording it anyway"
+            );
+            true
+        }
+    }
+}
+
+/// Whether `trigger` is a task dispatch that has to pass through admission
+/// before its chain may run: a real task dispatch, for a registered project,
+/// not yet naming the ledger item it runs (see [`ADMITTED_WORK_ITEM_KEY`]).
+///
+/// This is the one decision the admission block and the task chain's entry
+/// share: [`AdmitWorkItem`] accepts exactly the roots this is true for, and
+/// `CheckCharter` declines them, so a root is either admitted or run, never
+/// both.
+#[must_use]
+pub fn awaits_admission(trigger: &Event, registry: &Arc<RwLock<Registry>>) -> bool {
+    accepts_dispatch(trigger)
+        && trigger.payload.get(ADMITTED_WORK_ITEM_KEY).is_none()
+        && project_is_registered(registry, &trigger.project)
+}
+
+/// Admits a dispatched unit of work to the ledger, `queued`, from the root
 /// event of its task workflow.
 ///
 /// Mutator — sinks on `ExecutionRequested`, and only on the task-workflow
-/// dispatches that run a coding agent.
+/// dispatches that run a coding agent and have not been admitted yet.
 ///
-/// Recording at the root rather than at `PreflightCompleted` is what makes the
-/// ledger complete: a dispatch that fails its charter check, or fails preflight,
-/// never reaches preflight's success event, and an unrecorded dispatch is
-/// invisible to anyone reading the ledger for what still needs a person.
-pub struct RecordWorkItem {
+/// Admitting at the root rather than at `PreflightCompleted` is what makes the
+/// ledger complete: a dispatch that fails its charter check, or fails
+/// preflight, never reaches preflight's success event, and an unrecorded
+/// dispatch is invisible to anyone reading the ledger for what still needs a
+/// person. The root is held on the item, so a queued item survives a daemon
+/// restart with everything the scheduler needs to start it.
+pub struct AdmitWorkItem {
     store_path: PathBuf,
-    /// Read only to answer "is this project one Foundry runs?" — a dispatch the
-    /// engine refuses outright is not work, and must not leave an item the
-    /// ledger can never settle.
+    /// Read to answer "is this project one Foundry runs?", and to key the
+    /// per-repository pacing rule when the item's reason is computed.
     registry: Arc<RwLock<Registry>>,
+    /// The limits and lane pauses the item's first reason is computed from.
+    pacing: PacingPaths,
 }
 
-impl RecordWorkItem {
-    /// Record dispatches in the ledger at `store_path`.
+impl AdmitWorkItem {
+    /// Admit dispatches to the ledger at `store_path`, computing each one's
+    /// reason from the pacing files at `pacing`.
     #[must_use]
-    pub fn new(store_path: PathBuf, registry: Arc<RwLock<Registry>>) -> Self {
+    pub fn new(store_path: PathBuf, registry: Arc<RwLock<Registry>>, pacing: PacingPaths) -> Self {
         Self {
             store_path,
             registry,
-        }
-    }
-
-    /// Whether the dispatch names a project in the registry.
-    ///
-    /// The task chain's first block fails a dispatch for an unknown project
-    /// without emitting any domain event, so nothing downstream could ever
-    /// settle an item recorded for one: it would sit `running` until a restart
-    /// closed it with the wrong reason. Recording is therefore declined here
-    /// rather than settled later.
-    fn project_is_registered(&self, project: &str) -> bool {
-        match super::read_registry(&self.registry) {
-            Ok(guard) => guard.find_project(project).is_some(),
-            Err(error) => {
-                // Best-effort: a poisoned registry lock is not the ledger's
-                // fault, and declining every record would hide real work. Record
-                // and let the restart sweep be the backstop.
-                tracing::warn!(
-                    error = %error,
-                    "could not read the registry to check a dispatch; recording it anyway"
-                );
-                true
-            }
+            pacing,
         }
     }
 }
 
-impl SimulatedSuccess for RecordWorkItem {
+impl SimulatedSuccess for AdmitWorkItem {
     type Outcome = Option<WorkItem>;
 
     fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
-        if trigger.payload.get("admitted_work_item_id").is_some() {
+        if trigger.payload.get(ADMITTED_WORK_ITEM_KEY).is_some() {
             return None;
         }
         // accepts() has already filtered everything but a real task dispatch,
         // so a parse failure here is not reachable; an empty objective is the
         // honest synthetic stand-in if it ever were.
         let payload = trigger.parse_payload::<ExecutionRequestedPayload>().ok();
-        Some(payload.map_or_else(
+        let mut item = payload.map_or_else(
             || {
-                WorkItem::dispatched(
+                WorkItem::queued(
                     WorkItemSpec {
                         project: trigger.project.clone(),
                         objective: String::new(),
@@ -210,31 +249,29 @@ impl SimulatedSuccess for RecordWorkItem {
                         origin: "foundry task".to_string(),
                         trace_id: trigger.trace_id.clone(),
                     },
+                    trigger.clone(),
                     Utc::now(),
                 )
                 .with_source(trigger.source.clone())
             },
             |payload| item_from_dispatch(trigger, &payload),
-        ))
+        );
+        // A simulation reads no ledger, so it cannot know what holds the item.
+        item.reason = pacing::READY_REASON.to_string();
+        Some(item)
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
-        let Some(outcome) = outcome else {
-            return Vec::new();
-        };
-        let mut submitted = outcome.clone();
-        submitted.state = foundry_sdk::work_item::WorkItemState::Submitted;
-        submitted.reason = "submitted".to_string();
-        vec![
-            work_item_event(EventType::WorkItemSubmitted, trigger, &submitted),
-            work_item_event(EventType::WorkItemStarted, trigger, outcome),
-        ]
+        outcome
+            .as_ref()
+            .map(|item| vec![work_item_event(EventType::WorkItemSubmitted, trigger, item)])
+            .unwrap_or_default()
     }
 }
 
-impl TaskBlock for RecordWorkItem {
+impl TaskBlock for AdmitWorkItem {
     task_block_meta! {
-        name: "Record Work Item",
+        name: "Admit Work Item",
         kind: Mutator,
         sinks_on: [ExecutionRequested],
     }
@@ -242,42 +279,72 @@ impl TaskBlock for RecordWorkItem {
     dry_run_via_simulation!();
 
     fn accepts(&self, trigger: &Event) -> bool {
-        // ResumeWorkItem admits its child atomically before dispatch; recording
-        // that root again would mint a second identity on the same trace.
-        accepts_dispatch(trigger)
-            && trigger.payload.get("admitted_work_item_id").is_none()
-            && self.project_is_registered(&trigger.project)
+        awaits_admission(trigger, &self.registry)
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
         let payload = parse_payload!(trigger, ExecutionRequestedPayload);
         let item = item_from_dispatch(trigger, &payload);
-        let stored = self.write(&item);
-        let events = if stored {
-            self.success_events(trigger, &Some(item.clone()))
-        } else {
-            vec![]
-        };
-        let summary = if stored {
-            format!("{}: recorded work item {}", trigger.project, item.id)
-        } else {
-            format!("{}: work item not recorded (ledger unavailable)", trigger.project)
+        let stored = self.write(item);
+        let events = self.success_events(trigger, &stored);
+        let summary = match &stored {
+            Some(item) => {
+                format!("{}: admitted work item {} ({})", trigger.project, item.id, item.reason)
+            }
+            None => format!("{}: work item not admitted (ledger unavailable)", trigger.project),
         };
         Box::pin(async move { Ok(TaskBlockResult::success(summary, events)) })
     }
 }
 
-impl RecordWorkItem {
-    /// Add `item` to the ledger. Returns whether it reached the file.
-    fn write(&self, item: &WorkItem) -> bool {
-        let Some(_guard) = ledger_lock() else {
-            return false;
-        };
-        let Some(mut store) = load_ledger(&self.store_path) else {
-            return false;
-        };
+impl AdmitWorkItem {
+    /// Add `item` to the ledger with the reason it waits, and return it as
+    /// recorded. `None` when it did not reach the file.
+    ///
+    /// The reason is the same verdict the scheduler's next tick will reach
+    /// over this ledger, so `work_item_submitted` already says why the item
+    /// waits; the scheduler, not this block, starts it.
+    fn write(&self, mut item: WorkItem) -> Option<WorkItem> {
+        let _guard = ledger_lock()?;
+        let mut store = load_ledger(&self.store_path)?;
         store.upsert(item.clone());
-        save_ledger(&store, &self.store_path)
+        item.reason = queued_reason(&store, &item.id, &self.registry, &self.pacing);
+        store.upsert(item.clone());
+        save_ledger(&store, &self.store_path).then_some(item)
+    }
+}
+
+/// The reason the queued item `id` waits with in `store`, as the scheduler
+/// would decide it now: `ready` when nothing holds it.
+///
+/// Shared by admission and the owner controls that return an item to the
+/// queue, so every path that leaves an item `queued` records the same reason
+/// the next tick would.
+#[must_use]
+pub fn queued_reason(
+    store: &WorkItemStore,
+    id: &str,
+    registry: &Arc<RwLock<Registry>>,
+    pacing: &PacingPaths,
+) -> String {
+    let limits = pacing::limits_in_force(&pacing.limits);
+    let pauses = pacing::pauses_in_force(&pacing.state);
+    let repository_of = |project: &str| match super::read_registry(registry) {
+        Ok(guard) => pacing::repository_key(&guard, project),
+        Err(error) => {
+            // Best-effort: a poisoned registry lock leaves the project name as
+            // the repository key, which is the fallback for an unregistered
+            // project too; the rule still serialises one project's work.
+            tracing::warn!(error = %error, "could not read the registry to key a repository");
+            project.to_string()
+        }
+    };
+    let verdict = pacing::evaluate(&store.items, &limits, &pauses, Utc::now(), &repository_of)
+        .into_iter()
+        .find(|verdict| verdict.id == id);
+    match verdict.map(|verdict| verdict.decision) {
+        Some(Decision::Wait(reason) | Decision::NeedsDecision(reason)) => reason,
+        Some(Decision::Start) | None => pacing::READY_REASON.to_string(),
     }
 }
 
@@ -757,14 +824,30 @@ mod tests {
     use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
-    use super::{RecordWorkItem, SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
+    use super::{AdmitWorkItem, SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
 
-    /// A recorder over `path`, with "alpha" the one project in the registry.
-    fn recorder(path: &str) -> RecordWorkItem {
-        RecordWorkItem::new(
+    /// An admitter over `path`, with "alpha" the one project in the registry
+    /// and no pacing files, so the defaults apply.
+    fn recorder(path: &str) -> AdmitWorkItem {
+        AdmitWorkItem::new(
             std::path::PathBuf::from(path),
             test_helpers::registry_with_project("alpha", "/tmp/alpha"),
+            foundry_sdk::pacing::PacingPaths {
+                limits: std::path::PathBuf::from("/tmp/never-present/pacing.json"),
+                state: std::path::PathBuf::from("/tmp/never-present/pacing-state.json"),
+            },
         )
+    }
+
+    /// Start every queued item in the ledger at `path`, as the daemon's
+    /// scheduler would.
+    fn start_queued(path: &std::path::Path) {
+        let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
+        let mut store = WorkItemStore::load(path).unwrap();
+        for item in store.items.iter_mut().filter(|item| item.is_queued()) {
+            item.start(Utc::now());
+        }
+        store.save(path).unwrap();
     }
 
     assert_block_meta!(
@@ -799,7 +882,7 @@ mod tests {
 
     const TRACE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    /// A task-workflow root dispatch, the event `RecordWorkItem` records from.
+    /// A task-workflow root dispatch, the event `AdmitWorkItem` admits from.
     fn dispatch(extra: &serde_json::Value) -> Event {
         let mut payload = serde_json::json!({
             "project": "alpha",
@@ -981,17 +1064,21 @@ mod tests {
     // --- recording ---------------------------------------------------------
 
     #[tokio::test]
-    async fn a_task_dispatch_is_recorded_running_and_announced() {
+    async fn a_task_dispatch_is_admitted_queued_with_its_root_and_announced() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
         let block = recorder(path.to_str().unwrap());
+        let root = dispatch(&serde_json::json!({}));
 
-        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
+        let result = block.execute(&root).await.unwrap();
 
         let store = WorkItemStore::load(&path).unwrap();
         assert_eq!(store.items.len(), 1);
         let item = &store.items[0];
-        assert_eq!(item.state, WorkItemState::Running);
+        assert_eq!(item.state, WorkItemState::Queued);
+        assert_eq!(item.reason, "ready", "an idle ledger holds nothing back");
+        assert_eq!(item.started_at, None, "admission starts nothing; the scheduler does");
+        assert_eq!(item.pending_root.as_ref().map(|e| e.id.as_str()), Some(root.id.as_str()));
         assert_eq!(item.kind, WorkItemKind::Task);
         assert_eq!(item.lane, WorkLane::Interactive);
         assert_eq!(item.origin, "foundry task");
@@ -999,13 +1086,61 @@ mod tests {
         assert_eq!(item.trace_id.as_deref(), Some(TRACE));
 
         let types: Vec<&EventType> = result.events.iter().map(|e| &e.event_type).collect();
-        assert_eq!(types, vec![&EventType::WorkItemSubmitted, &EventType::WorkItemStarted]);
-        assert_eq!(result.events[0].payload["state"], "submitted");
-        assert_eq!(result.events[1].payload["state"], "running");
-        assert_eq!(result.events[1].payload["item_id"], item.id.as_str());
-        assert_eq!(result.events[1].payload["lane"], "interactive");
-        assert_eq!(result.events[1].payload["kind"], "task");
-        assert_eq!(result.events[1].payload["origin"], "foundry task");
+        assert_eq!(types, vec![&EventType::WorkItemSubmitted], "no start is announced");
+        assert_eq!(result.events[0].payload["state"], "queued");
+        assert_eq!(result.events[0].payload["reason"], "ready");
+        assert_eq!(result.events[0].payload["item_id"], item.id.as_str());
+        assert_eq!(result.events[0].payload["lane"], "interactive");
+        assert_eq!(result.events[0].payload["kind"], "task");
+        assert_eq!(result.events[0].payload["origin"], "foundry task");
+    }
+
+    #[tokio::test]
+    async fn a_second_dispatch_on_a_busy_repository_is_admitted_with_that_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let block = recorder(path.to_str().unwrap());
+        block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
+        start_queued(&path);
+        let first = WorkItemStore::load(&path).unwrap().items[0].id.clone();
+
+        let mut second = dispatch(&serde_json::json!({}));
+        second.trace_id = Some("b".repeat(32));
+        let result = block.execute(&second).await.unwrap();
+
+        let store = WorkItemStore::load(&path).unwrap();
+        assert_eq!(store.items[1].state, WorkItemState::Queued);
+        assert_eq!(store.items[1].reason, format!("repository busy: {first}"));
+        assert_eq!(result.events[0].payload["reason"], format!("repository busy: {first}"));
+    }
+
+    #[tokio::test]
+    async fn after_and_not_before_are_recorded_from_the_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let block = recorder(path.to_str().unwrap());
+        let later = "2099-01-01T00:00:00Z";
+
+        let result = block
+            .execute(&dispatch(&serde_json::json!({
+                "depends_on": ["wi_parent"],
+                "not_before": later,
+            })))
+            .await
+            .unwrap();
+
+        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        assert_eq!(item.depends_on, vec!["wi_parent".to_string()]);
+        assert_eq!(
+            item.not_before.map(|at| at.to_rfc3339()),
+            Some("2099-01-01T00:00:00+00:00".into())
+        );
+        assert_eq!(result.events[0].payload["depends_on"], serde_json::json!(["wi_parent"]));
+        assert_eq!(result.events[0].payload["not_before"], "2099-01-01T00:00:00Z");
+        assert_eq!(
+            item.reason, "waits on wi_parent, which is not in the ledger",
+            "the reason is the scheduler's own verdict, even when it is a decision"
+        );
     }
 
     #[tokio::test]
@@ -1154,10 +1289,6 @@ mod tests {
             result.events[0].payload["origin"],
             "foundry task (host workbench: asked by Stacey)"
         );
-        assert_eq!(
-            result.events[1].payload["origin"],
-            "foundry task (host workbench: asked by Stacey)"
-        );
     }
 
     #[tokio::test]
@@ -1266,14 +1397,15 @@ mod tests {
     fn dry_run_announces_the_item_the_dispatch_would_open() {
         let block = recorder("/tmp/never-written.json");
         let events = block.dry_run_events(&dispatch(&serde_json::json!({})));
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::WorkItemSubmitted);
-        assert_eq!(events[1].payload["state"], "running");
+        assert_eq!(events[0].payload["state"], "queued");
+        assert_eq!(events[0].payload["reason"], "ready");
     }
 
     // --- settling a dispatch that stopped before the agent -----------------
 
-    /// Record a dispatch, then hand `trigger` to `SettleFailedDispatch`.
+    /// Admit and start a dispatch, then hand `trigger` to `SettleFailedDispatch`.
     async fn record_then_abandon(trigger: Event) -> (WorkItemStore, Vec<Event>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
@@ -1281,6 +1413,7 @@ mod tests {
             .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
+        start_queued(&path);
         let result = SettleFailedDispatch::new(path.clone()).execute(&trigger).await.unwrap();
         (WorkItemStore::load(&path).unwrap(), result.events)
     }
@@ -1320,6 +1453,7 @@ mod tests {
             .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
+        start_queued(&path);
         let mut elsewhere = charter_failed(false);
         elsewhere.trace_id = Some("b".repeat(32));
 
@@ -1342,6 +1476,7 @@ mod tests {
             .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
+        start_queued(&path);
         let result = SettleWorkItem::new(path.clone()).execute(&trigger).await.unwrap();
         (WorkItemStore::load(&path).unwrap(), result.events)
     }
@@ -1407,6 +1542,7 @@ mod tests {
             .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
+        start_queued(&path);
         let settle = SettleWorkItem::new(path.clone());
         let trigger = completion(TaskVerdict::Complete, true, None);
         settle.execute(&trigger).await.unwrap();
@@ -1432,8 +1568,8 @@ mod tests {
     /// A record in one workflow and a settle in another, run concurrently
     /// against the same file, repeatedly.
     ///
-    /// Each iteration seeds a `running` item on its own trace, then drives a
-    /// record of a *new* dispatch and a settle of the seeded one at the same
+    /// Each iteration seeds a `running` item on its own trace, then drives an
+    /// admission of a *new* dispatch and a settle of the seeded one at the same
     /// time. Both mutations are a `load` → apply → `save`, so with a private
     /// lock per block they interleave and whichever saves last drops the
     /// other's change. Every iteration must afterwards show both: the new item
@@ -1483,7 +1619,7 @@ mod tests {
                 .iter()
                 .find(|item| item.trace_id.as_deref() == Some(new_trace.as_str()))
                 .unwrap_or_else(|| panic!("iteration {iteration}: the record was lost"));
-            assert_eq!(fresh_item.state, WorkItemState::Running);
+            assert_eq!(fresh_item.state, WorkItemState::Queued);
             let settled = store
                 .find(&seeded_id)
                 .unwrap_or_else(|| panic!("iteration {iteration}: the seeded item was lost"));
@@ -1511,6 +1647,7 @@ mod tests {
             .execute(&dispatch(&serde_json::json!({})))
             .await
             .unwrap();
+        start_queued(&path);
         let mut store = WorkItemStore::load(&path).unwrap();
         let mut candidate = store.items[0].clone();
         candidate.id = "wi_preserved_candidate".into();

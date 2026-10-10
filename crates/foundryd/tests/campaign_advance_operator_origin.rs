@@ -55,6 +55,15 @@ struct Harness {
     _project: TempDir,
 }
 
+/// The pacing files kept beside a test ledger.
+fn pacing_paths_beside(store_path: &std::path::Path) -> foundry_sdk::pacing::PacingPaths {
+    let dir = store_path.parent().expect("a ledger has a directory");
+    foundry_sdk::pacing::PacingPaths {
+        limits: dir.join("pacing.json"),
+        state: dir.join("pacing-state.json"),
+    }
+}
+
 fn make_harness() -> Harness {
     let (event_tx, events) = broadcast::channel(64);
     let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
@@ -244,10 +253,14 @@ async fn an_advance_with_an_origin_carries_it_to_the_cycle_and_into_the_ledger()
         .and_then(serde_json::Value::as_u64)
         .expect("the dispatched cycle must name its number");
 
-    foundry_blocks::blocks::RecordWorkItem::new(work_items_path.clone(), registry)
-        .execute(&cycle)
-        .await
-        .expect("record the dispatched cycle");
+    foundry_blocks::blocks::AdmitWorkItem::new(
+        work_items_path.clone(),
+        registry,
+        pacing_paths_beside(&work_items_path),
+    )
+    .execute(&cycle)
+    .await
+    .expect("admit the dispatched cycle");
 
     let stored = foundry_sdk::work_item::WorkItemStore::load(&work_items_path).unwrap();
     let item_id = stored.items[0].id.clone();
@@ -310,10 +323,14 @@ async fn an_advance_without_an_origin_dispatches_exactly_as_before() {
         .and_then(serde_json::Value::as_u64)
         .expect("the dispatched cycle must name its number");
 
-    foundry_blocks::blocks::RecordWorkItem::new(work_items_path.clone(), registry_for_ledger)
-        .execute(&cycle)
-        .await
-        .expect("record the dispatched cycle");
+    foundry_blocks::blocks::AdmitWorkItem::new(
+        work_items_path.clone(),
+        registry_for_ledger,
+        pacing_paths_beside(&work_items_path),
+    )
+    .execute(&cycle)
+    .await
+    .expect("admit the dispatched cycle");
     let stored = foundry_sdk::work_item::WorkItemStore::load(&work_items_path).unwrap();
     let read_back = client
         .get_work_item(GetWorkItemRequest {

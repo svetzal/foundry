@@ -88,9 +88,14 @@ fn near_matches(parent: &WorkItem) -> Vec<WorkItem> {
         ("landed", "test-project", "x", "2.0.0", WorkItemState::Landed),
         ("decision", "test-project", "x", "2.0.0", WorkItemState::NeedsDecision),
         ("failed", "test-project", "x", "2.0.0", WorkItemState::Failed),
-        ("running", "test-project", "x", "2.0.0", WorkItemState::Running),
-        ("queued", "test-project", "x", "2.0.0", WorkItemState::Queued),
-        ("submitted", "test-project", "x", "2.0.0", WorkItemState::Submitted),
+        // A running item occupies its repository under the pacing rules, so
+        // this one runs elsewhere; a waiting upgrade of the same package would
+        // hold the nightly's dispatch of it (the ledger dedupes waiting
+        // upgrades), so the waiting near-matches wait on other packages, held
+        // rather than queued so the scheduler leaves them exactly as seeded.
+        ("running", "test-project-extra", "x", "2.0.0", WorkItemState::Running),
+        ("held", "test-project", "xh", "2.0.0", WorkItemState::Held),
+        ("submitted", "test-project", "xs", "2.0.0", WorkItemState::Submitted),
     ] {
         let mut item = parent.clone();
         item.id = id.into();
@@ -216,10 +221,11 @@ impl Nightly {
         crate::proto::foundry_client::FoundryClient<tonic::transport::Channel>,
         tokio::task::JoinHandle<()>,
     ) {
+        let ledger = self.dir.path().join("work-items.json");
         let service = crate::service::FoundryService::new(
             self.ctx.clone(),
             crate::service::StoreConfig {
-                work_items_path: self.dir.path().join("work-items.json"),
+                work_items_path: ledger.clone(),
                 events_dir: self.dir.path().join("events"),
                 campaigns_path: self.dir.path().join("campaigns.json"),
                 registry_path: self.dir.path().join("registry.json"),
@@ -229,7 +235,8 @@ impl Nightly {
                 sentinels_path: self.dir.path().join("sentinels.json"),
                 scheduler_reload: Arc::new(tokio::sync::Notify::new()),
             },
-        );
+        )
+        .with_pacing(pacing_paths_beside(&ledger), Arc::new(tokio::sync::Notify::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -261,6 +268,61 @@ impl Nightly {
             .unwrap()
             .into_inner();
         (client, server, watch)
+    }
+
+    fn ledger(&self) -> PathBuf {
+        self.dir.path().join("work-items.json")
+    }
+
+    fn pacing(&self) -> foundry_sdk::pacing::PacingPaths {
+        pacing_paths_beside(&self.ledger())
+    }
+
+    /// Run the real pacing scheduler over this fixture's ledger, as the
+    /// daemon does, so queued upgrades start.
+    fn start_scheduler(&self) {
+        crate::service::spawn_pacing_scheduler(
+            &self.ctx,
+            self.ledger(),
+            self.pacing(),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+    }
+
+    /// Collect broadcast events until `terminals` task results have arrived
+    /// and each one's item has settled on that result's trace, then whatever
+    /// else is already there.
+    async fn observe_until_terminals(&mut self, terminals: usize) -> Vec<Event> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut observed: Vec<Event> = Vec::new();
+        loop {
+            let done = {
+                let traces: Vec<_> = observed
+                    .iter()
+                    .filter(|e| e.event_type == EventType::TaskRunCompleted)
+                    .map(|e| e.trace_id.clone())
+                    .collect();
+                traces.len() >= terminals
+                    && traces.iter().all(|trace| {
+                        observed.iter().any(|e| {
+                            e.event_type == EventType::WorkItemSettled && e.trace_id == *trace
+                        })
+                    })
+            };
+            if done {
+                break;
+            }
+            let event = tokio::time::timeout_at(deadline, self.events.recv())
+                .await
+                .unwrap_or_else(|error| panic!("{error}: observed {observed:#?}"))
+                .unwrap();
+            observed.push(event);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        while let Ok(event) = self.events.try_recv() {
+            observed.push(event);
+        }
+        observed
     }
 
     async fn plan(
@@ -337,13 +399,12 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
         crate::service::eventing_ops::run_major_upgrades(
             dispatches,
             f.ctx.clone(),
-            &f.dir.path().join("work-items.json"),
+            &f.ledger(),
+            &f.pacing(),
         )
         .await;
-        let mut observed = Vec::new();
-        while let Ok(event) = f.events.try_recv() {
-            observed.push(event);
-        }
+        f.start_scheduler();
+        let observed = f.observe_until_terminals(2).await;
         assert_watch_matches(watch, &observed).await;
         server.abort();
         let store = WorkItemStore::load(&f.dir.path().join("work-items.json")).unwrap();
@@ -360,9 +421,14 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
         for unrelated in &f.unrelated {
             assert_eq!(store.find(&unrelated.id), Some(unrelated));
         }
+        // The fresh upgrade's admitted root reaches the engine; the scheduler
+        // then emits one started root per item, each naming its item.
         let roots: Vec<_> = observed
             .iter()
-            .filter(|e| e.event_type == EventType::ExecutionRequested)
+            .filter(|e| {
+                e.event_type == EventType::ExecutionRequested
+                    && e.payload.get("admitted_work_item_id").is_some()
+            })
             .collect();
         assert_eq!(roots.len(), 2);
         assert_eq!(roots[0].payload["admitted_work_item_id"], child.id);
@@ -373,6 +439,7 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
         let fresh = store.items.iter().find(|i| i.trace_id == roots[1].trace_id).unwrap();
         assert_eq!(fresh.objective, objective("test-project", &major("y")));
         assert!(fresh.resumes.is_none());
+        assert_eq!(roots[1].payload["admitted_work_item_id"], fresh.id);
         let first_terminal = observed
             .iter()
             .position(|e| {
@@ -380,7 +447,10 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
             })
             .unwrap();
         let second_root = observed.iter().position(|e| e.id == roots[1].id).unwrap();
-        assert!(first_terminal < second_root, "nightly execution must remain sequential");
+        assert!(
+            first_terminal < second_root,
+            "one repository runs one upgrade at a time, so execution stays sequential"
+        );
         for event in observed.iter().filter(|e| e.payload["item_id"] == child.id) {
             assert_eq!(event.payload["resumes"], f.parent.id);
             assert_eq!(event.payload["objective"], f.parent.objective);
@@ -492,13 +562,16 @@ async fn nightly_resume_retains_eligibility_inflight_and_non_dispatch_modes() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One ordered scenario per failure mode keeps the ledger, log and Watch assertions together"
+)]
 async fn nightly_selected_resume_failure_never_falls_back_to_fresh_work() {
     for failure in [
         "cancelled",
         "missing-ref",
         "identity-changed",
         "first",
-        "partial",
         "final-ledger-save",
         "initial-ledger-save",
     ] {
@@ -544,9 +617,14 @@ async fn nightly_selected_resume_failure_never_falls_back_to_fresh_work() {
         }
         let (mut client, server, watch) = f.watching_client().await;
         let before = std::fs::read(&ledger).unwrap();
-        let error = crate::service::eventing_ops::prepare_major_dispatch(event, &f.ctx, &ledger)
-            .await
-            .unwrap_err();
+        let error = crate::service::eventing_ops::prepare_major_dispatch(
+            event,
+            &f.ctx,
+            &ledger,
+            &f.pacing(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(
             error.code(),
             if matches!(failure, "cancelled" | "missing-ref" | "identity-changed") {
@@ -602,7 +680,6 @@ fn assert_retained_admission(
 ) {
     let retained = match failure {
         "first" => std::fs::read(log.with_extension("retained")).unwrap(),
-        "partial" => std::fs::read(f.dir.path().join("events/retained.jsonl")).unwrap(),
         _ => std::fs::read(log).unwrap(),
     };
     assert!(retained.starts_with(history));
@@ -630,8 +707,7 @@ fn assert_retained_admission(
             .count(),
         match failure {
             "first" => 0,
-            "partial" => 1,
-            _ => 2,
+            _ => 1,
         }
     );
     for event in appended
@@ -677,10 +753,15 @@ async fn nightly_child_landing_respects_owner_cancellation_and_retains_parent_ev
     let summary = f.plan(Throttle::Full, UpdatePolicy::Major, true).await;
     let event = crate::service::eventing_ops::planned_major_dispatches(&summary).remove(0);
     let ledger = f.dir.path().join("work-items.json");
-    let root = crate::service::eventing_ops::prepare_major_dispatch(event, &f.ctx, &ledger)
-        .await
-        .unwrap();
-    let child_id = root.payload["admitted_work_item_id"].as_str().unwrap().to_string();
+    let crate::service::eventing_ops::MajorAdmission::Resumed(child) =
+        crate::service::eventing_ops::prepare_major_dispatch(event, &f.ctx, &ledger, &f.pacing())
+            .await
+            .unwrap()
+    else {
+        panic!("the planned upgrade resumes the preserved parent");
+    };
+    let child_id = child.id.clone();
+    assert_eq!(child.state, WorkItemState::Queued);
     let (mut client, server) = f.client().await;
     client
         .close_work_item(crate::proto::CloseWorkItemRequest {
@@ -693,7 +774,8 @@ async fn nightly_child_landing_respects_owner_cancellation_and_retains_parent_ev
     let cancelled = WorkItemStore::load(&ledger).unwrap().find(&f.parent.id).unwrap().clone();
     assert_eq!(cancelled.state, WorkItemState::Cancelled);
     assert_eq!(cancelled.disposition, f.parent.disposition);
-    crate::service::eventing_ops::run_major_upgrades(vec![root], f.ctx.clone(), &ledger).await;
+    f.start_scheduler();
+    let observed = f.observe_until_terminals(1).await;
     let store = WorkItemStore::load(&ledger).unwrap();
     assert_eq!(store.find(&f.parent.id), Some(&cancelled));
     assert_eq!(store.find(&child_id).unwrap().state, WorkItemState::Landed);
@@ -709,10 +791,6 @@ async fn nightly_child_landing_respects_owner_cancellation_and_retains_parent_ev
         parent_events.iter().map(|e| e.event_type.clone()).collect::<Vec<_>>(),
         vec![EventType::WorkItemSettled, EventType::WorkItemCancelled]
     );
-    let mut observed = Vec::new();
-    while let Ok(event) = f.events.try_recv() {
-        observed.push(event);
-    }
     assert_lifecycle_log_matches(&f.dir.path().join("events"), &child_id, &observed);
     server.abort();
 }

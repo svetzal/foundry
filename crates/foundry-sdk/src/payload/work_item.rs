@@ -4,12 +4,14 @@ use crate::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemState, W
 use crate::work_source::WorkSource;
 
 /// Payload for every work-item lifecycle event — `work_item_submitted`,
-/// `work_item_started`, `work_item_settled` and `work_item_cancelled`.
+/// `work_item_started`, `work_item_settled`, `work_item_cancelled`,
+/// `work_item_held` and `work_item_released`.
 ///
-/// One payload serves all four because they report the same record at
+/// One payload serves all six because they report the same record at
 /// different points in its life; the event type says which point, and `state`
-/// says where the item stands. `disposition` is present only once the item has
-/// settled.
+/// says where the item stands. A `work_item_submitted` reports the item
+/// `queued`, and its `reason` is why it waits (see [`crate::pacing`]).
+/// `disposition` is present only once the item has settled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItemEventPayload {
     /// The work item's stable id.
@@ -40,6 +42,12 @@ pub struct WorkItemEventPayload {
     /// Owner action, without replacing the original submission origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<crate::work_item::WorkItemOperatorAction>,
+    /// Items this one waits on. Absent when it waits on none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// The earliest time the scheduler may start it. Absent when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl WorkItemEventPayload {
@@ -59,8 +67,21 @@ impl WorkItemEventPayload {
             disposition: item.disposition.clone(),
             operator_action: item.operator_action.clone(),
             resumes: item.resumes.clone(),
+            depends_on: item.depends_on.clone(),
+            not_before: item.not_before,
         }
     }
+}
+
+/// Payload for `pacing_paused` and `pacing_resumed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PacingPayload {
+    /// The lanes this action named.
+    pub lanes: Vec<WorkLane>,
+    /// Every lane paused after the action was applied.
+    pub paused: Vec<WorkLane>,
+    /// CLI hostname and optional operator context.
+    pub operator_origin: String,
 }
 
 #[cfg(test)]

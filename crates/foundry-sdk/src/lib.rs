@@ -9,6 +9,7 @@ pub mod event;
 pub mod gates;
 pub mod gateway;
 pub mod loop_context;
+pub mod pacing;
 pub mod paths;
 pub mod payload;
 pub mod registry;
