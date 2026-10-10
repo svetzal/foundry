@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-10
+
 ### Added
 
 - A pacing stage between a work item's admission and its start. Every
