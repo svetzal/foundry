@@ -287,9 +287,7 @@ async fn remove_worktrees(
             (Ok(wt), Ok(root)) => wt != root && wt.starts_with(root),
             _ => false,
         };
-        let reason = if !owned {
-            Some("not Foundry-owned".to_string())
-        } else {
+        let reason = if owned {
             match guarded_delete(
                 project.into(),
                 path.into(),
@@ -306,6 +304,8 @@ async fn remove_worktrees(
                     Some(format!("safety check or removal failed: {error}"))
                 }
             }
+        } else {
+            Some("not Foundry-owned".to_string())
         };
         if let Some(reason) = reason {
             tracing::info!(%project, worktree = %wt_path, %reason, "keeping worktree");
