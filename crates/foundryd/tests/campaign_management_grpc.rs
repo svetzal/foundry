@@ -226,6 +226,7 @@ async fn complete_paused_campaign_persists_audit_record_and_emits_terminal_event
         preservation_ref: Some("abc123".to_string()),
         land_blocked: None,
         proof_evidence: None,
+        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Complete,
         context: LoopContext {
@@ -496,6 +497,7 @@ async fn pause_preserves_pending_run_result_through_resume() {
         preservation_ref: Some("foundry-task/preserved-ref".to_string()),
         land_blocked: None,
         proof_evidence: None,
+        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Remainder {
             gaps: vec!["exercise the gRPC boundary".to_string()],

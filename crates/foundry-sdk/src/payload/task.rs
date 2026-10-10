@@ -154,6 +154,12 @@ pub struct TaskRunCompletedPayload {
     /// Durable directory holding early acceptance proof and its copied logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_evidence: Option<String>,
+    /// Durable directory holding a copy of every file worktree cleanup removed
+    /// from the task's `.foundry` directory because it was not committed:
+    /// gitignored files and Foundry's own proof scratch. Files sit at their
+    /// repository-relative paths. Absent when cleanup removed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncommitted_artifacts: Option<String>,
     #[serde(flatten)]
     pub verdict: TaskVerdict,
     #[serde(flatten)]
@@ -200,6 +206,7 @@ mod tests {
             preservation_ref: Some("foundry-task/alpha-1".to_string()),
             land_blocked: Some(LandBlocked::TrunkMovedGatesFailed),
             proof_evidence: None,
+            uncommitted_artifacts: None,
             trunk_arrivals: vec![TrunkArrival {
                 commit: "abc123".to_string(),
                 subject: "docs: note".to_string(),
@@ -240,6 +247,7 @@ mod tests {
             preservation_ref: None,
             land_blocked: None,
             proof_evidence: None,
+            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Complete,
             context: super::LoopContext::default(),
@@ -255,5 +263,28 @@ mod tests {
                 "verdict": "complete",
             })
         );
+    }
+
+    /// Records written before the field existed still read, and a recorded
+    /// archive location survives a round trip.
+    #[test]
+    fn uncommitted_artifacts_is_optional_on_the_wire() {
+        let old: TaskRunCompletedPayload = serde_json::from_value(serde_json::json!({
+            "project": "alpha",
+            "success": true,
+            "landed": true,
+            "summary": "done",
+            "verdict": "complete",
+        }))
+        .unwrap();
+        assert_eq!(old.uncommitted_artifacts, None);
+
+        let archived = TaskRunCompletedPayload {
+            uncommitted_artifacts: Some("/home/u/.foundry/evidence/t/a/worktree".to_string()),
+            ..old
+        };
+        let json = serde_json::to_value(&archived).unwrap();
+        assert_eq!(json["uncommitted_artifacts"], "/home/u/.foundry/evidence/t/a/worktree");
+        assert_eq!(serde_json::from_value::<TaskRunCompletedPayload>(json).unwrap(), archived);
     }
 }

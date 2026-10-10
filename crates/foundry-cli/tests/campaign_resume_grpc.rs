@@ -162,6 +162,7 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
             preservation_ref: Some("foundry-task/cli-resume-grpc-test-ref".to_string()),
             land_blocked: None,
             proof_evidence: None,
+            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::BlockedOnDecision {
                 finding: "which path to take".to_string(),

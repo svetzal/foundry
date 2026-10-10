@@ -439,9 +439,9 @@ mod tests {
                 stdout: " M src/main.rs".to_string(),
                 ..success.clone()
             },
-            success.clone(), // reset artifact staging
-            success.clone(), // stage deliverables
-            success.clone(), // no tracked .foundry paths
+            success.clone(), // unstage proof scratch
+            success.clone(), // stage everything else
+            success.clone(), // HEAD tracks no proof scratch
             foundry_sdk::gateway::CommandResult {
                 exit_code: 1,
                 success: false,
@@ -455,7 +455,17 @@ mod tests {
         let issued: Vec<String> =
             shell.invocations().iter().map(|inv| inv.args.join(" ")).collect();
         assert!(summary.contains("preserved at"), "{summary}");
-        assert!(issued.iter().any(|a| a == "add -A -- . :(exclude).foundry"), "{issued:?}");
+        assert!(
+            issued.iter().any(|a| a == "reset HEAD -- .foundry/proof.json .foundry/logs"),
+            "{issued:?}"
+        );
+        assert!(
+            issued
+                .iter()
+                .any(|a| a == "add -A -- . :(exclude).foundry/proof.json :(exclude).foundry/logs"),
+            "only proof scratch is kept out of the commit: {issued:?}"
+        );
+        assert!(!issued.iter().any(|a| a.starts_with("add -u")), "{issued:?}");
         assert!(issued.iter().any(|a| a.starts_with("commit -m")), "{issued:?}");
         assert!(
             issued

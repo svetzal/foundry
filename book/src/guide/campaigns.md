@@ -333,12 +333,27 @@ so the archive is readable after worktree removal. Malformed proofs and absent
 logs remain failed evidence; archival never invents results. An archival I/O
 failure stops finalization before committing or cleanup.
 
-New files under the worktree's `.foundry` directory are excluded from the task
-commit, including accidentally staged proof and raw build logs. Files already
-tracked in HEAD remain project content: their modifications and deletions are
-committed normally. After archival and committing, excluded artifacts are
-removed so the worktree can be cleaned up; tracked `.foundry` content is left
-alone. Keep durable project configuration tracked explicitly.
+Only `.foundry/proof.json` and the files under `.foundry/logs/` are Foundry's
+own. They are kept out of the task commit, even when staged by accident. If
+HEAD already tracks one of them, its modifications and deletions are committed
+normally, but a new file there is not.
+
+Every other file the executor creates under `.foundry/` is project work and is
+committed with the change, like any other file. To make evidence land on trunk
+(or on the preserved branch, for work that does not land), write it under a
+repository path that is not gitignored and is not `.foundry/proof.json` or
+`.foundry/logs/`. For example, use `.foundry/<topic>/` or `docs/`.
+
+After committing, Foundry removes the files under `.foundry` that are still
+uncommitted (gitignored files and the proof scratch) so the worktree can be
+removed. Before it removes them, it copies each one to
+`~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/<repository path>`.
+The task result's `uncommitted_artifacts` field records that `worktree`
+directory. The field is absent when there was nothing to remove. This copy is
+the complete record of what cleanup removed, so it also holds the proof and its
+logs at their worktree paths, beside the portable proof archive in the parent
+directory. A copy failure stops finalization before any file is removed. Tracked
+`.foundry` content is not touched.
 
 New campaign tasks fail with a typed defect if the record is
 missing, malformed, or refers to absent logs. This check spends no reviewer
