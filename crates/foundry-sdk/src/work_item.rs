@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
 use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
+use crate::work_source::WorkSource;
 
 /// Current work-item store format version. Bumped on schema-breaking changes.
 pub const WORK_ITEM_STORE_VERSION: u32 = 1;
@@ -235,6 +236,12 @@ pub struct WorkItem {
     pub lane: WorkLane,
     /// Opaque submitter text. Foundry never interprets it.
     pub origin: String,
+    /// What dispatched the work, typed: a campaign cycle, a sentinel, a person
+    /// at a client, or a parent work item. Recorded at submission and never
+    /// changed. Absent on records written before the source existed, which
+    /// every reader treats as "not recorded".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WorkSource>,
     /// When the item entered the ledger.
     pub submitted_at: DateTime<Utc>,
     /// When an agent started on it.
@@ -304,6 +311,7 @@ impl WorkItem {
             kind: spec.kind,
             lane: spec.lane,
             origin: spec.origin,
+            source: None,
             submitted_at: at,
             started_at: None,
             settled_at: None,
@@ -340,6 +348,16 @@ impl WorkItem {
         item.queue();
         item.start(at);
         item
+    }
+
+    /// Record what dispatched the item (builder pattern).
+    ///
+    /// `None` leaves the source unrecorded, which is what an item whose
+    /// dispatching event named no source carries.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<WorkSource>) -> Self {
+        self.source = source;
+        self
     }
 
     /// Whether the item is still `running`.
@@ -772,6 +790,48 @@ mod tests {
             .filter(|p| p.to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(strays.is_empty(), "stray temp files: {strays:?}");
+    }
+
+    #[test]
+    fn a_recorded_source_round_trips_through_the_file_and_an_absent_one_stays_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let mut store = WorkItemStore::default();
+        let sourced = WorkItem::dispatched(spec(), now())
+            .with_source(Some(WorkSource::campaign("tidy-cli", 3)));
+        let unsourced = WorkItem::dispatched(spec(), now());
+        store.upsert(sourced.clone());
+        store.upsert(unsourced.clone());
+        store.save(&path).unwrap();
+
+        let loaded = WorkItemStore::load(&path).unwrap();
+        assert_eq!(
+            loaded.find(&sourced.id).unwrap().source,
+            Some(WorkSource::campaign("tidy-cli", 3))
+        );
+        assert_eq!(loaded.find(&unsourced.id).unwrap().source, None);
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let records = json["items"].as_array().unwrap();
+        assert_eq!(records[0]["source"]["kind"], "campaign");
+        assert_eq!(records[0]["source"]["ref"], "tidy-cli");
+        assert_eq!(records[0]["source"]["cycle"], 3);
+        assert!(records[1].get("source").is_none(), "an unrecorded source writes no key");
+    }
+
+    #[test]
+    fn a_record_written_before_the_source_existed_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let mut store = WorkItemStore::default();
+        store.upsert(WorkItem::dispatched(spec(), now()));
+        let mut json: serde_json::Value = serde_json::to_value(&store).unwrap();
+        json["items"][0].as_object_mut().unwrap().remove("source");
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let loaded = WorkItemStore::load(&path).unwrap();
+        assert_eq!(loaded.items[0].source, None, "absence reads as not recorded");
     }
 
     #[test]

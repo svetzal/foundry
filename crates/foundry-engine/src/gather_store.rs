@@ -19,6 +19,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{GatherCompletedPayload, GatheredChild, MissingChild};
 use foundry_sdk::scatter::{GatherPolicy, GatherSpec};
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::work_source::WorkSource;
 
 /// One open fan-out group: the children expected, those arrived so far, and
 /// everything needed to synthesize the reduce event when satisfied.
@@ -42,6 +43,7 @@ pub(crate) struct GatherGroup {
     trace_id: Option<String>,
     span_id: Option<String>,
     parent_span_id: Option<String>,
+    source: Option<WorkSource>,
     throttle: Throttle,
     // Accumulating arrival state.
     seen: HashSet<String>,
@@ -70,6 +72,7 @@ impl GatherGroup {
             trace_id: trigger.trace_id.clone(),
             span_id: trigger.span_id.clone(),
             parent_span_id: trigger.parent_span_id.clone(),
+            source: trigger.source.clone(),
             throttle: trigger.throttle,
             seen: HashSet::new(),
             arrived: Vec::new(),
@@ -134,6 +137,7 @@ impl GatherGroup {
             .with_span_ids(self.span_id, self.parent_span_id)
             .with_causation_id(caused_by)
             .with_gather_id(self.parent_gather_id)
+            .with_source(self.source)
     }
 }
 

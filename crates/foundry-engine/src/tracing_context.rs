@@ -22,6 +22,16 @@ use foundry_sdk::event::{Event, EventType};
 /// the way down a scattered child's sub-workflow so the terminal completion
 /// event still identifies its gather.
 ///
+/// # Work source
+///
+/// The emitted event inherits the trigger's typed `source` verbatim, by the
+/// same rule. A root event names what dispatched the work (a campaign cycle,
+/// a sentinel, a person at a client); every hop below it, including the
+/// maintenance fan-out's per-project roots, carries that name unchanged so the
+/// work-item ledger can record it off whichever event opens an item's chain.
+/// A block that sets an explicit source on an event it emits (a campaign
+/// dispatching a cycle from an operator-rooted advance) keeps it.
+///
 /// # Span rules
 ///
 /// - **Default** (non-opener events): the emitted event is a peer of the
@@ -79,6 +89,10 @@ impl SpanStamper {
 
         if emitted.gather_id.is_none() {
             emitted.gather_id.clone_from(&trigger.gather_id);
+        }
+
+        if emitted.source.is_none() {
+            emitted.source.clone_from(&trigger.source);
         }
 
         if self.opens_span(&emitted.event_type) {

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::PayloadError;
 use crate::throttle::Throttle;
+use crate::work_source::WorkSource;
 
 /// A Foundry event — an immutable fact that something happened.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +62,20 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gather_id: Option<String>,
 
+    /// What dispatched the unit of work this event belongs to, when the
+    /// submitter named it: a campaign cycle, a sentinel, a person at a client,
+    /// or a parent work item (see [`WorkSource`]).
+    ///
+    /// Stamped on the root event by whatever emitted it and propagated
+    /// verbatim to every descendant, across span-opener boundaries and the
+    /// maintenance fan-out, exactly like `trace_id` and `gather_id`. That is
+    /// what lets the work-item ledger record the source off the event that
+    /// opens an item's chain, however many hops below the root that is. `None`
+    /// for an event recorded before the field existed, or whose root named no
+    /// source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WorkSource>,
+
     /// Event-type-specific payload.
     pub payload: serde_json::Value,
 }
@@ -89,6 +104,7 @@ impl Event {
             parent_span_id: None,
             causation_id: None,
             gather_id: None,
+            source: None,
             payload,
         }
     }
@@ -128,6 +144,15 @@ impl Event {
     #[must_use]
     pub fn with_gather_id(mut self, gather_id: Option<String>) -> Self {
         self.gather_id = gather_id;
+        self
+    }
+
+    /// Attach the typed work source to this event (builder pattern).
+    ///
+    /// `source = None` indicates a root whose submitter named no source.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<WorkSource>) -> Self {
+        self.source = source;
         self
     }
 
@@ -1211,6 +1236,50 @@ mod tests {
         }"#;
         let event: Event = serde_json::from_str(json).unwrap();
         assert!(event.gather_id.is_none());
+    }
+
+    #[test]
+    fn source_defaults_to_none_and_is_omitted_from_json() {
+        let event = Event::new(
+            EventType::GreetingRequested,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        assert!(event.source.is_none(), "a bare event names no source");
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("source").is_none(), "source must be absent from JSON when None");
+    }
+
+    #[test]
+    fn source_round_trips_when_present_and_does_not_change_the_id() {
+        let base = Event::new(
+            EventType::GreetingComposed,
+            "test".to_string(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        let event = base.clone().with_source(Some(WorkSource::campaign("tidy-cli", 3)));
+        assert_eq!(base.id, event.id, "source must not change Event::id");
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.source, Some(WorkSource::campaign("tidy-cli", 3)));
+    }
+
+    #[test]
+    fn source_deserializes_as_none_when_absent() {
+        // Events written before the source existed must still parse.
+        let json = r#"{
+            "id": "evt_test",
+            "event_type": "greeting_requested",
+            "project": "test",
+            "occurred_at": "2026-01-01T00:00:00Z",
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "throttle": "full",
+            "payload": {}
+        }"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert!(event.source.is_none());
     }
 
     #[test]
