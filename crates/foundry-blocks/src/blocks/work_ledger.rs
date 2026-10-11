@@ -1,20 +1,10 @@
 //! The blocks that keep the work-item ledger in step with a task dispatch.
 //!
-//! [`AdmitWorkItem`] opens the record from the task-workflow root event — the
-//! `ExecutionRequested` that `foundry task`, a campaign cycle and the nightly
-//! majors lane all emit — recording it `queued` with the root held on the
-//! item, so the daemon's pacing scheduler can start it when the rules allow
-//! (see [`foundry_sdk::pacing`]). The chain itself does not run from that
-//! root: the task chain's entry declines a root that
-//! [`awaits_admission`], and runs only the started root the scheduler emits,
-//! which names the admitted item. [`SettleFailedDispatch`] closes the record
-//! when the chain stops before the coding agent starts, and
-//! [`SettleWorkItem`] closes it from the task runner's typed terminal result.
-//!
-//! None of them changes a dispatch. They observe the chain that already exists
-//! and write a record beside it, and a ledger fault is absorbed rather than
-//! propagated: an unwritable ledger must never be the reason a task does not
-//! run.
+//! Durable admission in the daemon opens each queued record before its
+//! traversal starts. The task chain declines a root that [`awaits_admission`]
+//! and accepts the started root naming its admitted item. [`SettleFailedDispatch`]
+//! records a stop before the coding agent runs, and [`SettleWorkItem`] records
+//! the task runner's typed terminal result and preservation evidence.
 //!
 //! Every mutation here is a `load` → apply → `save` against the file, which
 //! stays the single source of truth, and every one of them takes the same
@@ -182,10 +172,8 @@ fn project_is_registered(registry: &Arc<RwLock<Registry>>, project: &str) -> boo
 /// before its chain may run: a real task dispatch, for a registered project,
 /// not yet naming the ledger item it runs (see [`ADMITTED_WORK_ITEM_KEY`]).
 ///
-/// This is the one decision the admission block and the task chain's entry
-/// share: [`AdmitWorkItem`] accepts exactly the roots this is true for, and
-/// `CheckCharter` declines them, so a root is either admitted or run, never
-/// both.
+/// `CheckCharter` declines these roots until the scheduler starts their
+/// durable ledger item.
 #[must_use]
 pub fn awaits_admission(trigger: &Event, registry: &Arc<RwLock<Registry>>) -> bool {
     accepts_dispatch(trigger)
@@ -744,8 +732,6 @@ impl TaskBlock for SettleWorkItem {
 
 /// Build one work-item lifecycle event.
 ///
-/// Shared with [`super::run_ledger`] so every kind of item reports itself in
-/// the same payload shape.
 pub(super) fn work_item_event(event_type: EventType, trigger: &Event, item: &WorkItem) -> Event {
     super::event_from_infallible_payload(
         event_type,
@@ -824,7 +810,65 @@ mod tests {
     use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
-    use super::{AdmitWorkItem, SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
+    use super::AdmitWorkItem;
+    use super::{SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
+
+    fn admission_pending(trigger: &Event) -> bool {
+        super::awaits_admission(
+            trigger,
+            &test_helpers::registry_with_project("alpha", "/tmp/alpha"),
+        )
+    }
+
+    #[test]
+    fn dispatch_metadata_reaches_the_queued_item_and_its_lifecycle_payload() {
+        for (extra, source, kind, lane, origin) in [
+            (
+                serde_json::json!({"operator_origin": "host workbench: asked by Stacey"}),
+                Some(WorkSource::operator("workbench")),
+                WorkItemKind::Task,
+                WorkLane::Interactive,
+                "foundry task (host workbench: asked by Stacey)",
+            ),
+            (
+                serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3}),
+                Some(WorkSource::campaign("tidy-cli", 3)),
+                WorkItemKind::CampaignCycle,
+                WorkLane::Campaign,
+                "campaign tidy-cli cycle 3",
+            ),
+            (
+                serde_json::json!({}),
+                None,
+                WorkItemKind::Task,
+                WorkLane::Interactive,
+                "foundry task",
+            ),
+        ] {
+            let mut trigger = dispatch(&extra).with_source(source.clone());
+            trigger.payload["depends_on"] = serde_json::json!(["wi_parent"]);
+            trigger.payload["not_before"] = serde_json::json!("2099-01-01T00:00:00Z");
+            let payload = trigger.parse_payload().unwrap();
+            let item = super::item_from_dispatch(&trigger, &payload);
+            assert_eq!(item.state, WorkItemState::Queued);
+            assert_eq!(item.kind, kind);
+            assert_eq!(item.lane, lane);
+            assert_eq!(item.origin, origin);
+            assert_eq!(item.source, source);
+            assert_eq!(item.trace_id.as_deref(), Some(TRACE));
+            assert_eq!(item.depends_on, vec!["wi_parent"]);
+            assert_eq!(item.not_before.unwrap().to_rfc3339(), "2099-01-01T00:00:00+00:00");
+            assert_eq!(item.pending_root.as_ref(), Some(&trigger));
+            let fact = super::work_item_event(EventType::WorkItemSubmitted, &trigger, &item);
+            assert_eq!(fact.payload["origin"], origin);
+            assert_eq!(fact.payload["depends_on"], serde_json::json!(["wi_parent"]));
+            if let Some(source) = source {
+                assert_eq!(fact.payload["source"], serde_json::to_value(source).unwrap());
+            } else {
+                assert!(fact.payload.get("source").is_none());
+            }
+        }
+    }
 
     /// An admitter over `path`, with "alpha" the one project in the registry
     /// and no pacing files, so the defaults apply.
@@ -837,6 +881,15 @@ mod tests {
                 state: std::path::PathBuf::from("/tmp/never-present/pacing-state.json"),
             },
         )
+    }
+
+    /// Seed a queued dispatch to exercise settlement independently of admission.
+    fn seed_dispatch(path: &std::path::Path, trigger: &Event) {
+        let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
+        let mut store = WorkItemStore::load(path).unwrap();
+        let payload = trigger.parse_payload().unwrap();
+        store.upsert(super::item_from_dispatch(trigger, &payload));
+        store.save(path).unwrap();
     }
 
     /// Start every queued item in the ledger at `path`, as the daemon's
@@ -856,8 +909,6 @@ mod tests {
         sinks_on: [ExecutionRequested],
     );
 
-    /// `assert_block_meta!` may only be invoked once per module, so the other
-    /// blocks' metadata is asserted by hand.
     #[test]
     fn settle_work_item_is_a_mutator_sinking_on_the_terminal_task_result() {
         let block = SettleWorkItem::new(std::path::PathBuf::from("/tmp/work-items.json"));
@@ -882,7 +933,7 @@ mod tests {
 
     const TRACE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    /// A task-workflow root dispatch, the event `AdmitWorkItem` admits from.
+    /// A task-workflow root dispatch.
     fn dispatch(extra: &serde_json::Value) -> Event {
         let mut payload = serde_json::json!({
             "project": "alpha",
@@ -969,14 +1020,14 @@ mod tests {
 
     #[test]
     fn accepts_returns_true_for_a_task_workflow_dispatch() {
-        assert!(recorder("/tmp/x.json").accepts(&dispatch(&serde_json::json!({}))));
+        assert!(admission_pending(&dispatch(&serde_json::json!({}))));
     }
 
     #[test]
     fn accepts_returns_false_for_a_non_task_workflow() {
         let trigger = dispatch(&serde_json::json!({"workflow": "prompt"}));
         assert!(
-            !recorder("/tmp/x.json").accepts(&trigger),
+            !admission_pending(&trigger),
             "only the task workflow runs a coding agent and reports a verdict"
         );
     }
@@ -985,7 +1036,7 @@ mod tests {
     fn accepts_returns_false_when_there_is_no_prompt_to_dispatch() {
         let mut trigger = dispatch(&serde_json::json!({}));
         trigger.payload.as_object_mut().unwrap().remove("prompt");
-        assert!(!recorder("/tmp/x.json").accepts(&trigger));
+        assert!(!admission_pending(&trigger));
     }
 
     #[test]
@@ -994,7 +1045,7 @@ mod tests {
         trigger.project = "not-registered".to_string();
         trigger.payload["project"] = serde_json::json!("not-registered");
         assert!(
-            !recorder("/tmp/x.json").accepts(&trigger),
+            !admission_pending(&trigger),
             "the chain refuses an unknown project without emitting anything that could settle an item"
         );
     }
@@ -1004,7 +1055,7 @@ mod tests {
         let mut trigger = dispatch(&serde_json::json!({}));
         trigger.throttle = Throttle::DryRun;
         assert!(
-            !recorder("/tmp/x.json").accepts(&trigger),
+            !admission_pending(&trigger),
             "a dry run dispatches nothing, so the ledger must hold nothing"
         );
     }
@@ -1017,7 +1068,7 @@ mod tests {
             Throttle::Full,
             serde_json::json!({"workflow": "task", "nonsense": true}),
         );
-        assert!(!recorder("/tmp/x.json").accepts(&trigger));
+        assert!(!admission_pending(&trigger));
     }
 
     #[test]
@@ -1245,15 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_the_settlement_simulations_carry_the_triggers_source() {
-        let block = recorder("/tmp/never-written.json");
-        let trigger =
-            dispatch(&serde_json::json!({})).with_source(Some(WorkSource::operator("workbench")));
-        assert_eq!(
-            block.simulate(&trigger).unwrap().source,
-            Some(WorkSource::operator("workbench"))
-        );
-
+    fn the_settlement_simulations_carry_the_triggers_source() {
         let settle = SettleWorkItem::new("/tmp/never-written.json".into());
         let done = completion(TaskVerdict::Complete, true, None)
             .with_source(Some(WorkSource::campaign("tidy-cli", 2)));
@@ -1338,10 +1381,8 @@ mod tests {
         assert_eq!(super::classify("Add a flag.", None, None, Some("")).2, "foundry task");
     }
 
-    #[tokio::test]
-    async fn a_major_upgrade_objective_records_the_maintenance_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
+    #[test]
+    fn a_major_upgrade_objective_records_the_maintenance_lane() {
         let objective = crate::dependency_updates::majors::objective(
             "alpha",
             &foundry_sdk::payload::PlannedUpdate {
@@ -1357,14 +1398,11 @@ mod tests {
                 beyond_hold: false,
             },
         );
-        let block = recorder(path.to_str().unwrap());
-
-        block
-            .execute(&dispatch(&serde_json::json!({"prompt": objective})))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
+        let trigger = dispatch(&serde_json::json!({"prompt": objective}))
+            .with_source(Some(WorkSource::sentinel("nightly-maintenance")));
+        let payload = trigger.parse_payload().unwrap();
+        let item = super::item_from_dispatch(&trigger, &payload);
+        assert_eq!(item.source, Some(WorkSource::sentinel("nightly-maintenance")));
         assert_eq!(item.kind, WorkItemKind::MajorUpgrade);
         assert_eq!(item.lane, WorkLane::Maintenance);
         assert_eq!(item.origin, "nightly majors lane");
@@ -1410,10 +1448,7 @@ mod tests {
     async fn record_then_abandon(trigger: Event) -> (WorkItemStore, Vec<Event>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
         start_queued(&path);
         let result = SettleFailedDispatch::new(path.clone()).execute(&trigger).await.unwrap();
         (WorkItemStore::load(&path).unwrap(), result.events)
@@ -1450,10 +1485,7 @@ mod tests {
     async fn a_failed_dispatch_on_another_trace_settles_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
         start_queued(&path);
         let mut elsewhere = charter_failed(false);
         elsewhere.trace_id = Some("b".repeat(32));
@@ -1473,10 +1505,7 @@ mod tests {
     async fn record_then_settle(trigger: Event) -> (WorkItemStore, Vec<Event>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
         start_queued(&path);
         let result = SettleWorkItem::new(path.clone()).execute(&trigger).await.unwrap();
         (WorkItemStore::load(&path).unwrap(), result.events)
@@ -1539,10 +1568,7 @@ mod tests {
     async fn settling_twice_leaves_the_first_settlement_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
         start_queued(&path);
         let settle = SettleWorkItem::new(path.clone());
         let trigger = completion(TaskVerdict::Complete, true, None);
@@ -1579,7 +1605,7 @@ mod tests {
     async fn a_concurrent_record_and_settle_both_reach_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        let record = Arc::new(recorder(path.to_str().unwrap()));
+        let record_path = path.clone();
         let settle = Arc::new(SettleWorkItem::new(path.clone()));
 
         for iteration in 0..64u32 {
@@ -1607,11 +1633,11 @@ mod tests {
             let mut done = completion(TaskVerdict::Complete, true, None);
             done.trace_id = Some(seeded_trace);
 
-            let recorder = Arc::clone(&record);
+            let record_path = record_path.clone();
             let settler = Arc::clone(&settle);
-            let recording = tokio::spawn(async move { recorder.execute(&dispatched).await });
+            let recording = tokio::spawn(async move { seed_dispatch(&record_path, &dispatched) });
             let settling = tokio::spawn(async move { settler.execute(&done).await });
-            recording.await.unwrap().unwrap();
+            recording.await.unwrap();
             settling.await.unwrap().unwrap();
 
             let store = WorkItemStore::load(&path).unwrap();
@@ -1644,10 +1670,7 @@ mod tests {
     async fn supersession_reloads_after_owner_cancellation_and_keeps_unrelated_updates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work-items.json");
-        recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
         start_queued(&path);
         let mut store = WorkItemStore::load(&path).unwrap();
         let mut candidate = store.items[0].clone();

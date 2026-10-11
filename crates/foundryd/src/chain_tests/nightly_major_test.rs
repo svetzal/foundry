@@ -3,6 +3,7 @@ use super::*;
 use foundry_blocks::blocks::PlanMajorUpgrades;
 use foundry_blocks::dependency_updates::majors::{Caps, objective};
 use foundry_blocks::trace_writer::TraceWriter;
+use foundry_engine::event_writer::EventWriter;
 use foundry_sdk::payload::{
     ChainContext, ChangeKind, ClassificationPhase, DependencyBrief, DependencyClassification,
     DependencyUpdatesClassifiedPayload, Ecosystem, MajorUpgradeStatus, MajorUpgradesPlannedPayload,
@@ -145,8 +146,7 @@ impl Nightly {
         let registry =
             test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
         let trace_writer = Arc::new(TraceWriter::new(dir.path().join("traces").to_str().unwrap()));
-        let writer =
-            Arc::new(foundry_engine::event_writer::EventWriter::new(dir.path().join("events")));
+        let writer = Arc::new(EventWriter::new(dir.path().join("events")));
         // Actual prior task history would suppress x without the planner change.
         let history = Event::new(
             EventType::WorkItemSettled,
@@ -177,9 +177,14 @@ impl Nightly {
                 .unwrap();
         }
         let (tx, events) = tokio::sync::broadcast::channel(256);
-        let engine = continuation_engine(agent.clone(), registry.clone(), &ledger)
-            .with_event_writer(writer)
-            .with_event_broadcaster(tx.clone());
+        let engine = with_runtime_admission(
+            continuation_engine(agent.clone(), registry.clone(), &ledger),
+            &ledger,
+            registry.clone(),
+            tx.clone(),
+            writer,
+            trace_writer.clone(),
+        );
         let ctx = crate::service::RuntimeContext {
             engine: Arc::new(engine),
             trace_store: Arc::new(crate::trace_store::TraceStore::with_trace_writer(
@@ -399,6 +404,7 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
         let dispatches = crate::service::eventing_ops::planned_major_dispatches(&summary);
         assert_eq!(dispatches[0].payload["nightly_resume_item_id"], f.parent.id);
         assert!(dispatches[1].payload.get("nightly_resume_item_id").is_none());
+        f.start_scheduler();
         crate::service::eventing_ops::run_major_upgrades(
             dispatches,
             f.ctx.clone(),
@@ -406,7 +412,6 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
             &f.pacing(),
         )
         .await;
-        f.start_scheduler();
         let observed = f.observe_until_terminals(2).await;
         assert_watch_matches(watch, &observed).await;
         server.abort();

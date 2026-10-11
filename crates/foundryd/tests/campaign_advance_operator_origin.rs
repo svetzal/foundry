@@ -64,6 +64,25 @@ fn pacing_paths_beside(store_path: &std::path::Path) -> foundry_sdk::pacing::Pac
     }
 }
 
+/// Submit the cycle through the daemon's durable admission without starting it.
+fn admit_cycle(path: &std::path::Path, registry: Arc<RwLock<Registry>>, cycle: &Event) {
+    use foundry_engine::admission::{Admission, WorkAdmission};
+    let dir = path.parent().expect("ledger directory");
+    let (event_tx, _) = broadcast::channel(64);
+    let admission = foundryd::work_admission::DurableWorkAdmission::new(
+        path.to_path_buf(),
+        registry,
+        pacing_paths_beside(path),
+        event_tx,
+        Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events"))),
+        Arc::new(TraceWriter::new(dir.join("traces").to_str().unwrap())),
+    );
+    assert!(matches!(
+        admission.prepare(cycle, None).expect("admit cycle"),
+        Admission::Deferred { .. }
+    ));
+}
+
 fn make_harness() -> Harness {
     let (event_tx, events) = broadcast::channel(64);
     let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
@@ -253,14 +272,7 @@ async fn an_advance_with_an_origin_carries_it_to_the_cycle_and_into_the_ledger()
         .and_then(serde_json::Value::as_u64)
         .expect("the dispatched cycle must name its number");
 
-    foundry_blocks::blocks::AdmitWorkItem::new(
-        work_items_path.clone(),
-        registry,
-        pacing_paths_beside(&work_items_path),
-    )
-    .execute(&cycle)
-    .await
-    .expect("admit the dispatched cycle");
+    admit_cycle(&work_items_path, registry, &cycle);
 
     let stored = foundry_sdk::work_item::WorkItemStore::load(&work_items_path).unwrap();
     let item_id = stored.items[0].id.clone();
@@ -323,14 +335,7 @@ async fn an_advance_without_an_origin_dispatches_exactly_as_before() {
         .and_then(serde_json::Value::as_u64)
         .expect("the dispatched cycle must name its number");
 
-    foundry_blocks::blocks::AdmitWorkItem::new(
-        work_items_path.clone(),
-        registry_for_ledger,
-        pacing_paths_beside(&work_items_path),
-    )
-    .execute(&cycle)
-    .await
-    .expect("admit the dispatched cycle");
+    admit_cycle(&work_items_path, registry_for_ledger, &cycle);
     let stored = foundry_sdk::work_item::WorkItemStore::load(&work_items_path).unwrap();
     let read_back = client
         .get_work_item(GetWorkItemRequest {

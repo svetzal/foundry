@@ -112,7 +112,7 @@ fn task_project(dir: &Path) -> PathBuf {
     checkout
 }
 
-/// The real task chain, with the three ledger blocks registered exactly as
+/// The real task chain, with durable admission and typed settlement as
 /// `foundryd` registers them.
 fn task_engine(
     agent: Arc<dyn AgentGateway>,
@@ -176,22 +176,31 @@ pub(super) async fn admit_and_run(
     store_path: &Path,
     root: Event,
 ) -> Vec<Event> {
-    let mut events = engine.process(root).await.events;
-    let dispatched: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
-    let recorder = Arc::clone(&dispatched);
     let scheduler = crate::pacing::PacingScheduler::new(
         runtime_context(Arc::clone(engine), registry.clone(), store_path.parent().unwrap()),
         store_path.to_path_buf(),
         pacing_paths_beside(store_path),
-        Arc::new(tokio::sync::Notify::new()),
+        engine.admission_wake().unwrap(),
     )
-    .with_dispatch(Arc::new(move |event| recorder.lock().unwrap().push(event)));
-    scheduler.tick().await;
-    let started: Vec<Event> = std::mem::take(&mut *dispatched.lock().unwrap());
-    for root in started {
-        events.extend(engine.process(root).await.events);
-    }
-    events
+    .with_dispatch({
+        let engine = Arc::clone(engine);
+        Arc::new(move |event| {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move { engine.process(event).await });
+        })
+    });
+    let engine = Arc::clone(engine);
+    let mut traversal = tokio::spawn(async move { engine.process(root).await });
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            tokio::select! {
+                result = &mut traversal => return result.unwrap().events,
+                () = tokio::task::yield_now() => { scheduler.tick().await; },
+            }
+        }
+    })
+    .await
+    .expect("the admitted task must finish")
 }
 
 /// Park every seeded `queued` record in `items` so a running scheduler leaves
@@ -234,65 +243,47 @@ fn register_other_repository(dir: &Path, registry: &Arc<RwLock<Registry>>) {
     registry.projects.push(other);
 }
 
-/// Legacy recorder fixtures still admit synchronously. Retain durable owner
-/// validation and traversal completion while those fixtures are migrated.
-struct LegacyExecutionCompletion(crate::work_admission::DurableWorkAdmission);
-impl foundry_engine::admission::WorkAdmission for LegacyExecutionCompletion {
-    fn wake_handle(&self) -> Arc<tokio::sync::Notify> {
-        self.0.wake_handle()
-    }
-    fn failure_events(&self, root: &Event, reason: &str) -> Vec<Event> {
-        self.0.failure_events(root, reason)
-    }
-    fn owner(&self, root: &Event) -> anyhow::Result<Option<String>> {
-        self.0.owner(root)
-    }
-    fn prepare(
-        &self,
-        _event: &Event,
-        _owner: Option<&str>,
-    ) -> anyhow::Result<foundry_engine::admission::Admission> {
-        Ok(foundry_engine::admission::Admission::Execute)
-    }
-    fn wait(&self, id: &str) -> foundry_engine::admission::ResultFuture<'_> {
-        self.0.wait(id)
-    }
-    fn complete(
-        &self,
-        root: &Event,
-        result: &foundry_sdk::trace::ProcessResult,
-    ) -> anyhow::Result<Vec<Event>> {
-        self.0.complete(root, result)
-    }
+/// Bind admission and event routing to the same durable writer and broadcast.
+fn with_runtime_admission(
+    engine: Engine,
+    store_path: &Path,
+    registry: Arc<RwLock<Registry>>,
+    event_tx: tokio::sync::broadcast::Sender<Event>,
+    writer: Arc<foundry_engine::event_writer::EventWriter>,
+    trace_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
+) -> Engine {
+    let admission = crate::work_admission::DurableWorkAdmission::new(
+        store_path.to_path_buf(),
+        registry,
+        pacing_paths_beside(store_path),
+        event_tx.clone(),
+        writer.clone(),
+        trace_writer,
+    );
+    engine
+        .with_event_writer(writer)
+        .with_event_broadcaster(event_tx)
+        .with_work_admission(Arc::new(admission))
 }
 
-/// The ledger blocks that bracket the task chain.
+/// Durable admission and the typed task settlement blocks.
 fn register_ledger_blocks(
     engine: &mut Engine,
     store_path: &Path,
     registry: &Arc<RwLock<Registry>>,
 ) {
     let dir = store_path.parent().unwrap();
-    let writer = Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events")));
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
-    let completion = LegacyExecutionCompletion(crate::work_admission::DurableWorkAdmission::new(
-        store_path.to_path_buf(),
+    *engine = with_runtime_admission(
+        std::mem::take(engine),
+        store_path,
         registry.clone(),
-        pacing_paths_beside(store_path),
         event_tx,
-        writer.clone(),
+        Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events"))),
         Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
             dir.join("traces").to_str().unwrap(),
         )),
-    ));
-    *engine = std::mem::take(engine)
-        .with_event_writer(writer)
-        .with_work_admission(Arc::new(completion));
-    engine.register(Box::new(foundry_blocks::blocks::AdmitWorkItem::new(
-        store_path.to_path_buf(),
-        registry.clone(),
-        pacing_paths_beside(store_path),
-    )));
+    );
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         store_path.to_path_buf(),
     )));
@@ -845,10 +836,22 @@ async fn resume_service_tracked(
     let trace_writer = Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
         dir.join("traces").to_str().unwrap(),
     ));
+    let ledger = dir.join("work-items.json");
+    let writer = Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events")));
+    let engine = if engine.admission_wake().is_some() {
+        with_runtime_admission(
+            engine,
+            &ledger,
+            registry.clone(),
+            event_tx.clone(),
+            writer,
+            trace_writer.clone(),
+        )
+    } else {
+        engine.with_event_writer(writer).with_event_broadcaster(event_tx.clone())
+    };
     let ctx = RuntimeContext {
-        engine: Arc::new(engine.with_event_broadcaster(event_tx.clone()).with_event_writer(
-            Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events"))),
-        )),
+        engine: Arc::new(engine),
         trace_store: Arc::new(crate::trace_store::TraceStore::with_trace_writer(
             std::time::Duration::from_secs(60),
             trace_writer.clone(),
@@ -862,7 +865,10 @@ async fn resume_service_tracked(
     let ledger = dir.join("work-items.json");
     // The real pacing scheduler, as the daemon runs it: a queued child
     // starts through `spawn_workflow` when the rules allow.
-    let wake = Arc::new(tokio::sync::Notify::new());
+    let wake = ctx
+        .engine
+        .admission_wake()
+        .unwrap_or_else(|| Arc::new(tokio::sync::Notify::new()));
     crate::service::spawn_pacing_scheduler(
         &ctx,
         ledger.clone(),
