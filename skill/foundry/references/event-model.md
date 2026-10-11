@@ -161,7 +161,16 @@ from submission origin. They never abort running work or dispose of preserved wo
 kills the in-flight cycle so no `TaskRunCompleted` can settle its item. That
 item settles `cancelled` with the operator's `--reason` as its reason, and the
 event rides the aborted cycle's trace rather than the cancellation's. A graceful
-cancel emits nothing here — its cycle finishes and settles the usual way.
+cancel lets its cycle finish; when that cycle settles open, it settles
+`cancelled` because its campaign is cancelled.
+
+A campaign also emits `WorkItemCancelled` for cycles it has moved past, on each
+cycle's own trace and without an operator action. When the scheduler
+starts a later cycle, earlier open cycles of the same campaign settle `cancelled` with
+`carried forward by campaign <name> cycle <n> (<item id>)`. When the campaign
+completes or is cancelled, its remaining open cycles settle with `campaign
+<name> completed` or `campaign <name> cancelled`. Items without a typed
+campaign source are never touched, and preservation evidence is kept.
 
 Read the ledger with `foundry queue` (running, queued, open and the newest 20
 settled items), `foundry queue open` (only the three open states) and

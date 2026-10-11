@@ -453,6 +453,16 @@ through the `ListWorkItems` source filter (`campaign:<name>`), the same list
 from traces. A campaign whose cycles predate the typed source, or that never
 advanced, prints `(none recorded)`.
 
+An earlier cycle the campaign has moved past does not stay in the open list.
+When the next cycle starts, each earlier cycle still `preserved`,
+`needs_decision` or `failed` settles `cancelled` with the reason `carried
+forward by campaign <name> cycle <n> (<item id>)`. When the campaign completes
+or is cancelled, its remaining open cycles settle `cancelled` with the reason
+`campaign <name> completed` or `campaign <name> cancelled`. The preserved ref
+stays recorded on each item, and no `operator_action` is written. An escalated
+cycle stays open until the campaign advances again or ends: it is the live
+question. See [The work queue](./work-queue.md).
+
 New definitions start as `staged`. An authorized staged campaign becomes
 `active` on its first advance. Each advance re-runs mechanical done-evidence,
 reviews the repository and context artifacts, then makes exactly one decision:
@@ -739,8 +749,10 @@ settles it `cancelled` itself, with your `--reason` text as the reason and a
 disposition naming the cycle's worktree, whether that worktree is gone, and the
 ref any preserved work is recoverable from. A `work_item_cancelled` event records
 it, on the aborted cycle's own trace. `foundry queue show <id>` reads the result
-back. A graceful cancellation changes nothing there: its cycle finishes and
-settles the usual way. See [The work queue](./work-queue.md).
+back. A graceful cancellation lets its cycle finish; when that cycle settles
+open, it settles `cancelled` with the reason `campaign <name> cancelled:
+<reason>`, because the campaign is already cancelled. See [The work
+queue](./work-queue.md).
 
 Settlement happens asynchronously after the cancellation RPC returns. The ledger
 is saved before the engine writes and broadcasts `work_item_cancelled`, so a

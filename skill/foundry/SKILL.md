@@ -243,7 +243,11 @@ foundry campaign resume <name> [--add-cycles N]
 work-item ledger records them (`Cycles in the ledger:`), read through the
 `ListWorkItems` source filter `campaign:<name>` — the same list
 `foundry queue --source campaign:<name>` prints — never inferred from traces.
-Cycles that predate the typed source print `(none recorded)`.
+Cycles that predate the typed source print `(none recorded)`. An earlier open
+cycle settles `cancelled` (`carried forward by campaign <name> cycle <n> (<id>)`)
+when a later cycle starts, and the remaining open cycles settle
+`cancelled` when the campaign completes or is cancelled. An escalated cycle
+stays open until the campaign advances again or ends.
 
 Campaign definitions live in the daemon-owned campaign store. By default,
 `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all go

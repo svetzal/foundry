@@ -9,6 +9,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A campaign now settles the cycles it has moved past, so they leave the
+  "needs a person" list. Before, nothing settled a cycle once the next one was
+  formed from its preserved ref, and production showed four `preserved`
+  cycles of one campaign open on the same commit while a fifth ran. When the
+  scheduler starts a later cycle of the same campaign, before its agent runs,
+  every earlier open cycle (`preserved`, `needs_decision` or `failed`) settles
+  `cancelled` with the reason `carried forward by campaign <name> cycle <n> (<item id>)`. When the
+  campaign completes or is cancelled, its remaining open cycles settle
+  `cancelled` with `campaign <name> completed` or `campaign <name> cancelled`,
+  plus the recorded reason. A gracefully cancelled campaign's in-flight cycle
+  settles the same way once it finishes. Each settlement emits
+  `work_item_cancelled` on the cycle's own trace, keeps the preservation ref
+  and worktree fields, and records no `operator_action`. An escalated cycle
+  stays open until the campaign advances again or ends. Items without a typed
+  campaign source, other campaigns' items and settled items are never touched,
+  and an owner action that reached the ledger first wins. A new block, Settle
+  Carried Campaign Work, does this from campaign cycles' lifecycle events and
+  the campaign's terminal events.
 - Supersession now settles every open ledger item whose preserved work already
   reached trunk, not only `preserved` ones. The landing-triggered check and the
   scheduled reconciler both consider `preserved`, `needs_decision` and `failed`

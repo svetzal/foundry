@@ -189,7 +189,7 @@ the `*Started`/`*Completed` pairing rule:
 | `work_item_submitted` | A unit of work entered the ledger; paced work arrives `queued` with the reason it waits |
 | `work_item_started` | An agent started on a ledger item (for paced work, the scheduler emits it) |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
-| `work_item_cancelled` | An operator stopped a ledger item |
+| `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
 | `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
 

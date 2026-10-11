@@ -803,6 +803,10 @@ fn register_campaign_blocks(
         registry.clone(),
         foundry_sdk::paths::work_items_path(),
     )));
+    engine.register(Box::new(foundry_blocks::blocks::SettleCarriedCampaignWork::new(
+        foundry_sdk::paths::work_items_path(),
+        foundry_sdk::paths::campaigns_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
         agent.clone(),
         shell.clone(),
