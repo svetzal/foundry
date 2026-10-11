@@ -173,6 +173,28 @@ pub struct ShowPaths<'a> {
     pub events_dir: &'a Path,
 }
 
+/// Wire summary of one campaign, matching what `ListCampaigns` would have
+/// sent, so `foundry queue --offline` renders escalated campaigns through the
+/// same functions as the online path.
+pub(crate) fn summary_to_proto(campaign: &Campaign) -> crate::proto::Campaign {
+    crate::proto::Campaign {
+        name: campaign.name.clone(),
+        project: campaign.project.clone(),
+        mission: campaign.mission.clone(),
+        status: campaign.status.to_string(),
+        cycles_completed: campaign.cycles_completed,
+        cycles_landed: campaign.cycles_landed,
+        max_cycles: campaign.budget.max_cycles,
+        authorized_by: campaign.authorized_by.clone().unwrap_or_default(),
+        agent_provider: campaign.agent_provider.clone().unwrap_or_default(),
+        last_run_event_id: campaign.last_run_event_id.clone().unwrap_or_default(),
+        open_escalation: campaign
+            .open_escalation
+            .as_ref()
+            .map(render::campaign::escalation_to_proto),
+    }
+}
+
 /// Wire form of one campaign's detail, matching what `GetCampaign` would have
 /// sent, so `--offline` renders through the same functions as the online path.
 pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDetail {

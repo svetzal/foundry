@@ -175,7 +175,8 @@ without a typed
 campaign source are never touched, and preservation evidence is kept.
 
 Read the ledger with `foundry queue` (running, queued, open and the newest 20
-settled items), `foundry queue open` (only the three open states) and
+settled items), `foundry queue open` (only the three open states, then every escalated
+campaign as its own row kind, never a ledger item) and
 `foundry queue show <item_id>` (one item's full record, followed by that item's
 own `work_item_*` events from the durable event log — selected by payload
 `item_id`, never by trace or project, oldest first). All three take `--json`

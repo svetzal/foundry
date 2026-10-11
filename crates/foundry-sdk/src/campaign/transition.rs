@@ -345,6 +345,10 @@ impl Campaign {
 /// what it does.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OwnerOption {
+    /// The control the command runs: `advance`, `pause`, `resume`, `decide`,
+    /// `complete` or `cancel`. Absent from a report an older daemon wrote.
+    #[serde(default)]
+    pub control: String,
     /// The command line, with `<text>`-style placeholders for owner input.
     pub command: String,
     /// What running it does, in a few words.
@@ -368,6 +372,7 @@ pub fn owner_options(
     budget_exhausted: bool,
 ) -> Vec<OwnerOption> {
     let option = |command: String, effect: &str| OwnerOption {
+        control: command.split_whitespace().nth(2).unwrap_or_default().to_string(),
         command,
         effect: effect.to_string(),
     };
@@ -768,9 +773,9 @@ mod tests {
     }
 
     /// Apply the control a command line names, the way the CLI would.
-    fn apply_option(c: &mut Campaign, command: &str) -> Result<(), TransitionError> {
-        let verb = command.split_whitespace().nth(2).unwrap();
-        match verb {
+    fn apply_option(c: &mut Campaign, option: &OwnerOption) -> Result<(), TransitionError> {
+        let command = option.command.as_str();
+        match option.control.as_str() {
             "advance" => c.check_advanceable(),
             "pause" => {
                 c.pause();
@@ -799,7 +804,7 @@ mod tests {
                     for option in owner_options("c", status, authorized, exhausted) {
                         let mut c = template.clone();
                         assert!(
-                            apply_option(&mut c, &option.command).is_ok(),
+                            apply_option(&mut c, &option).is_ok(),
                             "{status} authorized={authorized} exhausted={exhausted}: `{}` is refused",
                             option.command
                         );

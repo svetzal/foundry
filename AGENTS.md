@@ -215,7 +215,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry gates <project>` | Auto-discover quality gates |
 | `foundry pipeline <project>` | Check GitHub Actions pipeline health and auto-remediate failures (CheckPipeline → RemediatePipeline) |
 | `foundry release <project> [--bump patch\|minor\|major]` | Agent-driven release workflow (ExecuteRelease → WatchPipeline → InstallLocally) |
-| `foundry queue [show <id>\|open] [--source <kind>:<ref>]` | Read the work-item ledger: what is running, queued, open (needs a person) and the newest 20 settled items; `--source` lists one dispatcher's items (`campaign:<name>`, `sentinel:<name>`, `operator:<host>`, `work_item:<parent id>`); `--json` and `--offline` supported. Read-only |
+| `foundry queue [show <id>\|open] [--source <kind>:<ref>]` | Read the work-item ledger: what is running, queued, open (needs a person, followed by every escalated campaign as its own row) and the newest 20 settled items; `--source` lists one dispatcher's items (`campaign:<name>`, `sentinel:<name>`, `operator:<host>`, `work_item:<parent id>`); `--json` and `--offline` supported. Read-only |
 | `foundry queue reconcile` | Run the canonical reconciler now through the daemon and print this invocation’s digest; no offline fallback |
 | `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Resume preserved work through a linked, queued continuation; daemon required |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
@@ -278,10 +278,10 @@ the settled group alone.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`/`held`), open (`preserved`/`needs_decision`/`failed`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`); an unknown kind is INVALID_ARGUMENT. Rows carry a source column, `-` when none was recorded |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`/`held`), open (`preserved`/`needs_decision`/`failed`, then every escalated campaign from `ListCampaigns`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`, before or after it); an unknown kind is INVALID_ARGUMENT. `campaign:<name>` also selects that campaign's escalation; other kinds select none. Rows carry a source column, `-` when none was recorded |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
-| `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+| `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only, then one `campaign <name> … escalated <when> <reason>` row per escalated campaign with `next: foundry campaign show <name> (<controls>)`. Escalations are campaign state, never ledger items: they come from `ListCampaigns` (offline: the campaign store plus the event-log fallback). Every escalated campaign is listed, also one with an open cycle item, and its row names that item (`(open cycle <id>)`) |
 | `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id, recorded `queued` for the scheduler; an unknown `--after` id or unparsable `--not-before` is INVALID_ARGUMENT; rejects `--offline` |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
 | `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued/held cancelled with `cancelled by operator`; rejects `--offline` |
@@ -291,10 +291,11 @@ the settled group alone.
 | `foundry pacing pause\|resume [--lane …]` | Yes | `PausePacing`/`ResumePacing`: persist the lane set to `FOUNDRY_PACING_STATE_PATH` by atomic rename, then emit `pacing_paused`/`pacing_resumed` for project `system`; rejects `--offline` |
 | `foundry pacing drain [--timeout <duration>]` | Yes | `PausePacing` on every lane, then watch `work_item_settled` until no running item remains; on timeout re-reads `GetPacing` and exits 1 naming what still runs; does not resume lanes; rejects `--offline` |
 
-All three take `--json`; the list forms emit an array, `show` emits an object
-(the record's keys unchanged, plus an `events` array), optional fields are
-absent when unset, and the human and JSON forms of one
-command render from the same fetched data.
+All three take `--json`. The list forms emit an object
+`{"items": [...], "escalated_campaigns": [...]}` (through 0.44.4, a bare array
+of items), `show` emits an object (the record's keys unchanged, plus an `events`
+array), optional fields are absent when unset, and the human and JSON forms of
+one command render from the same fetched data.
 
 > **Note for scripts/automation**: without `--offline`, online `foundry queue`,
 > `queue show` and `queue open` do not silently fall back and surface stable

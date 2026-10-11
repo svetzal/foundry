@@ -26,6 +26,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cancel` for an escalated campaign, `resume --add-cycles <n>` when the budget
   is spent). `campaign report` prints the same, and its `--json` gains
   `open_escalation` and `owner_options`. `campaign show` gains `--json`.
+- `foundry queue open`, and the open group of the `foundry queue` overview, now
+  list every escalated campaign. On 2026-10-11 four mojentic recovery campaigns
+  were escalated on production but `queue open` showed two items: the other
+  two (`mojentic-ex-transient-recovery-v2`, `mojentic-sw-transient-recovery-v2`)
+  escalated after their final cycle landed, so the ledger held no open item for
+  them. An escalation is campaign state, not executed work, so it is not
+  written into the ledger. The CLI reads it from `ListCampaigns` (offline: the
+  campaign store, with the event-log fallback for older escalations) and
+  renders it as its own row: `campaign <name> <project> escalated <when>
+  <reason>`, then `next: foundry campaign show <name> (<controls>)`. Every
+  escalated campaign is listed, including one with an open cycle item; the row
+  names that item as `(open cycle <id>)`. `--source campaign:<name>` keeps that
+  campaign's row, and other source kinds show none.
+- `--source` on `foundry queue` is accepted after `open` as well as before it,
+  as the documentation already showed (`foundry queue open --source …` was
+  refused).
+
+### Changed
+
+- **JSON shape for scripts:** `foundry queue --json` and `foundry queue open
+  --json` now emit an object, `{"items": [...], "escalated_campaigns": [...]}`,
+  instead of a bare array of items. Read `.items[]` where a script read `.[]`.
+  Each `escalated_campaigns` entry carries `name`, `project`, `status`,
+  `cycles_completed`, `cycles_landed`, `max_cycles`, `open_escalation`,
+  `open_cycles` and `owner_options`. Keeping campaigns out of `items` means a
+  consumer that counts ledger items never counts a campaign. `queue show
+  --json` is unchanged.
+- Each owner option (`campaign show --json`, `campaign report --json`, the
+  queue's `escalated_campaigns`) carries a `control` key naming the control it
+  runs.
 
 ## [0.44.4] - 2026-10-11
 

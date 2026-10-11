@@ -1,10 +1,11 @@
 //! CLI handlers for the `foundry queue` subcommands — reads of the work-item
 //! ledger.
 //!
-//! The three read commands are read-only. Owner controls require the daemon. The default online path is
-//! daemon-authoritative: it renders `ListWorkItems` / `GetWorkItem` directly
-//! and never reads, creates or mutates the client-side ledger file, so an
-//! absent `FOUNDRY_WORK_ITEMS_PATH` stays absent. `--offline` is an explicit
+//! The three read commands are read-only. Owner controls require the daemon.
+//! The default online path is daemon-authoritative: it renders
+//! `ListWorkItems` / `GetWorkItem` directly and never reads, creates or mutates
+//! the client-side ledger file, so an absent `FOUNDRY_WORK_ITEMS_PATH` stays
+//! absent. `--offline` is an explicit
 //! recovery mode that reads `work-items.json` directly when `foundryd` is not
 //! running.
 //!
@@ -15,6 +16,13 @@
 //! the daemon applies — exact payload `item_id`, every monthly file whatever
 //! its age, chronological order — so the two differ only in transport. The
 //! online path never reads the client-side ledger or events files.
+//!
+//! The overview and `open` also list every escalated campaign, because an
+//! escalated campaign waits on its owner as much as a preserved item does. A
+//! campaign escalation is campaign state, not executed work, so it is never
+//! written into the ledger: online it comes from `ListCampaigns`, offline from
+//! the campaign store and the event log, and it renders as its own row kind
+//! (and its own JSON array) beside the ledger items.
 
 use std::path::Path;
 
@@ -25,8 +33,8 @@ use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
-    GetWorkItemRequest, ListWorkItemEventsRequest, ListWorkItemsRequest, WorkItem as ProtoWorkItem,
-    WorkItemEvent as ProtoWorkItemEvent,
+    Campaign as ProtoCampaign, GetWorkItemRequest, ListCampaignsRequest, ListWorkItemEventsRequest,
+    ListWorkItemsRequest, WorkItem as ProtoWorkItem, WorkItemEvent as ProtoWorkItemEvent,
 };
 use crate::render;
 
@@ -41,15 +49,60 @@ pub enum View {
 
 /// Render a fetched list in the requested view and output form.
 ///
-/// The human and JSON forms render from the same fetched slice, so they can
-/// never disagree about which items the daemon returned.
-fn render_list(items: &[ProtoWorkItem], view: View, json: bool) -> String {
+/// The human and JSON forms render from the same fetched items and escalated
+/// campaigns, so they can never disagree about what the daemon returned.
+fn render_list(
+    items: &[ProtoWorkItem],
+    escalated: &[ProtoCampaign],
+    view: View,
+    json: bool,
+) -> String {
     match (view, json) {
-        (View::Overview, false) => render::queue::queue_overview(items),
-        (View::Overview, true) => render::queue::items_json(items),
-        (View::Open, false) => render::queue::open_only(items),
-        (View::Open, true) => render::queue::open_json(items),
+        (View::Overview, false) => render::queue::queue_overview(items, escalated),
+        (View::Overview, true) => render::queue::items_json(items, escalated),
+        (View::Open, false) => render::queue::open_only(items, escalated),
+        (View::Open, true) => render::queue::open_json(items, escalated),
     }
+}
+
+/// The client-side files `foundry queue --offline` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ListPaths<'a> {
+    /// The work-item ledger.
+    pub work_items: &'a Path,
+    /// The campaign store, for escalated campaigns.
+    pub campaigns: &'a Path,
+    /// The event log, for escalations that predate the campaign record.
+    pub events_dir: &'a Path,
+}
+
+/// The escalated campaigns among `campaigns`, in the order given, that a
+/// `--source` filter admits.
+///
+/// No filter admits every escalated campaign, `campaign:<name>` admits only
+/// that campaign, and every other source kind admits none: a sentinel or an
+/// operator never escalates a campaign.
+pub(crate) fn select_escalated(
+    campaigns: Vec<ProtoCampaign>,
+    source: Option<&SourceFilter>,
+) -> Vec<ProtoCampaign> {
+    let escalated = foundry_sdk::campaign::CampaignStatus::Escalated.to_string();
+    campaigns
+        .into_iter()
+        .filter(|campaign| campaign.status == escalated)
+        .filter(|campaign| match source {
+            None => true,
+            Some(filter) => {
+                filter.kind == WorkSourceKind::Campaign && filter.reference == campaign.name
+            }
+        })
+        .collect()
+}
+
+/// Whether a `--source` filter can admit any campaign at all, so the list can
+/// skip reading campaigns it would discard.
+fn admits_campaigns(source: Option<&SourceFilter>) -> bool {
+    source.is_none_or(|filter| filter.kind == WorkSourceKind::Campaign)
 }
 
 /// An exact source to select on, as `--source <kind>:<ref>` names it.
@@ -109,9 +162,10 @@ fn known_source_kinds() -> String {
     WorkSourceKind::ALL.iter().map(|kind| kind.tag()).collect::<Vec<_>>().join(", ")
 }
 
-/// List the ledger in `view`, optionally only the items from one source.
+/// List the ledger in `view`, optionally only the items from one source,
+/// beside the escalated campaigns the same source admits.
 pub async fn list(
-    work_items_path: &Path,
+    paths: ListPaths<'_>,
     addr: &str,
     offline: bool,
     view: View,
@@ -119,14 +173,33 @@ pub async fn list(
     source: Option<&str>,
 ) -> Result<()> {
     let source = source.map(SourceFilter::parse).transpose()?;
-    let items = if offline {
-        filter_by_source(load_offline(work_items_path)?, source.as_ref())
+    let (items, campaigns) = if offline {
+        let campaigns = if admits_campaigns(source.as_ref()) {
+            load_campaigns_offline(paths.campaigns, paths.events_dir)?
+        } else {
+            Vec::new()
+        };
+        (filter_by_source(load_offline(paths.work_items)?, source.as_ref()), campaigns)
     } else {
         fetch_online(addr, view, source.as_ref()).await?
     };
+    let escalated = select_escalated(campaigns, source.as_ref());
 
-    print!("{}", render_list(&items, view, json));
+    print!("{}", render_list(&items, &escalated, view, json));
     Ok(())
+}
+
+/// Read the campaign store directly, recovering pre-record escalation reasons
+/// from the event log the way `ListCampaigns` does, in its name order.
+fn load_campaigns_offline(campaigns_path: &Path, events_dir: &Path) -> Result<Vec<ProtoCampaign>> {
+    let mut store =
+        foundry_sdk::campaign::CampaignStore::load(campaigns_path).with_context(|| {
+            format!("could not read the campaign store at {}", campaigns_path.display())
+        })?;
+    foundry_sdk::campaign::escalation::resolve_open_escalations(&mut store.campaigns, events_dir)
+        .context("could not read campaign escalations from the event log")?;
+    store.campaigns.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(store.campaigns.iter().map(crate::campaign_commands::summary_to_proto).collect())
 }
 
 /// Only the items whose recorded source is `source`, in the order given;
@@ -145,19 +218,32 @@ pub(crate) fn filter_by_source(
 }
 
 /// Fetch the ledger records from the daemon, in the RPC's documented order,
-/// optionally selected by source.
+/// optionally selected by source, and the campaign inventory when the source
+/// can admit a campaign.
 async fn fetch_online(
     addr: &str,
     view: View,
     source: Option<&SourceFilter>,
-) -> Result<Vec<ProtoWorkItem>> {
+) -> Result<(Vec<ProtoWorkItem>, Vec<ProtoCampaign>)> {
     let suffix = match source {
         Some(filter) => format!("{} {}", view_suffix(view), filter.flag_text()),
         None => view_suffix(view).to_string(),
     };
     let mut client = connect_daemon_required(addr, &offline_hint(suffix.trim())).await?;
     let response = client.list_work_items(list_request(source)).await.map_err(status_to_anyhow)?;
-    Ok(response.into_inner().items)
+    let campaigns = if admits_campaigns(source) {
+        client
+            .list_campaigns(ListCampaignsRequest {
+                project: String::new(),
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .campaigns
+    } else {
+        Vec::new()
+    };
+    Ok((response.into_inner().items, campaigns))
 }
 
 /// The `ListWorkItems` request selecting every project and state, and
@@ -607,6 +693,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let rendered = render_list(
             &load_offline(&dir.path().join("absent.json")).expect("empty ledger"),
+            &[],
             View::Overview,
             false,
         );
@@ -675,23 +762,25 @@ mod tests {
             .save(tmp.path())
             .expect("save ledger");
 
+        let dir = tempfile::tempdir().expect("tempdir");
+        let campaigns = dir.path().join("campaigns.json");
+        let events = dir.path().join("events");
+        let paths = ListPaths {
+            work_items: tmp.path(),
+            campaigns: &campaigns,
+            events_dir: &events,
+        };
         // An unroutable address: reaching for it would fail the test.
-        list(tmp.path(), "http://127.0.0.1:0", true, View::Overview, false, None)
+        list(paths, "http://127.0.0.1:0", true, View::Overview, false, None)
             .await
             .expect("offline overview should succeed");
-        list(tmp.path(), "http://127.0.0.1:0", true, View::Open, true, None)
+        list(paths, "http://127.0.0.1:0", true, View::Open, true, None)
             .await
             .expect("offline open --json should succeed");
-        list(
-            tmp.path(),
-            "http://127.0.0.1:0",
-            true,
-            View::Overview,
-            false,
-            Some("operator:desk"),
-        )
-        .await
-        .expect("offline overview with a source filter should succeed");
+        list(paths, "http://127.0.0.1:0", true, View::Overview, false, Some("operator:desk"))
+            .await
+            .expect("offline overview with a source filter should succeed");
+        assert!(!campaigns.exists(), "an offline read never creates the campaign store");
     }
 
     // ── source filter ─────────────────────────────────────────────────────────
@@ -817,7 +906,7 @@ mod tests {
         assert_eq!(ids(&items), vec!["wi_running", "wi_failed", "wi_landed"]);
 
         for json in [false, true] {
-            let rendered = render_list(&items, View::Open, json);
+            let rendered = render_list(&items, &[], View::Open, json);
             assert!(rendered.contains("wi_failed"), "got:\n{rendered}");
             assert!(!rendered.contains("wi_running"), "got:\n{rendered}");
             assert!(!rendered.contains("wi_landed"), "got:\n{rendered}");
@@ -834,8 +923,8 @@ mod tests {
         .map(item_to_proto)
         .collect();
 
-        let human = render_list(&items, View::Overview, false);
-        let json = render_list(&items, View::Overview, true);
+        let human = render_list(&items, &[], View::Overview, false);
+        let json = render_list(&items, &[], View::Overview, true);
         for id in ["wi_running", "wi_failed"] {
             assert!(human.contains(id), "human form missing {id}");
             assert!(json.contains(id), "JSON form missing {id}");
@@ -853,5 +942,81 @@ mod tests {
             offline_hint(&SourceFilter::campaign("tidy-cli").flag_text()),
             "foundry queue --source campaign:tidy-cli --offline"
         );
+    }
+
+    // ── escalated campaign selection ──────────────────────────────────────────
+
+    fn wire_campaign(name: &str, status: &str) -> ProtoCampaign {
+        ProtoCampaign {
+            name: name.to_string(),
+            status: status.to_string(),
+            ..ProtoCampaign::default()
+        }
+    }
+
+    fn names(campaigns: &[ProtoCampaign]) -> Vec<&str> {
+        campaigns.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn only_escalated_campaigns_are_selected_and_a_source_filter_narrows_them() {
+        let all = || {
+            vec![
+                wire_campaign("asks", "escalated"),
+                wire_campaign("busy", "active"),
+                wire_campaign("stuck", "escalated"),
+                wire_campaign("resting", "paused"),
+            ]
+        };
+        assert_eq!(names(&select_escalated(all(), None)), ["asks", "stuck"]);
+        let stuck = SourceFilter::campaign("stuck");
+        assert_eq!(names(&select_escalated(all(), Some(&stuck))), ["stuck"]);
+        let busy = SourceFilter::campaign("busy");
+        assert!(select_escalated(all(), Some(&busy)).is_empty(), "not escalated");
+        for other in ["sentinel:nightly", "operator:desk", "work_item:wi_1"] {
+            let filter = SourceFilter::parse(other).expect("valid");
+            assert!(select_escalated(all(), Some(&filter)).is_empty(), "{other}");
+            assert!(!admits_campaigns(Some(&filter)), "{other} reads no campaigns");
+        }
+        assert!(admits_campaigns(None) && admits_campaigns(Some(&stuck)));
+    }
+
+    #[test]
+    fn offline_campaigns_recover_a_pre_record_reason_and_create_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let campaigns_path = dir.path().join("campaigns.json");
+        let missing = load_campaigns_offline(&campaigns_path, &dir.path().join("events"))
+            .expect("a missing store has no campaigns");
+        assert!(missing.is_empty());
+        assert!(!campaigns_path.exists(), "a read never creates the store");
+
+        let mut legacy: foundry_sdk::campaign::Campaign =
+            serde_json::from_value(serde_json::json!({
+                "name": "legacy", "project": "p", "mission": "ship", "status": "escalated",
+                "done_evidence": [{"kind": "review", "statement": "shipped"}]
+            }))
+            .expect("campaign");
+        legacy.authorized_by = Some("owner".to_string());
+        foundry_sdk::campaign::CampaignStore {
+            version: 1,
+            campaigns: vec![legacy],
+        }
+        .save(&campaigns_path)
+        .expect("save store");
+        let events = dir.path().join("events");
+        std::fs::create_dir_all(&events).expect("events dir");
+        std::fs::write(
+            events.join("2026-10.jsonl"),
+            "{\"id\":\"e1\",\"event_type\":\"campaign_escalated\",\"project\":\"p\",\
+             \"occurred_at\":\"2026-10-11T03:00:00Z\",\"recorded_at\":\"2026-10-11T03:00:00Z\",\
+             \"throttle\":\"full\",\"payload\":{\"campaign\":\"legacy\",\"project\":\"p\",\
+             \"reason\":\"owner decision required\",\"cycles_completed\":2,\"cycles_landed\":2}}\n",
+        )
+        .expect("write the log");
+
+        let loaded = load_campaigns_offline(&campaigns_path, &events).expect("loads");
+        let open = loaded[0].open_escalation.as_ref().expect("recovered");
+        assert_eq!(open.reason, "owner decision required");
+        assert!(open.from_event_log);
     }
 }
