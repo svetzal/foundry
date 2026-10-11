@@ -769,40 +769,6 @@ impl WorkItemStore {
             .map(|(index, _)| index)?;
         self.items.get_mut(index)
     }
-
-    /// The `running` item of `kind` that a run-shaped terminal settles.
-    ///
-    /// The run-shaped kinds nest and fan out: a maintenance cycle puts one
-    /// `Maintenance` item per project on one trace, and a single per-project
-    /// run can hold a `Maintenance`, a `Remediation` and a `Release` item at
-    /// once, all on that same trace *and* project. Neither the trace nor the
-    /// project alone identifies which item a terminal closes, so the kind is
-    /// part of the correlation and all three must match exactly — a terminal
-    /// carrying no trace settles only an item that carries none either.
-    ///
-    /// When more than one running item still matches (a run that remediates
-    /// twice), the oldest is settled first, so a sequence of terminals closes
-    /// the items in the order their roots opened them.
-    pub fn running_of_kind(
-        &mut self,
-        trace_id: Option<&str>,
-        project: &str,
-        kind: WorkItemKind,
-    ) -> Option<&mut WorkItem> {
-        let index = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                item.is_running()
-                    && item.kind == kind
-                    && item.project == project
-                    && item.trace_id.as_deref() == trace_id
-            })
-            .min_by_key(|(_, item)| item.started_at)
-            .map(|(index, _)| index)?;
-        self.items.get_mut(index)
-    }
 }
 
 /// Whether a task run's terminal result is what settles items of `kind`.
@@ -1548,58 +1514,6 @@ mod tests {
             },
             now(),
         )
-    }
-
-    #[test]
-    fn a_run_terminal_settles_only_its_own_kind_on_a_shared_trace_and_project() {
-        let trace = "c".repeat(32);
-        let mut store = WorkItemStore::default();
-        for kind in [
-            WorkItemKind::Maintenance,
-            WorkItemKind::Remediation,
-            WorkItemKind::Release,
-        ] {
-            store.upsert(run_item(kind, "alpha", Some(&trace)));
-        }
-        let ids: Vec<String> = store.items.iter().map(|item| item.id.clone()).collect();
-
-        let settled = store
-            .running_of_kind(Some(&trace), "alpha", WorkItemKind::Remediation)
-            .expect("the remediation item is running on this trace");
-        settled.settle_landed("fixed", now());
-
-        assert_eq!(store.find(&ids[1]).unwrap().state, WorkItemState::Landed);
-        assert!(store.find(&ids[0]).unwrap().is_running(), "the run itself is untouched");
-        assert!(store.find(&ids[2]).unwrap().is_running(), "the release is untouched");
-    }
-
-    #[test]
-    fn a_fan_out_siblings_terminal_settles_only_its_own_project() {
-        let trace = "d".repeat(32);
-        let mut store = WorkItemStore::default();
-        store.upsert(run_item(WorkItemKind::Maintenance, "alpha", Some(&trace)));
-        store.upsert(run_item(WorkItemKind::Maintenance, "beta", Some(&trace)));
-        let ids: Vec<String> = store.items.iter().map(|item| item.id.clone()).collect();
-
-        store
-            .running_of_kind(Some(&trace), "beta", WorkItemKind::Maintenance)
-            .unwrap()
-            .settle_landed("done", now());
-
-        assert!(store.find(&ids[0]).unwrap().is_running());
-        assert_eq!(store.find(&ids[1]).unwrap().state, WorkItemState::Landed);
-    }
-
-    #[test]
-    fn a_run_terminal_naming_a_trace_no_item_carries_settles_nothing() {
-        let mut store = WorkItemStore::default();
-        store.upsert(run_item(WorkItemKind::Maintenance, "alpha", Some(&"e".repeat(32))));
-        assert!(
-            store
-                .running_of_kind(Some(&"f".repeat(32)), "alpha", WorkItemKind::Maintenance)
-                .is_none()
-        );
-        assert!(store.running_of_kind(None, "alpha", WorkItemKind::Maintenance).is_none());
     }
 
     #[test]

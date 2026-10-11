@@ -181,127 +181,6 @@ pub fn awaits_admission(trigger: &Event, registry: &Arc<RwLock<Registry>>) -> bo
         && project_is_registered(registry, &trigger.project)
 }
 
-/// Admits a dispatched unit of work to the ledger, `queued`, from the root
-/// event of its task workflow.
-///
-/// Mutator — sinks on `ExecutionRequested`, and only on the task-workflow
-/// dispatches that run a coding agent and have not been admitted yet.
-///
-/// Admitting at the root rather than at `PreflightCompleted` is what makes the
-/// ledger complete: a dispatch that fails its charter check, or fails
-/// preflight, never reaches preflight's success event, and an unrecorded
-/// dispatch is invisible to anyone reading the ledger for what still needs a
-/// person. The root is held on the item, so a queued item survives a daemon
-/// restart with everything the scheduler needs to start it.
-pub struct AdmitWorkItem {
-    store_path: PathBuf,
-    /// Read to answer "is this project one Foundry runs?", and to key the
-    /// per-repository pacing rule when the item's reason is computed.
-    registry: Arc<RwLock<Registry>>,
-    /// The limits and lane pauses the item's first reason is computed from.
-    pacing: PacingPaths,
-}
-
-impl AdmitWorkItem {
-    /// Admit dispatches to the ledger at `store_path`, computing each one's
-    /// reason from the pacing files at `pacing`.
-    #[must_use]
-    pub fn new(store_path: PathBuf, registry: Arc<RwLock<Registry>>, pacing: PacingPaths) -> Self {
-        Self {
-            store_path,
-            registry,
-            pacing,
-        }
-    }
-}
-
-impl SimulatedSuccess for AdmitWorkItem {
-    type Outcome = Option<WorkItem>;
-
-    fn simulate(&self, trigger: &Event) -> Option<WorkItem> {
-        if trigger.payload.get(ADMITTED_WORK_ITEM_KEY).is_some() {
-            return None;
-        }
-        // accepts() has already filtered everything but a real task dispatch,
-        // so a parse failure here is not reachable; an empty objective is the
-        // honest synthetic stand-in if it ever were.
-        let payload = trigger.parse_payload::<ExecutionRequestedPayload>().ok();
-        let mut item = payload.map_or_else(
-            || {
-                WorkItem::queued(
-                    WorkItemSpec {
-                        project: trigger.project.clone(),
-                        objective: String::new(),
-                        kind: WorkItemKind::Task,
-                        lane: WorkLane::Interactive,
-                        origin: "foundry task".to_string(),
-                        trace_id: trigger.trace_id.clone(),
-                    },
-                    trigger.clone(),
-                    Utc::now(),
-                )
-                .with_source(trigger.source.clone())
-            },
-            |payload| item_from_dispatch(trigger, &payload),
-        );
-        // A simulation reads no ledger, so it cannot know what holds the item.
-        item.reason = pacing::READY_REASON.to_string();
-        Some(item)
-    }
-
-    fn success_events(&self, trigger: &Event, outcome: &Option<WorkItem>) -> Vec<Event> {
-        outcome
-            .as_ref()
-            .map(|item| vec![work_item_event(EventType::WorkItemSubmitted, trigger, item)])
-            .unwrap_or_default()
-    }
-}
-
-impl TaskBlock for AdmitWorkItem {
-    task_block_meta! {
-        name: "Admit Work Item",
-        kind: Mutator,
-        sinks_on: [ExecutionRequested],
-    }
-
-    dry_run_via_simulation!();
-
-    fn accepts(&self, trigger: &Event) -> bool {
-        awaits_admission(trigger, &self.registry)
-    }
-
-    fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
-        let payload = parse_payload!(trigger, ExecutionRequestedPayload);
-        let item = item_from_dispatch(trigger, &payload);
-        let stored = self.write(item);
-        let events = self.success_events(trigger, &stored);
-        let summary = match &stored {
-            Some(item) => {
-                format!("{}: admitted work item {} ({})", trigger.project, item.id, item.reason)
-            }
-            None => format!("{}: work item not admitted (ledger unavailable)", trigger.project),
-        };
-        Box::pin(async move { Ok(TaskBlockResult::success(summary, events)) })
-    }
-}
-
-impl AdmitWorkItem {
-    /// Add `item` to the ledger with the reason it waits, and return it as
-    /// recorded. `None` when it did not reach the file.
-    ///
-    /// The reason is the same verdict the scheduler's next tick will reach
-    /// over this ledger, so `work_item_submitted` already says why the item
-    /// waits; the scheduler, not this block, starts it.
-    fn write(&self, mut item: WorkItem) -> Option<WorkItem> {
-        let _guard = ledger_lock()?;
-        let mut store = load_ledger(&self.store_path)?;
-        store.upsert(item.clone());
-        item.reason = queued_reason(&store, &item.id, &self.registry, &self.pacing);
-        store.upsert(item.clone());
-        save_ledger(&store, &self.store_path).then_some(item)
-    }
-}
-
 /// The reason the queued item `id` waits with in `store`, as the scheduler
 /// would decide it now: `ready` when nothing holds it.
 ///
@@ -810,7 +689,6 @@ mod tests {
     use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
-    use super::AdmitWorkItem;
     use super::{SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
 
     fn admission_pending(trigger: &Event) -> bool {
@@ -870,19 +748,6 @@ mod tests {
         }
     }
 
-    /// An admitter over `path`, with "alpha" the one project in the registry
-    /// and no pacing files, so the defaults apply.
-    fn recorder(path: &str) -> AdmitWorkItem {
-        AdmitWorkItem::new(
-            std::path::PathBuf::from(path),
-            test_helpers::registry_with_project("alpha", "/tmp/alpha"),
-            foundry_sdk::pacing::PacingPaths {
-                limits: std::path::PathBuf::from("/tmp/never-present/pacing.json"),
-                state: std::path::PathBuf::from("/tmp/never-present/pacing-state.json"),
-            },
-        )
-    }
-
     /// Seed a queued dispatch to exercise settlement independently of admission.
     fn seed_dispatch(path: &std::path::Path, trigger: &Event) {
         let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
@@ -902,12 +767,6 @@ mod tests {
         }
         store.save(path).unwrap();
     }
-
-    assert_block_meta!(
-        recorder("/tmp/work-items.json"),
-        kind: Mutator,
-        sinks_on: [ExecutionRequested],
-    );
 
     #[test]
     fn settle_work_item_is_a_mutator_sinking_on_the_terminal_task_result() {
@@ -1115,185 +974,7 @@ mod tests {
 
     // --- recording ---------------------------------------------------------
 
-    #[tokio::test]
-    async fn a_task_dispatch_is_admitted_queued_with_its_root_and_announced() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-        let root = dispatch(&serde_json::json!({}));
-
-        let result = block.execute(&root).await.unwrap();
-
-        let store = WorkItemStore::load(&path).unwrap();
-        assert_eq!(store.items.len(), 1);
-        let item = &store.items[0];
-        assert_eq!(item.state, WorkItemState::Queued);
-        assert_eq!(item.reason, "ready", "an idle ledger holds nothing back");
-        assert_eq!(item.started_at, None, "admission starts nothing; the scheduler does");
-        assert_eq!(item.pending_root.as_ref().map(|e| e.id.as_str()), Some(root.id.as_str()));
-        assert_eq!(item.kind, WorkItemKind::Task);
-        assert_eq!(item.lane, WorkLane::Interactive);
-        assert_eq!(item.origin, "foundry task");
-        assert_eq!(item.objective, "Add a --quiet flag.");
-        assert_eq!(item.trace_id.as_deref(), Some(TRACE));
-
-        let types: Vec<&EventType> = result.events.iter().map(|e| &e.event_type).collect();
-        assert_eq!(types, vec![&EventType::WorkItemSubmitted], "no start is announced");
-        assert_eq!(result.events[0].payload["state"], "queued");
-        assert_eq!(result.events[0].payload["reason"], "ready");
-        assert_eq!(result.events[0].payload["item_id"], item.id.as_str());
-        assert_eq!(result.events[0].payload["lane"], "interactive");
-        assert_eq!(result.events[0].payload["kind"], "task");
-        assert_eq!(result.events[0].payload["origin"], "foundry task");
-    }
-
-    #[tokio::test]
-    async fn a_second_dispatch_on_a_busy_repository_is_admitted_with_that_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-        block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
-        start_queued(&path);
-        let first = WorkItemStore::load(&path).unwrap().items[0].id.clone();
-
-        let mut second = dispatch(&serde_json::json!({}));
-        second.trace_id = Some("b".repeat(32));
-        let result = block.execute(&second).await.unwrap();
-
-        let store = WorkItemStore::load(&path).unwrap();
-        assert_eq!(store.items[1].state, WorkItemState::Queued);
-        assert_eq!(store.items[1].reason, format!("repository busy: {first}"));
-        assert_eq!(result.events[0].payload["reason"], format!("repository busy: {first}"));
-    }
-
-    #[tokio::test]
-    async fn after_and_not_before_are_recorded_from_the_dispatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-        let later = "2099-01-01T00:00:00Z";
-
-        let result = block
-            .execute(&dispatch(&serde_json::json!({
-                "depends_on": ["wi_parent"],
-                "not_before": later,
-            })))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.depends_on, vec!["wi_parent".to_string()]);
-        assert_eq!(
-            item.not_before.map(|at| at.to_rfc3339()),
-            Some("2099-01-01T00:00:00+00:00".into())
-        );
-        assert_eq!(result.events[0].payload["depends_on"], serde_json::json!(["wi_parent"]));
-        assert_eq!(result.events[0].payload["not_before"], "2099-01-01T00:00:00Z");
-        assert_eq!(
-            item.reason, "waits on wi_parent, which is not in the ledger",
-            "the reason is the scheduler's own verdict, even when it is a decision"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_campaign_cycle_records_its_campaign_and_cycle_as_the_origin() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-
-        block
-            .execute(&dispatch(&serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3})))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.kind, WorkItemKind::CampaignCycle);
-        assert_eq!(item.lane, WorkLane::Campaign);
-        assert_eq!(item.origin, "campaign tidy-cli cycle 3");
-    }
-
     // --- the typed source, one test per kind, each read back from the file ---
-
-    #[tokio::test]
-    async fn a_foundry_task_dispatch_records_the_operator_host_as_its_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let trigger = dispatch(&serde_json::json!({"operator_origin": "host workbench"}))
-            .with_source(Some(WorkSource::operator("workbench")));
-
-        let result = recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.source, Some(WorkSource::operator("workbench")));
-        assert_eq!(item.origin, "foundry task (host workbench)", "origin is untouched");
-        for event in &result.events {
-            assert_eq!(event.payload["source"]["kind"], "operator");
-            assert_eq!(event.payload["source"]["ref"], "workbench");
-            assert!(event.payload["source"].get("cycle").is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_campaign_cycle_records_the_campaign_and_its_cycle_number_as_its_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let trigger = dispatch(&serde_json::json!({"campaign": "tidy-cli", "campaign_cycle": 3}))
-            .with_source(Some(WorkSource::campaign("tidy-cli", 3)));
-
-        let result = recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.source, Some(WorkSource::campaign("tidy-cli", 3)));
-        assert_eq!(item.kind, WorkItemKind::CampaignCycle);
-        assert_eq!(item.origin, "campaign tidy-cli cycle 3");
-        assert_eq!(result.events[0].payload["source"]["cycle"], 3);
-    }
-
-    #[tokio::test]
-    async fn a_majors_lane_upgrade_records_the_sentinel_that_fired_the_nightly() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let objective = crate::dependency_updates::majors::objective(
-            "alpha",
-            &foundry_sdk::payload::PlannedUpdate {
-                ecosystem: foundry_sdk::payload::Ecosystem::Cargo,
-                manifest: ".".to_string(),
-                package: "serde".to_string(),
-                from: "1.0.0".to_string(),
-                to: "2.0.0".to_string(),
-                class: foundry_sdk::payload::UpdateClass::Major,
-                change: foundry_sdk::payload::ChangeKind::Manifest,
-                security: None,
-                beyond_policy: false,
-                beyond_hold: false,
-            },
-        );
-        let trigger = dispatch(&serde_json::json!({"prompt": objective}))
-            .with_source(Some(WorkSource::sentinel("nightly-maintenance")));
-
-        recorder(path.to_str().unwrap()).execute(&trigger).await.unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.kind, WorkItemKind::MajorUpgrade);
-        assert_eq!(item.source, Some(WorkSource::sentinel("nightly-maintenance")));
-    }
-
-    #[tokio::test]
-    async fn a_dispatch_whose_root_names_no_source_records_none_and_announces_no_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-
-        let result = recorder(path.to_str().unwrap())
-            .execute(&dispatch(&serde_json::json!({})))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.source, None);
-        for event in &result.events {
-            assert!(event.payload.get("source").is_none(), "no source, no key: {}", event.payload);
-        }
-    }
 
     #[test]
     fn the_settlement_simulations_carry_the_triggers_source() {
@@ -1312,46 +993,6 @@ mod tests {
             failed.simulate(&stopped).unwrap().source,
             Some(WorkSource::sentinel("nightly-maintenance"))
         );
-    }
-
-    #[tokio::test]
-    async fn operator_origin_is_recorded_verbatim_beside_the_dispatch_origin() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-
-        let result = block
-            .execute(&dispatch(
-                &serde_json::json!({"operator_origin": "host workbench: asked by Stacey"}),
-            ))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.origin, "foundry task (host workbench: asked by Stacey)");
-        assert_eq!(
-            result.events[0].payload["origin"],
-            "foundry task (host workbench: asked by Stacey)"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_campaign_cycle_keeps_its_campaign_and_cycle_beside_the_operator_origin() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        let block = recorder(path.to_str().unwrap());
-
-        block
-            .execute(&dispatch(&serde_json::json!({
-                "campaign": "tidy-cli",
-                "campaign_cycle": 3,
-                "operator_origin": "host workbench: by hand",
-            })))
-            .await
-            .unwrap();
-
-        let item = WorkItemStore::load(&path).unwrap().items.remove(0);
-        assert_eq!(item.origin, "campaign tidy-cli cycle 3 (host workbench: by hand)");
     }
 
     #[test]
@@ -1406,40 +1047,6 @@ mod tests {
         assert_eq!(item.kind, WorkItemKind::MajorUpgrade);
         assert_eq!(item.lane, WorkLane::Maintenance);
         assert_eq!(item.origin, "nightly majors lane");
-    }
-
-    #[tokio::test]
-    async fn an_unwritable_ledger_neither_fails_the_dispatch_nor_announces_an_item() {
-        let block = recorder("/proc/foundry-does-not-exist/work-items.json");
-
-        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
-
-        assert!(result.success, "a ledger fault must not fail the dispatch");
-        assert!(result.events.is_empty(), "nothing was recorded, so nothing is announced");
-    }
-
-    #[tokio::test]
-    async fn a_malformed_ledger_neither_fails_the_dispatch_nor_overwrites_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        std::fs::write(&path, "{ not json").unwrap();
-        let block = recorder(path.to_str().unwrap());
-
-        let result = block.execute(&dispatch(&serde_json::json!({}))).await.unwrap();
-
-        assert!(result.success);
-        assert!(result.events.is_empty());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
-    }
-
-    #[test]
-    fn dry_run_announces_the_item_the_dispatch_would_open() {
-        let block = recorder("/tmp/never-written.json");
-        let events = block.dry_run_events(&dispatch(&serde_json::json!({})));
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, EventType::WorkItemSubmitted);
-        assert_eq!(events[0].payload["state"], "queued");
-        assert_eq!(events[0].payload["reason"], "ready");
     }
 
     // --- settling a dispatch that stopped before the agent -----------------
@@ -1658,14 +1265,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dry_run_and_accepts_agree_on_skip_for_an_admitted_resume() {
-        let block = recorder("/tmp/unused-resume-ledger.json");
-        let event = dispatch(&serde_json::json!({"admitted_work_item_id": "wi_child"}));
-        assert!(!block.accepts(&event));
-        assert!(block.simulate(&event).is_none());
-        assert!(block.dry_run_events(&event).is_empty());
-    }
     #[tokio::test]
     async fn supersession_reloads_after_owner_cancellation_and_keeps_unrelated_updates() {
         let dir = tempfile::tempdir().unwrap();

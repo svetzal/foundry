@@ -129,7 +129,6 @@ mod route_gate_result;
 mod route_project;
 mod route_validation_result;
 mod run_guard;
-mod run_ledger;
 mod run_preflight_gates;
 mod run_verify_gates;
 mod scan;
@@ -189,8 +188,6 @@ pub use review_task::ReviewTask;
 pub use route_gate_result::RouteGateResult;
 pub use route_project::RouteProjectWorkflow;
 pub use route_validation_result::RouteValidationResult;
-pub use run_ledger::RecordRunWorkItem;
-pub use run_ledger::SettleRunWorkItem;
 pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
@@ -206,7 +203,6 @@ pub use triage_assessment::TriageAssessment;
 pub use triage_maintenance::TriageMaintenance;
 pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
-pub use work_ledger::AdmitWorkItem;
 pub use work_ledger::{
     ADMITTED_WORK_ITEM_KEY, SettleFailedDispatch, SettleWorkItem, awaits_admission,
     item_from_dispatch, queued_reason,
