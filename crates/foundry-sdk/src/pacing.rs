@@ -680,6 +680,35 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_root_keeps_repository_and_host_capacity_until_execution_finishes() {
+        let mut owner = running("wi_owner", "alpha", WorkItemKind::Task);
+        owner.started_root = Some(root("alpha"));
+        owner.settle_cancelled("owner stopped the obligation", None, at(1));
+        let same_repo = queued("wi_same", "alpha", WorkLane::Interactive, 2);
+        let other_repo = queued("wi_other", "beta", WorkLane::Interactive, 3);
+        let limits = Limits { max_running: 1 };
+        assert_eq!(
+            decisions(
+                &[owner.clone(), same_repo.clone(), other_repo.clone()],
+                &limits,
+                &PauseState::default()
+            ),
+            vec![
+                ("wi_same".into(), Decision::Wait("repository busy: wi_owner".into())),
+                ("wi_other".into(), Decision::Wait("host at capacity 1/1".into())),
+            ]
+        );
+        owner.execution_completed = true;
+        assert_eq!(
+            decisions(&[owner, same_repo, other_repo], &limits, &PauseState::default()),
+            vec![
+                ("wi_same".into(), Decision::Start),
+                ("wi_other".into(), Decision::Wait("host at capacity 1/1".into())),
+            ]
+        );
+    }
+
+    #[test]
     fn two_projects_sharing_a_repository_key_share_the_rule() {
         let items = vec![
             queued("wi_a", "alpha", WorkLane::Interactive, 1),

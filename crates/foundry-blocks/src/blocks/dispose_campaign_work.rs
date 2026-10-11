@@ -237,13 +237,12 @@ fn work_item_cancelled_event(project: &str, throttle: Throttle, item: &WorkItem)
 
 /// Settle the aborted cycle's ledger item `cancelled`, and return it.
 ///
-/// Correlates by the aborted workflow's trace and nothing else, exactly as a
-/// `TaskRunCompleted` settlement does: a trace no running task-shaped item
-/// carries settles nothing, and there is no fallback to the project's newest
-/// running item — settling an unrelated concurrent run as cancelled would be
-/// worse than leaving this one for the restart sweep.
+/// The service has already aborted and awaited the Rust workflow. Its exact
+/// started root identifies the owner even when a typed task result settled
+/// before cleanup, or the aborted root was campaign formation. Legacy items
+/// without started-root evidence correlate only by the aborted trace.
 ///
-/// `None` when the cancellation aborted nothing, when no running item carries
+/// `None` when the cancellation aborted nothing, when no executing item carries
 /// that trace, or when the ledger cannot be read or written.
 fn settle_cancelled_cycle(
     path: &Path,
@@ -255,7 +254,27 @@ fn settle_cancelled_cycle(
     let disposition = cancellation_disposition(disposal);
     let _guard = super::work_ledger::ledger_lock()?;
     let mut store = super::work_ledger::load_ledger(path)?;
-    let item = store.running_for_settlement(Some(trace), project)?;
+    let owner = store.items.iter().position(|item| {
+        item.project == project
+            && item.trace_id.as_deref() == Some(trace)
+            && !item.execution_completed
+            && item
+                .started_root
+                .as_ref()
+                .is_some_and(|root| Some(root.id.as_str()) == payload.aborted_event_id.as_deref())
+    });
+    let item = if let Some(index) = owner {
+        store.items.get_mut(index)?
+    } else {
+        let legacy = store.running_for_settlement(Some(trace), project)?;
+        if legacy.started_root.is_some() {
+            return None;
+        }
+        legacy
+    };
+    // Disposal has finished after the original workflow unwound. Its slot can
+    // now be released even though that aborted traversal cannot call complete.
+    item.execution_completed = true;
     item.settle_cancelled(&payload.terminal.reason, disposition, Utc::now());
     let settled = item.clone();
     super::work_ledger::save_ledger(&store, path).then_some(settled)
@@ -624,6 +643,8 @@ mod tests {
         assert_eq!(settled.state, foundry_sdk::work_item::WorkItemState::Cancelled);
         assert_eq!(settled.reason, "superseded by the rewrite");
         assert!(settled.settled_at.is_some());
+        assert!(settled.execution_completed);
+        assert!(!settled.occupies_slot());
         let d = settled.disposition.clone().expect("a disposed worktree is recorded");
         assert_eq!(
             d.worktree,
@@ -632,6 +653,57 @@ mod tests {
         assert_eq!(d.worktree_removed, Some(true), "discard removed the worktree");
         assert_eq!(d.preservation_ref, None, "discarded work is on no ref");
         assert_eq!(settled_item(&ledger, &id), settled, "the settlement reached the file");
+    }
+
+    #[tokio::test]
+    async fn disposal_releases_the_exact_aborted_owner_after_typed_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = worktrees_root_with(dir.path(), &[]);
+        let (ledger, id) = ledger_with_running_cycle(dir.path());
+        for (kind, state) in [
+            (
+                foundry_sdk::work_item::WorkItemKind::CampaignCycle,
+                foundry_sdk::work_item::WorkItemState::Preserved,
+            ),
+            (
+                foundry_sdk::work_item::WorkItemKind::Workflow,
+                foundry_sdk::work_item::WorkItemState::Running,
+            ),
+            (
+                foundry_sdk::work_item::WorkItemKind::CampaignCycle,
+                foundry_sdk::work_item::WorkItemState::Cancelled,
+            ),
+        ] {
+            let mut store = foundry_sdk::work_item::WorkItemStore::load(&ledger).unwrap();
+            let owner = store.find_mut(&id).unwrap();
+            owner.kind = kind;
+            owner.state = state;
+            owner.execution_completed = false;
+            let mut started = Event::new(
+                EventType::ExecutionRequested,
+                "demo".into(),
+                Throttle::Full,
+                serde_json::json!({}),
+            );
+            started.id = "evt_abc".into();
+            owner.started_root = Some(started);
+            store.save(&ledger).unwrap();
+            assert!(settled_item(&ledger, &id).occupies_slot());
+
+            let disposal =
+                dispose(&shell_success(), &root, dir.path(), "demo", "ship-billing", true).await;
+            let mut wrong_root = payload(true, Some(TRACE));
+            wrong_root.aborted_event_id = Some("evt_other".into());
+            assert!(settle_cancelled_cycle(&ledger, "demo", &wrong_root, &disposal).is_none());
+            assert!(settled_item(&ledger, &id).occupies_slot());
+            let settled =
+                settle_cancelled_cycle(&ledger, "demo", &payload(true, Some(TRACE)), &disposal)
+                    .unwrap();
+            assert!(settled.execution_completed);
+            assert!(!settled.occupies_slot());
+            assert_eq!(settled.state, foundry_sdk::work_item::WorkItemState::Cancelled);
+            assert_eq!(settled_item(&ledger, &id), settled);
+        }
     }
 
     #[tokio::test]

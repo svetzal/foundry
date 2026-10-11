@@ -272,6 +272,11 @@ pub(super) async fn cancel_item(
             .iter_mut()
             .find(|item| item.id == id)
             .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
+        if close && item.occupies_slot() {
+            return Err(Status::failed_precondition(format!(
+                "work item '{id}' cannot be closed while its workflow still owns execution capacity"
+            )));
+        }
         let allowed = if close {
             item.state.is_open()
         } else {

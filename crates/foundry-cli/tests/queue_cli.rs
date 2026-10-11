@@ -1244,6 +1244,43 @@ async fn concurrent_owner_controls_settle_once_and_keep_unrelated_writes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_refuses_typed_results_until_their_root_cleanup_finishes() {
+    let (addr, ledger, state) = daemon_over_seeded_ledger().await;
+    let mut client = control_client(&addr).await;
+    for (id, result_state) in [
+        ("wi_preserved", WorkItemState::Preserved),
+        ("wi_failed", WorkItemState::Failed),
+        ("wi_needs", WorkItemState::NeedsDecision),
+    ] {
+        let mut store = WorkItemStore::load(ledger.path()).unwrap();
+        let owner = store.find_mut(id).unwrap();
+        owner.state = result_state;
+        owner.started_root = Some(Event::new(
+            EventType::ExecutionRequested,
+            owner.project.clone(),
+            Throttle::Full,
+            serde_json::json!({"workflow":"task"}),
+        ));
+        owner.execution_completed = false;
+        store.save(ledger.path()).unwrap();
+        let before = std::fs::read(ledger.path()).unwrap();
+        let history = log_bytes(&state.path().join("events"));
+        let error = mutate(&mut client, true, id, "stop", "owner").await.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(std::fs::read(ledger.path()).unwrap(), before);
+        assert_eq!(log_bytes(&state.path().join("events")), history);
+
+        let mut store = WorkItemStore::load(ledger.path()).unwrap();
+        store.find_mut(id).unwrap().execution_completed = true;
+        store.save(ledger.path()).unwrap();
+        assert_eq!(
+            mutate(&mut client, true, id, "stop", "owner").await.unwrap().state,
+            "cancelled"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_cli_owner_controls_forward_origin_and_never_write_client_files() {
     let (addr, ledger, state) = daemon_over_seeded_ledger().await;
     let home = tempfile::tempdir().unwrap();

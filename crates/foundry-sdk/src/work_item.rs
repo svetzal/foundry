@@ -408,11 +408,7 @@ impl WorkItem {
     /// slot until the complete traversal returns.
     #[must_use]
     pub fn occupies_slot(&self) -> bool {
-        self.is_running()
-            || (self.started_root.is_some()
-                && !self.execution_completed
-                && self.state != WorkItemState::Cancelled
-                && self.reason != "daemon restarted")
+        self.is_running() || (self.started_root.is_some() && !self.execution_completed)
     }
 
     /// Move the item to `running`, dropping the held root. The scheduler
@@ -1419,6 +1415,31 @@ mod tests {
         assert_eq!(item.state, WorkItemState::Failed);
         assert_eq!(item.reason, "daemon restarted");
         assert_eq!(item.settled_at, Some(at));
+    }
+
+    #[test]
+    fn every_started_root_retains_ownership_until_explicit_completion() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        item.started_root = Some(Event::new(
+            crate::event::EventType::ExecutionRequested,
+            item.project.clone(),
+            crate::throttle::Throttle::Full,
+            serde_json::json!({"workflow": "task"}),
+        ));
+        for state in [
+            WorkItemState::Landed,
+            WorkItemState::Preserved,
+            WorkItemState::NeedsDecision,
+            WorkItemState::Failed,
+            WorkItemState::Cancelled,
+        ] {
+            item.state = state;
+            item.reason = "daemon restarted".into();
+            item.execution_completed = false;
+            assert!(item.occupies_slot(), "unfinished root lost ownership in {state:?}");
+            item.execution_completed = true;
+            assert!(!item.occupies_slot(), "finished root retained ownership in {state:?}");
+        }
     }
 
     #[test]
