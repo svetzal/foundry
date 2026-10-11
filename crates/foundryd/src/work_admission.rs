@@ -363,8 +363,9 @@ impl WorkAdmission for DurableWorkAdmission {
     }
 }
 
-fn workflow_succeeded(root: &Event, result: &ProcessResult) -> bool {
-    let terminal = match root.event_type {
+/// The event that ends `root`'s workflow and carries its verdict, if it has one.
+fn terminal_kind(root: &Event) -> Option<EventType> {
+    match root.event_type {
         EventType::ProjectRunStarted if root.gather_id.is_some() => {
             Some(EventType::ProjectRunCompleted)
         }
@@ -378,21 +379,52 @@ fn workflow_succeeded(root: &Event, result: &ProcessResult) -> bool {
             Some(EventType::TaskRunCompleted)
         }
         _ => None,
+    }
+}
+
+/// An outcome event that reports `success: false`.
+fn reports_failure(event: &Event) -> bool {
+    matches!(
+        event.event_type,
+        EventType::ProjectRunCompleted
+            | EventType::ProjectIterationCompleted
+            | EventType::ProjectMaintenanceCompleted
+            | EventType::ReleaseCompleted
+            | EventType::RemediationCompleted
+            | EventType::TaskRunCompleted
+    ) && event.payload_bool("success") == Some(false)
+}
+
+/// Whether `root`'s workflow succeeded.
+///
+/// A workflow with a terminal event is judged by its last terminal: it must
+/// exist and not report failure. Foundry retries failed steps (a failed gate
+/// run asks for another attempt), so a failed block *before* that terminal is
+/// a retry the run recovered from, not a failure of the run. A block that
+/// fails *after* it (for example the local install that follows a completed
+/// maintenance run), or an outcome event reporting failure after it, still
+/// fails the workflow. A workflow without a terminal keeps the strict rule:
+/// every block succeeded and no outcome event reported failure.
+fn workflow_succeeded(root: &Event, result: &ProcessResult) -> bool {
+    let Some(kind) = terminal_kind(root) else {
+        return result.is_success()
+            && result.block_executions.iter().all(|block| block.success)
+            && !result.events.iter().any(reports_failure);
     };
-    terminal.is_none_or(|kind| result.events.iter().any(|event| event.event_type == kind))
-        && result.is_success()
-        && result.block_executions.iter().all(|block| block.success)
-        && !result.events.iter().any(|event| {
-            matches!(
-                event.event_type,
-                EventType::ProjectRunCompleted
-                    | EventType::ProjectIterationCompleted
-                    | EventType::ProjectMaintenanceCompleted
-                    | EventType::ReleaseCompleted
-                    | EventType::RemediationCompleted
-                    | EventType::TaskRunCompleted
-            ) && event.payload_bool("success") == Some(false)
-        })
+    let Some(last) = result.events.iter().rposition(|event| event.event_type == kind) else {
+        return false;
+    };
+    let terminal = &result.events[last];
+    if terminal.payload_bool("success") == Some(false) {
+        return false;
+    }
+    let after_terminal = result
+        .block_executions
+        .iter()
+        .rposition(|block| block.emitted_event_ids.contains(&terminal.id))
+        .map_or(&result.block_executions[..0], |at| &result.block_executions[at + 1..]);
+    after_terminal.iter().all(|block| block.success)
+        && !result.events[last + 1..].iter().any(reports_failure)
 }
 
 fn stopped_result(item: &WorkItem) -> ProcessResult {
@@ -1275,6 +1307,83 @@ mod tests {
         assert!(
             log.iter()
                 .any(|event| event.event_type == EventType::Custom("workflow_refused".into()))
+        );
+    }
+
+    fn block(name: &str, success: bool, emitted: &[&Event]) -> BlockExecution {
+        let mut block = BlockExecution::new(name, "evt_trigger", 1, serde_json::json!({}));
+        block.success = success;
+        block.emitted_event_ids = emitted.iter().map(|event| event.id.clone()).collect();
+        block
+    }
+
+    fn nightly_run(success: bool) -> (Event, Event) {
+        let request = root(EventType::ProjectRunStarted, "alpha").with_gather_id(Some("g".into()));
+        let completed = Event::new(
+            EventType::ProjectRunCompleted,
+            "alpha".into(),
+            request.throttle,
+            serde_json::json!({"success": success}),
+        );
+        (request, completed)
+    }
+
+    #[test]
+    fn a_nightly_run_that_recovered_on_a_retry_succeeded() {
+        let (request, completed) = nightly_run(true);
+        let result = ProcessResult {
+            events: vec![completed.clone()],
+            block_executions: vec![
+                block("Run Verify Gates", false, &[]),
+                block("Route Gate Result", false, &[]),
+                block("Run Verify Gates", true, &[]),
+                block("Complete Project Run", true, &[&completed]),
+            ],
+            total_duration_ms: 0,
+        };
+        assert!(
+            workflow_succeeded(&request, &result),
+            "a retried gate failure is not the run's verdict"
+        );
+    }
+
+    #[test]
+    fn a_failure_after_the_terminal_still_fails_the_run() {
+        let (request, completed) = nightly_run(true);
+        let result = ProcessResult {
+            events: vec![completed.clone()],
+            block_executions: vec![
+                block("Complete Project Run", true, &[&completed]),
+                block("Local Install", false, &[]),
+            ],
+            total_duration_ms: 0,
+        };
+        assert!(
+            !workflow_succeeded(&request, &result),
+            "an install failing after completion fails the run"
+        );
+    }
+
+    #[test]
+    fn a_nightly_run_is_judged_by_its_terminal() {
+        let (request, failed) = nightly_run(false);
+        let result = ProcessResult {
+            events: vec![failed.clone()],
+            block_executions: vec![block("Complete Project Run", true, &[&failed])],
+            total_duration_ms: 0,
+        };
+        assert!(
+            !workflow_succeeded(&request, &result),
+            "a terminal reporting failure fails the run"
+        );
+        let missing = ProcessResult {
+            events: vec![],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(
+            !workflow_succeeded(&request, &missing),
+            "no terminal means no verdict to land on"
         );
     }
 
