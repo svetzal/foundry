@@ -235,6 +235,11 @@ async fn a_submitted_cycle_carries_every_earlier_open_cycle_of_its_campaign() {
         cycle("wi_11", 11, WorkItemState::Preserved, 110),
     ];
     let mut owner_cancelled = cycle("wi_8", 8, WorkItemState::Preserved, 80);
+    // A failed formation run submitted before cycle 12 is carried with it.
+    let mut formation = cycle("wi_formation", 11, WorkItemState::Failed, 115);
+    formation.kind = WorkItemKind::Workflow;
+    let mut carried = carried.to_vec();
+    carried.push(formation);
     owner_cancelled.operator_action = Some(WorkItemOperatorAction {
         command: "close".into(),
         origin: "owner host".into(),
@@ -245,14 +250,9 @@ async fn a_submitted_cycle_carries_every_earlier_open_cycle_of_its_campaign() {
     let evidence = owner_cancelled.disposition.clone();
     owner_cancelled.settle_cancelled("owner closed", evidence, start());
     let landed = cycle("wi_6", 6, WorkItemState::Landed, 60);
-    // Durable admission records the campaign's formation workflow with the
-    // campaign's source; it is not a cycle, so it neither carries nor is carried.
-    let mut formation = cycle("wi_formation", 11, WorkItemState::Failed, 115);
-    formation.kind = WorkItemKind::Workflow;
     let untouched = [
         owner_cancelled,
         landed,
-        formation,
         item(
             "wi_other_campaign",
             Some(WorkSource::campaign("other", 2)),
@@ -268,7 +268,7 @@ async fn a_submitted_cycle_carries_every_earlier_open_cycle_of_its_campaign() {
         item("wi_sourceless", None, WorkItemState::NeedsDecision, 52),
     ];
     let submitted = cycle("wi_12", 12, WorkItemState::Queued, 120);
-    let mut items = carried.to_vec();
+    let mut items = carried.clone();
     items.extend(untouched.iter().cloned());
     items.push(submitted.clone());
     let fixture = Fixture::new(&items, campaign(CampaignStatus::Active));
@@ -415,7 +415,7 @@ fn a_concurrent_owner_action_wins_because_the_decision_is_taken_under_the_gate()
 }
 
 #[test]
-fn only_campaign_cycle_lifecycle_and_campaign_terminal_events_are_accepted() {
+fn only_campaign_cycle_and_formation_lifecycle_and_terminal_events_are_accepted() {
     let fixture = Fixture::new(&[], campaign(CampaignStatus::Active));
     let block = fixture.block();
     let operator = item("wi_op", Some(WorkSource::operator("laptop")), WorkItemState::Queued, 1);
@@ -427,7 +427,10 @@ fn only_campaign_cycle_lifecycle_and_campaign_terminal_events_are_accepted() {
     assert!(block.accepts(&lifecycle(EventType::WorkItemSubmitted, &cycle_item)));
     let mut formation = cycle_item.clone();
     formation.kind = WorkItemKind::Workflow;
-    assert!(!block.accepts(&lifecycle(EventType::WorkItemStarted, &formation)));
+    assert!(block.accepts(&lifecycle(EventType::WorkItemSettled, &formation)));
+    let mut unrelated_workflow = operator.clone();
+    unrelated_workflow.kind = WorkItemKind::Workflow;
+    assert!(!block.accepts(&lifecycle(EventType::WorkItemSettled, &unrelated_workflow)));
     assert!(block.accepts(&completed("")));
     assert!(block.accepts(&cancelled("why", true)));
     assert_eq!(
@@ -449,4 +452,66 @@ fn a_dry_run_reads_and_writes_nothing() {
             .is_empty()
     );
     assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+fn formation(id: &str, state: WorkItemState, minutes: i64) -> WorkItem {
+    let mut item = item(id, Some(WorkSource::campaign(CAMPAIGN, 0)), state, minutes);
+    item.kind = WorkItemKind::Workflow;
+    item
+}
+
+#[tokio::test]
+async fn a_formation_run_is_carried_only_by_a_cycle_submitted_after_it() {
+    let before = formation("wi_formation_before", WorkItemState::Failed, 10);
+    let carrier = cycle("wi_cycle_2", 2, WorkItemState::Running, 20);
+    let after = formation("wi_formation_after", WorkItemState::Failed, 30);
+    let fixture = Fixture::new(
+        &[before.clone(), carrier.clone(), after.clone()],
+        campaign(CampaignStatus::Active),
+    );
+
+    let events = fixture.run(&lifecycle(EventType::WorkItemStarted, &carrier)).await;
+
+    let ledger = fixture.ledger();
+    assert_settled(
+        ledger.find(&before.id).unwrap(),
+        &before,
+        "carried forward by campaign transient-recovery cycle 2 (wi_cycle_2)",
+    );
+    assert_announced(&events, &[&before], &ledger);
+    // A formation run never carries: the later one is not a cycle and stays
+    // open, and so does the running cycle.
+    assert_eq!(ledger.find(&after.id), Some(&after));
+    assert_eq!(ledger.find(&carrier.id), Some(&carrier));
+}
+
+#[tokio::test]
+async fn a_terminal_campaign_settles_its_open_formation_runs() {
+    let failed = formation("wi_formation", WorkItemState::Failed, 10);
+    let fixture = Fixture::new(std::slice::from_ref(&failed), campaign(CampaignStatus::Active));
+    let mut stopped = campaign(CampaignStatus::Active);
+    assert_eq!(stopped.cancel("owner stopped", start()).unwrap(), Transition::Applied);
+    fixture.set_campaign(stopped);
+
+    // A formation run that settles failed after the cancellation finds the
+    // campaign terminal, exactly as an in-flight cycle does.
+    let events = fixture.run(&lifecycle(EventType::WorkItemSettled, &failed)).await;
+    let ledger = fixture.ledger();
+    assert_settled(
+        ledger.find(&failed.id).unwrap(),
+        &failed,
+        "campaign transient-recovery cancelled: owner stopped",
+    );
+    assert_announced(&events, &[&failed], &ledger);
+
+    let leftover = formation("wi_formation_2", WorkItemState::Failed, 20);
+    fixture.write_item(&leftover);
+    let events = fixture.run(&completed("done evidence met")).await;
+    let ledger = fixture.ledger();
+    assert_settled(
+        ledger.find(&leftover.id).unwrap(),
+        &leftover,
+        "campaign transient-recovery completed: done evidence met",
+    );
+    assert_announced(&events, &[&leftover], &ledger);
 }

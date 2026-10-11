@@ -169,7 +169,9 @@ cycle's own trace and without an operator action. When the scheduler
 starts a later cycle, earlier open cycles of the same campaign settle `cancelled` with
 `carried forward by campaign <name> cycle <n> (<item id>)`. When the campaign
 completes or is cancelled, its remaining open cycles settle with `campaign
-<name> completed` or `campaign <name> cancelled`. Items without a typed
+<name> completed` or `campaign <name> cancelled`. The campaign's open
+formation runs (`workflow` items with its source) settle the same way. Items
+without a typed
 campaign source are never touched, and preservation evidence is kept.
 
 Read the ledger with `foundry queue` (running, queued, open and the newest 20

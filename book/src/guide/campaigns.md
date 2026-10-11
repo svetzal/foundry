@@ -461,7 +461,8 @@ or is cancelled, its remaining open cycles settle `cancelled` with the reason
 `campaign <name> completed` or `campaign <name> cancelled`. The preserved ref
 stays recorded on each item, and no `operator_action` is written. An escalated
 cycle stays open until the campaign advances again or ends: it is the live
-question. See [The work queue](./work-queue.md).
+question. A formation run that ended `failed` settles the same way, when the
+next cycle starts or the campaign ends. See [The work queue](./work-queue.md).
 
 New definitions start as `staged`. An authorized staged campaign becomes
 `active` on its first advance. Each advance re-runs mechanical done-evidence,

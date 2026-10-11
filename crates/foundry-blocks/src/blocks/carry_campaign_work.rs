@@ -5,7 +5,9 @@
 //! `failed` is not owed by a person: the campaign carried it, and the
 //! campaign's own escalation is what a person sees. Without this block those
 //! cycles stay in the open list after the campaign has advanced, completed or
-//! been cancelled.
+//! been cancelled. The same holds for the campaign's formation runs, which
+//! durable admission records as `workflow` items with the campaign's source:
+//! one that ended `failed` is the campaign's to retry, not a person's.
 
 use std::path::{Path, PathBuf};
 
@@ -23,8 +25,8 @@ use super::work_ledger::{ledger_lock, load_ledger, save_ledger};
 /// Settles open campaign cycles `cancelled` once their campaign has moved
 /// past them.
 ///
-/// Mutator. It sinks on the lifecycle events of campaign cycle items
-/// (`work_item_submitted`, `work_item_started`, `work_item_settled`) and on
+/// Mutator. It sinks on the lifecycle events of campaign cycle and formation
+/// items (`work_item_submitted`, `work_item_started`, `work_item_settled`) and on
 /// the campaign's own `campaign_completed` and `campaign_cancelled`. Under the
 /// daemon's durable admission a cycle's `work_item_submitted` is persisted and
 /// broadcast but not routed to blocks, so carrying forward happens when the
@@ -34,8 +36,11 @@ use super::work_ledger::{ledger_lock, load_ledger, save_ledger};
 /// stands, so a missed or reordered trigger is made good by the next one:
 ///
 /// - An open cycle is carried forward when a later-submitted cycle of the same
-///   campaign has a higher cycle number and was not itself cancelled.
-/// - Every open cycle of a completed or cancelled campaign settles with the
+///   campaign has a higher cycle number and was not itself cancelled. An open
+///   formation run is carried forward by the first such cycle submitted after
+///   it. Only a cycle carries.
+/// - Every open cycle and formation run of a completed or cancelled campaign
+///   settles with the
 ///   campaign's terminal reason. A graceful cancellation lets the in-flight
 ///   cycle finish; that cycle's own `work_item_settled` finds the campaign
 ///   already terminal in the campaign store and settles it then.
@@ -76,10 +81,9 @@ fn sweep_for(trigger: &Event) -> Option<Sweep> {
         EventType::WorkItemSubmitted | EventType::WorkItemStarted | EventType::WorkItemSettled => {
             let payload = trigger.parse_payload::<WorkItemEventPayload>().ok()?;
             let source = payload.source?;
-            (payload.kind == WorkItemKind::CampaignCycle
-                && source.kind == WorkSourceKind::Campaign
-                && source.cycle.is_some())
-            .then_some(Sweep {
+            let cycle = payload.kind == WorkItemKind::CampaignCycle && source.cycle.is_some();
+            let formation = payload.kind == WorkItemKind::Workflow;
+            (source.kind == WorkSourceKind::Campaign && (cycle || formation)).then_some(Sweep {
                 campaign: source.reference,
                 project: payload.project,
                 terminal: None,
@@ -147,11 +151,31 @@ fn stored_terminal(path: &Path, campaign: &str) -> Option<String> {
     Some(terminal_reason(campaign, outcome, recorded))
 }
 
+/// What an item is to `campaign` in `project`, when it belongs to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// A `campaign_cycle` item with its cycle number.
+    Cycle(u64),
+    /// A `workflow` item carrying the campaign's source: durable admission
+    /// records the campaign's formation run (`campaign_advance_requested`)
+    /// this way. It is never a carrier.
+    Formation,
+}
+
+fn role_of(item: &WorkItem, campaign: &str, project: &str) -> Option<Role> {
+    if let Some(cycle) = cycle_of(item, campaign, project) {
+        return Some(Role::Cycle(cycle));
+    }
+    let source = item.source.as_ref()?;
+    (item.kind == WorkItemKind::Workflow
+        && item.project == project
+        && source.matches(WorkSourceKind::Campaign, campaign))
+    .then_some(Role::Formation)
+}
+
 /// The cycle number of `item` when it is a cycle of `campaign` in `project`.
 ///
-/// Only `campaign_cycle` items count. Durable admission also records the
-/// campaign's own formation workflow (`campaign_advance_requested`) as a
-/// `workflow` item carrying the campaign's source; that is not a cycle.
+/// Only `campaign_cycle` items count, so only a cycle can carry the others.
 fn cycle_of(item: &WorkItem, campaign: &str, project: &str) -> Option<u64> {
     let source = item.source.as_ref()?;
     (item.kind == WorkItemKind::CampaignCycle
@@ -161,13 +185,15 @@ fn cycle_of(item: &WorkItem, campaign: &str, project: &str) -> Option<u64> {
     .flatten()
 }
 
-/// Settle `cancelled`, in `store`, every open cycle of `campaign` in `project`
-/// that the campaign has moved past, and return the settled items.
+/// Settle `cancelled`, in `store`, every open cycle and formation run of
+/// `campaign` in `project` that the campaign has moved past, and return the
+/// settled items.
 ///
 /// The carrier is the most recently submitted cycle of the campaign that was
 /// not itself cancelled. An open cycle with a lower number, submitted no later,
-/// settles `carried forward by campaign <name> cycle <n> (<carrier id>)`.
-/// When `terminal` is set, every other open cycle settles with that reason.
+/// and an open formation run submitted before the carrier, settle `carried
+/// forward by campaign <name> cycle <n> (<carrier id>)`. When `terminal` is
+/// set, every other open cycle and formation run settles with that reason.
 fn settle_campaign_cycles(
     store: &mut WorkItemStore,
     campaign: &str,
@@ -184,16 +210,18 @@ fn settle_campaign_cycles(
         .map(|(cycle, item)| (cycle, item.submitted_at, item.id.clone()));
     let mut settled = Vec::new();
     for item in &mut store.items {
-        let Some(cycle) = cycle_of(item, campaign, project) else {
+        let Some(role) = role_of(item, campaign, project) else {
             continue;
         };
         if !item.state.is_open() {
             continue;
         }
+        let moved_past = |carried_by: u64, submitted_at: DateTime<Utc>| match role {
+            Role::Cycle(cycle) => cycle < carried_by && item.submitted_at <= submitted_at,
+            Role::Formation => item.submitted_at < submitted_at,
+        };
         let reason = match &carrier {
-            Some((carried_by, submitted_at, id))
-                if cycle < *carried_by && item.submitted_at <= *submitted_at =>
-            {
+            Some((carried_by, submitted_at, id)) if moved_past(*carried_by, *submitted_at) => {
                 format!("carried forward by campaign {campaign} cycle {carried_by} ({id})")
             }
             _ => match terminal {
