@@ -53,6 +53,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Tests in `crates/foundryd/tests/campaign_advance_concurrency.rs` reproduce
   the hang.
 
+- The work-item ledger no longer reports a workflow that succeeded as failed
+  because it read the workflow's result while it was being written. The
+  ledger and the trace store both write `{root}.json` for a started root, and
+  the ledger reads it back the moment the item settles. A read during the
+  other writer's truncate-and-write failed to parse, so the waiting caller got
+  a synthesized failure terminal (for an advance, a `campaign_advance_completed`
+  with `decision: "escalate"` and `success: false`) beside the real one. Trace
+  files are now written beside their destination and renamed into place.
+
 - The `foundryd` single-instance tests no longer fail at random. The 0.45.0
   release build on `mojility-ops-01` failed once because the lock-held test
   reported "address already in use" instead of "already running". The test
