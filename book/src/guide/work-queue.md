@@ -753,16 +753,21 @@ worktree fields:
   When that cycle settles open, its own `work_item_settled` finds the campaign
   already cancelled in the campaign store, and the cycle settles `cancelled`
   then. It is not stranded open.
+- The campaign's formation runs (`campaign_advance_requested`), which durable
+  admission records as `workflow` items with the campaign's source, follow the
+  same rules. An open formation run settles with the carried-forward reason
+  when a cycle submitted after it starts, and with the terminal reason when
+  the campaign completes or is cancelled. A formation run never carries other
+  items.
 
-Each settlement emits `work_item_cancelled` on that cycle's own trace. Only
-`campaign_cycle` items whose typed source names the campaign and a cycle are
-touched. The campaign's formation workflow, which durable admission records as
-a `workflow` item with the campaign's source, is not a cycle. An item
+Each settlement emits `work_item_cancelled` on that item's own trace. Only
+`campaign_cycle` items whose typed source names the campaign and a cycle, and
+`workflow` items whose typed source names the campaign, are touched. An item
 recorded before the typed source existed, another campaign's item, a
 non-campaign item and a settled item never change. The decision is taken on the
 ledger as loaded under the shared write gate, in the same pass that writes it,
 so an owner action that landed first wins. The Settle Carried Campaign Work
-block runs on every campaign cycle's `work_item_submitted`,
+block runs on every campaign cycle's and formation run's `work_item_submitted`,
 `work_item_started` and `work_item_settled`, and on `campaign_completed` and
 `campaign_cancelled`; each trigger decides from the current ledger, so a
 repeated or reordered trigger changes nothing more. Durable admission persists

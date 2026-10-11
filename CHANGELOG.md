@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A campaign's formation runs no longer stay open after the campaign moves on.
+  Since 0.43.0 each advance is a `workflow` ledger item with the campaign's
+  source, and one that ended `failed` stayed in the open list. When a later
+  cycle of the campaign starts, an open formation run submitted before it
+  settles `cancelled` with `carried forward by campaign <name> cycle <n> (<item
+  id>)`; when the campaign completes or is cancelled, its open formation runs
+  settle with the terminal reason. Only a cycle carries other items.
+
 ## [0.43.0] - 2026-10-11
 
 ### Changed
