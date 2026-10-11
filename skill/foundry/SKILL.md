@@ -184,6 +184,15 @@ client's hostname. It is opaque — it changes nothing about how the task runs.
 settled `landed`; an id not in the ledger is refused. `--not-before` takes an
 RFC 3339 timestamp or a duration from now (`90s`, `30m`, `2h`, `1d`).
 
+`--continues <id>` (repeatable) records that the task follows up on an open
+item of the same project (`preserved`, `needs_decision` or `failed`), such as
+fixing review findings on its branch. It is lineage only: no change to the
+task's base or objective, and no waiting. An unknown id is refused with
+`INVALID_ARGUMENT`, another project's item or a settled one with
+`FAILED_PRECONDITION`. When the task lands, each continued item still open
+settles `landed` with reason `superseded by <commit> via <new item id>`; if it
+does not land, they stay open. `queue show` lists the ids under `Continues:`.
+
 The task is recorded `queued` and the pacing scheduler starts it when the rules
 allow (one mutating item per repository, the host running cap, `--not-before`,
 `--after`, lane not paused); the command waits through that queue time, and

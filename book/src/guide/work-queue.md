@@ -412,6 +412,37 @@ blank input returns `INVALID_ARGUMENT`, and other states return
 read or save failures return `INTERNAL` and a failed save emits no cancellation.
 Concurrent requests for one item can succeed only once.
 
+### Follow up on open work
+
+```bash
+foundry task <project> "Fix the review findings on wi_X's branch" --continues wi_0123456789abcdef01234567
+```
+
+A follow-up task often finishes work that another item left open: it builds on
+that item's branch, fixes its review findings, and lands. `foundry task <project>
+"<description>" --continues <id>` (repeatable) records that lineage. Each id must
+name an item in the ledger (otherwise `INVALID_ARGUMENT`, as for `--after`) that
+belongs to the same project and is open, that is `preserved`, `needs_decision`
+or `failed` (otherwise `FAILED_PRECONDITION`). A refused dispatch admits and
+runs nothing.
+
+`--continues` is lineage only. It does not change the task's base or its
+objective, and it does not make the task wait: combine it with `--after` for
+that. Use `foundry queue resume` instead to re-run a preserved item's own
+objective from its preserved branch.
+
+The new item records the ids in `continues`, shown by `foundry queue show` in
+human and JSON output, by the queue overview as `(continues <id>, …)`, and in
+its lifecycle payloads beside `resumes`. When the new item settles `landed`
+with a landing commit, each continued item that is still open settles `landed`
+with `landed_commit` set and the reason `superseded by <commit> via <new item
+id>`. A `work_item_settled` event records it on that item's own trace, and the
+guarded branch cleanup runs as for any landed item. The decision is taken on
+the ledger as loaded under the shared write gate, so an item the owner already
+closed or cancelled stays as it is. A follow-up that does not land, including
+a `complete` that delivered nothing, leaves the continued items open and
+unchanged.
+
 ### Resume preserved work
 
 ```bash

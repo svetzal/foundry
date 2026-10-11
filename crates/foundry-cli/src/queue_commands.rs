@@ -344,6 +344,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         source: item.source.as_ref().map(source_to_proto),
         depends_on: item.depends_on.clone(),
         not_before: item.not_before.map(|at| at.to_rfc3339()),
+        continues: item.continues.clone(),
     }
 }
 

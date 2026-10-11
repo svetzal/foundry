@@ -78,7 +78,7 @@ fn assert_cancellation_announced(events: &[Event], item: &WorkItem) {
 }
 
 /// Every event in the durable log under `events_dir`, oldest file first.
-fn logged_events(events_dir: &Path) -> Vec<Event> {
+pub(super) fn logged_events(events_dir: &Path) -> Vec<Event> {
     let mut files: Vec<_> = std::fs::read_dir(events_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())

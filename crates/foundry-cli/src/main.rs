@@ -55,6 +55,13 @@ struct TaskArgs {
     /// as 30m, 2h or 1d
     #[arg(long, value_name = "TIME|DURATION")]
     not_before: Option<String>,
+
+    /// Record that this task follows up on an open work item (repeatable).
+    /// Lineage only: the task's base and objective are unchanged, and it does
+    /// not wait for the item. When this task lands, each continued item still
+    /// open settles landed, superseded by it.
+    #[arg(long, value_name = "WORK_ITEM_ID")]
+    continues: Vec<String>,
 }
 
 impl TaskArgs {
@@ -65,8 +72,11 @@ impl TaskArgs {
             &self.description,
             self.agent.as_deref(),
             self.origin.as_deref(),
-            &self.after,
-            self.not_before.as_deref(),
+            &workflow_commands::TaskOptions {
+                after: &self.after,
+                not_before: self.not_before.as_deref(),
+                continues: &self.continues,
+            },
         )
         .await
     }
@@ -1147,6 +1157,30 @@ mod cli_surface_tests {
             Commands::Task(args) => {
                 assert_eq!(args.after, vec!["wi_a".to_string(), "wi_b".to_string()]);
                 assert_eq!(args.not_before.as_deref(), Some("2h"));
+                assert!(args.continues.is_empty());
+            }
+            _ => panic!("expected the task subcommand"),
+        }
+    }
+
+    #[test]
+    fn task_accepts_repeatable_continues() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "task",
+            "acme",
+            "fix the review findings",
+            "--continues",
+            "wi_a",
+            "--continues",
+            "wi_b",
+        ])
+        .expect("parse");
+
+        match cli.command {
+            Commands::Task(args) => {
+                assert_eq!(args.continues, vec!["wi_a".to_string(), "wi_b".to_string()]);
+                assert!(args.after.is_empty(), "continuing is not waiting");
             }
             _ => panic!("expected the task subcommand"),
         }

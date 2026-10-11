@@ -214,15 +214,16 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
 
 /// The `execution_requested` payload for one `foundry task` dispatch.
 ///
-/// `operator_origin`, `depends_on` and `not_before` are written only when
-/// there is something to carry, so a dispatch without them is byte-for-byte
-/// the payload this command has always sent.
+/// `operator_origin`, `depends_on`, `not_before` and `continues` are written
+/// only when there is something to carry, so a dispatch without them is
+/// byte-for-byte the payload this command has always sent.
 fn task_payload(
     project: &str,
     description: &str,
     agent_provider: Option<&str>,
     operator_origin: Option<&str>,
     schedule: &TaskSchedule<'_>,
+    continues: &[String],
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "project": project,
@@ -240,6 +241,9 @@ fn task_payload(
     }
     if let Some(at) = schedule.not_before {
         payload["not_before"] = serde_json::json!(at.to_rfc3339());
+    }
+    if !continues.is_empty() {
+        payload["continues"] = serde_json::json!(continues);
     }
     payload
 }
@@ -305,19 +309,30 @@ fn on_run_event(
             ))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What an operator passed to `foundry task` beside the objective: pacing
+/// (`--after`, `--not-before`) and lineage (`--continues`).
+#[derive(Debug, Default)]
+pub struct TaskOptions<'a> {
+    /// Items this task waits on.
+    pub after: &'a [String],
+    /// The earliest start, as typed: RFC 3339 or a duration from now.
+    pub not_before: Option<&'a str>,
+    /// Open items this task follows up on.
+    pub continues: &'a [String],
+}
+
 pub async fn task(
     addr: &str,
     project: &str,
     description: &str,
     agent: Option<&str>,
     origin: Option<&str>,
-    after: &[String],
-    not_before: Option<&str>,
+    options: &TaskOptions<'_>,
 ) -> Result<()> {
     let agent_provider = resolve_agent_override(agent)?;
     let operator_origin = crate::origin::local_operator_origin(origin);
-    let not_before = not_before
+    let not_before = options
+        .not_before
         .map(|text| crate::commands::parse_not_before(text, chrono::Utc::now()))
         .transpose()?;
     let payload = task_payload(
@@ -325,7 +340,11 @@ pub async fn task(
         description,
         agent_provider.as_deref(),
         Some(&operator_origin),
-        &TaskSchedule { after, not_before },
+        &TaskSchedule {
+            after: options.after,
+            not_before,
+        },
+        options.continues,
     );
     let runner = WorkflowRunner::new(addr, project);
     println!("Running task for {project}...");
@@ -605,8 +624,14 @@ mod tests {
     #[test]
     fn task_payload_carries_the_hostname_and_the_origin_text_verbatim() {
         let origin = crate::origin::operator_origin(Some("workbench"), Some("asked by Stacey"));
-        let payload =
-            super::task_payload("p", "do the thing", None, Some(&origin), &TaskSchedule::default());
+        let payload = super::task_payload(
+            "p",
+            "do the thing",
+            None,
+            Some(&origin),
+            &TaskSchedule::default(),
+            &[],
+        );
 
         assert_eq!(payload["operator_origin"], "host workbench: asked by Stacey");
         assert_eq!(payload["prompt"], "do the thing");
@@ -618,8 +643,14 @@ mod tests {
         // The lookup failing yields `None` for the hostname; the dispatch still
         // carries its prompt and gains a stated origin rather than no origin.
         let origin = crate::origin::operator_origin(None, Some("by hand"));
-        let payload =
-            super::task_payload("p", "do the thing", None, Some(&origin), &TaskSchedule::default());
+        let payload = super::task_payload(
+            "p",
+            "do the thing",
+            None,
+            Some(&origin),
+            &TaskSchedule::default(),
+            &[],
+        );
 
         assert_eq!(payload["operator_origin"], "host unknown host: by hand");
         assert_eq!(payload["prompt"], "do the thing");
@@ -628,7 +659,7 @@ mod tests {
     #[test]
     fn task_payload_without_operator_origin_is_unchanged() {
         let payload =
-            super::task_payload("p", "do the thing", None, None, &TaskSchedule::default());
+            super::task_payload("p", "do the thing", None, None, &TaskSchedule::default(), &[]);
 
         assert_eq!(
             payload,
@@ -649,9 +680,26 @@ mod tests {
                 after: &after,
                 not_before: Some(not_before),
             },
+            &[],
         );
         assert_eq!(payload["depends_on"], serde_json::json!(["wi_a", "wi_b"]));
         assert_eq!(payload["not_before"], "2026-10-11T09:00:00+00:00");
+        assert!(payload.get("continues").is_none());
+    }
+
+    #[test]
+    fn task_payload_carries_continues_only_when_given() {
+        let continues = vec!["wi_a".to_string(), "wi_b".to_string()];
+        let payload = super::task_payload(
+            "p",
+            "fix the review findings",
+            None,
+            None,
+            &TaskSchedule::default(),
+            &continues,
+        );
+        assert_eq!(payload["continues"], serde_json::json!(["wi_a", "wi_b"]));
+        assert!(payload.get("depends_on").is_none(), "continuing is not waiting");
     }
 
     fn watched(event_id: &str, event_type: &str, trace: &str, payload: &str) -> WatchResponse {

@@ -432,6 +432,12 @@ Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
 `INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
 
+`foundry task <project> "<description>" --continues <id>` (repeatable) is the
+lighter link for a follow-up with its own objective. Each id must be an open
+item of the same project. The new item records them in `continues`; when it
+lands, each one still open settles `landed` with reason `superseded by <commit>
+via <new item id>`, and when it does not land they stay open.
+
 If the initial ledger save fails, no child or lifecycle events are created.
 Otherwise admission stages a child in `failed` with reason `resume admission incomplete;
 execution not dispatched`, no `started_at`, a `settled_at`, no disposition, and

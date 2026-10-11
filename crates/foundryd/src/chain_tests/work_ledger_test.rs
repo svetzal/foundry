@@ -1954,3 +1954,6 @@ mod supersession_test;
 
 #[path = "campaign_carry_test.rs"]
 mod campaign_carry_test;
+
+#[path = "continuation_test.rs"]
+mod continuation_test;
