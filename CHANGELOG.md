@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-10-10
+
 ### Changed
 
 - A quality gate (or its `fix_command`) without its own `timeout` now runs for
