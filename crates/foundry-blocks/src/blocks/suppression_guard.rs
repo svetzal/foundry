@@ -11,13 +11,27 @@
 //! `origin/<branch>`: an agent that pushes moves the remote, and a diff
 //! against it would then be empty (2026-09-29, mojentic-kt).
 //!
+//! Only lines added to a file where a suppression takes effect are read
+//! ([`Surface`]): the auditors' own configuration files, and files that run
+//! commands, where an auditor invocation can carry an ignore flag. Logs,
+//! evidence archives, briefs and other prose can quote a suppression without
+//! applying it, and are never read. On 2026-10-11 a mojentic-py campaign
+//! cycle was stopped for "a pip-audit --ignore-vuln flag" found in an archived
+//! controller log that quoted this guard's own earlier rejection, and an
+//! earlier cycle for a brief that forbade ignore flags.
+//!
+//! The guard flags:
+//!
 //! - any entry added to `.supply-chain-allow.json`;
 //! - `ignore_advisories` (or an advisory ID) added to a `mix.exs`, or to a
 //!   `mix_audit` skips file;
 //! - a `<suppress>` added to a Dependency-Check suppressions XML;
-//! - a `pip-audit --ignore-vuln` flag;
-//! - an advisory ID added to `deny.toml` or `audit.toml`, or a
-//!   `cargo audit --ignore` flag;
+//! - an advisory ID added to `deny.toml` or `audit.toml` (including
+//!   `.cargo/audit.toml`);
+//! - a `pip-audit --ignore-vuln` or `cargo audit --ignore` flag added to a
+//!   file that runs commands: `.hone-gates.json`, a CI workflow, a shell
+//!   script, a Makefile or justfile, `package.json` scripts, and the Python
+//!   task runners' configuration;
 //! - an npm `overrides`/`resolutions` entry that pins a package to a version
 //!   the latest supply-chain scan says is vulnerable.
 //!
@@ -57,57 +71,145 @@ fn advisory_ids(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// Suppression entries added in a unified diff (`git diff -U0`).
+/// A file where an advisory suppression takes effect. The guard reads added
+/// lines only in these files: a positive list, so a log, an evidence archive
+/// or a document in a new place can never trip it by quoting a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    /// `.supply-chain-allow.json`, Foundry's own advisory allowlist.
+    SupplyChainAllowList,
+    /// A `mix.exs`, where `ignore_advisories` lives.
+    MixExs,
+    /// A `mix_audit` skips file.
+    MixAuditSkips,
+    /// An OWASP Dependency-Check suppressions XML.
+    DependencyCheckSuppressions,
+    /// `deny.toml` or `audit.toml` (cargo deny, cargo audit).
+    CargoAdvisoryConfig,
+    /// A file that runs commands, where an auditor invocation can carry an
+    /// ignore flag.
+    Commands,
+}
+
+/// Files that run commands, by name.
+const COMMAND_FILES: [&str; 20] = [
+    ".hone-gates.json",
+    "package.json",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "noxfile.py",
+    "hatch.toml",
+    "Makefile",
+    "makefile",
+    "GNUmakefile",
+    "justfile",
+    "Justfile",
+    ".justfile",
+    "Taskfile.yml",
+    "Taskfile.yaml",
+    ".pre-commit-config.yaml",
+    ".gitlab-ci.yml",
+    "Dockerfile",
+    "mise.toml",
+    ".mise.toml",
+];
+
+/// Extensions of files that run commands.
+const COMMAND_EXTENSIONS: [&str; 6] = ["sh", "bash", "zsh", "ps1", "mk", "just"];
+
+/// Where `path` (relative to the repository root) can hold a suppression,
+/// or `None` when nothing added to it takes effect as one.
+fn surface(path: &str) -> Option<Surface> {
+    let path = Path::new(path);
+    let name = path.file_name()?.to_string_lossy();
+    let extension = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+    let extension = extension.as_deref();
+    let yaml = matches!(extension, Some("yml" | "yaml"));
+    let under = |dir: &str| path.parent().is_some_and(|p| p.iter().any(|c| c == dir));
+    if name == ".supply-chain-allow.json" {
+        Some(Surface::SupplyChainAllowList)
+    } else if name == "mix.exs" {
+        Some(Surface::MixExs)
+    } else if name.contains("mix-audit")
+        && matches!(extension, None | Some("yml" | "yaml" | "txt" | "json" | "exs"))
+    {
+        Some(Surface::MixAuditSkips)
+    } else if extension == Some("xml") && name.to_ascii_lowercase().contains("suppress") {
+        Some(Surface::DependencyCheckSuppressions)
+    } else if name == "deny.toml" || name == "audit.toml" {
+        Some(Surface::CargoAdvisoryConfig)
+    } else if COMMAND_FILES.contains(&name.as_ref())
+        || extension.is_some_and(|e| COMMAND_EXTENSIONS.contains(&e))
+        // GitHub reads workflows and composite actions only from the root `.github/`.
+        || (yaml && path.starts_with(".github"))
+        || (yaml && path.starts_with(".circleci"))
+        // An extensionless executable in a scripts directory.
+        || (extension.is_none() && (under("bin") || under("scripts")))
+    {
+        Some(Surface::Commands)
+    } else {
+        None
+    }
+}
+
+/// The suppression an added `line` applies in a file of this `surface`, if
+/// any. `ids` are the advisory IDs on the line.
+fn suppression_in(surface: Surface, line: &str, ids: &[String]) -> Option<&'static str> {
+    match surface {
+        Surface::SupplyChainAllowList => (!ids.is_empty() || line.contains("\"cve\""))
+            .then_some("an allowlist entry in .supply-chain-allow.json"),
+        Surface::MixExs => (line.contains("ignore_advisories") || !ids.is_empty())
+            .then_some("ignore_advisories in mix.exs"),
+        Surface::MixAuditSkips => (!ids.is_empty()).then_some("a mix_audit skip"),
+        Surface::DependencyCheckSuppressions => (line.contains("<suppress")
+            || line.contains("<cve>")
+            || line.contains("<vulnerabilityName>"))
+        .then_some("a Dependency-Check suppression"),
+        Surface::CargoAdvisoryConfig => {
+            (!ids.is_empty()).then_some("a cargo deny/audit ignore entry")
+        }
+        Surface::Commands => {
+            if line.contains("--ignore-vuln") {
+                Some("a pip-audit --ignore-vuln flag")
+            } else if line.contains("cargo audit") && line.contains("--ignore") {
+                Some("a cargo audit --ignore flag")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Suppression entries added in a unified diff (`git diff -U0`), read only
+/// in files where a suppression takes effect (see [`Surface`]).
 pub(crate) fn added_suppressions(diff: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut file = String::new();
+    let mut file_surface = None;
     for line in diff.lines() {
         if let Some(path) = line.strip_prefix("+++ ") {
             file = path.strip_prefix("b/").unwrap_or(path).to_string();
+            file_surface = surface(&file);
             continue;
         }
+        let Some(surface) = file_surface else {
+            continue;
+        };
         let Some(added) = line.strip_prefix('+') else {
             continue;
         };
-        let name = Path::new(&file)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let lower_name = name.to_ascii_lowercase();
         let ids = advisory_ids(added);
-        let what = if name == ".supply-chain-allow.json"
-            && (!ids.is_empty() || added.contains("\"cve\""))
-        {
-            Some("an allowlist entry in .supply-chain-allow.json")
-        } else if name == "mix.exs" && (added.contains("ignore_advisories") || !ids.is_empty()) {
-            Some("ignore_advisories in mix.exs")
-        } else if name.contains("mix-audit") && !ids.is_empty() {
-            Some("a mix_audit skip")
-        } else if Path::new(&name).extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"))
-            && lower_name.contains("suppress")
-            && (added.contains("<suppress")
-                || added.contains("<cve>")
-                || added.contains("<vulnerabilityName>"))
-        {
-            Some("a Dependency-Check suppression")
-        } else if added.contains("--ignore-vuln") {
-            Some("a pip-audit --ignore-vuln flag")
-        } else if (name == "deny.toml" || name == "audit.toml") && !ids.is_empty() {
-            Some("a cargo deny/audit ignore entry")
-        } else if added.contains("cargo audit") && added.contains("--ignore") {
-            Some("a cargo audit --ignore flag")
-        } else {
-            None
+        let Some(what) = suppression_in(surface, added, &ids) else {
+            continue;
         };
-        if let Some(what) = what {
-            let detail = if ids.is_empty() {
-                format!("{what} ({file})")
-            } else {
-                format!("{what} ({file}: {})", ids.join(", "))
-            };
-            if !found.contains(&detail) {
-                found.push(detail);
-            }
+        let detail = if ids.is_empty() {
+            format!("{what} ({file})")
+        } else {
+            format!("{what} ({file}: {})", ids.join(", "))
+        };
+        if !found.contains(&detail) {
+            found.push(detail);
         }
     }
     found
@@ -372,6 +474,132 @@ diff --git a/mix.exs b/mix.exs
 +++ b/mix.lock\n+  \"phoenix\": {:hex, :phoenix, \"1.8.15\"},\n\
 +++ b/CHANGELOG.md\n+- Upgraded jose to fix CVE-2026-2.\n";
         assert!(added_suppressions(diff).is_empty());
+    }
+
+    /// The archived controller log mojentic-py's campaign committed on
+    /// 2026-10-11: the guard's own rejection, quoted back into the run.
+    fn quoted_rejection() -> String {
+        needs_review(&[
+            "a pip-audit --ignore-vuln flag (.hone-gates.json: PYSEC-2026-3)".to_string(),
+            "a cargo audit --ignore flag (.github/workflows/ci.yml: RUSTSEC-2026-0008)".to_string(),
+        ])
+    }
+
+    #[test]
+    fn a_log_that_quotes_the_guards_own_rejection_is_not_a_suppression() {
+        let diff = format!(
+            "+++ b/evidence/cycle-9/current/controller-trace/2-agent.stdout.log\n\
+             +{}\n\
+             +$ .venv/bin/pip-audit --ignore-vuln PYSEC-2026-3\n\
+             +$ cargo audit --ignore RUSTSEC-2026-0008\n",
+            quoted_rejection()
+        );
+        assert_eq!(added_suppressions(&diff), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_brief_that_forbids_ignore_flags_is_not_a_suppression() {
+        let diff = "+++ b/.foundry/campaigns/cycle-3/brief.md\n\
++Never pass --ignore-vuln GHSA-xj6q-8x83-jv6g to pip-audit, and never run\n\
++`cargo audit --ignore RUSTSEC-2026-0001`; upgrade instead.\n\
++++ b/README.md\n\
++The nightly gate runs `pip-audit --ignore-vuln` only with a human's approval.\n\
++++ b/evidence/cycle-4/mix-audit.log\n\
++GHSA-abcd-efgh-ijkl: plug 1.15.0 is vulnerable\n";
+        assert_eq!(added_suppressions(diff), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_committed_evidence_log_quoting_a_flag_passes_the_run() {
+        use crate::blocks::test_helpers::git_repo::{CleanProcessShellGateway, commit, git, repo};
+
+        let repo = repo();
+        let head = git(&repo.work, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(repo.work.join("evidence/cycle-9")).unwrap();
+        commit(
+            &repo.work,
+            "evidence/cycle-9/controller.stdout.log",
+            &quoted_rejection(),
+            "evidence: cycle 9",
+        );
+        std::fs::write(
+            repo.work.join("BRIEF.md"),
+            "Never add --ignore-vuln or cargo audit --ignore.\n",
+        )
+        .unwrap();
+        let events = tempfile::tempdir().unwrap();
+
+        let found =
+            run_suppressions(&CleanProcessShellGateway, &repo.work, &head, "p", events.path())
+                .await;
+
+        assert_eq!(found, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_ignore_flag_in_a_gate_command_is_flagged() {
+        let diff = "+++ b/.hone-gates.json\n\
++    {\"name\": \"audit\", \"command\": \"uv run pip-audit --ignore-vuln GHSA-xj6q-8x83-jv6g\"}\n";
+        assert_eq!(
+            added_suppressions(diff),
+            ["a pip-audit --ignore-vuln flag (.hone-gates.json: GHSA-xj6q-8x83-jv6g)"]
+        );
+    }
+
+    #[test]
+    fn an_ignore_entry_in_cargo_audit_config_is_flagged() {
+        let diff = "+++ b/.cargo/audit.toml\n\
++[advisories]\n\
++ignore = [\"RUSTSEC-2026-0007\"]\n";
+        assert_eq!(
+            added_suppressions(diff),
+            ["a cargo deny/audit ignore entry (.cargo/audit.toml: RUSTSEC-2026-0007)"]
+        );
+    }
+
+    #[test]
+    fn ignore_flags_in_ci_scripts_and_task_runners_are_flagged() {
+        let diff = "+++ b/.github/workflows/audit.yaml\n\
++        run: pip-audit --strict --ignore-vuln PYSEC-2026-3\n\
++++ b/scripts/audit.sh\n\
++cargo audit --ignore RUSTSEC-2026-0008\n\
++++ b/Makefile\n\
++\tcargo audit --deny warnings --ignore RUSTSEC-2026-0009\n\
++++ b/package.json\n\
++    \"audit\": \"pip-audit --ignore-vuln GHSA-xj6q-8x83-jv6g\",\n\
++++ b/bin/audit\n\
++exec pip-audit --ignore-vuln PYSEC-2026-4\n";
+        assert_eq!(
+            added_suppressions(diff),
+            [
+                "a pip-audit --ignore-vuln flag (.github/workflows/audit.yaml: PYSEC-2026-3)",
+                "a cargo audit --ignore flag (scripts/audit.sh: RUSTSEC-2026-0008)",
+                "a cargo audit --ignore flag (Makefile: RUSTSEC-2026-0009)",
+                "a pip-audit --ignore-vuln flag (package.json: GHSA-xj6q-8x83-jv6g)",
+                "a pip-audit --ignore-vuln flag (bin/audit: PYSEC-2026-4)",
+            ]
+        );
+    }
+
+    #[test]
+    fn suppressions_live_only_in_config_and_command_files() {
+        assert_eq!(surface("deny.toml"), Some(Surface::CargoAdvisoryConfig));
+        assert_eq!(surface("crates/x/deny.toml"), Some(Surface::CargoAdvisoryConfig));
+        assert_eq!(surface(".mix-audit-skips.yml"), Some(Surface::MixAuditSkips));
+        assert_eq!(surface(".github/workflows/ci.yml"), Some(Surface::Commands));
+        assert_eq!(surface(".github/actions/audit/action.yml"), Some(Surface::Commands));
+        assert_eq!(surface("tox.ini"), Some(Surface::Commands));
+        // A copy of a workflow outside the root `.github/` never runs.
+        assert_eq!(surface("evidence/.github/workflows/ci.yml"), None);
+        for quoted in [
+            "evidence/cycle-9/current/controller-trace/2-agent.stdout.log",
+            "CHANGELOG.md",
+            "docs/brief.md",
+            "evidence/mix-audit.log",
+            "notes.txt",
+        ] {
+            assert_eq!(surface(quoted), None, "{quoted}");
+        }
     }
 
     fn finding(package: &str, fix: Option<&str>, range: Option<&str>) -> SupplyChainFinding {

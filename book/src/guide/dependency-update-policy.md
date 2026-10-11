@@ -187,6 +187,20 @@ It is never green, and its commits are not pushed. Maintain and iterate retry
 it (the retry is told to remove the suppression); remediation and tasks stop
 for review.
 
+The check reads added lines only in files where a suppression takes effect.
+These are the auditors' configuration files (`.supply-chain-allow.json`,
+`mix.exs`, a `mix_audit` skips file, a Dependency-Check suppressions XML,
+`deny.toml`, `audit.toml`). They are also the files that run commands, where
+an auditor invocation can carry `--ignore-vuln` or `cargo audit --ignore`,
+for example `.hone-gates.json`, the YAML files in the root `.github/` and
+`.circleci/`, shell scripts, extensionless files in a `bin/` or `scripts/`
+directory, Makefiles, justfiles, `package.json`, `pyproject.toml`,
+`setup.cfg`, `tox.ini`, `noxfile.py`, `.pre-commit-config.yaml`,
+`.gitlab-ci.yml` and `Dockerfile`. A log, an evidence archive, a brief, a
+README or a CHANGELOG can quote a flag without applying it, so the check
+does not read them. On 2026-10-11 a campaign cycle stopped because an
+archived controller log quoted the guard's own earlier rejection.
+
 The check does not compare against `origin/<branch>` because the agent can
 move it: on 2026-09-29 a maintain agent pushed its own commit, the diff
 against the remote came back empty, and a suppression in that commit would
