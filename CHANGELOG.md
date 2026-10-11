@@ -9,6 +9,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A second `foundry campaign advance` for a campaign no longer starts a
+  second advance workflow. On 2026-10-11 an operator retried a hung advance on
+  production and got two advance workflows for one campaign, which had to be
+  cancelled by hand. The `AdvanceCampaign` RPC checked only the campaign
+  status. It now also refuses to duplicate work in flight: when the campaign
+  already has an advance or a cycle submitted, queued, held or running in the
+  work-item ledger (cycles by their `campaign:<name>` source, advances by a
+  `CampaignAdvanceRequested` root naming the campaign), or an accepted advance
+  or cycle workflow in the tracker not yet admitted to the ledger, it
+  dispatches nothing. `AdvanceCampaignResponse` has a new `in_flight` field
+  (`CampaignWorkInFlight`: kind, work item id, state, root event id) and an
+  empty `event_id` in that case; existing fields and numbers are unchanged.
+  The check and the dispatch run under the same campaign store lock, and the
+  tracker records the workflow before the lock is released, so two
+  simultaneous advances for one campaign dispatch exactly one workflow. The
+  CLI prints the existing item with `next: foundry queue show <id>` and exits
+  0 without watching. The automatic advance after a cycle is unaffected.
+- `foundry campaign advance` now follows only its own advance. It watched the
+  whole project and stopped at the first `campaign_advance_completed`, so on
+  2026-10-11 two clients printed and exited on another campaign's formation.
+  It now follows the advance's own trace and also stops when its work item
+  settles without a campaign event, which is what an advance whose formed
+  outcome was discarded produces.
+
 - A campaign formation no longer blocks every other campaign. On 2026-10-11
   five concurrent `foundry campaign advance` calls on production, one per
   campaign, admitted three; the other two hung for minutes and were admitted

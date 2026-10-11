@@ -1,4 +1,6 @@
-//! A campaign formation runs its agent without holding the campaign store.
+//! Concurrent campaign advances: formation runs its agent without holding the
+//! campaign store, and a campaign never gets a second advance while one is in
+//! flight.
 //!
 //! Reproduces the 2026-10-11 production hang: five concurrent
 //! `foundry campaign advance` calls, one per campaign. Three were admitted; the
@@ -14,7 +16,11 @@
 //! - different campaigns form at the same time;
 //! - a formed outcome is applied only when the campaign record is unchanged
 //!   since formation read it. A campaign paused, cancelled or edited while its
-//!   formation ran keeps the operator's change, and the outcome is discarded.
+//!   formation ran keeps the operator's change, and the outcome is discarded;
+//! - an advance for a campaign whose advance or cycle is already submitted,
+//!   queued, held or running dispatches nothing and names that work instead.
+//!   On 2026-10-11 an operator retried a hung advance and got two advance
+//!   workflows for one campaign, which had to be cancelled by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::pin::Pin;
@@ -30,6 +36,11 @@ use foundry_blocks::{
 use foundry_engine::engine::Engine;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gateway::fakes::FakeShellGateway;
+use foundry_sdk::throttle::Throttle;
+use foundry_sdk::work_item::{
+    WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+};
+use foundry_sdk::work_source::WorkSource;
 use foundry_sdk::{
     campaign::{Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence},
     registry::Registry,
@@ -119,7 +130,7 @@ fn active_campaign(name: &str) -> Campaign {
 }
 
 struct Harness {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     path: std::path::PathBuf,
     service: Arc<FoundryService>,
     tracker: Arc<WorkflowTracker>,
@@ -174,7 +185,7 @@ impl Harness {
             },
         ));
         Self {
-            _dir: dir,
+            dir,
             path,
             service,
             tracker,
@@ -195,6 +206,10 @@ impl Harness {
         .unwrap_or_else(|_| panic!("advance for '{name}' waited on another formation"))
         .unwrap()
         .into_inner()
+    }
+
+    fn ledger_path(&self) -> std::path::PathBuf {
+        self.dir.path().join("work.json")
     }
 
     fn stored(&self, name: &str) -> Campaign {
@@ -402,4 +417,175 @@ async fn a_campaign_edited_while_it_forms_keeps_the_edit_and_dispatches_nothing(
     assert_eq!(stored.cycles_completed, 0, "the stale outcome was not applied");
     let events = harness.drain_events();
     assert_eq!(count(&events, &EventType::ExecutionRequested, "alpha"), 0);
+}
+
+// ── A second advance while one is in flight ─────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_advance_while_one_forms_names_it_and_dispatches_nothing() {
+    let agent = GatedAgent::new();
+    let mut harness = Harness::new(&["alpha"], agent.clone());
+
+    let first = harness.advance("alpha").await;
+    wait_until("alpha's formation to reach its agent", || agent.entered() >= 1).await;
+    let second = harness.advance("alpha").await;
+
+    assert!(second.event_id.is_empty(), "no second workflow was dispatched");
+    let in_flight = second.in_flight.expect("the in-flight advance is named");
+    assert_eq!(in_flight.kind, "advance");
+    assert_eq!(in_flight.event_id, first.event_id);
+
+    agent.release(2);
+    harness.settled().await;
+    assert_eq!(agent.entered(), 1, "alpha formed once");
+    assert_eq!(harness.stored("alpha").cycles_completed, 1);
+    let events = harness.drain_events();
+    assert_eq!(count(&events, &EventType::CampaignAdvanceRequested, "alpha"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_simultaneous_advances_for_one_campaign_dispatch_exactly_one() {
+    for _ in 0..10 {
+        let agent = GatedAgent::new();
+        let mut harness = Harness::new(&["alpha"], agent.clone());
+
+        let (left, right) = tokio::join!(harness.advance("alpha"), harness.advance("alpha"));
+        let dispatched = [&left, &right].iter().filter(|r| !r.event_id.is_empty()).count();
+        let refused = [&left, &right].iter().filter(|r| r.in_flight.is_some()).count();
+        assert_eq!((dispatched, refused), (1, 1), "exactly one advance dispatched");
+
+        agent.release(2);
+        harness.settled().await;
+        assert_eq!(agent.entered(), 1, "alpha formed once");
+        let events = harness.drain_events();
+        assert_eq!(count(&events, &EventType::CampaignAdvanceRequested, "alpha"), 1);
+    }
+}
+
+fn cycle_root(campaign: &str) -> Event {
+    Event::new(
+        EventType::ExecutionRequested,
+        "test-project".to_string(),
+        Throttle::Full,
+        serde_json::json!({"workflow": "task", "prompt": "a cycle", "campaign": campaign}),
+    )
+    .with_source(Some(WorkSource::campaign(campaign, 1)))
+}
+
+fn advance_root(campaign: &str) -> Event {
+    Event::new(
+        EventType::CampaignAdvanceRequested,
+        "test-project".to_string(),
+        Throttle::Full,
+        serde_json::json!({"campaign": campaign}),
+    )
+}
+
+/// A ledger item in `state`, rooted at `root`, as the daemon records it.
+fn ledger_item(root: Event, kind: WorkItemKind, state: WorkItemState) -> WorkItem {
+    let source = root.source.clone();
+    let mut item = WorkItem::queued(
+        WorkItemSpec {
+            project: root.project.clone(),
+            objective: "work".to_string(),
+            kind,
+            lane: WorkLane::Campaign,
+            origin: root.event_type.to_string(),
+            trace_id: None,
+        },
+        root.clone(),
+        chrono::Utc::now(),
+    )
+    .with_source(source);
+    match state {
+        WorkItemState::Queued => {}
+        WorkItemState::Held => item.hold(),
+        WorkItemState::Running => {
+            item.start(chrono::Utc::now());
+            item.started_root = Some(root);
+        }
+        WorkItemState::Landed => {
+            item.start(chrono::Utc::now());
+            item.started_root = Some(root);
+            item.settle_landed("landed", chrono::Utc::now());
+            item.execution_completed = true;
+        }
+        other => panic!("fixture does not build {other:?}"),
+    }
+    item
+}
+
+fn write_ledger(harness: &Harness, items: Vec<WorkItem>) {
+    let store = WorkItemStore {
+        items,
+        ..WorkItemStore::default()
+    };
+    store.save(&harness.ledger_path()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_while_a_cycle_waits_or_runs_names_that_cycle() {
+    for state in [
+        WorkItemState::Queued,
+        WorkItemState::Held,
+        WorkItemState::Running,
+    ] {
+        let agent = GatedAgent::new();
+        let mut harness = Harness::new(&["alpha"], agent.clone());
+        let cycle = ledger_item(cycle_root("alpha"), WorkItemKind::CampaignCycle, state);
+        write_ledger(&harness, vec![cycle.clone()]);
+
+        let response = harness.advance("alpha").await;
+
+        assert!(response.event_id.is_empty(), "{state:?}: nothing dispatched");
+        let in_flight = response.in_flight.expect("the cycle is named");
+        assert_eq!(in_flight.kind, "cycle");
+        assert_eq!(in_flight.work_item_id, cycle.id);
+        assert_eq!(in_flight.state, state.tag());
+        harness.settled().await;
+        assert_eq!(agent.entered(), 0, "{state:?}: no formation ran");
+        assert!(harness.drain_events().is_empty(), "{state:?}: no event emitted");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_while_an_advance_waits_in_the_ledger_names_it() {
+    let agent = GatedAgent::new();
+    let mut harness = Harness::new(&["alpha"], agent.clone());
+    let queued = ledger_item(advance_root("alpha"), WorkItemKind::Workflow, WorkItemState::Queued);
+    write_ledger(&harness, vec![queued.clone()]);
+
+    let response = harness.advance("alpha").await;
+
+    assert!(response.event_id.is_empty());
+    let in_flight = response.in_flight.expect("the queued advance is named");
+    assert_eq!(in_flight.kind, "advance");
+    assert_eq!(in_flight.work_item_id, queued.id);
+    assert_eq!(in_flight.state, "queued");
+    assert_eq!(in_flight.event_id, queued.pending_root.unwrap().id);
+    harness.settled().await;
+    assert_eq!(agent.entered(), 0);
+    assert!(harness.drain_events().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settled_work_and_other_campaigns_work_do_not_block_an_advance() {
+    let agent = GatedAgent::new();
+    let harness = Harness::new(&["alpha", "beta"], agent.clone());
+    write_ledger(
+        &harness,
+        vec![
+            ledger_item(cycle_root("alpha"), WorkItemKind::CampaignCycle, WorkItemState::Landed),
+            ledger_item(cycle_root("beta"), WorkItemKind::CampaignCycle, WorkItemState::Running),
+            ledger_item(advance_root("beta"), WorkItemKind::Workflow, WorkItemState::Queued),
+        ],
+    );
+
+    let response = harness.advance("alpha").await;
+
+    assert!(response.in_flight.is_none());
+    assert!(!response.event_id.is_empty(), "alpha's advance was dispatched");
+    agent.release(1);
+    harness.settled().await;
+    assert_eq!(harness.stored("alpha").cycles_completed, 1);
 }

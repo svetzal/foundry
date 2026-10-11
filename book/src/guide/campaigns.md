@@ -625,8 +625,19 @@ approach, or escalate for an owner decision.
 
 ## Observing and Reconstructing a Cycle
 
-`foundry campaign advance` prints the root event ID, streams block progress, and
-renders the completed trace. The same run remains available through:
+`foundry campaign advance` prints the root event ID, streams the block progress
+of its own advance (not other workflows on the project), and renders the
+completed trace. An advance never duplicates work: when the campaign already has
+an advance or a cycle submitted, queued, held or running, the command dispatches
+nothing, prints the existing item, and exits 0:
+
+```text
+Campaign 'parite-phase-2d' already has a cycle in flight: work item wi_3f… (running). Nothing dispatched.
+  next: foundry queue show wi_3f…
+```
+
+Two advances for one campaign issued at the same moment dispatch exactly one
+workflow. The same run remains available through:
 
 ```bash
 foundry history --project parite-cli

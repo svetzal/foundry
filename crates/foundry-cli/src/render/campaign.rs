@@ -530,11 +530,71 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
     out
 }
 
+/// The line `foundry campaign advance` prints when the daemon refused to
+/// duplicate work already in flight for the campaign.
+///
+/// Names the existing item and the command that inspects it. The advance was a
+/// no-op, so there is nothing of this client's to watch.
+pub fn advance_in_flight(campaign: &str, in_flight: &crate::proto::CampaignWorkInFlight) -> String {
+    let article = if in_flight.kind.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "Campaign '{campaign}' already has {article} {} in flight: ",
+        in_flight.kind
+    );
+    if in_flight.work_item_id.is_empty() {
+        let _ = writeln!(
+            out,
+            "event {} ({}, not yet in the ledger). Nothing dispatched.",
+            in_flight.event_id, in_flight.state
+        );
+        let _ = writeln!(out, "  next: foundry status");
+    } else {
+        let _ = writeln!(
+            out,
+            "work item {} ({}). Nothing dispatched.",
+            in_flight.work_item_id, in_flight.state
+        );
+        let _ = writeln!(out, "  next: foundry queue show {}", in_flight.work_item_id);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use foundry_sdk::campaign::{CampaignBudget, CampaignStatus, OwnerDecision};
 
     use super::*;
+
+    fn in_flight(kind: &str, id: &str, state: &str) -> crate::proto::CampaignWorkInFlight {
+        crate::proto::CampaignWorkInFlight {
+            kind: kind.to_string(),
+            work_item_id: id.to_string(),
+            state: state.to_string(),
+            event_id: "evt_root".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_in_flight_cycle_names_its_work_item_and_how_to_inspect_it() {
+        assert_eq!(
+            advance_in_flight("probe", &in_flight("cycle", "wi_1", "running")),
+            "Campaign 'probe' already has a cycle in flight: work item wi_1 (running). Nothing dispatched.\n  next: foundry queue show wi_1\n"
+        );
+    }
+
+    #[test]
+    fn an_advance_not_yet_in_the_ledger_names_its_event() {
+        assert_eq!(
+            advance_in_flight("probe", &in_flight("advance", "", "submitted")),
+            "Campaign 'probe' already has an advance in flight: event evt_root (submitted, not yet in the ledger). Nothing dispatched.\n  next: foundry status\n"
+        );
+    }
 
     #[test]
     fn cost_reports_show_known_usd_and_missing_billing_dimensions() {
