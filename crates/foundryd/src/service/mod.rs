@@ -616,10 +616,13 @@ mod tests {
     /// a broadcast receiver to observe emitted events.
     fn test_service() -> (FoundryService, broadcast::Receiver<Event>) {
         let (event_tx, rx) = broadcast::channel(64);
-        let engine = Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let engine =
+            Arc::new(Engine::new().with_event_broadcaster(event_tx.clone()).with_event_writer(
+                Arc::new(foundry_engine::event_writer::EventWriter::new(tmp.path().join("events"))),
+            ));
         let trace_store = Arc::new(TraceStore::new(Duration::from_secs(60)));
         let workflow_tracker = Arc::new(WorkflowTracker::new());
-        let tmp = tempfile::tempdir().expect("tempdir");
         let trace_writer = Arc::new(TraceWriter::new(tmp.path().to_str().unwrap()));
         let registry = Arc::new(RwLock::new(Registry {
             version: 2,

@@ -9,7 +9,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{MajorUpgradeStatus, MajorUpgradesPlannedPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
-use foundry_sdk::trace::ProcessResult;
+use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
 use crate::proto::{
     EmitRequest, EmitResponse, StatusRequest, StatusResponse, WatchRequest, WatchResponse,
@@ -308,7 +308,6 @@ pub(super) async fn finalise_system_maintenance(
     let engine = &ctx.engine;
     let trace_writer = &ctx.trace_writer;
     let registry = &ctx.registry;
-    let event_tx = &ctx.event_tx;
     // Extract skipped projects before any .await — RwLock guards must not cross await points.
     // A poisoned registry lock must not abort the maintenance summary: log it
     // and degrade to an empty skipped-project list rather than taking down
@@ -370,19 +369,45 @@ pub(super) async fn finalise_system_maintenance(
     .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None)
     .with_source(cycle_root_source(result, root_event_id));
 
-    let summary_result = engine.process(summary_event.clone()).await;
+    let mut summary_result = engine.process(summary_event.clone()).await;
+
+    // The summary root is published when admitted, before its agent runs.
+    // Give its final notification a separate id and an explicit completion
+    // marker so a CLI waits through the whole queued summary traversal.
+    let mut completed = summary_event.clone();
+    completed.id = format!("evt_completed_{}", summary_event.id);
+    completed.payload["service_completed"] = serde_json::json!(true);
+    completed.causation_id = Some(summary_event.id.clone());
+    publish_completion(ctx, &summary_event.id, completed, &mut summary_result).await;
 
     if let Err(e) = trace_writer.write(&summary_event.id, &summary_result) {
         tracing::warn!(error = %e, "failed to write summary trace");
     }
 
     dispatch_major_upgrades(planned_major_dispatches(&summary_result), ctx.clone());
+}
 
-    // Best-effort: a send error means no Watch subscribers are attached,
-    // which is the normal steady state; summary emission must not depend on
-    // a listener.
-    if let Err(e) = event_tx.send(summary_event) {
-        tracing::debug!(error = %e, "no Watch subscribers for MaintenanceSummaryRequested");
+async fn publish_completion(
+    ctx: &super::RuntimeContext,
+    trace_root_id: &str,
+    completed: Event,
+    result: &mut ProcessResult,
+) {
+    // A subscriber may query Trace immediately on receipt. Make the final
+    // result available before the durable notification is broadcast.
+    result.events.push(completed.clone());
+    if let Err(error) = ctx.trace_writer.write(trace_root_id, result) {
+        tracing::warn!(%error, event_id = trace_root_id, "failed to write completion trace");
+    }
+    ctx.trace_store.insert(trace_root_id.to_string(), result.clone());
+    if let Err(error) = ctx.engine.publish_required(completed.clone()).await {
+        tracing::error!(%error, event_id = %completed.id, "could not persist service completion");
+        result.events.retain(|event| event.id != completed.id);
+        let mut failure =
+            BlockExecution::new("Publish service completion", &completed.id, 0, completed.payload);
+        failure.summary = format!("completion persistence failed: {error}");
+        result.block_executions.push(failure);
+        ctx.trace_store.insert(trace_root_id.to_string(), result.clone());
     }
 }
 
@@ -423,7 +448,8 @@ pub(super) async fn run_workflow_result(
     };
     let _guard = WorkflowGuard::new(tracker, event_id.clone());
 
-    let result = engine.process(event).await;
+    let root = event.clone();
+    let mut result = engine.process(event).await;
 
     tracing::info!(
         total_events = result.events.len(),
@@ -431,13 +457,20 @@ pub(super) async fn run_workflow_result(
         "event chain complete"
     );
 
-    if let Err(e) = trace_writer.write(&event_id, &result) {
-        tracing::warn!(error = %e, event_id = %event_id, "failed to write trace to disk");
-    }
-
     if root_event_type == EventType::MaintenanceCycleStarted && root_project == "system" {
+        // The summary can inspect its originating cycle's trace while it
+        // runs, so retain the original pre-summary trace persistence.
+        if let Err(error) = trace_writer.write(&event_id, &result) {
+            tracing::warn!(%error, event_id = %event_id, "failed to write cycle trace before summary");
+        }
         finalise_system_maintenance(&result, &ctx, root_throttle, &event_id, None).await;
-    } else if root_event_type == EventType::ProjectRunStarted {
+    } else if root_event_type == EventType::ProjectRunStarted
+        && root.payload.get(foundry_blocks::blocks::ADMITTED_WORK_ITEM_KEY).is_none()
+        && !result
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::ProjectRunCompleted)
+    {
         let success = result.is_success();
         let completed = Event::new(
             EventType::ProjectRunCompleted,
@@ -446,14 +479,20 @@ pub(super) async fn run_workflow_result(
             serde_json::json!({
                 "success": success,
                 "root_event_id": event_id,
+                "service_completed": true,
             }),
-        );
-        // Best-effort: a send error means no Watch subscribers are attached,
-        // which is the normal steady state; completion emission must not
-        // depend on a listener.
-        if let Err(e) = event_tx.send(completed) {
-            tracing::debug!(error = %e, event_id = %event_id, "no Watch subscribers for ProjectRunCompleted");
-        }
+        )
+        .with_trace_id(root.trace_id.clone())
+        .with_source(root.source.clone())
+        .with_span_ids(root.span_id.clone(), root.parent_span_id.clone())
+        .with_causation_id(Some(event_id.clone()));
+        let mut completed = completed;
+        completed.id = format!("evt_completed_{event_id}");
+        publish_completion(&ctx, &event_id, completed, &mut result).await;
+    }
+
+    if let Err(e) = trace_writer.write(&event_id, &result) {
+        tracing::warn!(error = %e, event_id = %event_id, "failed to write trace to disk");
     }
 
     trace_store.insert(event_id, result.clone());
