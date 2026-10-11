@@ -618,9 +618,11 @@ enum AdvanceWatchStep {
 /// Classify `event` for the advance whose root trace is `own_trace`, or
 /// `None` when it belongs to another workflow on the project.
 ///
-/// The advance is done at its `campaign_advance_completed`, or when its own
-/// work item settles without one: a campaign paused or changed while it formed
-/// discards the formed outcome and emits no campaign event.
+/// The advance is done at its `campaign_advance_completed` (a decision, or a
+/// `stood_down` completion when the campaign was paused, cancelled or settled
+/// before its outcome could apply), or when its own work item settles without
+/// one: an advance whose campaign changed during every formation fails and
+/// emits no campaign event.
 fn advance_watch_step(
     own_trace: Option<&str>,
     event: &crate::proto::WatchResponse,

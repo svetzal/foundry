@@ -11,8 +11,8 @@ use foundry_sdk::campaign::{
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
 use foundry_sdk::payload::{
-    CampaignAdvanceCompletedPayload, CampaignAdvanceRequestedPayload, CampaignDecision,
-    CampaignTerminalPayload, TaskVerdict,
+    CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
+    CampaignDecision, CampaignStandDown, CampaignTerminalPayload, TaskVerdict,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -650,6 +650,38 @@ fn completed_event(
     outcome: CampaignDecision,
     record: &FormationRecord,
 ) -> Event {
+    advance_completed_event(campaign, throttle, CampaignAdvanceOutcome::Decided(outcome), record)
+}
+
+/// The completion of an advance that applied nothing because the campaign was
+/// stopped or settled by someone else.
+///
+/// It is a success: the advance did what the stop asked of it. The work item
+/// therefore settles `landed` instead of waiting in the open group for a
+/// person. It carries no objective, changes no status and counts no cycle, and
+/// its `decision` is `stood_down`, so no reader can take it for a dispatch or
+/// for the campaign completing. `record` is the formation that ran and was
+/// discarded, when one did; it explains the agent spend.
+fn stood_down_event(
+    campaign: &Campaign,
+    throttle: foundry_sdk::throttle::Throttle,
+    reason: String,
+    record: &FormationRecord,
+) -> Event {
+    advance_completed_event(
+        campaign,
+        throttle,
+        CampaignAdvanceOutcome::StoodDown(CampaignStandDown::new(campaign.status, reason)),
+        record,
+    )
+}
+
+fn advance_completed_event(
+    campaign: &Campaign,
+    throttle: foundry_sdk::throttle::Throttle,
+    outcome: CampaignAdvanceOutcome,
+    record: &FormationRecord,
+) -> Event {
     super::event_from_infallible_payload(
         EventType::CampaignAdvanceCompleted,
         &campaign.project,
@@ -660,6 +692,7 @@ fn completed_event(
             project: campaign.project.clone(),
             cycles_completed: campaign.cycles_completed,
             cycles_landed: campaign.cycles_landed,
+            success: true,
             outcome,
             prompt: record.prompt.clone(),
             agent_provider: record.agent_provider.clone(),
@@ -746,9 +779,12 @@ fn terminal_error_result(
             project: project.to_string(),
             cycles_completed,
             cycles_landed,
-            outcome: CampaignDecision::Escalate {
+            // A fault, not a decision the campaign reached: the work item
+            // settles `failed` on this.
+            success: false,
+            outcome: CampaignAdvanceOutcome::Decided(CampaignDecision::Escalate {
                 reason: reason.clone(),
-            },
+            }),
             // A store failure aborts before any agent is asked, so there is no
             // formation to record.
             prompt: None,
@@ -1208,6 +1244,34 @@ async fn lock_store(store_path: &Path) -> anyhow::Result<CampaignStoreGuard> {
         .and_then(|result| result.map_err(anyhow::Error::from))
 }
 
+/// Save the run result recorded on a `stopped` campaign and stand down
+/// without forming.
+fn stand_down_before_forming(
+    execution: &AdvanceExecution,
+    guard: &CampaignStoreGuard,
+    stopped: &Campaign,
+) -> TaskBlockResult {
+    let summary = format!(
+        "campaign '{}' is {}; run recorded without advancing",
+        stopped.name, stopped.status
+    );
+    let events = vec![stood_down_event(
+        stopped,
+        execution.throttle,
+        summary.clone(),
+        &FormationRecord::default(),
+    )];
+    persist_or_terminal(
+        execution,
+        guard,
+        events,
+        summary,
+        "stopped campaign result could not be saved",
+        stopped.cycles_completed,
+        stopped.cycles_landed,
+    )
+}
+
 /// What the first critical section decided.
 enum Prepared {
     /// The advance ended without asking an agent.
@@ -1317,29 +1381,21 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
     // arriving run result and forming nothing further. For a cancellation this
     // is the whole graceful-stop mechanism: the in-flight cycle runs to
     // completion, `FinalizeTask` commits and preserves its work as usual, and
-    // the result lands in the store with no successor dispatched.
+    // the result lands in the store with no successor dispatched. A paused
+    // campaign keeps that result pending, and the advance after `resume`
+    // replays it.
     //
-    // Emitting nothing is deliberate. `CampaignCancelled` was already emitted
-    // by the operator's `cancel`, and forming any decision here would move the
-    // status off `Cancelled` — `Done` in particular would record the abandoned
-    // campaign as completed, which is the false evidence claim the separate
-    // status exists to prevent.
+    // The only event is the advance's own `stood_down` completion, so its work
+    // item settles `landed`: stopping here is what the operator asked for.
+    // Nothing else is emitted and no decision is formed. `CampaignCancelled`
+    // was already emitted by the operator's `cancel`, and forming any decision
+    // here would move the status off `Cancelled` — `Done` in particular would
+    // record the abandoned campaign as completed, which is the false evidence
+    // claim the separate status exists to prevent. A stand-down changes no
+    // status.
     if campaign.status.halts_formation() {
-        let status = campaign.status;
-        let cycles_completed = campaign.cycles_completed;
-        let cycles_landed = campaign.cycles_landed;
-        return Prepared::Finished(persist_or_terminal(
-            execution,
-            &guard,
-            vec![],
-            format!(
-                "campaign '{}' is {status}; run recorded without advancing",
-                execution.request.campaign
-            ),
-            "stopped campaign result could not be saved",
-            cycles_completed,
-            cycles_landed,
-        ));
+        let stopped = campaign.clone();
+        return Prepared::Finished(stand_down_before_forming(execution, &guard, &stopped));
     }
 
     if let Some(outcome) = forced {
@@ -1380,47 +1436,67 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
     Prepared::Form(Box::new(formed_from))
 }
 
+/// How many times one advance forms before it gives up on a campaign that
+/// keeps changing under it.
+///
+/// Each formation that finds the record edited forms again from the edited
+/// record, so an owner's budget or mission edit never stalls the campaign. An
+/// owner edits a campaign a handful of times at most; a record that changes
+/// during three formations in a row is something rewriting it continuously,
+/// and the advance fails visibly instead of spending more agent calls.
+const FORMATIONS_PER_ADVANCE: usize = 3;
+
+/// What the second critical section did with a formed outcome.
+enum Applied {
+    /// The advance is over: the outcome was applied, or the campaign was
+    /// stopped and the advance stood down, or a fault ended it.
+    Settled(TaskBlockResult),
+    /// The campaign can still advance but its record changed, so the outcome
+    /// was discarded and nothing was written. Form again.
+    Changed,
+}
+
 /// The second critical section: apply the formed outcome, unless the campaign
 /// changed while its formation ran.
 ///
 /// A changed record is never overwritten. When the campaign was stopped or
 /// settled (paused, cancelled, completed, escalated) the outcome is discarded
-/// and the advance ends quietly: the operator asked for exactly that, and a
-/// paused campaign's run result stays pending for the advance after `resume`.
-/// When the campaign could still advance but its record changed (a budget or
-/// decision edit), the outcome is discarded and the advance reports failure,
-/// so its work item lands in the open group and the owner re-runs
-/// `foundry campaign advance` to form from the current record.
+/// and the advance stands down: it emits a `stood_down` completion and
+/// succeeds, because the operator asked for exactly that, and a paused
+/// campaign's run result stays pending for the advance after `resume`. When
+/// the campaign could still advance but its record changed (a budget or
+/// mission edit), the outcome is discarded and the caller forms again from the
+/// current record.
 async fn apply_unless_changed(
     execution: &AdvanceExecution,
     request: &CampaignAdvanceRequestedPayload,
     formed_from: &Campaign,
     outcome: AdvanceOutcome,
     record: &FormationRecord,
-) -> TaskBlockResult {
+) -> Applied {
     let name = &execution.request.campaign;
     let mut guard = match lock_store(&execution.store_path).await {
         Ok(guard) => guard,
         Err(error) => {
-            return terminal_error_result(
+            return Applied::Settled(terminal_error_result(
                 name,
                 &execution.project,
                 execution.throttle,
                 formed_from.cycles_completed,
                 formed_from.cycles_landed,
                 format!("campaign store unavailable after formation: {error}"),
-            );
+            ));
         }
     };
     let Some(campaign) = guard.store.find_mut(name) else {
-        return terminal_error_result(
+        return Applied::Settled(terminal_error_result(
             name,
             &execution.project,
             execution.throttle,
             formed_from.cycles_completed,
             formed_from.cycles_landed,
             format!("campaign '{name}' not found after formation"),
-        );
+        ));
     };
     match recheck(formed_from, campaign) {
         Recheck::Unchanged => {
@@ -1429,7 +1505,7 @@ async fn apply_unless_changed(
                 apply_advance_outcome(campaign, request, execution.throttle, outcome, record);
             let cycles_completed = campaign.cycles_completed;
             let cycles_landed = campaign.cycles_landed;
-            persist_or_terminal(
+            Applied::Settled(persist_or_terminal(
                 execution,
                 &guard,
                 events,
@@ -1437,54 +1513,93 @@ async fn apply_unless_changed(
                 "campaign decision could not be saved",
                 cycles_completed,
                 cycles_landed,
-            )
+            ))
         }
         Recheck::Stopped(status) => {
-            tracing::warn!(campaign = %name, %status, "campaign stopped while it formed; formed outcome discarded");
-            TaskBlockResult::success(
-                format!(
-                    "campaign '{name}' became {status} while it formed; the formed outcome was discarded"
-                ),
-                vec![],
-            )
+            tracing::info!(campaign = %name, %status, "campaign stopped while it formed; advance stood down");
+            let summary = format!(
+                "campaign '{name}' became {status} while it formed; the formed outcome was discarded"
+            );
+            // Nothing is written: the record stays exactly as the stop left it.
+            Applied::Settled(TaskBlockResult::success(
+                summary.clone(),
+                vec![stood_down_event(
+                    campaign,
+                    execution.throttle,
+                    summary,
+                    record,
+                )],
+            ))
         }
         Recheck::Changed => {
-            tracing::warn!(campaign = %name, "campaign changed while it formed; formed outcome discarded");
-            TaskBlockResult {
-                success: false,
-                summary: format!(
-                    "campaign '{name}' changed while it formed; the formed outcome was discarded rather than overwrite that change. Run `foundry campaign advance {name}` to form from the current record"
-                ),
-                ..Default::default()
-            }
+            tracing::warn!(campaign = %name, "campaign changed while it formed; forming again from the current record");
+            Applied::Changed
         }
+    }
+}
+
+/// The advance's result when the campaign changed during every formation.
+///
+/// A fault, not a decision: no outcome was applied and no event is emitted, so
+/// the work item settles `failed` and lands in `foundry queue open` with this
+/// summary in its trace.
+fn formations_exhausted(execution: &AdvanceExecution) -> TaskBlockResult {
+    let name = &execution.request.campaign;
+    tracing::warn!(campaign = %name, formations = FORMATIONS_PER_ADVANCE, "campaign changed during every formation; advance failed");
+    TaskBlockResult {
+        success: false,
+        summary: format!(
+            "campaign '{name}' changed while it formed, {FORMATIONS_PER_ADVANCE} formations in a row; no outcome was applied and every change was kept. Run `foundry campaign advance {name}` once the campaign is no longer being edited"
+        ),
+        ..Default::default()
     }
 }
 
 /// Advance one campaign.
 ///
-/// The campaign store's flock is held only for two short critical sections,
-/// never across the agent: formation runs the done gates and a decision agent
-/// for minutes, and the flock serialises every campaign mutation in every
-/// process. Holding it there made every `AdvanceCampaign` RPC and every other
-/// campaign control wait on whichever formation was running (the 2026-10-11
-/// production hang). The per-campaign [`FormationLocks`] entry is held across
-/// the whole advance instead, so one campaign never forms twice at once while
-/// different campaigns form side by side.
+/// The campaign store's flock is held only for short critical sections, never
+/// across the agent: formation runs the done gates and a decision agent for
+/// minutes, and the flock serialises every campaign mutation in every process.
+/// Holding it there made every `AdvanceCampaign` RPC and every other campaign
+/// control wait on whichever formation was running (the 2026-10-11 production
+/// hang). The per-campaign [`FormationLocks`] entry is held across the whole
+/// advance instead, so one campaign never forms twice at once while different
+/// campaigns form side by side.
+///
+/// A formation whose campaign was edited meanwhile is discarded and the
+/// advance prepares again from the current record, up to
+/// [`FORMATIONS_PER_ADVANCE`] formations. Preparing again re-runs every check
+/// the first pass made (status, authorization, forced outcomes, budget) against
+/// the edited record. It records the arriving run result at most once, because
+/// recording is keyed on the run's event id, so a cycle is never counted twice.
 async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
     let formation = execution.formation_locks.for_campaign(&execution.request.campaign);
     let _formation_guard = formation.lock().await;
 
-    let formed_from = match prepare_formation(&execution).await {
-        Prepared::Finished(result) => return result,
-        Prepared::Form(campaign) => *campaign,
-    };
-
-    let effective_execution = replay_pending_run(&execution, &formed_from);
-    let (outcome, record) = choose_advance_outcome(&effective_execution, &formed_from, None).await;
-    let outcome = outcome.map_decision(|decision| enforce_campaign_budget(&formed_from, decision));
-    apply_unless_changed(&execution, &effective_execution.request, &formed_from, outcome, &record)
+    for _ in 0..FORMATIONS_PER_ADVANCE {
+        let formed_from = match prepare_formation(&execution).await {
+            Prepared::Finished(result) => return result,
+            Prepared::Form(campaign) => *campaign,
+        };
+        let effective_execution = replay_pending_run(&execution, &formed_from);
+        let (outcome, record) =
+            choose_advance_outcome(&effective_execution, &formed_from, None).await;
+        let outcome =
+            outcome.map_decision(|decision| enforce_campaign_budget(&formed_from, decision));
+        match apply_unless_changed(
+            &execution,
+            &effective_execution.request,
+            &formed_from,
+            outcome,
+            &record,
+        )
         .await
+        {
+            Applied::Settled(result) => return result,
+            Applied::Changed => {}
+        }
+    }
+    formations_exhausted(&execution)
 }
 
 impl SimulatedSuccess for AdvanceCampaign {
@@ -1590,10 +1705,10 @@ mod tests {
     };
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::payload::{
-        CampaignAdvanceCompletedPayload, CampaignAdvanceRequestedPayload, CampaignDecision,
-        LoopContext, TaskRunCompletedPayload, TaskVerdict,
+        CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
+        CampaignDecision, LoopContext, TaskRunCompletedPayload, TaskVerdict,
     };
-    use foundry_sdk::task_block::TaskBlock;
+    use foundry_sdk::task_block::{TaskBlock, TaskBlockResult};
     use foundry_sdk::throttle::Throttle;
     use foundry_sdk::work_source::WorkSource;
 
@@ -2001,7 +2116,7 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.events.is_empty());
+        assert_only_stand_down(&result, CampaignStatus::Paused);
         assert!(agent.invocations().is_empty());
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
@@ -2094,7 +2209,9 @@ mod tests {
 
         // No successor dispatched, no formation agent consulted, and above all
         // no terminal event — `cancel` already emitted `CampaignCancelled`.
-        assert!(result.events.is_empty());
+        // The only event is the advance's own stand-down, which moves no
+        // status.
+        assert_only_stand_down(&result, CampaignStatus::Cancelled);
         assert!(agent.invocations().is_empty());
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
@@ -2173,7 +2290,7 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.events.is_empty());
+        assert_only_stand_down(&result, CampaignStatus::Paused);
         assert!(agent.invocations().is_empty());
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
@@ -2404,38 +2521,16 @@ mod tests {
             store_path.clone(),
         );
 
-        let paused_trigger = Event::new(
-            EventType::CampaignAdvanceRequested,
-            "p".to_string(),
-            Throttle::Full,
-            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
-                campaign: "c".to_string(),
-                operator_origin: None,
-                run_event_id: Some("run-1".to_string()),
-                run_result: Some(pending.clone()),
-            })
-            .unwrap(),
-        );
-        assert!(block.execute(&paused_trigger).await.unwrap().events.is_empty());
+        let paused = block.execute(&automatic_advance_trigger(pending.clone())).await.unwrap();
+        assert_only_stand_down(&paused, CampaignStatus::Paused);
         let mut stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find_mut("c").unwrap();
         assert_eq!(campaign.pending_run_result.as_ref(), Some(&pending));
         campaign.status = CampaignStatus::Active;
         stored.save(&store_path).unwrap();
 
-        let manual_trigger = Event::new(
-            EventType::CampaignAdvanceRequested,
-            "p".to_string(),
-            Throttle::Full,
-            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
-                campaign: "c".to_string(),
-                operator_origin: None,
-                run_event_id: None,
-                run_result: None,
-            })
-            .unwrap(),
-        )
-        .with_source(Some(WorkSource::operator("workbench")));
+        let manual_trigger =
+            manual_advance_trigger().with_source(Some(WorkSource::operator("workbench")));
         let result = block.execute(&manual_trigger).await.unwrap();
 
         let execution = result
@@ -3180,6 +3275,138 @@ mod tests {
                 campaign: Some("c".to_string()),
                 ..LoopContext::default()
             },
+        }
+    }
+
+    /// A decision agent that answers `advance`, and on its first ask edits
+    /// the campaign it is forming, as an owner would mid-formation.
+    struct EditsOnFirstAsk {
+        store: std::path::PathBuf,
+        edit: fn(&mut Campaign),
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::gateway::AgentGateway for EditsOnFirstAsk {
+        fn invoke<'a>(
+            &'a self,
+            _request: &'a crate::gateway::AgentRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                if self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    let mut guard = CampaignStore::lock_exclusive(&self.store).unwrap();
+                    (self.edit)(guard.store.find_mut("c").unwrap());
+                    guard.save().unwrap();
+                }
+                Ok(AgentResponse::success(
+                    r#"{"decision":"advance","objective":"next slice","reason":"gap remains"}"#,
+                ))
+            })
+        }
+    }
+
+    fn reforming_block(
+        dir: &std::path::Path,
+        edit: fn(&mut Campaign),
+    ) -> (AdvanceCampaign, std::sync::Arc<EditsOnFirstAsk>, std::path::PathBuf) {
+        let (store_path, registry) = staged_active_campaign(dir);
+        let agent = std::sync::Arc::new(EditsOnFirstAsk {
+            store: store_path.clone(),
+            edit,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        (block, agent, store_path)
+    }
+
+    fn automatic_advance_trigger(run_result: TaskRunCompletedPayload) -> Event {
+        Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                operator_origin: None,
+                run_event_id: Some("run-1".to_string()),
+                run_result: Some(run_result),
+            })
+            .unwrap(),
+        )
+    }
+
+    /// An edit during formation re-forms from the edited record. The arriving
+    /// run result was recorded by the first pass and is not counted again by
+    /// the second, and the cycle is counted once, for the outcome applied.
+    #[tokio::test]
+    async fn an_edit_during_formation_reforms_without_counting_the_run_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (block, agent, store_path) =
+            reforming_block(dir.path(), |campaign| campaign.mission = "edited".to_string());
+        let mut landed = run_result_with(TaskVerdict::Complete);
+        landed.success = true;
+        landed.landed = true;
+
+        let result = block.execute(&automatic_advance_trigger(landed)).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(agent.asked.load(std::sync::atomic::Ordering::SeqCst), 2, "formed twice");
+        let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(stored.mission, "edited", "the edit was kept");
+        assert_eq!(stored.cycles_landed, 1, "the run result was recorded once");
+        assert_eq!(stored.cycles_completed, 3, "one cycle dispatched");
+        assert_eq!(stored.last_run_event_id.as_deref(), Some("run-1"));
+        let kinds: Vec<_> = result.events.iter().map(|e| e.event_type.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                EventType::CampaignAdvanceCompleted,
+                EventType::ExecutionRequested
+            ]
+        );
+    }
+
+    /// The second formation is held to the edited budget: an owner who cut the
+    /// budget mid-formation gets the budget escalation, not a dispatch.
+    #[tokio::test]
+    async fn a_budget_cut_during_formation_is_enforced_on_the_reform() {
+        let dir = tempfile::tempdir().unwrap();
+        let (block, agent, store_path) =
+            reforming_block(dir.path(), |campaign| campaign.budget.max_cycles = 2);
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(agent.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(stored.status, CampaignStatus::Escalated);
+        assert_eq!(stored.cycles_completed, 2, "nothing dispatched past the edited budget");
+        assert!(
+            terminal_reason(&result, &EventType::CampaignEscalated).contains("budget exhausted")
+        );
+        assert!(!result.events.iter().any(|e| e.event_type == EventType::ExecutionRequested));
+    }
+
+    /// The advance stood down: it succeeded, and its only event is a
+    /// `stood_down` completion naming `status`, with no objective.
+    fn assert_only_stand_down(result: &TaskBlockResult, status: CampaignStatus) {
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(result.events.len(), 1, "{:?}", result.events);
+        let event = &result.events[0];
+        assert_eq!(event.event_type, EventType::CampaignAdvanceCompleted);
+        let payload: CampaignAdvanceCompletedPayload = event.parse_payload().unwrap();
+        assert!(payload.success);
+        match payload.outcome {
+            CampaignAdvanceOutcome::StoodDown(stand_down) => {
+                assert_eq!(stand_down.campaign_status, status);
+            }
+            CampaignAdvanceOutcome::Decided(decision) => {
+                panic!("a stopped campaign formed a decision: {decision:?}")
+            }
         }
     }
 

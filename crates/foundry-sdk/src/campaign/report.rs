@@ -393,6 +393,37 @@ mod tests {
     }
 
     #[test]
+    fn a_stand_down_is_listed_as_stood_down_and_counts_no_cycle() {
+        let events = vec![
+            json!({"id":"e1","trace_id":"t1","occurred_at":"2026-10-11T10:00:00Z",
+                "event_type":"campaign_advance_completed",
+                "payload":{"campaign":"c","project":"p","cycles_completed":1,"cycles_landed":1,
+                    "success":true,"decision":"advance","objective":"o","reason":"gap"}}),
+            json!({"id":"e2","trace_id":"t2","occurred_at":"2026-10-11T11:00:00Z",
+                "event_type":"campaign_advance_completed",
+                "payload":{"campaign":"c","project":"p","cycles_completed":1,"cycles_landed":1,
+                    "success":true,"decision":"stood_down","campaign_status":"paused",
+                    "reason":"campaign 'c' became paused while it formed"}}),
+        ];
+        let mut stopped = campaign();
+        stopped.cycles_completed = 1;
+        let report = aggregate(&stopped, &events);
+        let decisions: Vec<_> = report
+            .formation_decisions
+            .iter()
+            .map(|d| (d.decision.as_str(), d.reason.as_str()))
+            .collect();
+        assert_eq!(
+            decisions,
+            [
+                ("advance", "gap"),
+                ("stood_down", "campaign 'c' became paused while it formed")
+            ]
+        );
+        assert_eq!(report.cycles_dispatched, 1, "cycles come from the record, not the events");
+    }
+
+    #[test]
     fn damaged_complete_logs_fail_but_incomplete_appends_are_visible() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("2026-09.jsonl");

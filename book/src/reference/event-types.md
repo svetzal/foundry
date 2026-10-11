@@ -204,7 +204,7 @@ or `detail`.
 | Type                         | Description                                                  |
 | ---------------------------- | ------------------------------------------------------------ |
 | `campaign_advance_requested` | Request to re-evaluate a durable campaign                    |
-| `campaign_advance_completed` | Formation chose done, one next objective, or escalation      |
+| `campaign_advance_completed` | Formation chose done, one next objective, or escalation; or the advance stood down because the campaign was stopped |
 | `campaign_paused`            | Provider unavailability paused a non-terminal campaign       |
 | `campaign_escalated`         | Campaign halted for budget, failure, rule, or owner judgment |
 | `campaign_completed`         | Required done evidence proved the mission complete           |
@@ -306,18 +306,24 @@ pause state is saved.
 
 **`campaign_advance_completed` payload**
 
-| Field              | Type                  | Description                                                     |
-| ------------------ | --------------------- | --------------------------------------------------------------- |
-| `campaign`         | string                | Campaign name                                                   |
-| `project`          | string                | Registered project name                                         |
-| `cycles_completed` | integer               | Tasks dispatched by the campaign                                |
-| `cycles_landed`    | integer               | Task results whose `task_run_completed.landed` field was `true` |
-| `decision`         | string                | `done`, `advance`, or `escalate`                                |
-| `objective`        | string (advance only) | Exactly one next task objective                                 |
-| `reason`           | string                | Evidence or gap supporting the decision                         |
-| `prompt`           | string (optional)     | Exact prompt shown to the formation agent                       |
-| `agent_provider`   | string (optional)     | Provider used for the formation decision                        |
-| `gate_results`     | array                 | Results from campaign done-evidence gates                       |
+| Field              | Type                     | Description                                                                                       |
+| ------------------ | ------------------------ | ------------------------------------------------------------------------------------------------- |
+| `campaign`         | string                   | Campaign name                                                                                     |
+| `project`          | string                   | Registered project name                                                                           |
+| `cycles_completed` | integer                  | Tasks dispatched by the campaign                                                                  |
+| `cycles_landed`    | integer                  | Task results whose `task_run_completed.landed` field was `true`                                   |
+| `success`          | boolean                  | `true` for a decision or a stand-down; `false` for a fault. Absent on older events, read as `true` |
+| `decision`         | string                   | `done`, `advance`, `escalate`, or `stood_down`                                                    |
+| `campaign_status`  | string (stood_down only) | Status that stopped the advance: `paused`, `cancelled`, `completed`, or `escalated`               |
+| `objective`        | string (advance only)    | Exactly one next task objective                                                                   |
+| `reason`           | string                   | Evidence or gap supporting the decision, or why the advance stood down                            |
+| `prompt`           | string (optional)        | Exact prompt shown to the formation agent                                                         |
+| `agent_provider`   | string (optional)        | Provider used for the formation decision                                                          |
+| `gate_results`     | array                    | Results from campaign done-evidence gates                                                         |
+
+`stood_down` means the advance applied nothing because the campaign was stopped
+before its cycle result arrived or while it formed. It dispatches nothing,
+changes no status and counts no cycle. Its work item settles `landed`.
 
 ## Gate Orchestration
 

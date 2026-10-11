@@ -653,11 +653,23 @@ concurrent campaigns in the same project cannot make cycle boundaries ambiguous.
 - the exact prompt shown to the decision agent;
 - the selected agent provider;
 - the formation decision and reason;
-- the objective, when one was dispatched; and
-- the gate results produced by done-evidence commands.
+- the objective, when one was dispatched;
+- the gate results produced by done-evidence commands; and
+- `success`: `true` when the advance decided or stood down, `false` when a
+  fault (an unreadable store, a failed save, a missing campaign) stopped it.
 
 Forced decisions that do not consult an agent record no prompt or provider. This
 is intentional evidence that formation was bypassed, not missing telemetry.
+
+An advance that finds its campaign stopped records `decision: "stood_down"`
+instead of a formation decision, with `campaign_status` (the status that
+stopped it) and a `reason`. It has no objective, dispatches nothing, changes no
+status and counts no cycle. It carries the prompt and gate results only when a
+formation ran and was then discarded, which accounts for that agent's spend.
+
+The advance's work item settles from this event. A decision or a stand-down
+settles `landed`; `success: false`, or no `campaign_advance_completed` at all,
+settles `failed` and lists the item in `foundry queue open`.
 
 `cycles_completed` counts dispatched tasks. `cycles_landed` counts task results
 whose changes reached trunk. The bounded `objective_history` stored with the
@@ -668,7 +680,8 @@ complete historical record.
 
 Pausing prevents automatic or manual advancement. If an already-running task
 finishes after the pause, Foundry records its result without changing the paused
-state. The typed result and preservation ref remain pending in the campaign
+state, and the advance that carried the result stands down and settles
+`landed`. The typed result and preservation ref remain pending in the campaign
 store; the next manual advance after resume consumes them, so formation sees the
 exact reviewer gaps and the task continues from preserved work.
 
@@ -715,13 +728,18 @@ the campaign record changed while it formed, the formed outcome is discarded and
 the change stands:
 
 - The campaign was paused, cancelled, completed or escalated meanwhile. The
-  advance ends with no campaign events and dispatches nothing. A paused
-  campaign keeps its pending run result for the advance after `resume`.
-- The campaign can still advance but its record changed (an owner decision, a
-  budget edit, an `--offline` edit). The advance reports failure, so its work
-  item settles `failed` and shows in `foundry queue open`, and it dispatches
-  nothing. Run `foundry campaign advance <name>` to form again from the current
-  record.
+  advance stands down: it emits a `stood_down` completion, dispatches nothing
+  and settles `landed`, because the stop is what the operator asked for. A
+  paused campaign keeps its pending run result for the advance after `resume`.
+- The campaign can still advance but its record changed (a budget edit, a
+  mission edit, an `--offline` edit). The advance forms again from the current
+  record, still holding the campaign's formation lock, and re-runs every check
+  against it, so a budget cut is enforced. The arriving run result is recorded
+  once, whatever the number of formations. An advance whose campaign changes
+  during three formations in a row fails: it applies nothing, its work item
+  settles `failed` with a summary that says so and shows in
+  `foundry queue open`, and every change stands. Run
+  `foundry campaign advance <name>` once the edits stop.
 
 Controls validate the latest stored state after acquiring the lock; a
 transition that became invalid while waiting returns `FAILED_PRECONDITION`.
@@ -800,7 +818,9 @@ additionally recorded as an owner decision when the campaign has an owner.
 
 By default the cancellation is **graceful**: the in-flight cycle runs to
 completion, its work is committed and preserved exactly as usual, and no
-successor cycle is dispatched. To stop immediately instead:
+successor cycle is dispatched. The advance that carries the cycle's result
+records it, stands down with `decision: "stood_down"` and settles `landed`; the
+campaign stays `cancelled`. To stop immediately instead:
 
 ```bash
 # Kill the running agent, keep its work (committed and pushed or bundled)

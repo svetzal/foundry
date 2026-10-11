@@ -276,7 +276,7 @@ and `--offline`, and all three are read-only.
 | `TaskReviewed`                | `objective`, `review`, `gate_results[]`, structural verdict fields, `campaign?`                                                                 |
 | `TaskRunCompleted`            | `success`, `landed`, `summary`, `preservation_ref?`, `land_blocked?`, `trunk_arrivals?`, structural verdict fields, `campaign?`                                                  |
 | `CampaignAdvanceRequested`    | `campaign`, `run_event_id?`, `run_result?`                                                                                                      |
-| `CampaignAdvanceCompleted`    | `campaign`, `cycles_completed`, `cycles_landed`, `decision`, `objective?`, `reason`                                                             |
+| `CampaignAdvanceCompleted`    | `campaign`, `cycles_completed`, `cycles_landed`, `success`, `decision` (`done`/`advance`/`escalate`/`stood_down`), `campaign_status?`, `objective?`, `reason` |
 | `CampaignEscalated`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |
 | `CampaignCompleted`           | `campaign`, `reason`, `cycles_completed`, `cycles_landed`                                                                                       |
 

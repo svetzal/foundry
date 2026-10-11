@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::TaskRunCompletedPayload;
+use crate::campaign::CampaignStatus;
 use crate::gates::GateResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,58 @@ pub enum CampaignDecision {
     Escalate { reason: String },
 }
 
+/// What one campaign advance concluded.
+///
+/// Either formation decided, or the advance stood down because someone else
+/// stopped or settled the campaign first. Both arrive under the `decision`
+/// tag, so a reader that switches on it sees `stood_down` as its own value and
+/// can never take it for `advance` or `done`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CampaignAdvanceOutcome {
+    Decided(CampaignDecision),
+    StoodDown(CampaignStandDown),
+}
+
+/// An advance that applied nothing because the campaign was paused,
+/// cancelled, completed or escalated before (or while) it formed.
+///
+/// It dispatches nothing, changes no status and counts no cycle: the stop
+/// belongs to whoever made it. It is a separate type from
+/// [`CampaignDecision`] because a decision agent can never choose it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampaignStandDown {
+    /// Always `stood_down` on the wire. Private, so the only way to build one
+    /// is [`CampaignStandDown::new`], and a payload carrying any other
+    /// `decision` never reads as a stand-down.
+    #[serde(rename = "decision")]
+    tag: StandDownTag,
+    /// The campaign's status when the advance stood down.
+    pub campaign_status: CampaignStatus,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StandDownTag {
+    StoodDown,
+}
+
+impl CampaignStandDown {
+    #[must_use]
+    pub fn new(campaign_status: CampaignStatus, reason: String) -> Self {
+        Self {
+            tag: StandDownTag::StoodDown,
+            campaign_status,
+            reason,
+        }
+    }
+}
+
+fn advance_succeeded() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CampaignAdvanceCompletedPayload {
     /// Most recent task result known to the campaign. The prompt records what was supplied.
@@ -36,8 +89,17 @@ pub struct CampaignAdvanceCompletedPayload {
     pub project: String,
     pub cycles_completed: u64,
     pub cycles_landed: u64,
+    /// Whether the advance did its job: decided, or stood down for a stop.
+    ///
+    /// `false` only for a fault that kept the advance from settling the
+    /// campaign (store unreadable, save failed, campaign missing). The work
+    /// item ledger settles an advance `failed` on exactly this. Events
+    /// written before the field existed read as `true`, matching how the
+    /// ledger read them.
+    #[serde(default = "advance_succeeded")]
+    pub success: bool,
     #[serde(flatten)]
-    pub outcome: CampaignDecision,
+    pub outcome: CampaignAdvanceOutcome,
     /// The exact prompt the formation agent was shown.
     ///
     /// Formation is the most consequential decision in a campaign and was the
@@ -147,6 +209,94 @@ mod tests {
         assert!(back.terminated_now);
         assert!(!back.discard_work);
         assert_eq!(back.aborted_event_id.as_deref(), Some("evt_abc"));
+    }
+
+    fn advance_completed(outcome: CampaignAdvanceOutcome) -> CampaignAdvanceCompletedPayload {
+        CampaignAdvanceCompletedPayload {
+            last_task_run_event_id: None,
+            campaign: "c".to_string(),
+            project: "p".to_string(),
+            cycles_completed: 2,
+            cycles_landed: 1,
+            success: true,
+            outcome,
+            prompt: None,
+            agent_provider: None,
+            gate_results: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_decided_advance_keeps_its_wire_shape_and_gains_only_success() {
+        let json = serde_json::to_value(advance_completed(CampaignAdvanceOutcome::Decided(
+            CampaignDecision::Advance {
+                objective: "next".to_string(),
+                reason: "gap".to_string(),
+            },
+        )))
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "campaign": "c", "project": "p", "cycles_completed": 2, "cycles_landed": 1,
+                "success": true, "decision": "advance", "objective": "next", "reason": "gap"
+            })
+        );
+        let back: CampaignAdvanceCompletedPayload = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back.outcome,
+            CampaignAdvanceOutcome::Decided(CampaignDecision::Advance { .. })
+        ));
+    }
+
+    #[test]
+    fn a_stand_down_is_its_own_decision_value_naming_the_status() {
+        let json = serde_json::to_value(advance_completed(CampaignAdvanceOutcome::StoodDown(
+            CampaignStandDown::new(CampaignStatus::Paused, "campaign 'c' is paused".to_string()),
+        )))
+        .unwrap();
+        assert_eq!(json["decision"], "stood_down");
+        assert_eq!(json["campaign_status"], "paused");
+        assert_eq!(json["success"], true);
+        assert!(json.get("objective").is_none());
+        let back: CampaignAdvanceCompletedPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back.outcome,
+            CampaignAdvanceOutcome::StoodDown(CampaignStandDown::new(
+                CampaignStatus::Paused,
+                "campaign 'c' is paused".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn an_advance_written_before_success_existed_reads_as_succeeded() {
+        let back: CampaignAdvanceCompletedPayload = serde_json::from_value(serde_json::json!({
+            "campaign": "c", "project": "p", "cycles_completed": 1, "cycles_landed": 0,
+            "decision": "escalate", "reason": "owner review needed"
+        }))
+        .unwrap();
+        assert!(back.success);
+        assert!(matches!(
+            back.outcome,
+            CampaignAdvanceOutcome::Decided(CampaignDecision::Escalate { .. })
+        ));
+    }
+
+    #[test]
+    fn a_stand_down_requires_its_own_tag() {
+        let parsed = serde_json::from_value::<CampaignStandDown>(serde_json::json!({
+            "decision": "advance", "campaign_status": "paused", "reason": "x"
+        }));
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn a_decision_agent_cannot_answer_stood_down() {
+        let parsed = serde_json::from_value::<CampaignDecision>(serde_json::json!({
+            "decision": "stood_down", "campaign_status": "paused", "reason": "x"
+        }));
+        assert!(parsed.is_err());
     }
 
     #[test]
