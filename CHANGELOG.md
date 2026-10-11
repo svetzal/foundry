@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow that recovered from a retried failure now settles `landed`. Since
+  0.43.0 a work item settled `failed` whenever any block in its chain failed,
+  so a nightly maintenance run whose first gate attempt failed and whose retry
+  passed was recorded as failed although its completion reported success and
+  its work was pushed (four items on 2026-10-11). A workflow with a terminal
+  event is now judged by its last terminal; a block or outcome event that fails
+  after that terminal, such as the local install, still fails the item.
+
 ## [0.44.2] - 2026-10-11
 
 ### Added
