@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::StoreError;
 use crate::payload::{LandBlocked, TaskRunCompletedPayload, TaskVerdict};
 
+pub mod escalation;
 pub mod report;
 pub mod transition;
-pub use transition::{Transition, TransitionError};
+pub use escalation::CampaignEscalation;
+pub use transition::{OwnerOption, Transition, TransitionError, owner_options};
 
 /// How many recent objectives a campaign remembers.
 ///
@@ -218,6 +220,11 @@ pub struct Campaign {
     /// cutting new work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objective_history: Vec<CampaignCycle>,
+    /// Why the campaign waits on its owner. Present only while the status is
+    /// `escalated`: Formation sets it with the status, and every transition
+    /// out of `escalated` clears it. See [`escalation`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_escalation: Option<CampaignEscalation>,
 }
 
 /// Semantic role of a campaign context path.
@@ -507,6 +514,25 @@ impl CampaignStatus {
     }
 }
 
+impl CampaignStatus {
+    /// Every status, in lifecycle order.
+    pub const ALL: [Self; 6] = [
+        Self::Staged,
+        Self::Active,
+        Self::Paused,
+        Self::Escalated,
+        Self::Completed,
+        Self::Cancelled,
+    ];
+
+    /// The status a serialized tag names, as [`Display`](std::fmt::Display)
+    /// writes it; `None` for a tag this build does not know.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.to_string() == tag)
+    }
+}
+
 impl std::fmt::Display for CampaignStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -612,6 +638,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -691,6 +718,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -833,6 +861,7 @@ mod tests {
         let store = CampaignStore::load(&path).unwrap();
         let campaign = store.find("legacy").unwrap();
         assert!(campaign.objective_history.is_empty());
+        assert!(campaign.open_escalation.is_none());
         assert_eq!(campaign.cycles_completed, 4);
 
         // An untouched legacy campaign must not gain the key on rewrite either,
@@ -842,6 +871,10 @@ mod tests {
         assert!(
             !rewritten.contains("objective_history"),
             "an empty history must not be serialized: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("open_escalation"),
+            "no escalation, no key, so an older build still reads the store: {rewritten}"
         );
         assert!(CampaignStore::load(&path).unwrap().find("legacy").is_some());
     }
@@ -955,6 +988,7 @@ mod tests {
             }],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         };
 

@@ -50,6 +50,15 @@ pub struct CampaignReport {
     pub formation_sessions: Vec<FormationSessionReport>,
     #[serde(default)]
     pub formation_decisions: Vec<FormationDecisionReport>,
+    /// Why an `escalated` campaign waits on its owner: the campaign record,
+    /// or for an escalation that predates the record, the newest
+    /// `campaign_escalated` event. Absent for any other status, and when no
+    /// reason was ever recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_escalation: Option<super::CampaignEscalation>,
+    /// The controls the owner can run on the campaign now.
+    #[serde(default)]
+    pub owner_options: Vec<super::OwnerOption>,
 }
 
 /// Read the daemon's event logs. Invalid complete records are errors, not zero spend.
@@ -225,6 +234,8 @@ fn initial_report(campaign: &Campaign, events: &[Value]) -> CampaignReport {
             .collect(),
         inferred_stage_sessions: 0,
         incomplete_log_lines: 0,
+        open_escalation: open_escalation(campaign, events),
+        owner_options: campaign.owner_options(),
         stages: BTreeMap::new(),
         formation_sessions: Vec::new(),
         formation_decisions: events
@@ -247,6 +258,23 @@ fn initial_report(campaign: &Campaign, events: &[Value]) -> CampaignReport {
             })
             .collect(),
     }
+}
+
+/// The open escalation of an `escalated` campaign, with the same event-log
+/// fallback [`super::escalation::resolve_open_escalations`] applies.
+fn open_escalation(campaign: &Campaign, events: &[Value]) -> Option<super::CampaignEscalation> {
+    if campaign.status != super::CampaignStatus::Escalated {
+        return None;
+    }
+    if campaign.open_escalation.is_some() {
+        return campaign.open_escalation.clone();
+    }
+    let logged = events
+        .iter()
+        .filter(|e| e["event_type"] == "campaign_escalated")
+        .filter_map(|e| serde_json::from_value::<crate::event::Event>(e.clone()).ok());
+    let name = BTreeSet::from([campaign.name.clone()]);
+    super::escalation::newest_escalations(logged, &name).remove(&campaign.name)
 }
 
 fn add_terminal_accounting(stage: &mut StageReport, finish: &Value) {
@@ -325,6 +353,45 @@ mod tests {
         assert_eq!(report.inferred_stage_sessions, 1);
         assert!(!report.stages.contains_key("review"));
     }
+    #[test]
+    fn an_escalated_report_carries_its_reason_from_the_record_or_the_log() {
+        let mut escalated = campaign();
+        escalated.status = crate::campaign::CampaignStatus::Escalated;
+        let mut logged = crate::event::Event::new(
+            crate::event::EventType::CampaignEscalated,
+            "p".to_string(),
+            crate::throttle::Throttle::Full,
+            json!({"campaign":"c","project":"p","reason":"budget exhausted (6)",
+                "cycles_completed":6,"cycles_landed":4}),
+        );
+        logged.occurred_at = DateTime::from_timestamp(100, 0).unwrap();
+        let events = vec![serde_json::to_value(&logged).unwrap()];
+
+        let from_log = aggregate(&escalated, &events).open_escalation.unwrap();
+        assert_eq!(from_log.reason, "budget exhausted (6)");
+        assert!(from_log.from_event_log);
+
+        escalated.open_escalation = Some(crate::campaign::CampaignEscalation {
+            from_event_log: false,
+            reason: "recorded".to_string(),
+            ..from_log
+        });
+        assert_eq!(aggregate(&escalated, &events).open_escalation.unwrap().reason, "recorded");
+
+        let report = aggregate(&escalated, &events);
+        assert!(
+            report
+                .owner_options
+                .iter()
+                .any(|o| o.command.starts_with("foundry campaign cancel c")),
+            "{:?}",
+            report.owner_options
+        );
+
+        let active = campaign();
+        assert!(aggregate(&active, &events).open_escalation.is_none());
+    }
+
     #[test]
     fn damaged_complete_logs_fail_but_incomplete_appends_are_visible() {
         let dir = tempfile::tempdir().unwrap();

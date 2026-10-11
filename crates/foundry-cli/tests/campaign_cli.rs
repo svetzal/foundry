@@ -70,6 +70,7 @@ fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        open_escalation: None,
         writable_repositories: vec![],
     }
 }
@@ -764,4 +765,146 @@ async fn online_campaign_commands_render_daemon_owned_fields_not_client_store_fi
     }
 
     assert_daemon_mutations(harness.daemon_campaigns_path());
+}
+
+// ── escalation reason and owner options on `campaign show` ────────────────────
+
+const LEGACY_REASON: &str = "campaign cycle budget exhausted (6)";
+
+fn escalation_event(campaign: &str, reason: &str) -> Event {
+    Event::new(
+        EventType::CampaignEscalated,
+        "daemon-project".to_string(),
+        Throttle::Full,
+        Event::serialize_payload(&foundry_sdk::payload::CampaignTerminalPayload {
+            campaign: campaign.to_string(),
+            project: "daemon-project".to_string(),
+            reason: reason.to_string(),
+            cycles_completed: 6,
+            cycles_landed: 6,
+        })
+        .expect("payload serializes"),
+    )
+}
+
+/// A campaign that escalated before Foundry kept the reason on the campaign:
+/// `--offline` recovers it from the event log, as the daemon does, and writes
+/// nothing back.
+#[test]
+fn offline_campaign_show_recovers_a_pre_record_escalation_from_the_event_log() {
+    let home = tempfile::tempdir().expect("client home");
+    let campaigns = home.path().join("campaigns.json");
+    save_campaigns(&campaigns, vec![make_campaign("legacy", CampaignStatus::Escalated)]);
+    let before = std::fs::read(&campaigns).expect("read campaigns");
+    foundry_engine::event_writer::EventWriter::new(home.path().join(".foundry/events"))
+        .write(&escalation_event("legacy", LEGACY_REASON))
+        .expect("write the logged escalation");
+    let registry = home.path().join("registry.json");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["--offline".to_string(), "campaign".into(), "show".into()];
+        args.push("legacy".into());
+        args.extend(extra.iter().map(ToString::to_string));
+        run_foundry(home.path(), &campaigns, &registry, DUMMY_ADDR, &args)
+    };
+
+    let human = run(&[]);
+    assert_success(&human, "offline campaign show");
+    let out = stdout_string(&human);
+    assert!(out.contains("Escalation:"), "{out}");
+    assert!(out.contains(&format!("Reason:     {LEGACY_REASON}")), "{out}");
+    assert!(out.contains("recovered from the event log"), "{out}");
+    assert!(out.contains("Owner options:"), "{out}");
+    for command in [
+        "foundry campaign decide legacy --decision \"<text>\"",
+        "foundry campaign resume legacy",
+        "foundry campaign complete legacy --reason \"<text>\"",
+        "foundry campaign cancel legacy --reason \"<text>\"",
+    ] {
+        assert!(out.contains(command), "missing `{command}` in:\n{out}");
+    }
+
+    let json = run(&["--json"]);
+    assert_success(&json, "offline campaign show --json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&json)).expect("--json output must parse");
+    assert_eq!(parsed["status"], "escalated");
+    assert_eq!(parsed["open_escalation"]["reason"], LEGACY_REASON);
+    assert_eq!(parsed["open_escalation"]["from_event_log"], true);
+    assert_eq!(
+        parsed["owner_options"][0]["command"],
+        "foundry campaign decide legacy --decision \"<text>\""
+    );
+    assert!(parsed["cycles"].as_array().expect("cycles array").is_empty());
+
+    assert_eq!(
+        std::fs::read(&campaigns).expect("read campaigns"),
+        before,
+        "a read writes nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_campaign_show_prints_the_recorded_escalation_question_and_options() {
+    let mut asking = make_campaign("asking", CampaignStatus::Escalated);
+    asking.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
+        reason: "boundaries differ; options: A | B".to_string(),
+        escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-11T03:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc),
+        cycles_completed: 2,
+        cycles_landed: 1,
+        question: Some("boundaries differ".to_string()),
+        choices: vec!["A".to_string(), "B".to_string()],
+        from_event_log: false,
+    });
+    let active = make_campaign("steady", CampaignStatus::Active);
+    let daemon_campaigns = NamedTempFile::new().expect("daemon campaigns");
+    save_campaigns(daemon_campaigns.path(), vec![asking, active]);
+    let repo = tempfile::tempdir().expect("repo");
+    let (service, _tx, _traces) =
+        make_service(daemon_campaigns.path().to_path_buf(), daemon_registry(repo.path()));
+    let addr = start_server(service).await;
+    let home = tempfile::tempdir().expect("client home");
+    let client_campaigns = missing_client_campaigns_path(home.path());
+    let registry = home.path().join("registry.json");
+    let run = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+        run_foundry(home.path(), &client_campaigns, &registry, &addr, &args)
+    };
+
+    let human = run(&["campaign", "show", "asking"]);
+    assert_success(&human, "online campaign show");
+    let out = stdout_string(&human);
+    assert!(out.contains("Reason:     boundaries differ; options: A | B"), "{out}");
+    assert!(
+        out.contains("Escalated:  2026-10-11T03:00:00+00:00 at 2 cycles (1 landed)"),
+        "{out}"
+    );
+    assert!(out.contains("Question:   boundaries differ"), "{out}");
+    assert!(out.contains("Choice:     A") && out.contains("Choice:     B"), "{out}");
+    assert!(!out.contains("recovered from the event log"), "{out}");
+    assert!(out.contains("foundry campaign decide asking --decision \"<text>\""), "{out}");
+
+    let json = run(&["campaign", "show", "asking", "--json"]);
+    assert_success(&json, "online campaign show --json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&json)).expect("--json output must parse");
+    assert_eq!(parsed["open_escalation"]["question"], "boundaries differ");
+    assert_eq!(parsed["open_escalation"]["choices"], serde_json::json!(["A", "B"]));
+    assert!(parsed["open_escalation"].get("from_event_log").is_none());
+    let commands: Vec<&str> = parsed["owner_options"]
+        .as_array()
+        .expect("owner_options array")
+        .iter()
+        .map(|o| o["command"].as_str().expect("command"))
+        .collect();
+    assert_eq!(commands.len(), 4, "{commands:?}");
+
+    let steady = run(&["campaign", "show", "steady", "--json"]);
+    assert_success(&steady, "online campaign show of an active campaign");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&steady)).expect("--json output must parse");
+    assert!(parsed.get("open_escalation").is_none(), "an active campaign waits on nobody");
+    assert!(!stdout_string(&run(&["campaign", "show", "steady"])).contains("Escalation:"));
+    assert!(!client_campaigns.exists(), "online reads never create the client store");
 }

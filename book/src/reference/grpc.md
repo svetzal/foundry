@@ -409,9 +409,13 @@ in deterministic campaign-name order, and exposes summary/status fields only.
 | ----------- | ----------------- | ------------------------------------------------- |
 | `campaigns` | repeated Campaign | Durable inventory records sorted by campaign name |
 
+An escalated campaign carries `open_escalation`, read the same way as
+`GetCampaign` reads it.
+
 **Errors:** `FAILED_PRECONDITION` when the campaign store is malformed;
-`INTERNAL` when the campaign store is unreadable. Missing or empty stores return
-an empty list.
+`INTERNAL` when the campaign store is unreadable, or when an escalated campaign
+needs the event-log fallback and the event log cannot be read. Missing or empty
+stores return an empty list.
 
 ### `PauseCampaign(PauseCampaignRequest) → PauseCampaignResponse`
 
@@ -658,9 +662,17 @@ distinction preserved), escalation rules, and all runtime status fields.
 | ---------- | -------------- | --------------------------------------- |
 | `campaign` | CampaignDetail | Full durable definition of the campaign |
 
+For an escalated campaign, `open_escalation` says why it waits on its owner.
+The daemon reads it from the campaign record, which formation writes when it
+escalates the campaign. A campaign that escalated before the record existed has
+none: the daemon then recovers the reason from the newest `campaign_escalated`
+event naming the campaign (every monthly file under `FOUNDRY_EVENTS_DIR`) and
+sets `from_event_log`. A recovered record is never written back to the store.
+
 **Errors:** `NOT_FOUND` when no campaign with the given name exists in the store
 (even when other campaigns are present); `FAILED_PRECONDITION` when the campaign
-store is malformed; `INTERNAL` when the campaign store is unreadable.
+store is malformed; `INTERNAL` when the campaign store is unreadable, or when
+the event-log fallback cannot read the event log.
 
 **CLI:** `foundry campaign show <name>` routes through this RPC by default and
 renders the returned `CampaignDetail` directly, without re-reading
@@ -1029,6 +1041,21 @@ Summary-only wire form returned by `ListCampaigns`. Intentionally omits
 | `authorized_by`     | string | Owner authorization identity, or empty when absent                        |
 | `agent_provider`    | string | Preferred agent provider, or empty when absent                            |
 | `last_run_event_id` | string | Most recent campaign-run event ID, or empty when absent                   |
+| `open_escalation`   | CampaignEscalation | Why the campaign waits on its owner; set only while `escalated`, absent when no reason was ever recorded |
+
+### `CampaignEscalation`
+
+Why an escalated campaign waits on its owner.
+
+| Field              | Type            | Description                                                                          |
+| ------------------ | --------------- | ------------------------------------------------------------------------------------ |
+| `reason`           | string          | The reason formation recorded, as the `campaign_escalated` event carries it          |
+| `escalated_at`     | string          | RFC 3339 time of the escalation                                                      |
+| `cycles_completed` | uint64          | Dispatched cycles at the escalation                                                  |
+| `cycles_landed`    | uint64          | Cycles whose work had landed at the escalation                                       |
+| `question`         | optional string | The task agent's question, when a task stopped with `blocked_on_decision`            |
+| `choices`          | repeated string | The choices the task agent offered with its question                                 |
+| `from_event_log`   | bool            | The record was recovered from the event log; the escalation predates the record      |
 
 ### `CampaignDetail`
 
@@ -1053,6 +1080,7 @@ omits.
 | `done_evidence`     | repeated DoneEvidence  | Completion criteria with `Gate`/`Review` type distinction                 |
 | `escalation`        | repeated string        | Human-readable escalation instructions                                    |
 | `owner_decisions`   | repeated OwnerDecision | Append-only owner policy decisions recorded after escalations             |
+| `open_escalation`   | CampaignEscalation     | Why the campaign waits on its owner; see `Campaign.open_escalation`       |
 
 ### `OwnerDecision`
 

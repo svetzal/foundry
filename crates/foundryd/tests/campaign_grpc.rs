@@ -100,6 +100,7 @@ fn sample_campaign(name: &str, project: &str) -> Campaign {
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        open_escalation: None,
         writable_repositories: vec![],
     }
 }

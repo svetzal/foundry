@@ -216,6 +216,7 @@ fn seed_active_campaign(path: &std::path::Path) {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }],
     }

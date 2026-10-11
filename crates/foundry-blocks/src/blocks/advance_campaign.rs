@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use foundry_sdk::campaign::escalation::REESCALATION_REASON;
 use foundry_sdk::campaign::{
-    Campaign, CampaignStatus, CampaignStore, CampaignStoreGuard, CycleOutcome, DoneEvidence,
+    Campaign, CampaignEscalation, CampaignStatus, CampaignStore, CampaignStoreGuard, CycleOutcome,
+    DoneEvidence,
 };
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
@@ -454,7 +456,16 @@ const DECISION_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// the campaign dispatches or dies on.
 enum AdvanceOutcome {
     Decided(CampaignDecision),
-    Pause { reason: String },
+    Pause {
+        reason: String,
+    },
+    /// A task stopped with `blocked_on_decision`. It escalates like any other
+    /// escalation, but keeps the agent's question and choices apart so the
+    /// campaign record can show them to the owner as they were asked.
+    OwnerQuestion {
+        finding: String,
+        options: Vec<String>,
+    },
 }
 
 impl AdvanceOutcome {
@@ -464,7 +475,7 @@ impl AdvanceOutcome {
     fn map_decision(self, rule: impl FnOnce(CampaignDecision) -> CampaignDecision) -> Self {
         match self {
             Self::Decided(decision) => Self::Decided(rule(decision)),
-            Self::Pause { .. } => self,
+            Self::Pause { .. } | Self::OwnerQuestion { .. } => self,
         }
     }
 }
@@ -800,15 +811,16 @@ fn update_run_and_forced_outcome(
     }
     if campaign.status == CampaignStatus::Escalated {
         return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-            reason: format!("campaign is {} and requires owner resumption", campaign.status),
+            reason: REESCALATION_REASON.to_string(),
         }));
     }
     if let Some(result) = &request.run_result {
         match &result.verdict {
             TaskVerdict::BlockedOnDecision { finding, options } => {
-                return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                    reason: format!("{finding}; options: {}", options.join(" | ")),
-                }));
+                return Some(AdvanceOutcome::OwnerQuestion {
+                    finding: finding.clone(),
+                    options: options.clone(),
+                });
             }
             // The same tripped breaker that stops a decision agent also arrives
             // here, as the executor's typed verdict. Both paths must wait it out
@@ -962,8 +974,14 @@ fn apply_advance_outcome(
     outcome: AdvanceOutcome,
     record: &FormationRecord,
 ) -> Vec<Event> {
-    let decision = match outcome {
-        AdvanceOutcome::Decided(decision) => decision,
+    let (decision, question) = match outcome {
+        AdvanceOutcome::Decided(decision) => (decision, None),
+        AdvanceOutcome::OwnerQuestion { finding, options } => (
+            CampaignDecision::Escalate {
+                reason: format!("{finding}; options: {}", options.join(" | ")),
+            },
+            Some((finding, options)),
+        ),
         // `CampaignPaused` is deliberately not a terminal event — it does not
         // end the campaign, and the pending run result is left intact so the
         // advance after `campaign resume` forms from it and the executor
@@ -973,6 +991,7 @@ fn apply_advance_outcome(
         // watching, and silence here is indistinguishable from progress.
         AdvanceOutcome::Pause { reason } => {
             campaign.status = CampaignStatus::Paused;
+            campaign.open_escalation = None;
             tracing::warn!(
                 campaign = %campaign.name,
                 project = %campaign.project,
@@ -990,6 +1009,7 @@ fn apply_advance_outcome(
     match decision {
         CampaignDecision::Done { reason } => {
             campaign.status = CampaignStatus::Completed;
+            campaign.open_escalation = None;
             campaign.pending_run_result = None;
             vec![
                 completed_event(
@@ -1004,6 +1024,22 @@ fn apply_advance_outcome(
             ]
         }
         CampaignDecision::Escalate { reason } => {
+            // The first reason stands while the campaign stays escalated: a
+            // later forced re-escalation only restates the status, and
+            // replacing the record with it would hide why the campaign stopped.
+            if campaign.status != CampaignStatus::Escalated {
+                let (question, choices) = question
+                    .map_or((None, Vec::new()), |(finding, options)| (Some(finding), options));
+                campaign.open_escalation = Some(CampaignEscalation {
+                    reason: reason.clone(),
+                    escalated_at: chrono::Utc::now(),
+                    cycles_completed: campaign.cycles_completed,
+                    cycles_landed: campaign.cycles_landed,
+                    question,
+                    choices,
+                    from_event_log: false,
+                });
+            }
             campaign.status = CampaignStatus::Escalated;
             // Resumption must retain the reviewed result and preserved base.
             // Escalation waits for the owner; it does not discard learning.
@@ -1021,6 +1057,7 @@ fn apply_advance_outcome(
         }
         CampaignDecision::Advance { objective, reason } => {
             campaign.status = CampaignStatus::Active;
+            campaign.open_escalation = None;
             campaign.cycles_completed += 1;
             campaign.record_dispatched_objective(objective.clone());
             let base_ref = next_base_ref(request).map(ToString::to_string);
@@ -1116,6 +1153,19 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
     }
 }
 
+/// The block summary for a formed outcome.
+///
+/// A pause emits no event, so its reason would otherwise be invisible; the
+/// block summary is what carries it into the run trace.
+fn outcome_summary(campaign: &str, outcome: &AdvanceOutcome) -> String {
+    match outcome {
+        AdvanceOutcome::Decided(_) | AdvanceOutcome::OwnerQuestion { .. } => {
+            format!("campaign '{campaign}' advanced")
+        }
+        AdvanceOutcome::Pause { reason } => format!("campaign '{campaign}' paused: {reason}"),
+    }
+}
+
 async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
     let _process_guard = execution.lock.lock().await;
     // RPCs and offline processes can hold the flock even after this block has
@@ -1206,14 +1256,7 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
     let effective_execution = replay_pending_run(&execution, campaign);
     let (outcome, record) = choose_advance_outcome(&effective_execution, campaign, forced).await;
     let outcome = outcome.map_decision(|decision| enforce_campaign_budget(campaign, decision));
-    // A pause emits no event, so its reason would otherwise be invisible; the
-    // block summary is what carries it into the run trace.
-    let summary = match &outcome {
-        AdvanceOutcome::Decided(_) => format!("campaign '{}' advanced", execution.request.campaign),
-        AdvanceOutcome::Pause { reason } => {
-            format!("campaign '{}' paused: {reason}", execution.request.campaign)
-        }
-    };
+    let summary = outcome_summary(&execution.request.campaign, &outcome);
     let events = apply_advance_outcome(
         campaign,
         &effective_execution.request,
@@ -1464,6 +1507,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -1558,6 +1602,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -1608,10 +1653,35 @@ mod tests {
         assert!(result.success);
         assert!(result.events.iter().any(|e| e.event_type == EventType::CampaignEscalated));
         assert!(agent.invocations().is_empty());
-        assert_eq!(
-            CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
-            CampaignStatus::Escalated
+        let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(stored.status, CampaignStatus::Escalated);
+        // The owner reads why from the campaign itself, with the agent's own
+        // question and choices kept apart from the flattened reason.
+        let open = stored.open_escalation.expect("the escalation is recorded on the campaign");
+        assert_eq!(open.reason, "boundaries differ; options: A | B");
+        assert_eq!(open.question.as_deref(), Some("boundaries differ"));
+        assert_eq!(open.choices, ["A", "B"]);
+        assert_eq!((open.cycles_completed, open.cycles_landed), (1, 0));
+        assert!(!open.from_event_log);
+
+        // A later result reaching the still-escalated campaign restates the
+        // status; it must not replace the question the owner has to answer.
+        let again = Event::new(
+            EventType::CampaignAdvanceRequested,
+            "p".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                campaign: "c".to_string(),
+                operator_origin: None,
+                run_event_id: None,
+                run_result: None,
+            })
+            .unwrap(),
         );
+        let result = block.execute(&again).await.unwrap();
+        assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("requires owner"));
+        let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(stored.open_escalation.unwrap().reason, open.reason);
     }
 
     #[tokio::test]
@@ -1640,6 +1710,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -1730,6 +1801,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -1810,6 +1882,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -1886,6 +1959,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -2181,6 +2255,7 @@ mod tests {
                 }],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -3304,6 +3379,9 @@ mod tests {
         let mut stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find_mut("c").unwrap();
         assert_eq!(campaign.status, CampaignStatus::Escalated);
+        let open = campaign.open_escalation.as_ref().expect("the budget stop is recorded");
+        assert!(open.reason.contains("budget exhausted"), "{}", open.reason);
+        assert!(open.question.is_none(), "a budget stop asks no question");
         assert_eq!(
             campaign.pending_run_result.as_ref().unwrap().preservation_ref.as_deref(),
             Some("foundry-task/p/preserved")

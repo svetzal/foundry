@@ -120,6 +120,7 @@ impl Campaign {
     // refactor.
     pub fn pause(&mut self) {
         self.status = CampaignStatus::Paused;
+        self.open_escalation = None;
         // pending_run_result is intentionally left untouched.
     }
 
@@ -171,6 +172,7 @@ impl Campaign {
                 })?;
         }
         self.status = CampaignStatus::Active;
+        self.open_escalation = None;
         // pending_run_result is intentionally left untouched.
         Ok(())
     }
@@ -206,6 +208,7 @@ impl Campaign {
             decided_at: at,
         });
         self.status = CampaignStatus::Active;
+        self.open_escalation = None;
         Ok(())
     }
 
@@ -243,6 +246,7 @@ impl Campaign {
             decided_at: at,
         });
         self.status = CampaignStatus::Completed;
+        self.open_escalation = None;
         self.pending_run_result = None;
         Ok(Transition::Applied)
     }
@@ -301,8 +305,21 @@ impl Campaign {
             });
         }
         self.status = CampaignStatus::Cancelled;
+        self.open_escalation = None;
         self.pending_run_result = None;
         Ok(Transition::Applied)
+    }
+
+    /// The controls the owner can run on this campaign now; see
+    /// [`owner_options`].
+    #[must_use]
+    pub fn owner_options(&self) -> Vec<OwnerOption> {
+        owner_options(
+            &self.name,
+            self.status,
+            self.authorized_by.is_some(),
+            self.cycles_completed >= self.budget.max_cycles,
+        )
     }
 
     /// Whether `advance` may run against this campaign's current status.
@@ -322,6 +339,95 @@ impl Campaign {
             }),
         }
     }
+}
+
+/// One control the owner can run on a campaign now: the command line and
+/// what it does.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnerOption {
+    /// The command line, with `<text>`-style placeholders for owner input.
+    pub command: String,
+    /// What running it does, in a few words.
+    pub effect: String,
+}
+
+/// The controls the owner can run on a campaign in `status`, as command lines.
+///
+/// The verbs per status are the "Valid next control" column of the status
+/// table in `book/src/guide/campaigns.md`, and every one is legal under the
+/// [`Campaign`] transition methods (a test holds the two together). `resume`,
+/// `decide` and `complete` need an `authorized_by` owner, so they are left out
+/// for an unauthorized campaign rather than offered and refused. When the cycle
+/// budget is spent, `resume` is offered with `--add-cycles`, the only form the
+/// engine accepts.
+#[must_use]
+pub fn owner_options(
+    name: &str,
+    status: CampaignStatus,
+    authorized: bool,
+    budget_exhausted: bool,
+) -> Vec<OwnerOption> {
+    let option = |command: String, effect: &str| OwnerOption {
+        command,
+        effect: effect.to_string(),
+    };
+    let advance = || {
+        option(
+            format!("foundry campaign advance {name}"),
+            "derive and dispatch the next objective",
+        )
+    };
+    let pause = || option(format!("foundry campaign pause {name}"), "stop automatic advancement");
+    let resume = || {
+        if budget_exhausted {
+            option(
+                format!("foundry campaign resume {name} --add-cycles <n>"),
+                "authorize n more cycles and return to active; advance continues it",
+            )
+        } else {
+            option(
+                format!("foundry campaign resume {name}"),
+                "return to active without a decision; advance continues it",
+            )
+        }
+    };
+    let decide = || {
+        option(
+            format!("foundry campaign decide {name} --decision \"<text>\""),
+            "record a binding owner decision and return to active; advance continues it",
+        )
+    };
+    let complete = || {
+        option(
+            format!("foundry campaign complete {name} --reason \"<text>\""),
+            "close it: owner-verified evidence shows the mission shipped",
+        )
+    };
+    let cancel = || {
+        option(
+            format!("foundry campaign cancel {name} --reason \"<text>\""),
+            "stop it permanently",
+        )
+    };
+    let mut options = Vec::new();
+    match status {
+        CampaignStatus::Staged | CampaignStatus::Active => {
+            options.extend([advance(), pause()]);
+        }
+        CampaignStatus::Paused => {
+            if authorized {
+                options.extend([resume(), complete()]);
+            }
+        }
+        CampaignStatus::Escalated => {
+            if authorized {
+                options.extend([decide(), resume(), complete()]);
+            }
+        }
+        CampaignStatus::Completed | CampaignStatus::Cancelled => return options,
+    }
+    options.push(cancel());
+    options
 }
 
 #[cfg(test)]
@@ -353,6 +459,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -619,5 +726,118 @@ mod tests {
             .to_string(),
             "add_cycles (5) would overflow max_cycles for campaign 'c'"
         );
+    }
+
+    fn escalated_with_record() -> Campaign {
+        let mut c = campaign(CampaignStatus::Escalated, true);
+        c.open_escalation = Some(crate::campaign::CampaignEscalation {
+            reason: "owner decision required".to_string(),
+            escalated_at: at(),
+            cycles_completed: 0,
+            cycles_landed: 0,
+            question: None,
+            choices: vec![],
+            from_event_log: false,
+        });
+        c
+    }
+
+    /// The record describes the question the owner has not answered yet, so
+    /// every control that moves the campaign out of `escalated` clears it.
+    #[test]
+    fn every_transition_out_of_escalated_clears_the_open_escalation() {
+        let mut c = escalated_with_record();
+        c.pause();
+        assert!(c.open_escalation.is_none(), "pause");
+
+        let mut c = escalated_with_record();
+        c.resume(0).unwrap();
+        assert!(c.open_escalation.is_none(), "resume");
+
+        let mut c = escalated_with_record();
+        c.record_owner_decision("keep going".to_string(), at()).unwrap();
+        assert!(c.open_escalation.is_none(), "decide");
+
+        let mut c = escalated_with_record();
+        assert_eq!(c.complete("shipped", at()).unwrap(), Transition::Applied);
+        assert!(c.open_escalation.is_none(), "complete");
+
+        let mut c = escalated_with_record();
+        assert_eq!(c.cancel("abandoned", at()).unwrap(), Transition::Applied);
+        assert!(c.open_escalation.is_none(), "cancel");
+    }
+
+    /// Apply the control a command line names, the way the CLI would.
+    fn apply_option(c: &mut Campaign, command: &str) -> Result<(), TransitionError> {
+        let verb = command.split_whitespace().nth(2).unwrap();
+        match verb {
+            "advance" => c.check_advanceable(),
+            "pause" => {
+                c.pause();
+                Ok(())
+            }
+            "resume" => c.resume(u64::from(command.contains("--add-cycles"))),
+            "decide" => c.record_owner_decision("d".to_string(), at()),
+            "complete" => c.complete("r", at()).map(|_| ()),
+            "cancel" => c.cancel("r", at()).map(|_| ()),
+            other => panic!("unknown verb {other}"),
+        }
+    }
+
+    /// Every option offered is a control the transition methods accept, for
+    /// every status, authorization and budget state. Offering a command the
+    /// engine then refuses would send the owner in a circle.
+    #[test]
+    fn every_offered_owner_option_is_legal_for_its_campaign() {
+        for status in CampaignStatus::ALL {
+            for authorized in [true, false] {
+                for exhausted in [true, false] {
+                    let mut template = campaign(status, authorized);
+                    if exhausted {
+                        template.cycles_completed = template.budget.max_cycles;
+                    }
+                    for option in owner_options("c", status, authorized, exhausted) {
+                        let mut c = template.clone();
+                        assert!(
+                            apply_option(&mut c, &option.command).is_ok(),
+                            "{status} authorized={authorized} exhausted={exhausted}: `{}` is refused",
+                            option.command
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn escalated_options_follow_the_status_table_with_real_command_lines() {
+        let commands: Vec<String> =
+            owner_options("mojentic-x", CampaignStatus::Escalated, true, false)
+                .into_iter()
+                .map(|o| o.command)
+                .collect();
+        assert_eq!(
+            commands,
+            [
+                "foundry campaign decide mojentic-x --decision \"<text>\"",
+                "foundry campaign resume mojentic-x",
+                "foundry campaign complete mojentic-x --reason \"<text>\"",
+                "foundry campaign cancel mojentic-x --reason \"<text>\"",
+            ]
+        );
+        let exhausted = owner_options("mojentic-x", CampaignStatus::Escalated, true, true);
+        assert_eq!(exhausted[1].command, "foundry campaign resume mojentic-x --add-cycles <n>");
+        let unauthorized = owner_options("mojentic-x", CampaignStatus::Escalated, false, false);
+        assert_eq!(unauthorized.len(), 1, "only cancel needs no owner");
+        assert!(owner_options("c", CampaignStatus::Completed, true, false).is_empty());
+        assert!(owner_options("c", CampaignStatus::Cancelled, true, false).is_empty());
+    }
+
+    #[test]
+    fn status_tags_round_trip() {
+        for status in CampaignStatus::ALL {
+            assert_eq!(CampaignStatus::from_tag(&status.to_string()), Some(status));
+        }
+        assert_eq!(CampaignStatus::from_tag("bogus"), None);
     }
 }

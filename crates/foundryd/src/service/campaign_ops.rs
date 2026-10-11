@@ -17,12 +17,12 @@ use foundry_sdk::throttle::Throttle;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    Campaign as ProtoCampaign, CampaignDetail, CancelCampaignRequest, CancelCampaignResponse,
-    CompleteCampaignRequest, CompleteCampaignResponse, DecideCampaignRequest,
-    DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence, GetCampaignRequest,
-    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
-    OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
-    ResumeCampaignRequest, ResumeCampaignResponse,
+    Campaign as ProtoCampaign, CampaignDetail, CampaignEscalation as ProtoCampaignEscalation,
+    CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
+    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse,
+    DoneEvidence as ProtoDoneEvidence, GetCampaignRequest, GetCampaignResponse,
+    ListCampaignsRequest, ListCampaignsResponse, OwnerDecision as ProtoOwnerDecision,
+    PauseCampaignRequest, PauseCampaignResponse, ResumeCampaignRequest, ResumeCampaignResponse,
 };
 
 fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaign {
@@ -37,7 +37,35 @@ fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaig
         authorized_by: campaign.authorized_by.clone().unwrap_or_default(),
         agent_provider: campaign.agent_provider.clone().unwrap_or_default(),
         last_run_event_id: campaign.last_run_event_id.clone().unwrap_or_default(),
+        open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
     }
+}
+
+fn escalation_to_proto(
+    escalation: &foundry_sdk::campaign::CampaignEscalation,
+) -> ProtoCampaignEscalation {
+    ProtoCampaignEscalation {
+        reason: escalation.reason.clone(),
+        escalated_at: escalation.escalated_at.to_rfc3339(),
+        cycles_completed: escalation.cycles_completed,
+        cycles_landed: escalation.cycles_landed,
+        question: escalation.question.clone(),
+        choices: escalation.choices.clone(),
+        from_event_log: escalation.from_event_log,
+    }
+}
+
+/// Recover, from the event log, the reason of any escalated campaign in
+/// `campaigns` whose escalation predates the campaign record.
+///
+/// Read-only: the recovered records live only in the caller's copy, never in
+/// the store.
+fn resolve_escalations(
+    campaigns: &mut [foundry_sdk::campaign::Campaign],
+    events_dir: &Path,
+) -> Result<(), Status> {
+    foundry_sdk::campaign::escalation::resolve_open_escalations(campaigns, events_dir)
+        .map_err(|error| Status::internal(error.to_string()))
 }
 
 fn map_store_error(error: StoreError) -> Status {
@@ -141,6 +169,7 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         done_evidence: campaign.done_evidence.iter().map(done_evidence_to_proto).collect(),
         escalation: campaign.escalation.clone(),
         owner_decisions: campaign.owner_decisions.iter().map(owner_decision_to_proto).collect(),
+        open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
     }
 }
 
@@ -275,18 +304,25 @@ pub(super) fn add(
     }))
 }
 
+/// Read one campaign's full detail by exact name.
+///
+/// An escalated campaign whose escalation predates the campaign record carries
+/// the reason recovered from the event log under `events_dir`.
 pub(super) fn get(
     campaigns_path: &Path,
+    events_dir: &Path,
     request: Request<GetCampaignRequest>,
 ) -> Result<Response<GetCampaignResponse>, Status> {
     let name = request.into_inner().name;
     let store = load_store(campaigns_path)?;
-    match store.find(&name) {
-        Some(campaign) => Ok(Response::new(GetCampaignResponse {
-            campaign: Some(campaign_to_detail(campaign)),
-        })),
-        None => Err(Status::not_found(format!("campaign '{name}' not found"))),
-    }
+    let Some(campaign) = store.find(&name) else {
+        return Err(Status::not_found(format!("campaign '{name}' not found")));
+    };
+    let mut one = [campaign.clone()];
+    resolve_escalations(&mut one, events_dir)?;
+    Ok(Response::new(GetCampaignResponse {
+        campaign: Some(campaign_to_detail(&one[0])),
+    }))
 }
 
 /// Pause a campaign, preserving any stored `pending_run_result`.
@@ -675,8 +711,13 @@ pub(super) fn advance(
     }))
 }
 
+/// List the campaign inventory, optionally for one project, sorted by name.
+///
+/// Escalated campaigns carry their reason, recovered from the event log under
+/// `events_dir` when the escalation predates the campaign record.
 pub(super) fn list(
     campaigns_path: &Path,
+    events_dir: &Path,
     request: Request<ListCampaignsRequest>,
 ) -> Result<Response<ListCampaignsResponse>, Status> {
     let req = request.into_inner();
@@ -685,6 +726,7 @@ pub(super) fn list(
     if !req.project.is_empty() {
         campaigns.retain(|campaign| campaign.project == req.project);
     }
+    resolve_escalations(&mut campaigns, events_dir)?;
 
     campaigns.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -772,6 +814,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -843,6 +886,7 @@ mod tests {
             }],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         };
         let tmp = write_store_with(vec![campaign]);
@@ -850,7 +894,8 @@ mod tests {
         let request = Request::new(GetCampaignRequest {
             name: "my-campaign".to_string(),
         });
-        let response = get(tmp.path(), request).expect("get should succeed");
+        let response =
+            get(tmp.path(), &tmp.path().join("no-events"), request).expect("get should succeed");
         let detail = response.into_inner().campaign.expect("campaign present");
 
         assert_eq!(detail.name, "my-campaign");
@@ -895,7 +940,8 @@ mod tests {
         let request = Request::new(GetCampaignRequest {
             name: "does-not-exist".to_string(),
         });
-        let err = get(tmp.path(), request).expect_err("should be not found");
+        let err = get(tmp.path(), &tmp.path().join("no-events"), request)
+            .expect_err("should be not found");
         assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
@@ -906,7 +952,7 @@ mod tests {
         let request = Request::new(GetCampaignRequest {
             name: "anything".to_string(),
         });
-        let err = get(tmp.path(), request).expect_err("should fail");
+        let err = get(tmp.path(), &tmp.path().join("no-events"), request).expect_err("should fail");
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     }
 
@@ -917,7 +963,121 @@ mod tests {
         let request = Request::new(GetCampaignRequest {
             name: "anything".to_string(),
         });
-        let err = get(tmp.path(), request).expect_err("should fail");
+        let err = get(tmp.path(), &tmp.path().join("no-events"), request).expect_err("should fail");
         assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    // ── escalation reason on GetCampaign / ListCampaigns ──────────────────────
+
+    fn escalated(name: &str) -> Campaign {
+        let mut campaign = sample_campaign(name, "proj");
+        campaign.status = CampaignStatus::Escalated;
+        campaign
+    }
+
+    /// Write one `campaign_escalated` event through the daemon's own writer.
+    fn log_escalation(events_dir: &Path, campaign: &str, reason: &str) {
+        let event = Event::new(
+            EventType::CampaignEscalated,
+            "proj".to_string(),
+            Throttle::Full,
+            Event::serialize_payload(&CampaignTerminalPayload {
+                campaign: campaign.to_string(),
+                project: "proj".to_string(),
+                reason: reason.to_string(),
+                cycles_completed: 6,
+                cycles_landed: 6,
+            })
+            .expect("payload serializes"),
+        );
+        foundry_engine::event_writer::EventWriter::new(events_dir)
+            .write(&event)
+            .expect("write the event");
+    }
+
+    #[test]
+    fn get_carries_the_recorded_escalation_reason_and_question() {
+        let mut campaign = escalated("asks");
+        campaign.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
+            reason: "boundaries differ; options: A | B".to_string(),
+            escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-11T03:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            cycles_completed: 2,
+            cycles_landed: 1,
+            question: Some("boundaries differ".to_string()),
+            choices: vec!["A".to_string(), "B".to_string()],
+            from_event_log: false,
+        });
+        let tmp = write_store_with(vec![campaign]);
+        let events = tempfile::tempdir().expect("events dir");
+        // A newer logged reason must not override the campaign's own record.
+        log_escalation(events.path(), "asks", "a different logged reason");
+
+        let detail = get(
+            tmp.path(),
+            events.path(),
+            Request::new(GetCampaignRequest {
+                name: "asks".to_string(),
+            }),
+        )
+        .expect("get succeeds")
+        .into_inner()
+        .campaign
+        .expect("campaign present");
+
+        let open = detail.open_escalation.expect("the reason reaches the response");
+        assert_eq!(open.reason, "boundaries differ; options: A | B");
+        assert_eq!(open.escalated_at, "2026-10-11T03:00:00+00:00");
+        assert_eq!(open.question.as_deref(), Some("boundaries differ"));
+        assert_eq!(open.choices, ["A", "B"]);
+        assert_eq!((open.cycles_completed, open.cycles_landed), (2, 1));
+        assert!(!open.from_event_log);
+    }
+
+    /// The four production campaigns escalated before the record existed: the
+    /// daemon recovers their reason from the event log without writing it back.
+    #[test]
+    fn get_and_list_recover_a_pre_record_escalation_from_the_event_log() {
+        let tmp = write_store_with(vec![escalated("legacy"), sample_campaign("busy", "proj")]);
+        let before = std::fs::read(tmp.path()).expect("read store");
+        let events = tempfile::tempdir().expect("events dir");
+        log_escalation(events.path(), "legacy", "campaign cycle budget exhausted (6)");
+        log_escalation(events.path(), "busy", "an escalation it has since moved past");
+
+        let detail = get(
+            tmp.path(),
+            events.path(),
+            Request::new(GetCampaignRequest {
+                name: "legacy".to_string(),
+            }),
+        )
+        .expect("get succeeds")
+        .into_inner()
+        .campaign
+        .expect("campaign present");
+        let open = detail.open_escalation.expect("recovered from the log");
+        assert_eq!(open.reason, "campaign cycle budget exhausted (6)");
+        assert!(open.from_event_log);
+
+        let listed = list(
+            tmp.path(),
+            events.path(),
+            Request::new(ListCampaignsRequest {
+                project: String::new(),
+            }),
+        )
+        .expect("list succeeds")
+        .into_inner()
+        .campaigns;
+        let legacy = listed.iter().find(|c| c.name == "legacy").expect("listed");
+        assert_eq!(
+            legacy.open_escalation.as_ref().map(|e| e.reason.as_str()),
+            Some("campaign cycle budget exhausted (6)")
+        );
+        let busy = listed.iter().find(|c| c.name == "busy").expect("listed");
+        assert!(busy.open_escalation.is_none(), "only an escalated campaign carries a reason");
+
+        assert_eq!(std::fs::read(tmp.path()).expect("read store"), before, "a read writes nothing");
     }
 }

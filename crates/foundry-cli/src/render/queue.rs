@@ -396,7 +396,7 @@ struct JsonItemWithEvents<'a> {
 /// makes an absent field distinguishable from a recorded empty string or
 /// `false` after a round trip.
 #[derive(Serialize)]
-struct JsonItem<'a> {
+pub(crate) struct JsonItem<'a> {
     id: &'a str,
     project: &'a str,
     objective: &'a str,
@@ -510,14 +510,15 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
 
 /// Serialize a borrowed JSON projection.
 ///
-/// [`JsonItem`] is strings, options of strings and one option of `bool`, none
-/// of which `serde_json` can fail on, and the failure it would report has no
+/// Every projection here ([`JsonItem`] and the campaign projections built on
+/// it) is strings, integers, bools, sequences and options of those, none of
+/// which `serde_json` can fail on, and the failure it would report has no
 /// caller-actionable form.
 #[allow(
     clippy::expect_used,
-    reason = "JsonItem is strings and plain options, which are infallibly serializable"
+    reason = "the JSON projections are strings, numbers and plain options, which are infallibly serializable"
 )]
-fn to_pretty<T: Serialize>(value: &T) -> String {
+pub(crate) fn to_pretty<T: Serialize>(value: &T) -> String {
     let mut out = serde_json::to_string_pretty(value).expect("JsonItem is infallibly serializable");
     out.push('\n');
     out

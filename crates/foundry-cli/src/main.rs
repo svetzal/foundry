@@ -383,8 +383,14 @@ enum CampaignCommands {
     Add { file: std::path::PathBuf },
     /// List campaigns
     List,
-    /// Show one campaign
-    Show { name: String },
+    /// Show one campaign: its definition, why it waits on its owner when
+    /// escalated, what the owner can run now, and its cycles in the ledger
+    Show {
+        name: String,
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
+    },
     /// Show stage time, token usage, and external completion (example: foundry campaign report atlas --json)
     Report {
         name: String,
@@ -930,15 +936,15 @@ async fn handle_campaign_command(
             campaign_commands::report(campaigns_path, addr, offline, &name, json).await
         }
         CampaignCommands::List => campaign_commands::list(campaigns_path, addr, offline).await,
-        CampaignCommands::Show { name } => {
-            campaign_commands::show(
-                campaigns_path,
-                &foundry_sdk::paths::work_items_path(),
-                addr,
-                offline,
-                &name,
-            )
-            .await
+        CampaignCommands::Show { name, json } => {
+            let (work_items, events_dir) =
+                (foundry_sdk::paths::work_items_path(), foundry_sdk::paths::events_dir());
+            let paths = campaign_commands::ShowPaths {
+                campaigns: campaigns_path,
+                work_items: &work_items,
+                events_dir: &events_dir,
+            };
+            campaign_commands::show(paths, addr, offline, &name, json).await
         }
         CampaignCommands::Advance { name, origin } => {
             campaign_commands::advance(addr, campaigns_path, offline, &name, origin.as_deref())
