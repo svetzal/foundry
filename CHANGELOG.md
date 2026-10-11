@@ -42,6 +42,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `--source` on `foundry queue` is accepted after `open` as well as before it,
   as the documentation already showed (`foundry queue open --source …` was
   refused).
+- The advisory-suppression guard no longer stops a run for a flag that is
+  only quoted. It read every added line in every file, so on 2026-10-11 a
+  mojentic-py campaign cycle needed review for "a pip-audit --ignore-vuln
+  flag" in an archived controller log under `evidence/` that quoted the
+  guard's own earlier rejection, although the repository contains no
+  `--ignore-vuln`. An earlier cycle was stopped for a brief that forbade
+  ignore flags. The guard now reads added lines only in files where a
+  suppression takes effect: the auditors' configuration files, and files
+  that run commands (`.hone-gates.json`, CI workflows, scripts, Makefiles,
+  justfiles, `package.json`, the Python task runners' configuration). Logs,
+  evidence archives and documents are not read. Every suppression the guard
+  caught in those files before, it still catches, with the same message.
 
 ### Changed
 
