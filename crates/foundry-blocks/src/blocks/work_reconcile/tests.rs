@@ -620,3 +620,256 @@ async fn isolated_trunk(local_ahead: bool, name: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Preserved work on `foundry-task/preserved` (two commits) that reached
+/// trunk either by fast-forward or as one squashed commit, followed by an
+/// unrelated trunk commit. `foundry-task/no-commits` stays at the base, as a
+/// run that blocked or failed before committing leaves it.
+async fn open_items_fixture(root: &Path, squashed: bool) -> (PathBuf, String) {
+    let remote = root.join("remote.git");
+    let checkout = root.join("checkout");
+    git(root, &["init", "--bare", remote.to_str().unwrap()]).await;
+    git(root, &["init", "-b", "main", checkout.to_str().unwrap()]).await;
+    git(&checkout, &["config", "user.name", "Regression"]).await;
+    git(&checkout, &["config", "user.email", "regression@example.test"]).await;
+    git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]).await;
+    let commit = |files: &'static [(&'static str, &'static str)], message: &'static str| {
+        let checkout = checkout.clone();
+        async move {
+            for (name, content) in files {
+                std::fs::write(checkout.join(name), content).unwrap();
+            }
+            git(&checkout, &["add", "--all"]).await;
+            git(&checkout, &["commit", "-m", message]).await;
+        }
+    };
+    commit(&[("app.txt", "one\ntwo\n")], "base").await;
+    git(&checkout, &["branch", "foundry-task/no-commits"]).await;
+    git(&checkout, &["checkout", "-b", "foundry-task/preserved"]).await;
+    commit(&[("app.txt", "ONE\ntwo\n")], "first half").await;
+    commit(&[("added.txt", "new\n")], "second half").await;
+    git(&checkout, &["checkout", "main"]).await;
+    if squashed {
+        commit(&[("app.txt", "ONE\ntwo\n"), ("added.txt", "new\n")], "squashed").await;
+    } else {
+        git(&checkout, &["merge", "--ff-only", "foundry-task/preserved"]).await;
+    }
+    commit(&[("later.txt", "unrelated\n")], "later cycle").await;
+    git(
+        &checkout,
+        &[
+            "push",
+            "origin",
+            "main",
+            "foundry-task/preserved",
+            "foundry-task/no-commits",
+        ],
+    )
+    .await;
+    let trunk = git(&checkout, &["rev-parse", "main"]).await;
+    (checkout, trunk)
+}
+
+fn open_item(
+    id: &str,
+    state: foundry_sdk::work_item::WorkItemState,
+    started: chrono::DateTime<chrono::Utc>,
+    reference: Option<&str>,
+) -> foundry_sdk::work_item::WorkItem {
+    use foundry_sdk::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
+
+    let mut item = WorkItem::submitted(
+        WorkItemSpec {
+            project: "regression".into(),
+            objective: "preserved deliverable".into(),
+            kind: WorkItemKind::Task,
+            lane: WorkLane::Interactive,
+            origin: "regression".into(),
+            trace_id: None,
+        },
+        started,
+    );
+    item.id = id.into();
+    item.state = state;
+    item.started_at = Some(started);
+    item.settled_at = Some(started);
+    item.disposition = reference.map(|reference| WorkDisposition {
+        task_branch: None,
+        branch_cleanup: Vec::new(),
+        verdict: None,
+        landed_commit: None,
+        preservation_ref: Some(reference.into()),
+        worktree: None,
+        worktree_removed: None,
+    });
+    item
+}
+
+async fn assert_open_items_settle_when_superseded(squashed: bool) {
+    use foundry_sdk::work_item::{WorkItemState, WorkItemStore};
+
+    let root = tempfile::tempdir().unwrap();
+    let (checkout, trunk) = open_items_fixture(root.path(), squashed).await;
+    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let now = chrono::Utc::now();
+    let reference = Some("foundry-task/preserved");
+    let settling = [
+        open_item("wi_preserved", WorkItemState::Preserved, earlier, reference),
+        open_item("wi_needs_decision", WorkItemState::NeedsDecision, earlier, reference),
+        open_item("wi_failed", WorkItemState::Failed, earlier, reference),
+    ];
+    let mut cancelled =
+        open_item("wi_owner_cancelled", WorkItemState::Preserved, earlier, reference);
+    cancelled.settle_cancelled("owner stopped", cancelled.disposition.clone(), earlier);
+    // Started after its branch's tip was committed: it made no commits.
+    let blocked = open_item(
+        "wi_blocked_without_commits",
+        WorkItemState::NeedsDecision,
+        now,
+        Some("foundry-task/no-commits"),
+    );
+    // Dependency-blocked before it ever ran: nothing preserved, not broken.
+    let unrun = open_item("wi_never_ran", WorkItemState::NeedsDecision, earlier, None);
+    let ledger = root.path().join("ledger.json");
+    let mut items = settling.to_vec();
+    items.extend([cancelled.clone(), blocked.clone(), unrun.clone()]);
+    WorkItemStore { version: 1, items }.save(&ledger).unwrap();
+    let block = ReconcileWork::new(
+        registry_with_project("regression", checkout.to_str().unwrap()),
+        ledger.clone(),
+        root.path().join("worktrees"),
+        root.path().join("events"),
+        root.path().join("digest"),
+    );
+
+    let result = block
+        .execute(&make_trigger(
+            foundry_sdk::event::EventType::WorkReconcileStarted,
+            "system",
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+
+    let report: WorkReconcileCompletedPayload =
+        result.events.last().unwrap().parse_payload().unwrap();
+    assert!(report.success, "{:?}", report.errors);
+    let mut settled = report.settled_ids.clone();
+    settled.sort();
+    assert_eq!(settled, vec!["wi_failed", "wi_needs_decision", "wi_preserved"]);
+    let proof = if squashed {
+        "(content containment)"
+    } else {
+        "(ancestry)"
+    };
+    let store = WorkItemStore::load(&ledger).unwrap();
+    for item in &settling {
+        let landed = store.find(&item.id).unwrap();
+        assert_eq!(landed.state, WorkItemState::Landed, "{}", item.id);
+        assert_eq!(landed.reason, format!("superseded by {trunk}"));
+        assert_eq!(
+            landed.disposition.as_ref().unwrap().landed_commit.as_deref(),
+            Some(trunk.as_str())
+        );
+        assert!(report.findings.iter().any(|f| f.identity == item.id
+            && f.category == "informational"
+            && f.detail.contains(proof)));
+    }
+    assert_eq!(store.find(&cancelled.id), Some(&cancelled));
+    assert_eq!(store.find(&blocked.id), Some(&blocked));
+    assert_eq!(store.find(&unrun.id), Some(&unrun));
+    assert!(report.findings.iter().any(|f| f.identity == blocked.id
+        && f.category == "unresolved"
+        && f.detail.contains("no commit made after the item started")));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.identity == unrun.id || f.identity == cancelled.id)
+    );
+    assert_eq!(report.broken_items, 0);
+}
+
+async fn isolated_open_items(squashed: bool, name: &str) {
+    if std::env::var_os("RECONCILE_OPEN_ITEMS_CHILD").is_some() {
+        assert_open_items_settle_when_superseded(squashed).await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let global = root.path().join("gitconfig");
+    std::fs::write(&global, "").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env("RECONCILE_OPEN_ITEMS_CHILD", "1")
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_settles_every_open_item_whose_work_reached_trunk() {
+    isolated_open_items(
+        false,
+        "blocks::work_reconcile::tests::reconciliation_settles_every_open_item_whose_work_reached_trunk",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reconciliation_settles_open_items_whose_work_was_squashed_into_trunk() {
+    isolated_open_items(
+        true,
+        "blocks::work_reconcile::tests::reconciliation_settles_open_items_whose_work_was_squashed_into_trunk",
+    )
+    .await;
+}
+
+#[test]
+fn a_proof_never_settles_an_item_that_changed_after_inspection() {
+    use foundry_sdk::work_item::{WorkItemState, WorkItemStore};
+
+    let root = tempfile::tempdir().unwrap();
+    let ledger = root.path().join("ledger.json");
+    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let reference = Some("foundry-task/preserved");
+    let inspected = [
+        open_item("wi_closed", WorkItemState::NeedsDecision, earlier, reference),
+        open_item("wi_edited", WorkItemState::Failed, earlier, reference),
+        open_item("wi_unchanged", WorkItemState::Failed, earlier, reference),
+    ];
+    let mut current = inspected.to_vec();
+    let disposition = current[0].disposition.clone();
+    current[0].settle_cancelled("owner closed", disposition, earlier);
+    current[1].reason = "a later writer's reason".into();
+    WorkItemStore {
+        version: 1,
+        items: current.clone(),
+    }
+    .save(&ledger)
+    .unwrap();
+    let verified: Vec<_> = inspected
+        .iter()
+        .map(|item| (item.clone(), "trunk-commit".to_string()))
+        .collect();
+
+    let settled = super::apply_verified(&ledger, &verified).unwrap();
+
+    assert_eq!(
+        settled.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        vec!["wi_unchanged"]
+    );
+    let store = WorkItemStore::load(&ledger).unwrap();
+    assert_eq!(store.find("wi_closed"), Some(&current[0]));
+    assert_eq!(store.find("wi_edited"), Some(&current[1]));
+    assert_eq!(store.find("wi_unchanged").unwrap().state, WorkItemState::Landed);
+}

@@ -448,32 +448,41 @@ rewritten. Lifecycle events alone are not proof of execution: consult the ledger
 and RPC result, and continue from the preserved parent's id.
 
 After a task actually lands, Foundry also checks that registered project's
-other `preserved` ledger items against the registered trunk branch, using the
-registered checkout path. A preserved commit reachable from trunk, or a
-nonempty set of commits whose patches are all matched by `git cherry`, settles
-`landed`. Its `landed_commit` is the verified trunk commit and its reason is
-exactly `superseded by <commit>`. The appended `work_item_settled` event carries
+other open ledger items (`preserved`, `needs_decision` or `failed`) that
+recorded a preservation ref against the registered trunk branch, using the
+registered checkout path. A preserved commit reachable from trunk, a nonempty
+set of commits whose patches are all matched by `git cherry`, or a commit that
+`git merge-tree --write-tree` merges into trunk cleanly with trunk's own tree
+as the result (content containment, Git 2.38 or later), settles `landed`. A
+`needs_decision` or `failed` item settles only when its preserved tip was
+committed after the item started; a run that made no commits keeps its
+question or fault open. Its `landed_commit` is the verified trunk commit and
+its reason is exactly `superseded by <commit>`, whichever proof succeeded. The appended `work_item_settled` event carries
 that item's exact id, project and original trace. Objective, submission origin,
 `resumes` and prior preservation evidence remain intact; no preserved ref,
 bundle or worktree is deleted.
 
 This check runs only after actual task landing. Failed, blocked, preserved and
-no-landing task results do not trigger it. It checks only preserved items in
-the same registered project; owner-cancelled items remain cancelled. A repeated
+no-landing task results do not trigger it. It checks only open items with a
+preservation ref in the same registered project; owner-cancelled items remain
+cancelled. A repeated
 terminal does not append another settlement. The ledger is reloaded under the
 shared write gate before saving, so concurrent owner actions and unrelated
 updates are retained. A failed save emits no settlement.
 
-Missing refs or objects, failed Git commands, unmatched patches, edited
-squashes without patch-equivalence proof, and ambiguous evidence leave the item
-open with an explicit supersession diagnostic in the settlement block's result
-and structured log. Empty Git output is never proof. Local branch refs and
+Missing refs or objects, failed Git commands, preserved changes that trunk
+does not hold (unmatched patches whose merge into trunk conflicts or would
+still change trunk's tree), and ambiguous evidence leave the item open with an
+explicit supersession diagnostic in the settlement block's result and
+structured log. When patch equivalence and content containment both fail, the
+diagnostic gives each reason. Empty Git output is never proof. Local branch refs and
 commit ids are checked directly. Branch names are also checked by exact name
 on `origin` when configured, without fetching; conflicting local and remote
 heads remain unresolved. A remote-only head must already have locally available
 objects. A bundle must advertise exactly one head and that commit must already be
-locally available. Patch comparison requires complete, shared history and
-rejects merge commits that `git cherry` cannot account for. Queue show and JSON
+locally available. Patch comparison and content containment require complete,
+shared history; patch comparison rejects merge commits that `git cherry` cannot
+account for. Queue show and JSON
 expose the persisted commit and reason through the daemon's read path.
 Scheduled invocation and the reporting reconciler are not delivered by this
 landing-triggered check.
@@ -484,7 +493,7 @@ landing-triggered check.
 report; `--offline` is rejected. The canonical `work-reconciler` sentinel uses
 `30 */3 * * *` and pairs `work_reconcile_started` with `work_reconcile_completed`.
 Inventory reports exact IDs, paths, branch refs and registered-trunk status.
-Conservative supersession may settle preserved work without a task landing;
+Conservative supersession may settle open work with a preservation ref without a task landing;
 concurrent owner changes win, and preservation evidence is retained. No cleanup
 or agent invocation occurs. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use

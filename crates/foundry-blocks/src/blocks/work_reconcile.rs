@@ -10,7 +10,10 @@ use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore, ledger_write_gate};
 
-use super::work_supersession::{prove_commit_supersession, prove_supersession, verified_commit};
+use super::work_supersession::{
+    SupersessionProof, is_supersession_candidate, prove_commit_supersession, prove_supersession,
+    verified_commit,
+};
 use super::{SimulatedSuccess, work_ledger::work_item_event};
 
 /// Reconciles registered repositories with the daemon-owned ledger.
@@ -308,8 +311,8 @@ impl ReconcileWork {
                         break;
                     }
                     1 => match prove_commit_supersession(checkout, commit, hash).await {
-                        Ok(_) => {
-                            trunk_status = format!("patch-equivalent to {name}");
+                        Ok(proof) => {
+                            trunk_status = format!("{} {name}", proof.relation());
                             break;
                         }
                         Err(error) => failures.push(format!("not superseded by {name}: {error:#}")),
@@ -404,24 +407,26 @@ impl ReconcileWork {
                     "active running item has no exact workspace evidence; inventory ownership unresolved",
                 );
             }
-            if item.state == WorkItemState::Preserved {
-                if disposition.and_then(|d| d.preservation_ref.as_ref()).is_none() {
-                    finding(
-                        report,
-                        &project.name,
-                        "broken_item",
-                        &item.id,
-                        "preserved item has no preservation ref",
-                    );
-                }
+            if item.state == WorkItemState::Preserved
+                && disposition.and_then(|d| d.preservation_ref.as_ref()).is_none()
+            {
+                finding(
+                    report,
+                    &project.name,
+                    "broken_item",
+                    &item.id,
+                    "preserved item has no preservation ref",
+                );
+            }
+            if is_supersession_candidate(item) {
                 match prove_item_against_trunks(checkout, item, trunks).await {
-                    Ok((name, commit)) => {
+                    Ok((name, commit, proof)) => {
                         finding(
                             report,
                             &project.name,
                             "informational",
                             &item.id,
-                            &format!("superseded by {name} at {commit}"),
+                            &format!("superseded by {name} at {commit} ({proof})"),
                         );
                         verified.push((item.clone(), commit));
                     }
@@ -443,12 +448,12 @@ async fn prove_item_against_trunks(
     checkout: &Path,
     item: &WorkItem,
     trunks: &[(String, String)],
-) -> Result<(String, String)> {
+) -> Result<(String, String, SupersessionProof)> {
     ensure!(!trunks.is_empty(), "registered trunk or fetched origin unavailable");
     let mut failures = Vec::new();
     for (name, commit) in trunks {
         match prove_supersession(checkout, commit, item).await {
-            Ok(commit) => return Ok((name.clone(), commit)),
+            Ok(proof) => return Ok((name.clone(), commit.clone(), proof)),
             Err(error) => failures.push(format!("{name}: {error:#}")),
         }
     }
@@ -493,8 +498,10 @@ fn apply_verified(path: &Path, verified: &[(WorkItem, String)]) -> Result<Vec<Wo
     let mut store = WorkItemStore::load(path)?;
     let mut settled = Vec::new();
     for (candidate, commit) in verified {
+        // Only an item still exactly as inspected, and still open, settles. An
+        // owner's close or cancel, or any other write, wins over the proof.
         if let Some(item) = store.items.iter_mut().find(|item| **item == *candidate)
-            && item.state == WorkItemState::Preserved
+            && item.state.is_open()
             && let Some(disposition) = item.disposition.as_mut()
         {
             disposition.landed_commit = Some(commit.clone());

@@ -32,13 +32,14 @@ item IDs, full paths and refs:
 
 - Orphan Foundry directories and Git worktree registrations, with their branch,
   registration and directory status.
-- Orphan local and origin task branches, their commit and ancestry status against
+- Orphan local and origin task branches, their commit and supersession status
+  (`ancestor of`, `patch-equivalent to` or `content contained in`) against
   either the local registered trunk or its freshly fetched origin tracking branch.
   Findings name the trunk that proves supersession and report differing trunk
   commits. A branch-only fetch refreshes origin tracking refs and
   retains stale origin tracking branches, even when Git configuration enables pruning.
 - Broken item workspace references and unresolved preservation or inspection
-  evidence. Unmatched patches and ambiguous heads keep obligations open.
+  evidence. Changes trunk does not hold and ambiguous heads keep obligations open.
 - Informational non-Foundry worktrees and dirty registered checkouts.
 
 Running work is associated through recorded workspace fields or exact project
@@ -46,9 +47,36 @@ and trace evidence in the durable event log, never by parsing item IDs out of
 workspace names. A running item without that evidence makes ownership unresolved;
 its possible workspace is not declared orphaned.
 
-Preserved work settles `landed` only when the existing conservative Git proof
-shows it is an ancestor of trunk, or all its non-merge commits have equivalent
-patches on trunk (`git cherry`). After a successful origin fetch, either the local
+Every open item (`preserved`, `needs_decision` or `failed`) that recorded a
+preservation ref is checked. Owner-cancelled and other settled items are not.
+An open item without a preservation ref is not checked; only a `preserved` one
+is reported as a broken item. An item settles `landed` only when a conservative
+Git proof succeeds. The proofs run in this order:
+
+- Ancestry: the preserved commit is an ancestor of trunk.
+- Patch equivalence: all its non-merge commits have equivalent patches on trunk
+  (`git cherry`).
+- Content containment: `git merge-tree --write-tree` merges the preserved
+  commit into trunk without a conflict, and the merged tree is trunk's own
+  tree. Trunk then already holds every change the branch makes since their
+  merge base, as it does after a later cycle squashed the work or rebased it
+  with the same conflict resolution. This needs Git 2.38 or later. It changes
+  no ref, index or worktree, and writes the merged tree only as unreferenced
+  loose objects.
+
+The informational finding for a settled item names the proving trunk, its
+commit and the proof, for example `superseded by origin trunk
+refs/remotes/origin/main at <commit> (content containment)`. When patch
+equivalence and content containment both fail, the unresolved finding gives
+each reason.
+
+A `needs_decision` or `failed` run keeps a preservation ref even when it made
+no commits, and that ref then points at the trunk commit the run started from.
+Such an item settles only when its preserved tip was committed after the item
+started, compared at whole seconds. Otherwise it stays open with an unresolved
+finding: its obligation is the question or the fault, not work that can land.
+
+After a successful origin fetch, either the local
 registered trunk (`refs/heads/<branch>`) or an origin trunk observed by that
 fetch (`refs/remotes/origin/<branch>`) can
 provide that proof: a stale checkout does not hide landed work, and local work
@@ -56,7 +84,7 @@ ahead of origin still counts. With no origin or a failed fetch, existing
 behaviour is retained. Retained tracking refs absent from the successful fetch
 are never used as origin trunk proof.
 Shallow history, missing objects, divergent local and remote preservation heads,
-ambiguous bundles and unmatched patches remain open by exact ID. The settlement records the verified trunk commit and exact reason
+ambiguous bundles, merge conflicts and changes trunk does not hold remain open by exact ID. The settlement records the verified trunk commit and exact reason
 `superseded by <commit>`, retaining submission, continuation and preservation
 fields. Its `work_item_settled` event stays on the original trace.
 
@@ -68,8 +96,8 @@ never rewritten.
 
 Once an item settles landed, Foundry deletes only its recorded task branch
 locally and its recorded preservation branch locally and on origin, best-effort.
-Each deletion requires fresh ancestry or patch-equivalence proof against the
-registered trunk and refuses branches checked out in any worktree. A changed
+Each deletion requires fresh ancestry, patch-equivalence or content-containment
+proof against the registered trunk and refuses branches checked out in any worktree. A changed
 ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
 unlanded items in any registered project sharing the repository are retained.
 Ownership compares exact refs across repository slugs and shared Git common

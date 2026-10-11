@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Supersession now settles every open ledger item whose preserved work already
+  reached trunk, not only `preserved` ones. The landing-triggered check and the
+  scheduled reconciler both consider `preserved`, `needs_decision` and `failed`
+  items that recorded a preservation ref. Before, a `needs_decision` item whose
+  preserved tip a later campaign cycle had already landed stayed in the "needs
+  a person" list indefinitely. Owner-cancelled items stay cancelled, an item
+  changed after inspection is never overwritten, and an open item without a
+  preservation ref is not a candidate. A `needs_decision` or `failed` run that
+  made no commits still preserves its base commit, which every later trunk
+  contains, so such an item settles only when its preserved tip was committed
+  after the item started; otherwise it stays open with a diagnostic.
+- Supersession has a third proof, content containment, tried after ancestry
+  and `git cherry` patch equivalence. When `git merge-tree --write-tree`
+  merges the preserved commit into trunk without a conflict and the result is
+  trunk's own tree, trunk already holds every change the branch made. This
+  recognises work a later cycle squashed or rebased with conflict resolution,
+  which used to fail with "preserved commits have unmatched patches". A
+  conflict, a merge that would still change trunk, missing objects, shallow
+  or unrelated history, or unexpected output is never proof, and the
+  diagnostic now gives the patch-equivalence and containment reasons
+  together. The settled reason stays `superseded by <commit>`; the structured
+  log and the reconciler's finding name the proof. Branch cleanup and the
+  orphan-branch inventory share the proof, so an orphan branch can now read
+  `content contained in <trunk>`. The proof writes only unreferenced loose
+  objects and needs Git 2.38 or later.
+
 ## [0.43.0] - 2026-10-10
 
 ### Changed
