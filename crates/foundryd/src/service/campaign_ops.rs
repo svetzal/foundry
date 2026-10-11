@@ -512,8 +512,9 @@ fn select_aborted_owner_in_file(
 /// Stop a campaign permanently, optionally killing its in-flight cycle first.
 ///
 /// Abort the target workflow before waiting for the store lock, so `--now`
-/// releases its formation's lock promptly. Other campaigns may still hold the
-/// lock; acquisition and persistence therefore run on the blocking pool.
+/// never waits on a critical section of the task it is about to kill. Others
+/// may hold the lock briefly; acquisition and persistence therefore run on the
+/// blocking pool.
 ///
 /// The window between the abort and the lock is safe because the only thing
 /// that could have advanced this campaign is the task just aborted, and the

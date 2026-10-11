@@ -582,10 +582,11 @@ Unlike `CompleteCampaign`, this does **not** require `authorized_by` — an
 unauthorized campaign has no other reachable terminal state.
 
 With `terminate_now`, the daemon aborts the in-flight workflow before touching
-the store. Because a whole campaign runs inside one task, aborting it kills the
-running agent process and releases the campaign store lock that task was
-holding. The abort is awaited, so the subsequent store acquisition is
-uncontended. `discard_work` then selects how the orphaned worktree is disposed
+the store. Aborting it kills the running agent process. A formation holds the
+campaign store lock only in its short read and write sections, never while its
+agent runs; if the abort lands inside one, dropping the task releases the lock.
+The abort is awaited, so the subsequent store acquisition does not wait on the
+aborted task. `discard_work` then selects how the orphaned worktree is disposed
 of by the `DisposeCampaignWork` block.
 
 **Request:**

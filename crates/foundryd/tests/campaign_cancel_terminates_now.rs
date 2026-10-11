@@ -15,8 +15,9 @@
 //!
 //! 2. **The aborted task's store lock is released before `cancel` needs it.**
 //!    `execute_campaign_advance` holds the campaign store's advisory file lock
-//!    across the whole formation agent call, and `cancel` takes that same lock
-//!    immediately after aborting. `WorkflowTracker::abort_campaign` awaits the
+//!    in two short critical sections (never across its agent call), and an
+//!    abort can land inside one; `cancel` takes that same lock immediately
+//!    after aborting. `WorkflowTracker::abort_campaign` awaits the
 //!    aborted task's join handle for exactly this reason. Remove that await and
 //!    this test hangs rather than failing — which is the regression it exists
 //!    to catch.

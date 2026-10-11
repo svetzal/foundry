@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +30,7 @@ pub struct AdvanceCampaign {
     shell: Arc<dyn ShellGateway>,
     registry: Arc<std::sync::RwLock<Registry>>,
     store_path: PathBuf,
-    lock: Arc<tokio::sync::Mutex<()>>,
+    formation_locks: Arc<FormationLocks>,
 }
 
 impl AdvanceCampaign {
@@ -44,8 +45,36 @@ impl AdvanceCampaign {
             shell,
             registry,
             store_path,
-            lock: Arc::new(tokio::sync::Mutex::new(())),
+            formation_locks: Arc::new(FormationLocks::default()),
         }
+    }
+}
+
+/// One async mutex per campaign name.
+///
+/// A campaign never forms twice at once: a second advance for the same
+/// campaign waits here, then reads the record the first one left. Different
+/// campaigns hold different mutexes, so their formations run side by side.
+/// This lock is in-process only and is held across the agent call; the
+/// cross-process campaign store flock is not (see
+/// [`execute_campaign_advance`]).
+///
+/// Entries are never removed. A campaign name costs one small entry for the
+/// life of the daemon, and removing one safely would need the same
+/// coordination this map exists to provide.
+#[derive(Default)]
+struct FormationLocks(std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+impl FormationLocks {
+    fn for_campaign(&self, campaign: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.0.lock().unwrap_or_else(|poisoned| {
+            // The map holds no invariant beyond membership, so a panic while
+            // it was held cannot have left it inconsistent. Recover rather
+            // than take the daemon down.
+            tracing::warn!("campaign formation lock map poisoned; recovering");
+            poisoned.into_inner()
+        });
+        Arc::clone(locks.entry(campaign.to_string()).or_default())
     }
 }
 
@@ -444,8 +473,9 @@ const DECISION_ATTEMPTS: u32 = 3;
 ///
 /// Long enough to outlast the transport blips that caused the observed
 /// escalations, and negligible against a Deep-tier invocation already measured
-/// in minutes. No jitter: campaign advances are serialized by a process mutex
-/// and a store-wide file lock, so there is no herd to spread.
+/// in minutes. No jitter: one campaign forms at a time, and the few campaigns
+/// forming side by side retry independent invocations, so there is no herd to
+/// spread.
 const DECISION_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// What an advance concluded, once provider outages are separated from the
@@ -754,7 +784,7 @@ struct AdvanceExecution {
     shell: Arc<dyn ShellGateway>,
     registry: Arc<std::sync::RwLock<Registry>>,
     store_path: PathBuf,
-    lock: Arc<tokio::sync::Mutex<()>>,
+    formation_locks: Arc<FormationLocks>,
     request: CampaignAdvanceRequestedPayload,
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
@@ -1147,7 +1177,7 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
         shell: Arc::clone(&execution.shell),
         registry: Arc::clone(&execution.registry),
         store_path: execution.store_path.clone(),
-        lock: Arc::clone(&execution.lock),
+        formation_locks: Arc::clone(&execution.formation_locks),
         project: execution.project.clone(),
         throttle: execution.throttle,
     }
@@ -1166,38 +1196,97 @@ fn outcome_summary(campaign: &str, outcome: &AdvanceOutcome) -> String {
     }
 }
 
-async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
-    let _process_guard = execution.lock.lock().await;
-    // RPCs and offline processes can hold the flock even after this block has
-    // the in-process mutex. Never park a runtime worker while acquiring it.
-    let store_path = execution.store_path.clone();
-    let acquisition =
-        tokio::task::spawn_blocking(move || CampaignStore::lock_exclusive(&store_path))
-            .await
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result.map_err(anyhow::Error::from));
-    let mut guard = match acquisition {
+/// Take the campaign store's cross-process flock off the runtime.
+///
+/// RPCs, offline CLI commands and other formations can hold it. Their critical
+/// sections are short, but a runtime worker must never park on a flock.
+async fn lock_store(store_path: &Path) -> anyhow::Result<CampaignStoreGuard> {
+    let store_path = store_path.to_path_buf();
+    tokio::task::spawn_blocking(move || CampaignStore::lock_exclusive(&store_path))
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result.map_err(anyhow::Error::from))
+}
+
+/// What the first critical section decided.
+enum Prepared {
+    /// The advance ended without asking an agent.
+    Finished(TaskBlockResult),
+    /// Form from this record, which is also what was saved.
+    Form(Box<Campaign>),
+}
+
+/// Whether a formed outcome may still be applied to the campaign.
+#[derive(Debug, PartialEq, Eq)]
+enum Recheck {
+    /// The record is exactly what formation read.
+    Unchanged,
+    /// Someone stopped or settled the campaign while it formed.
+    Stopped(CampaignStatus),
+    /// The campaign can still advance, but its record changed.
+    Changed,
+}
+
+/// Compare the record formation read with the record now in the store.
+///
+/// Any difference means someone else wrote the campaign while the agent ran:
+/// an operator's `pause`, `resume`, `decide`, `complete` or `cancel`, or an
+/// `--offline` edit. The outcome was formed from a record that no longer
+/// exists, so it is never applied over that change.
+fn recheck(formed_from: &Campaign, current: &Campaign) -> Recheck {
+    if same_record(formed_from, current) {
+        Recheck::Unchanged
+    } else if current.check_advanceable().is_err() {
+        Recheck::Stopped(current.status)
+    } else {
+        Recheck::Changed
+    }
+}
+
+fn same_record(left: &Campaign, right: &Campaign) -> bool {
+    match (serde_json::to_value(left), serde_json::to_value(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        (Err(error), _) | (_, Err(error)) => {
+            // Best-effort: a record that cannot be serialised cannot be
+            // compared. Treating it as changed discards the formed outcome
+            // instead of risking an overwrite; the warn carries the fault.
+            tracing::warn!(campaign = %left.name, %error, "campaign record could not be compared after formation");
+            false
+        }
+    }
+}
+
+/// The first critical section: record the arriving run result and decide
+/// whether an agent is needed at all.
+///
+/// Everything here is quick, so it runs under the store flock. A forced
+/// outcome (unauthorized, already settled, a verdict that decides on its own)
+/// asks no agent and is applied before the flock is released. Otherwise the
+/// recorded run result is saved now, so it survives a formation that fails or
+/// is discarded, and the saved record is returned to form from.
+async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
+    let mut guard = match lock_store(&execution.store_path).await {
         Ok(guard) => guard,
         Err(error) => {
-            return terminal_error_result(
+            return Prepared::Finished(terminal_error_result(
                 &execution.request.campaign,
                 &execution.project,
                 execution.throttle,
                 0,
                 0,
                 format!("campaign store unavailable: {error}"),
-            );
+            ));
         }
     };
     let Some(campaign) = guard.store.find_mut(&execution.request.campaign) else {
-        return terminal_error_result(
+        return Prepared::Finished(terminal_error_result(
             &execution.request.campaign,
             &execution.project,
             execution.throttle,
             0,
             0,
             format!("campaign '{}' not found", execution.request.campaign),
-        );
+        ));
     };
 
     if let Err(error) = campaign.validate() {
@@ -1212,15 +1301,15 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         );
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
-        return persist_or_terminal(
-            &execution,
+        return Prepared::Finished(persist_or_terminal(
+            execution,
             &guard,
             events,
             format!("campaign '{}' escalated", execution.request.campaign),
             "campaign invalid and escalation could not be saved",
             cycles_completed,
             cycles_landed,
-        );
+        ));
     }
 
     let forced = update_run_and_forced_outcome(campaign, &execution.request);
@@ -1239,8 +1328,8 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         let status = campaign.status;
         let cycles_completed = campaign.cycles_completed;
         let cycles_landed = campaign.cycles_landed;
-        return persist_or_terminal(
-            &execution,
+        return Prepared::Finished(persist_or_terminal(
+            execution,
             &guard,
             vec![],
             format!(
@@ -1250,31 +1339,152 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
             "stopped campaign result could not be saved",
             cycles_completed,
             cycles_landed,
-        );
+        ));
     }
 
-    let effective_execution = replay_pending_run(&execution, campaign);
-    let (outcome, record) = choose_advance_outcome(&effective_execution, campaign, forced).await;
-    let outcome = outcome.map_decision(|decision| enforce_campaign_budget(campaign, decision));
-    let summary = outcome_summary(&execution.request.campaign, &outcome);
-    let events = apply_advance_outcome(
-        campaign,
-        &effective_execution.request,
-        execution.throttle,
-        outcome,
-        &record,
-    );
-    let cycles_completed = campaign.cycles_completed;
-    let cycles_landed = campaign.cycles_landed;
-    persist_or_terminal(
-        &execution,
-        &guard,
-        events,
-        summary,
-        "campaign decision could not be saved",
-        cycles_completed,
-        cycles_landed,
-    )
+    if let Some(outcome) = forced {
+        let effective_execution = replay_pending_run(execution, campaign);
+        let outcome = outcome.map_decision(|decision| enforce_campaign_budget(campaign, decision));
+        let summary = outcome_summary(&execution.request.campaign, &outcome);
+        let events = apply_advance_outcome(
+            campaign,
+            &effective_execution.request,
+            execution.throttle,
+            outcome,
+            &FormationRecord::default(),
+        );
+        let cycles_completed = campaign.cycles_completed;
+        let cycles_landed = campaign.cycles_landed;
+        return Prepared::Finished(persist_or_terminal(
+            execution,
+            &guard,
+            events,
+            summary,
+            "campaign decision could not be saved",
+            cycles_completed,
+            cycles_landed,
+        ));
+    }
+
+    let formed_from = campaign.clone();
+    if let Err(error) = guard.save() {
+        return Prepared::Finished(terminal_error_result(
+            &execution.request.campaign,
+            &execution.project,
+            execution.throttle,
+            formed_from.cycles_completed,
+            formed_from.cycles_landed,
+            format!("campaign run result could not be saved before formation: {error}"),
+        ));
+    }
+    Prepared::Form(Box::new(formed_from))
+}
+
+/// The second critical section: apply the formed outcome, unless the campaign
+/// changed while its formation ran.
+///
+/// A changed record is never overwritten. When the campaign was stopped or
+/// settled (paused, cancelled, completed, escalated) the outcome is discarded
+/// and the advance ends quietly: the operator asked for exactly that, and a
+/// paused campaign's run result stays pending for the advance after `resume`.
+/// When the campaign could still advance but its record changed (a budget or
+/// decision edit), the outcome is discarded and the advance reports failure,
+/// so its work item lands in the open group and the owner re-runs
+/// `foundry campaign advance` to form from the current record.
+async fn apply_unless_changed(
+    execution: &AdvanceExecution,
+    request: &CampaignAdvanceRequestedPayload,
+    formed_from: &Campaign,
+    outcome: AdvanceOutcome,
+    record: &FormationRecord,
+) -> TaskBlockResult {
+    let name = &execution.request.campaign;
+    let mut guard = match lock_store(&execution.store_path).await {
+        Ok(guard) => guard,
+        Err(error) => {
+            return terminal_error_result(
+                name,
+                &execution.project,
+                execution.throttle,
+                formed_from.cycles_completed,
+                formed_from.cycles_landed,
+                format!("campaign store unavailable after formation: {error}"),
+            );
+        }
+    };
+    let Some(campaign) = guard.store.find_mut(name) else {
+        return terminal_error_result(
+            name,
+            &execution.project,
+            execution.throttle,
+            formed_from.cycles_completed,
+            formed_from.cycles_landed,
+            format!("campaign '{name}' not found after formation"),
+        );
+    };
+    match recheck(formed_from, campaign) {
+        Recheck::Unchanged => {
+            let summary = outcome_summary(name, &outcome);
+            let events =
+                apply_advance_outcome(campaign, request, execution.throttle, outcome, record);
+            let cycles_completed = campaign.cycles_completed;
+            let cycles_landed = campaign.cycles_landed;
+            persist_or_terminal(
+                execution,
+                &guard,
+                events,
+                summary,
+                "campaign decision could not be saved",
+                cycles_completed,
+                cycles_landed,
+            )
+        }
+        Recheck::Stopped(status) => {
+            tracing::warn!(campaign = %name, %status, "campaign stopped while it formed; formed outcome discarded");
+            TaskBlockResult::success(
+                format!(
+                    "campaign '{name}' became {status} while it formed; the formed outcome was discarded"
+                ),
+                vec![],
+            )
+        }
+        Recheck::Changed => {
+            tracing::warn!(campaign = %name, "campaign changed while it formed; formed outcome discarded");
+            TaskBlockResult {
+                success: false,
+                summary: format!(
+                    "campaign '{name}' changed while it formed; the formed outcome was discarded rather than overwrite that change. Run `foundry campaign advance {name}` to form from the current record"
+                ),
+                ..Default::default()
+            }
+        }
+    }
+}
+
+/// Advance one campaign.
+///
+/// The campaign store's flock is held only for two short critical sections,
+/// never across the agent: formation runs the done gates and a decision agent
+/// for minutes, and the flock serialises every campaign mutation in every
+/// process. Holding it there made every `AdvanceCampaign` RPC and every other
+/// campaign control wait on whichever formation was running (the 2026-10-11
+/// production hang). The per-campaign [`FormationLocks`] entry is held across
+/// the whole advance instead, so one campaign never forms twice at once while
+/// different campaigns form side by side.
+async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
+    let formation = execution.formation_locks.for_campaign(&execution.request.campaign);
+    let _formation_guard = formation.lock().await;
+
+    let formed_from = match prepare_formation(&execution).await {
+        Prepared::Finished(result) => return result,
+        Prepared::Form(campaign) => *campaign,
+    };
+
+    let effective_execution = replay_pending_run(&execution, &formed_from);
+    let (outcome, record) = choose_advance_outcome(&effective_execution, &formed_from, None).await;
+    let outcome = outcome.map_decision(|decision| enforce_campaign_budget(&formed_from, decision));
+    apply_unless_changed(&execution, &effective_execution.request, &formed_from, outcome, &record)
+        .await
 }
 
 impl SimulatedSuccess for AdvanceCampaign {
@@ -1342,7 +1552,7 @@ impl TaskBlock for AdvanceCampaign {
         let shell = Arc::clone(&self.shell);
         let registry = Arc::clone(&self.registry);
         let store_path = self.store_path.clone();
-        let lock = Arc::clone(&self.lock);
+        let formation_locks = Arc::clone(&self.formation_locks);
 
         Box::pin(async move {
             Ok(execute_campaign_advance(AdvanceExecution {
@@ -1351,7 +1561,7 @@ impl TaskBlock for AdvanceCampaign {
                 shell,
                 registry,
                 store_path,
-                lock,
+                formation_locks,
                 request,
                 project,
                 throttle,
@@ -1391,9 +1601,46 @@ mod tests {
     use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
 
     use super::{
-        AdvanceCampaign, DECISION_ATTEMPTS, enforce_campaign_budget, enforce_done_gate_truth,
-        formation_gate_results, outcome_label, parse_decision, run_done_gates,
+        AdvanceCampaign, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
+        enforce_done_gate_truth, formation_gate_results, outcome_label, parse_decision, recheck,
+        run_done_gates,
     };
+
+    #[test]
+    fn an_untouched_record_takes_its_formed_outcome() {
+        let formed_from = campaign_for_accumulation_test();
+        assert_eq!(recheck(&formed_from, &formed_from.clone()), Recheck::Unchanged);
+    }
+
+    #[test]
+    fn a_campaign_stopped_while_it_formed_reports_its_new_status() {
+        let formed_from = campaign_for_accumulation_test();
+        for status in [
+            CampaignStatus::Paused,
+            CampaignStatus::Cancelled,
+            CampaignStatus::Completed,
+            CampaignStatus::Escalated,
+        ] {
+            let mut current = formed_from.clone();
+            current.status = status;
+            assert_eq!(recheck(&formed_from, &current), Recheck::Stopped(status));
+        }
+    }
+
+    #[test]
+    fn any_other_edit_while_it_formed_counts_as_a_change() {
+        let formed_from = campaign_for_accumulation_test();
+        let mut budget = formed_from.clone();
+        budget.budget.max_cycles += 5;
+        assert_eq!(recheck(&formed_from, &budget), Recheck::Changed);
+        let mut decided = formed_from.clone();
+        decided.owner_decisions.push(foundry_sdk::campaign::OwnerDecision {
+            decision: "prefer the smaller slice".to_string(),
+            authorized_by: "owner".to_string(),
+            decided_at: chrono::Utc::now(),
+        });
+        assert_eq!(recheck(&formed_from, &decided), Recheck::Changed);
+    }
 
     #[test]
     fn formation_keeps_gate_truth_and_failure_tails_without_passing_noise() {

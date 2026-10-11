@@ -9,6 +9,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A campaign formation no longer blocks every other campaign. On 2026-10-11
+  five concurrent `foundry campaign advance` calls on production, one per
+  campaign, admitted three; the other two hung for minutes and were admitted
+  only as other formations finished. Formation held the campaign store's
+  cross-process file lock across its done gates and its decision agent, and
+  the `AdvanceCampaign` RPC (like every other campaign control) needs that
+  lock to validate. A process-wide mutex also serialised formations for
+  different campaigns. Formation now holds the file lock only for two short
+  sections: it records the arriving run result and saves it, releases the
+  lock, runs the gates and agent, then locks again and applies the outcome
+  only if the campaign record is unchanged since it read it. A campaign paused,
+  cancelled, completed or escalated while it formed keeps that status and the
+  outcome is discarded without events. A campaign edited in any other way
+  keeps the edit, and the advance reports failure so its work item shows in
+  `foundry queue open`; run `campaign advance` again to form from the current
+  record. The process-wide mutex is now one mutex per campaign, so different
+  campaigns form at the same time and one campaign never forms twice at once.
+  Tests in `crates/foundryd/tests/campaign_advance_concurrency.rs` reproduce
+  the hang.
+
 - The `foundryd` single-instance tests no longer fail at random. The 0.45.0
   release build on `mojility-ops-01` failed once because the lock-held test
   reported "address already in use" instead of "already running". The test
