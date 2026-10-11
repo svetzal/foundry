@@ -162,7 +162,11 @@ campaign task result. Online campaign control flows through the daemon-owned
 campaign store; explicit `--offline` is the only direct-file recovery path.
 Online reads and mutations render daemon-owned responses directly rather than
 re-reading `FOUNDRY_CAMPAIGNS_PATH`. Each decision reloads the durable campaign
-record under a process lock before reasoning begins.
+record under the store lock, releases the lock while the gates and agent run,
+and applies its outcome only if the record is unchanged when it locks again.
+A campaign paused, cancelled or edited meanwhile keeps that change and the
+outcome is discarded. One campaign forms at a time; different campaigns form
+concurrently.
 
 ```text
 CampaignAdvanceRequested {campaign, run_event_id?, run_result?}

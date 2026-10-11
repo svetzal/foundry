@@ -103,10 +103,10 @@ impl WorkflowTracker {
     /// unwind. Returns what was aborted.
     ///
     /// **The await is load-bearing.** `abort()` only schedules cancellation; it
-    /// does not wait for the task's future to be dropped. The aborted task is
-    /// very likely holding the campaign store's advisory file lock — the
-    /// formation block holds it across the whole agent call — and the caller's
-    /// very next act is to take that same lock. Only awaiting the handle
+    /// does not wait for the task's future to be dropped. The aborted task may
+    /// be holding the campaign store's advisory file lock — the formation
+    /// block takes it for two short critical sections around its agent call —
+    /// and the caller's very next act is to take that same lock. Only awaiting the handle
     /// proves the future was dropped and therefore that `CampaignStoreGuard`'s
     /// `Drop` has released the flock. Without it the caller can block on a lock
     /// nobody has got around to releasing.

@@ -1,4 +1,7 @@
 //! Campaign flock contention must leave a single Tokio worker free to run formations and reads.
+//!
+//! A formation no longer holds the flock across its agent, so here an outside
+//! process (an `--offline` CLI) holds it instead while controls queue on it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use foundry_blocks::{
@@ -168,7 +171,17 @@ async fn prove_progress() {
         }))
         .await
         .unwrap();
-    agent.entered.notified().await; // The real formation now owns the flock.
+    agent.entered.notified().await; // The formation is parked in its agent.
+    // An outside holder of the flock, as an `--offline` command would be.
+    let (release_flock, flock_released) = std::sync::mpsc::channel::<()>();
+    let (flock_held, held) = std::sync::mpsc::channel::<()>();
+    let holder_path = path.clone();
+    let holder = std::thread::spawn(move || {
+        let _guard = CampaignStore::lock_exclusive(&holder_path).unwrap();
+        flock_held.send(()).unwrap();
+        flock_released.recv().unwrap();
+    });
+    held.recv().unwrap();
     let second = {
         let service = service.clone();
         tokio::spawn(async move {
@@ -210,10 +223,14 @@ async fn prove_progress() {
         .unwrap()
         .unwrap();
     assert_eq!(response.into_inner().campaigns.len(), 2);
-    agent.release.notify_one();
+    release_flock.send(()).unwrap();
+    holder.join().unwrap();
+    // Both controls finish while the first formation is still in its agent:
+    // a formation does not hold the flock.
     second.await.unwrap().unwrap();
     let paused = pause.await.unwrap().unwrap().into_inner().campaign.unwrap();
     assert_eq!(paused.status, "paused");
+    agent.release.notify_one();
     // The second formation must also finish; waiting controls must not hold up
     // the agent output or the next formation's acquisition of the same flock.
     loop {
@@ -225,6 +242,9 @@ async fn prove_progress() {
         }
     }
     let store = CampaignStore::load(&path).unwrap();
-    assert_eq!(store.find("forming").unwrap().status, CampaignStatus::Paused);
+    // Paused while it formed: the formed escalation is discarded, the pause stands.
+    let forming = store.find("forming").unwrap();
+    assert_eq!(forming.status, CampaignStatus::Paused);
+    assert!(forming.open_escalation.is_none());
     assert_eq!(store.find("second").unwrap().status, CampaignStatus::Escalated);
 }

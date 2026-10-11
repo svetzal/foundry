@@ -683,20 +683,39 @@ foundry campaign resume parite-phase-2d --add-cycles 1
 
 Completion and escalation are terminal events and are forced into the next ops
 digest as an anomaly. Campaign-store mutations are serialized across the CLI and
-daemon, so a control command cannot overwrite an in-flight formation decision.
-Online `add`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel`
-wait for a formation holding the store lock, including a formation for another
-campaign. They acquire the lock on Tokio's blocking pool, leaving runtime workers
-free to process agent output, finish formations, and answer other RPCs. Campaign
-list and queue reads remain available while controls wait. Once admitted to the
-blocking pool, a control operation finishes even if its client disconnects;
-inspect campaign state before retrying an interrupted command.
+daemon by a file lock on the campaign store. Every holder keeps it only for a
+short read-and-write section. Online `add`, `advance`, `pause`, `resume`,
+`decide`, `complete`, and `cancel` acquire it on Tokio's blocking pool, so
+runtime workers stay free to process agent output and answer other RPCs. Once
+admitted to the blocking pool, a control operation finishes even if its client
+disconnects; inspect campaign state before retrying an interrupted command.
 
-Waiting controls validate the latest stored state after acquiring the lock;
-a transition that became invalid while waiting returns `FAILED_PRECONDITION`.
-`cancel --now` aborts its target workflow before waiting, but may still wait for
-another campaign's formation. Formation itself also acquires the file lock on
-the blocking pool. Offline commands retain their synchronous file-lock behaviour.
+A formation does not hold the lock while its done gates and agent run. It reads
+the campaign and saves the arriving run result under the lock, releases the
+lock, forms, then takes the lock again and applies the outcome only if the
+campaign record is unchanged since it read it. Controls and advances for any
+campaign therefore return promptly while formations run, and different campaigns
+form at the same time. One campaign never forms twice at once: a second
+formation for the same campaign waits for the first and then reads the record
+the first one left.
+
+A control never loses to a formation that was running when it was issued. When
+the campaign record changed while it formed, the formed outcome is discarded and
+the change stands:
+
+- The campaign was paused, cancelled, completed or escalated meanwhile. The
+  advance ends with no campaign events and dispatches nothing. A paused
+  campaign keeps its pending run result for the advance after `resume`.
+- The campaign can still advance but its record changed (an owner decision, a
+  budget edit, an `--offline` edit). The advance reports failure, so its work
+  item settles `failed` and shows in `foundry queue open`, and it dispatches
+  nothing. Run `foundry campaign advance <name>` to form again from the current
+  record.
+
+Controls validate the latest stored state after acquiring the lock; a
+transition that became invalid while waiting returns `FAILED_PRECONDITION`.
+`cancel --now` aborts its target workflow before it takes the lock. Offline
+commands retain their synchronous file-lock behaviour.
 
 If a daemon-side save fails during `pause`, `resume`, `decide`, or `complete`,
 the RPC returns `INTERNAL`, leaves the persisted daemon-owned store

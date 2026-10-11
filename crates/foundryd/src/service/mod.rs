@@ -92,8 +92,9 @@ pub struct FoundryService {
 }
 
 impl FoundryService {
-    /// Campaign mutations can wait for a formation's cross-process flock.
-    /// Keep their entire lock/read/save operation off Tokio's worker threads.
+    /// Campaign mutations take the store's cross-process flock, which other
+    /// processes and formations hold for short critical sections. Keep their
+    /// entire lock/read/save operation off Tokio's worker threads.
     async fn campaign_operation<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&std::path::Path, &RuntimeContext) -> Result<T, Status> + Send + 'static,
