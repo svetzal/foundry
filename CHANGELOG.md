@@ -7,7 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-11
+
 ### Changed
+
+- All engineering workflows now enter the same durable queue before execution.
+  Manual and nightly maintenance, campaign formation, releases, remediation,
+  iteration, validation, supply-chain scans and digest agents obey the shared
+  host cap and repository ownership. Downstream steps retain ownership through
+  installation and cleanup. Independent derived tasks queue before it releases.
+  Dry runs also queue because observers can invoke agents or checks. Mutator
+  simulation stays active, and the settlement reason identifies the dry run.
+- The nightly stages all project roots before waiting. Queued and held children
+  survive restart and recovery rejoins their gather. Cancellation publishes a
+  typed failed terminal so watchers and the maintenance cycle complete honestly.
+- Supply-chain auto-fix reserves all active repositories for its sequential scan.
+  A busy repository delays the scan instead of being skipped. Audit-only scans
+  consume a system slot without project reservations.
 
 - A campaign now settles the cycles it has moved past, so they leave the
   "needs a person" list. Before, nothing settled a cycle once the next one was
@@ -52,24 +68,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   orphan-branch inventory share the proof, so an orphan branch can now read
   `content contained in <trunk>`. The proof writes only unreferenced loose
   objects and needs Git 2.38 or later.
-
-## [0.43.0] - 2026-10-10
-
-### Changed
-
-- All engineering workflows now enter the same durable queue before execution.
-  Manual and nightly maintenance, campaign formation, releases, remediation,
-  iteration, validation, supply-chain scans and digest agents obey the shared
-  host cap and repository ownership. Downstream steps retain ownership through
-  installation and cleanup. Independent derived tasks queue before it releases.
-  Dry runs also queue because observers can invoke agents or checks. Mutator
-  simulation stays active, and the settlement reason identifies the dry run.
-- The nightly stages all project roots before waiting. Queued and held children
-  survive restart and recovery rejoins their gather. Cancellation publishes a
-  typed failed terminal so watchers and the maintenance cycle complete honestly.
-- Supply-chain auto-fix reserves all active repositories for its sequential scan.
-  A busy repository delays the scan instead of being skipped. Audit-only scans
-  consume a system slot without project reservations.
 
 ### Fixed
 
