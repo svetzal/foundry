@@ -186,7 +186,8 @@ lands, on trunk or on the preserved branch, even when the executor staged it.
 The one exception is a deletion of a file that HEAD tracks under `.foundry/`.
 That deletion is committed, so a task can remove legacy content. A project that
 already tracks files under `.foundry/` keeps them until a task or a person
-deletes them. An executor's edits to those files do not land.
+deletes them. An executor's edits to those files do not land. These rules
+apply whether or not the project's `.gitignore` ignores `.foundry/`.
 
 Before Finalize Task removes the worktree, it copies every `.foundry` file that
 did not land to

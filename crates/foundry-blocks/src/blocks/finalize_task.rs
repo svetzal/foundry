@@ -1954,4 +1954,113 @@ mod tests {
         // Test fixture owns this evidence archive; this is not a worktree removal.
         std::fs::remove_dir_all(attempt).unwrap();
     }
+
+    /// Commit a `.gitignore` that ignores the whole of `.foundry/` on the task
+    /// branch, as a project that keeps Foundry scratch out of git does.
+    fn ignore_dot_foundry_on_task_branch(worktree: &Path) {
+        std::fs::write(worktree.join(".gitignore"), ".foundry/\n").unwrap();
+        git(worktree, &["add", ".gitignore"]);
+        git(worktree, &["commit", "-m", "ignore .foundry"]);
+    }
+
+    /// The 2026-10-11 Bedrock incident: once a repository ignored `.foundry/`,
+    /// staging with a `.foundry` exclude pathspec made git exit 1 ("paths are
+    /// ignored"), so every task failed at commit. Ignoring `.foundry` must
+    /// not stop the project change landing, nor let scratch land.
+    #[tokio::test]
+    async fn an_ignored_dot_foundry_does_not_stop_the_project_change_landing() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/ignored-dot-foundry";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        ignore_dot_foundry_on_task_branch(&worktree);
+        write_agent_evidence(&worktree);
+        write_project_change(&worktree);
+
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
+        let payload = &result.events[0].payload;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert_eq!(commit_changes(&checkout, "HEAD"), "A\tdocs/notes.md");
+        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "scratch landed on trunk");
+        assert!(!worktree.exists());
+        let mirror = unlanded_mirror(payload);
+        assert_agent_evidence_archived(mirror);
+        // Test fixture owns this evidence archive; this is not a worktree removal.
+        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+    }
+
+    /// An ignored `.foundry` that HEAD still partly tracks: the deletion of a
+    /// tracked file lands, while an edit to another and a file the agent
+    /// force-staged do not.
+    #[tokio::test]
+    async fn an_ignored_but_partly_tracked_dot_foundry_lands_only_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/ignored-partly-tracked";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        track_on_task_branch(
+            &worktree,
+            &[
+                (".foundry/old.json", "legacy"),
+                (".foundry/kept.json", "kept"),
+            ],
+        );
+        ignore_dot_foundry_on_task_branch(&worktree);
+        std::fs::remove_file(worktree.join(".foundry/old.json")).unwrap();
+        std::fs::write(worktree.join(".foundry/kept.json"), "agent").unwrap();
+        std::fs::write(worktree.join(".foundry/forced.json"), "forced").unwrap();
+        git(&worktree, &["add", "--force", ".foundry/forced.json"]);
+        write_project_change(&worktree);
+
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
+        let payload = &result.events[0].payload;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert_eq!(commit_changes(&checkout, "HEAD"), "D\t.foundry/old.json\nA\tdocs/notes.md");
+        assert_eq!(tracked_under_foundry(&checkout, "HEAD"), ".foundry/kept.json");
+        assert_eq!(git(&checkout, &["show", "HEAD:.foundry/kept.json"]), "kept");
+        assert!(!worktree.exists());
+        let mirror = unlanded_mirror(payload);
+        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/kept.json")).unwrap(), "agent");
+        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/forced.json")).unwrap(), "forced");
+        // Test fixture owns this evidence archive; this is not a worktree removal.
+        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+    }
+
+    /// A tracked `.foundry` file the agent replaced with a directory: the
+    /// file's deletion lands, the directory's new content does not.
+    #[tokio::test]
+    async fn a_tracked_dot_foundry_file_replaced_by_a_directory_lands_as_a_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/file-to-directory";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        track_on_task_branch(&worktree, &[(".foundry/state", "file")]);
+        std::fs::remove_file(worktree.join(".foundry/state")).unwrap();
+        std::fs::create_dir(worktree.join(".foundry/state")).unwrap();
+        std::fs::write(worktree.join(".foundry/state/inner.json"), "inner").unwrap();
+        write_project_change(&worktree);
+
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
+        let payload = &result.events[0].payload;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert_eq!(commit_changes(&checkout, "HEAD"), "D\t.foundry/state\nA\tdocs/notes.md");
+        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "scratch landed on trunk");
+        assert!(!worktree.exists());
+        let mirror = unlanded_mirror(payload);
+        assert_eq!(
+            std::fs::read_to_string(mirror.join(".foundry/state/inner.json")).unwrap(),
+            "inner"
+        );
+        // Test fixture owns this evidence archive; this is not a worktree removal.
+        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+    }
 }

@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A task or campaign cycle in a repository whose `.gitignore` ignores
+  `.foundry/` commits again. Staging used a `:(exclude).foundry` pathspec, and
+  git rejects any pathspec that names an ignored path ("paths are ignored",
+  exit 1), so every commit in such a repository failed (three Bedrock
+  repositories from 2026-10-10). The worktree is now staged with
+  `git add -A -- .`, which skips ignored paths, and the index under `.foundry`
+  is then reset to HEAD. What lands is unchanged: nothing new or edited under
+  `.foundry`, only deletions of files HEAD tracks there.
+
 ## [0.44.3] - 2026-10-11
 
 ### Fixed
