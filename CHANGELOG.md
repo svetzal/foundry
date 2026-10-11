@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.3] - 2026-10-11
+
 ### Fixed
 
 - A workflow that recovered from a retried failure now settles `landed`. Since
