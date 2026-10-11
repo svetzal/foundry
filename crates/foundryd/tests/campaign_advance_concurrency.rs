@@ -244,6 +244,7 @@ impl Harness {
             FakeShellGateway::success(),
             registry.clone(),
             path.clone(),
+            work_items_path.clone(),
         )));
         let wake = engine.admission_wake();
         let engine = Arc::new(engine);

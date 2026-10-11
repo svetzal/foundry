@@ -210,6 +210,17 @@ preserved commit is readable with `git show`). Otherwise it cuts the next
 objective from trunk, or escalates. The refused cycle counts against the cycle
 budget like any other dispatched cycle, but it spends no agent session.
 
+When the refused cycle was the last one the budget allowed, the campaign
+escalates. The escalation reason says that the cycle was refused before any
+agent session ran, and it includes the refusal summary (the ref, the preserved
+commit, how far behind trunk it was and the conflicting files). It also says
+what to do next: add a cycle with `foundry campaign resume <name> --add-cycles
+1` and advance, and the next cycle starts from trunk with the refusal in front
+of formation. If you already reconciled that work onto trunk by hand, close its
+work item with `foundry queue close`. Foundry does not give the refused cycle
+back: a refund would reuse its cycle number, and the ledger only carries an
+open cycle forward when a later cycle has a higher number.
+
 A `complete` with a `land_blocked` reason is preserved work to reconcile, not
 a defect. Its work item settles `preserved` and its reason names the block.
 The next campaign cycle starts from the preserved branch (brought onto
@@ -225,6 +236,31 @@ way the next cycle resumes from the preserved work; a bundle also carries
 `HEAD`, so you can fetch or clone it by hand to recover the work yourself. Tasks
 do not retry. A campaign decides whether the preserved result should seed
 another objective.
+
+### When preserved work was settled outside the campaign
+
+The next cycle continues from the last cycle's preserved ref only while that
+work is still owed. Before formation, Foundry reads the work-item ledger and
+finds the campaign's cycle item whose disposition records that ref (the latest
+one submitted, if there are several). If that item is settled `cancelled` or
+`landed`, the ref no longer carries forward:
+
+- `cancelled`: an owner ran `foundry queue close` on it, for example after
+  cherry-picking the work onto trunk by hand.
+- `landed`: supersession detection found the work on trunk and settled the
+  item with the reason `superseded by <commit>`.
+
+The next cycle then starts from the registered trunk. Formation's `ACCUMULATED
+UNMERGED WORK` section names the ref, the work item, its state and its reason,
+and tells formation not to treat that work as pending. An item that is still
+`preserved`, `needs_decision` or `failed` keeps carrying its work forward, as
+does a ref that no item records. If the ledger cannot be read, the cycle
+continues from the ref, as before, and the daemon logs a warning.
+
+Without this check, a manual advance after an owner reconciled the work by
+hand replays the old ref. The continuation guard then refuses the cycle
+because the old commits conflict with trunk, and the owner's cycle is spent
+with no agent session. To use this, close the item before you advance.
 
 ## Campaign Definitions
 
@@ -643,7 +679,9 @@ The reason also appears in the advance block's summary in the run trace.
 Formation reasons about two trees, because they can differ. The live repository
 snapshot is the delivered trunk state and is what a `done` decision is judged
 against. Separately, when the previous cycle did not land, its preserved branch
-becomes the next execution's base ref — so formation is also shown an
+becomes the next execution's base ref (unless its work item was settled
+outside the campaign, see "When preserved work was settled outside the
+campaign" above) — so formation is also shown an
 `ACCUMULATED UNMERGED WORK` section listing the commits and changed files
 reachable from that ref but absent from trunk. An `advance` objective is cut
 from mission minus trunk-plus-accumulated. Without this the agent inspects only
@@ -728,7 +766,9 @@ finishes after the pause, Foundry records its result without changing the paused
 state, and the advance that carried the result stands down and settles
 `landed`. The typed result and preservation ref remain pending in the campaign
 store; the next manual advance after resume consumes them, so formation sees the
-exact reviewer gaps and the task continues from preserved work.
+exact reviewer gaps and the task continues from preserved work. If you closed
+the preserved work's item while the campaign waited, the task starts from trunk
+instead.
 
 Resume is valid for both `paused` and `escalated` campaigns. When an escalation
 is budget-only (the engine stopped because the cycle limit was reached but no

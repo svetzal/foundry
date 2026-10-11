@@ -812,6 +812,7 @@ fn register_campaign_blocks(
         shell.clone(),
         registry.clone(),
         foundry_sdk::paths::campaigns_path(),
+        foundry_sdk::paths::work_items_path(),
     )));
 }
 

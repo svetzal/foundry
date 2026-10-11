@@ -100,8 +100,13 @@ fn campaign_engine(
 ) -> Engine {
     let mut engine = prompt_engine(shell.clone(), agent.clone(), registry.clone());
     engine.register(Box::new(foundry_blocks::blocks::RequestCampaignAdvance));
+    let work_items_path = store_path.with_file_name("work_items.json");
     engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
-        agent, shell, registry, store_path,
+        agent,
+        shell,
+        registry,
+        store_path,
+        work_items_path,
     )));
     engine
 }

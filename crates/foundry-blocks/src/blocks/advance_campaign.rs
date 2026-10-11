@@ -12,11 +12,13 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
 use foundry_sdk::payload::{
     CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
-    CampaignDecision, CampaignStandDown, CampaignTerminalPayload, LandBlocked, TaskVerdict,
+    CampaignDecision, CampaignStandDown, CampaignTerminalPayload, LandBlocked,
+    TaskRunCompletedPayload, TaskVerdict,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_sdk::work_source::WorkSource;
+use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkItemStore};
+use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
 use crate::gateway::{
     AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
@@ -30,21 +32,29 @@ pub struct AdvanceCampaign {
     shell: Arc<dyn ShellGateway>,
     registry: Arc<std::sync::RwLock<Registry>>,
     store_path: PathBuf,
+    work_items_path: PathBuf,
     formation_locks: Arc<FormationLocks>,
 }
 
 impl AdvanceCampaign {
+    /// Advance campaigns held in the store at `store_path`.
+    ///
+    /// `work_items_path` is the work-item ledger. Formation reads it to learn
+    /// whether the preserved work a cycle would continue from has since been
+    /// settled by its owner or found on trunk; it never writes it.
     pub fn new(
         agent: Arc<dyn AgentGateway>,
         shell: Arc<dyn ShellGateway>,
         registry: Arc<std::sync::RwLock<Registry>>,
         store_path: PathBuf,
+        work_items_path: PathBuf,
     ) -> Self {
         Self {
             agent,
             shell,
             registry,
             store_path,
+            work_items_path,
             formation_locks: Arc::new(FormationLocks::default()),
         }
     }
@@ -158,6 +168,111 @@ fn next_base_ref(request: &CampaignAdvanceRequestedPayload) -> Option<&str> {
         .and_then(|result| result.preservation_ref.as_deref())
 }
 
+/// The work item holding the preserved work a cycle would continue from, when
+/// that item has since been settled outside the campaign.
+///
+/// An owner who reconciles preserved work onto trunk by hand closes its item
+/// (`foundry queue close`, settled `cancelled`), and supersession detection
+/// settles an item `landed` once trunk carries its work. Neither writes the
+/// campaign store, so the campaign's pending run result still names the ref.
+/// Continuing from it then replays work trunk already has, and the
+/// continuation guard refuses the cycle before any agent runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SettledBase {
+    /// The preservation ref the cycle would have continued from.
+    reference: String,
+    item_id: String,
+    state: WorkItemState,
+    reason: String,
+    /// The owner command that settled the item, when a person did.
+    owner_command: Option<String>,
+}
+
+impl SettledBase {
+    /// How the item was settled, for formation: `settled cancelled by an
+    /// owner close: <reason>` or `settled landed: <reason>`.
+    fn describe(&self) -> String {
+        match &self.owner_command {
+            Some(command) => {
+                format!("settled {} by an owner {command}: {}", self.state.tag(), self.reason)
+            }
+            None => format!("settled {}: {}", self.state.tag(), self.reason),
+        }
+    }
+}
+
+/// Find the cycle item of `campaign` in `project` whose disposition preserves
+/// `reference`, and report it when it is settled `cancelled` or `landed`.
+///
+/// When several items record the same ref, the latest submitted decides. An
+/// item still open (`preserved`, `needs_decision`, `failed`) or not yet settled
+/// keeps carrying its work forward, as does a ref no item records.
+fn settled_base(
+    ledger: &WorkItemStore,
+    campaign: &str,
+    project: &str,
+    reference: &str,
+) -> Option<SettledBase> {
+    let item = ledger
+        .items
+        .iter()
+        .filter(|item| {
+            item.kind == WorkItemKind::CampaignCycle
+                && item.project == project
+                && item
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.matches(WorkSourceKind::Campaign, campaign))
+                && item
+                    .disposition
+                    .as_ref()
+                    .and_then(|disposition| disposition.preservation_ref.as_deref())
+                    == Some(reference)
+        })
+        .max_by_key(|item| item.submitted_at)?;
+    matches!(item.state, WorkItemState::Cancelled | WorkItemState::Landed).then(|| SettledBase {
+        reference: reference.to_string(),
+        item_id: item.id.clone(),
+        state: item.state,
+        reason: item.reason.clone(),
+        owner_command: item.operator_action.as_ref().map(|action| action.command.clone()),
+    })
+}
+
+/// Read the ledger at `work_items_path` and report whether the ref `request`
+/// would continue from belongs to a settled item.
+///
+/// The ledger is read off the runtime, as the other ledger readers do: on a
+/// long-lived daemon it holds every item ever dispatched.
+async fn resolve_settled_base(
+    work_items_path: &Path,
+    campaign: &Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+) -> Option<SettledBase> {
+    let reference = next_base_ref(request)?;
+    let path = work_items_path.to_path_buf();
+    let loaded = tokio::task::spawn_blocking(move || WorkItemStore::load(&path))
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result.map_err(anyhow::Error::from));
+    let ledger = match loaded {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            // Best-effort: without the ledger nobody can say the work was
+            // settled, so the cycle continues from the ref exactly as it did
+            // before this check existed. The warn carries the fault.
+            tracing::warn!(
+                campaign = %campaign.name,
+                path = %work_items_path.display(),
+                %error,
+                "could not read the work-item ledger; continuing from the preserved ref"
+            );
+            return None;
+        }
+    };
+    settled_base(&ledger, &campaign.name, &campaign.project, reference)
+}
+
 /// Whether the last cycle was a continuation refused before its agent session
 /// because its preserved work conflicts with trunk.
 ///
@@ -177,11 +292,29 @@ fn continuation_refused(request: &CampaignAdvanceRequestedPayload) -> bool {
 /// forward, so from the second such cycle onward the canonical checkout no
 /// longer reflects what the executor will actually start from. Without this the
 /// decision agent re-cuts objectives the accumulated work already satisfies.
+///
+/// `settled` names preserved work whose item was settled outside the campaign.
+/// The request then carries no preservation ref, and formation is told why, so
+/// it does not treat that work as still pending.
 async fn accumulated_work(
     shell: &dyn ShellGateway,
     repo: &Path,
     request: &CampaignAdvanceRequestedPayload,
+    settled: Option<&SettledBase>,
 ) -> String {
+    if let Some(settled) = settled {
+        return format!(
+            "NEXT CYCLE BASE: the live checkout above. The preserved work at {} (work item {}) \
+             was {}. It no longer carries forward: the next cycle starts from trunk, not from \
+             that ref. Do not assume that work is still pending. Where it was reconciled onto \
+             trunk, the live snapshot above shows it; cut the next objective from the mission \
+             minus trunk, and reapply nothing from that ref unless trunk lacks something the \
+             mission still needs.",
+            settled.reference,
+            settled.item_id,
+            settled.describe()
+        );
+    }
     let Some(reference) = next_base_ref(request) else {
         if continuation_refused(request) {
             return "NEXT CYCLE BASE: the live checkout above. The last cycle was refused before \
@@ -846,8 +979,12 @@ struct AdvanceExecution {
     shell: Arc<dyn ShellGateway>,
     registry: Arc<std::sync::RwLock<Registry>>,
     store_path: PathBuf,
+    work_items_path: PathBuf,
     formation_locks: Arc<FormationLocks>,
     request: CampaignAdvanceRequestedPayload,
+    /// Set by [`release_settled_base`] when the preserved work `request`
+    /// would have continued from was settled outside the campaign.
+    settled_base: Option<SettledBase>,
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
 }
@@ -935,19 +1072,43 @@ fn update_run_and_forced_outcome(
         }
     }
     if campaign.cycles_completed >= campaign.budget.max_cycles
-        && request
+        && let Some(result) = request
             .run_result
             .as_ref()
-            .is_some_and(|r| !r.landed && !matches!(r.verdict, TaskVerdict::Complete))
+            .filter(|r| !r.landed && !matches!(r.verdict, TaskVerdict::Complete))
     {
-        return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-            reason: format!(
+        let reason = if continuation_refused(request) {
+            refused_at_budget_reason(campaign, result)
+        } else {
+            format!(
                 "campaign cycle budget exhausted ({}) after an unlanded non-complete result",
                 campaign.budget.max_cycles
-            ),
-        }));
+            )
+        };
+        return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate { reason }));
     }
     None
+}
+
+/// The escalation reason when the last authorized cycle was a refused
+/// continuation.
+///
+/// The cycle is not refunded: a refund would reuse its number, and an open
+/// cycle is only carried forward by a later cycle with a higher one. Instead
+/// the owner is told that the cycle ran no agent, which ref was refused and
+/// why (the refusal summary names the ref, the preserved commit, how far
+/// behind trunk it was and the conflicting files), and what to do next.
+fn refused_at_budget_reason(campaign: &Campaign, result: &TaskRunCompletedPayload) -> String {
+    format!(
+        "campaign cycle budget exhausted ({budget}): the last cycle was refused before any agent \
+         session ran, so it did no work. {refusal}. To go on, add a cycle (`foundry campaign \
+         resume {name} --add-cycles 1`) and advance: the next cycle starts from trunk, and \
+         formation sees this refusal. If that preserved work was already reconciled onto trunk \
+         by hand, close its work item with `foundry queue close` so it leaves the open list",
+        budget = campaign.budget.max_cycles,
+        refusal = result.summary.trim().trim_end_matches('.'),
+        name = campaign.name,
+    )
 }
 
 fn enforce_campaign_budget(campaign: &Campaign, decision: CampaignDecision) -> CampaignDecision {
@@ -1006,6 +1167,7 @@ async fn derive_advance_outcome(
     entry: &foundry_sdk::registry::ProjectEntry,
     campaign: &Campaign,
     request: &CampaignAdvanceRequestedPayload,
+    settled: Option<&SettledBase>,
     trace_id: Option<String>,
 ) -> anyhow::Result<(AdvanceOutcome, FormationRecord)> {
     campaign.validate()?;
@@ -1022,7 +1184,7 @@ async fn derive_advance_outcome(
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
     let snapshot = repo_snapshot(shell, repo).await;
-    let accumulated = accumulated_work(shell, repo, request).await;
+    let accumulated = accumulated_work(shell, repo, request, settled).await;
     // The gates, the snapshot, and the prompt are all deterministic for this
     // advance, so a retry re-asks the same question rather than re-deriving it.
     let decision_request = DecisionRequest {
@@ -1212,6 +1374,7 @@ async fn choose_advance_outcome(
         &entry,
         campaign,
         &execution.request,
+        execution.settled_base.as_ref(),
         execution.trace_id.clone(),
     )
     .await
@@ -1243,10 +1406,43 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
         shell: Arc::clone(&execution.shell),
         registry: Arc::clone(&execution.registry),
         store_path: execution.store_path.clone(),
+        work_items_path: execution.work_items_path.clone(),
         formation_locks: Arc::clone(&execution.formation_locks),
+        settled_base: execution.settled_base.clone(),
         project: execution.project.clone(),
         throttle: execution.throttle,
     }
+}
+
+/// Stop the advance continuing from preserved work that was settled outside
+/// the campaign.
+///
+/// When the work item holding the ref `effective` would continue from is
+/// settled `cancelled` (an owner closed it) or `landed` (trunk
+/// already carries it), the request drops that ref, so formation's prompt and
+/// the dispatched cycle both start from the registered trunk, and the
+/// settlement is kept for the prompt. Resolved once per formation, after the
+/// pending run is replayed, because a manual advance replays a ref that may
+/// have been settled since it was recorded.
+async fn release_settled_base(
+    mut effective: AdvanceExecution,
+    campaign: &Campaign,
+) -> AdvanceExecution {
+    effective.settled_base =
+        resolve_settled_base(&effective.work_items_path, campaign, &effective.request).await;
+    if let Some(settled) = &effective.settled_base {
+        tracing::info!(
+            campaign = %campaign.name,
+            preservation_ref = %settled.reference,
+            work_item = %settled.item_id,
+            state = %settled.state.tag(),
+            "preserved work was settled outside the campaign; the next cycle starts from trunk"
+        );
+        if let Some(result) = effective.request.run_result.as_mut() {
+            result.preservation_ref = None;
+        }
+    }
+    effective
 }
 
 /// The block summary for a formed outcome.
@@ -1429,6 +1625,11 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
     }
 
     if let Some(outcome) = forced {
+        // No ledger read here: a forced outcome never dispatches a cycle
+        // (`enforce_campaign_budget` only turns an advance into an
+        // escalation), so no base ref is read. The pending run result stays
+        // as recorded, and the advance that later forms from it checks the
+        // ledger then.
         let effective_execution = replay_pending_run(execution, campaign);
         let outcome = outcome.map_decision(|decision| enforce_campaign_budget(campaign, decision));
         let summary = outcome_summary(&execution.request.campaign, &outcome);
@@ -1611,7 +1812,8 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
             Prepared::Finished(result) => return result,
             Prepared::Form(campaign) => *campaign,
         };
-        let effective_execution = replay_pending_run(&execution, &formed_from);
+        let effective_execution =
+            release_settled_base(replay_pending_run(&execution, &formed_from), &formed_from).await;
         let (outcome, record) =
             choose_advance_outcome(&effective_execution, &formed_from, None).await;
         let outcome =
@@ -1697,6 +1899,7 @@ impl TaskBlock for AdvanceCampaign {
         let shell = Arc::clone(&self.shell);
         let registry = Arc::clone(&self.registry);
         let store_path = self.store_path.clone();
+        let work_items_path = self.work_items_path.clone();
         let formation_locks = Arc::clone(&self.formation_locks);
 
         Box::pin(async move {
@@ -1706,8 +1909,10 @@ impl TaskBlock for AdvanceCampaign {
                 shell,
                 registry,
                 store_path,
+                work_items_path,
                 formation_locks,
                 request,
+                settled_base: None,
                 project,
                 throttle,
             })
@@ -1748,8 +1953,26 @@ mod tests {
     use super::{
         AdvanceCampaign, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
         enforce_done_gate_truth, formation_gate_results, outcome_label, parse_decision, recheck,
-        run_done_gates,
+        run_done_gates, settled_base,
     };
+    use foundry_sdk::work_item::WorkItemStore;
+
+    /// The block under test, reading its work-item ledger from
+    /// `work_items.json` beside the campaign store. A test that never writes
+    /// that file runs against an empty ledger.
+    fn advance_block(
+        agent: std::sync::Arc<dyn crate::gateway::AgentGateway>,
+        shell: std::sync::Arc<dyn crate::gateway::ShellGateway>,
+        registry: std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+        store_path: std::path::PathBuf,
+    ) -> AdvanceCampaign {
+        let work_items_path = ledger_path_beside(&store_path);
+        AdvanceCampaign::new(agent, shell, registry, store_path, work_items_path)
+    }
+
+    fn ledger_path_beside(store_path: &std::path::Path) -> std::path::PathBuf {
+        store_path.with_file_name("work_items.json")
+    }
 
     #[test]
     fn an_untouched_record_takes_its_formed_outcome() {
@@ -1823,8 +2046,7 @@ mod tests {
             1,
             crate::gateway::AgentFailureMetadata::new(AgentProvider::Codex).with_message(message),
         ));
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
         assert_eq!(agent.invocations().len(), 1);
         assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains(message));
@@ -2002,12 +2224,8 @@ mod tests {
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let run_result = TaskRunCompletedPayload {
             project: "p".to_string(),
             success: false,
@@ -2110,12 +2328,8 @@ mod tests {
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -2201,12 +2415,8 @@ mod tests {
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -2284,12 +2494,8 @@ mod tests {
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -2389,8 +2595,7 @@ mod tests {
             shell_result("d170a17 add parite-converterd\n1da793c add NVENC profile\n"),
             shell_result(" 48 files changed, 5734 insertions(+), 297 deletions(-)\n"),
         ]);
-        let block =
-            AdvanceCampaign::new(agent.clone(), shell.clone(), registry, store_path.clone());
+        let block = advance_block(agent.clone(), shell.clone(), registry, store_path.clone());
 
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
@@ -2476,8 +2681,7 @@ mod tests {
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut the first slice.\",\"reason\":\"nothing built yet\"}\n```",
         );
         let shell = FakeShellGateway::success();
-        let block =
-            AdvanceCampaign::new(agent.clone(), shell.clone(), registry, store_path.clone());
+        let block = advance_block(agent.clone(), shell.clone(), registry, store_path.clone());
 
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
@@ -2544,12 +2748,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Add the generated gRPC boundary test.\",\"reason\":\"typed remainder\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let paused = block.execute(&automatic_advance_trigger(pending.clone())).await.unwrap();
         assert_only_stand_down(&paused, CampaignStatus::Paused);
@@ -2637,8 +2837,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Add the generated client test.\",\"reason\":\"owner policy recorded\"}\n```",
         );
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -2701,8 +2900,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Route the CLI at the new RPC.\",\"reason\":\"the RPC exists but nothing calls it\"}\n```",
         );
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
 
         block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -2736,8 +2934,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut the first slice.\",\"reason\":\"nothing built yet\"}\n```",
         );
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
 
         block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -2763,12 +2960,8 @@ mod tests {
                 "```json\n{\"decision\":\"advance\",\"objective\":\"Route registry init at the new RPC.\",\"reason\":\"one command still bypasses the daemon\"}\n```",
             ),
         ]);
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         block.execute(&manual_advance_trigger()).await.unwrap();
         let result_trigger = Event::new(
@@ -2837,8 +3030,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Next slice.\",\"reason\":\"gap\"}\n```",
         );
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
 
         block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -2892,7 +3084,7 @@ mod tests {
                 success: true,
             },
         ]);
-        let block = AdvanceCampaign::new(agent.clone(), shell, registry, store_path.clone());
+        let block = advance_block(agent.clone(), shell, registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -2959,12 +3151,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3019,12 +3207,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3068,8 +3252,7 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
         );
-        let block =
-            AdvanceCampaign::new(agent, FakeShellGateway::success(), registry, store_path.clone());
+        let block = advance_block(agent, FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3129,7 +3312,7 @@ mod tests {
         store.save(&store_path).unwrap();
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.to_str().unwrap());
-        AdvanceCampaign::new(
+        advance_block(
             FakeAgentGateway::success_with(
                 "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
             ),
@@ -3234,12 +3417,8 @@ mod tests {
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3346,12 +3525,8 @@ mod tests {
             edit,
             asked: std::sync::atomic::AtomicUsize::new(0),
         });
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         (block, agent, store_path)
     }
 
@@ -3467,12 +3642,8 @@ mod tests {
                 "```json\n{\"decision\":\"advance\",\"objective\":\"Land the next slice.\",\"reason\":\"gap remains\"}\n```",
             ),
         ]);
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3495,12 +3666,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::failure("");
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3527,12 +3694,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::success_with("I think we should keep going.");
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3557,12 +3720,8 @@ mod tests {
             AgentFailureKind::AccountLimit,
             "You've hit your monthly spend limit (circuit breaker open for provider claude)",
         ));
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
 
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
@@ -3597,12 +3756,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::success();
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -3646,7 +3801,7 @@ mod tests {
     async fn runner_error_unrelated_to_the_provider_still_escalates() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
-        let block = AdvanceCampaign::new(
+        let block = advance_block(
             FakeAgentGateway::success(),
             FakeShellGateway::success(),
             registry,
@@ -3690,12 +3845,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Reapply the preserved slice onto trunk.\",\"reason\":\"refused continuation\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let refusal = "continuation refused before any agent session: the preserved work at \
                        foundry-task/p-c14 (637e470) is 3 commit(s) behind trunk (a57afdf) and \
                        replaying it onto trunk conflicts in: Package.swift, README.md";
@@ -3731,6 +3882,331 @@ mod tests {
         assert!(prompt.contains("continuation_conflict"), "{prompt}");
         assert!(prompt.contains("Package.swift, README.md"), "{prompt}");
         assert!(prompt.contains("no longer carries forward"), "{prompt}");
+    }
+
+    // --- preserved work settled outside the campaign ----------------------
+
+    const PRESERVED_REF: &str = "foundry-task/p-c-c2-a38a60";
+
+    /// Cycle 2's result: a remainder whose work is preserved at
+    /// [`PRESERVED_REF`].
+    fn preserved_run() -> TaskRunCompletedPayload {
+        let mut run = run_result_with(TaskVerdict::Remainder {
+            gaps: vec!["conformance table".to_string()],
+        });
+        run.summary = "task stopped with a typed non-complete verdict; work preserved".to_string();
+        run.preservation_ref = Some(PRESERVED_REF.to_string());
+        run
+    }
+
+    /// Cycle 2's work item as the ledger settles it from [`preserved_run`].
+    fn preserved_cycle_item() -> foundry_sdk::work_item::WorkItem {
+        use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
+        let at = chrono::Utc::now();
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "p".to_string(),
+                objective: "Write the recovery conformance table.".to_string(),
+                kind: WorkItemKind::CampaignCycle,
+                lane: WorkLane::Campaign,
+                origin: "campaign c".to_string(),
+                trace_id: None,
+            },
+            at,
+        )
+        .with_source(Some(WorkSource::campaign("c", 2)));
+        item.settle_from_task_run(&preserved_run(), Some(true), at);
+        item
+    }
+
+    /// What `foundry queue close` does to an open item.
+    fn close_by_owner(item: &mut foundry_sdk::work_item::WorkItem, reason: &str) {
+        item.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
+            command: "close".to_string(),
+            origin: "max-headroom".to_string(),
+            previous_state: item.state,
+            previous_reason: item.reason.clone(),
+            previous_settled_at: item.settled_at,
+        });
+        item.settle_cancelled(reason, item.disposition.clone(), chrono::Utc::now());
+    }
+
+    /// A campaign whose cycle 2 preserved its work and which now waits for
+    /// the owner's manual advance, beside a ledger holding cycle 2's item as
+    /// `settle` leaves it. Returns the item's id.
+    fn campaign_awaiting_owner_advance(
+        dir: &std::path::Path,
+        settle: impl FnOnce(&mut foundry_sdk::work_item::WorkItem),
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+        String,
+    ) {
+        let store_path = dir.join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                pending_run_result: Some(preserved_run()),
+                last_run_event_id: Some("run-2".to_string()),
+                ..campaign_for_accumulation_test()
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let mut item = preserved_cycle_item();
+        assert_eq!(
+            item.disposition.as_ref().and_then(|d| d.preservation_ref.as_deref()),
+            Some(PRESERVED_REF),
+            "a preserved cycle's disposition records the ref its run result names"
+        );
+        settle(&mut item);
+        let id = item.id.clone();
+        foundry_sdk::work_item::WorkItemStore {
+            items: vec![item],
+            ..Default::default()
+        }
+        .save(&ledger_path_beside(&store_path))
+        .unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.to_str().unwrap());
+        (store_path, registry, id)
+    }
+
+    fn advance_decision_agent() -> std::sync::Arc<FakeAgentGateway> {
+        FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut the next slice from trunk.\",\"reason\":\"gap remains\"}\n```",
+        )
+    }
+
+    fn dispatched_base_ref(result: &TaskBlockResult) -> Option<String> {
+        result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("formation dispatched the next cycle")
+            .payload
+            .get("base_ref")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string)
+    }
+
+    fn probed_the_ref(shell: &FakeShellGateway) -> bool {
+        shell
+            .invocations()
+            .iter()
+            .any(|inv| inv.args.iter().any(|arg| arg.contains(PRESERVED_REF)))
+    }
+
+    /// The owner reconciled cycle 2's work onto trunk by hand and closed its
+    /// item. The next cycle must start from trunk, and formation must be told
+    /// why, not shown the closed ref as the base it continues from.
+    #[tokio::test]
+    async fn an_owner_closed_preserved_item_no_longer_carries_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry, item_id) = campaign_awaiting_owner_advance(dir.path(), |item| {
+            close_by_owner(item, "cherry-picked onto main by hand");
+        });
+        let agent = advance_decision_agent();
+        let shell = FakeShellGateway::success();
+        let block = advance_block(agent.clone(), shell.clone(), registry, store_path);
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(dispatched_base_ref(&result), None, "the next cycle starts from trunk");
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(!prompt.contains(&format!("NEXT CYCLE BASE: {PRESERVED_REF}")), "{prompt}");
+        assert!(prompt.contains("NEXT CYCLE BASE: the live checkout above"), "{prompt}");
+        assert!(prompt.contains(PRESERVED_REF), "the settlement names the ref: {prompt}");
+        assert!(prompt.contains(&item_id), "the settlement names the item: {prompt}");
+        assert!(prompt.contains("settled cancelled by an owner close"), "{prompt}");
+        assert!(prompt.contains("cherry-picked onto main by hand"), "{prompt}");
+        assert!(!probed_the_ref(&shell), "a settled ref is not probed as accumulated work");
+    }
+
+    /// Supersession detection found cycle 2's work on trunk and settled its
+    /// item `landed`. The next cycle starts from trunk.
+    #[tokio::test]
+    async fn a_preserved_item_superseded_on_trunk_no_longer_carries_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry, item_id) = campaign_awaiting_owner_advance(dir.path(), |item| {
+            item.settle_landed("superseded by 9f3c2e1", chrono::Utc::now());
+        });
+        let agent = advance_decision_agent();
+        let shell = FakeShellGateway::success();
+        let block = advance_block(agent.clone(), shell.clone(), registry, store_path);
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(dispatched_base_ref(&result), None, "the next cycle starts from trunk");
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(!prompt.contains(&format!("NEXT CYCLE BASE: {PRESERVED_REF}")), "{prompt}");
+        assert!(prompt.contains(&item_id), "{prompt}");
+        assert!(prompt.contains("settled landed: superseded by 9f3c2e1"), "{prompt}");
+        assert!(!probed_the_ref(&shell));
+    }
+
+    /// Control: an item still `preserved` carries its work forward as before.
+    #[tokio::test]
+    async fn a_still_preserved_item_keeps_carrying_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry, _) = campaign_awaiting_owner_advance(dir.path(), |_| {});
+        let agent = advance_decision_agent();
+        let shell = FakeShellGateway::success();
+        let block = advance_block(agent.clone(), shell.clone(), registry, store_path);
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(dispatched_base_ref(&result).as_deref(), Some(PRESERVED_REF));
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(prompt.contains(&format!("NEXT CYCLE BASE: {PRESERVED_REF}")), "{prompt}");
+        assert!(probed_the_ref(&shell));
+    }
+
+    /// An unreadable ledger cannot say the work was settled, so the cycle
+    /// continues from the ref as it always has.
+    #[tokio::test]
+    async fn an_unreadable_ledger_keeps_continuing_from_the_preserved_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry, _) = campaign_awaiting_owner_advance(dir.path(), |item| {
+            close_by_owner(item, "cherry-picked onto main by hand");
+        });
+        std::fs::write(ledger_path_beside(&store_path), "{ not json").unwrap();
+        let agent = advance_decision_agent();
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert_eq!(dispatched_base_ref(&result).as_deref(), Some(PRESERVED_REF));
+    }
+
+    fn ledger_of(items: Vec<foundry_sdk::work_item::WorkItem>) -> WorkItemStore {
+        WorkItemStore {
+            items,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_a_cancelled_or_landed_item_settles_its_ref() {
+        use foundry_sdk::work_item::WorkItemState;
+        let preserved = preserved_cycle_item();
+        assert_eq!(
+            settled_base(&ledger_of(vec![preserved.clone()]), "c", "p", PRESERVED_REF),
+            None
+        );
+        for state in [
+            WorkItemState::NeedsDecision,
+            WorkItemState::Failed,
+            WorkItemState::Running,
+        ] {
+            let mut open = preserved.clone();
+            open.state = state;
+            assert_eq!(
+                settled_base(&ledger_of(vec![open]), "c", "p", PRESERVED_REF),
+                None,
+                "{state:?} still carries its work"
+            );
+        }
+        let mut closed = preserved.clone();
+        close_by_owner(&mut closed, "reconciled by hand");
+        let settled = settled_base(&ledger_of(vec![closed.clone()]), "c", "p", PRESERVED_REF)
+            .expect("an owner close settles the ref");
+        assert_eq!(settled.item_id, closed.id);
+        assert_eq!(settled.describe(), "settled cancelled by an owner close: reconciled by hand");
+        let mut superseded = preserved;
+        superseded.settle_landed("superseded by 9f3c2e1", chrono::Utc::now());
+        assert_eq!(
+            settled_base(&ledger_of(vec![superseded]), "c", "p", PRESERVED_REF)
+                .map(|settled| settled.describe()),
+            Some("settled landed: superseded by 9f3c2e1".to_string())
+        );
+    }
+
+    #[test]
+    fn a_settled_ref_matches_only_its_own_campaign_cycle() {
+        use foundry_sdk::work_item::WorkItemKind;
+        let mut closed = preserved_cycle_item();
+        close_by_owner(&mut closed, "reconciled by hand");
+        let ledger = ledger_of(vec![closed.clone()]);
+        assert_eq!(settled_base(&ledger, "other", "p", PRESERVED_REF), None, "another campaign");
+        assert_eq!(settled_base(&ledger, "c", "q", PRESERVED_REF), None, "another project");
+        assert_eq!(settled_base(&ledger, "c", "p", "foundry-task/other"), None, "another ref");
+        let mut task = closed;
+        task.kind = WorkItemKind::Task;
+        assert_eq!(
+            settled_base(&ledger_of(vec![task]), "c", "p", PRESERVED_REF),
+            None,
+            "only a campaign cycle item counts"
+        );
+    }
+
+    /// Two items recording the same ref: the latest submitted decides.
+    #[test]
+    fn the_latest_item_for_a_ref_decides_whether_it_is_settled() {
+        let mut older = preserved_cycle_item();
+        close_by_owner(&mut older, "reconciled by hand");
+        older.submitted_at -= chrono::Duration::hours(1);
+        let newer = preserved_cycle_item();
+        assert_eq!(
+            settled_base(&ledger_of(vec![older.clone(), newer.clone()]), "c", "p", PRESERVED_REF),
+            None,
+            "the newer item is still preserved"
+        );
+        let mut newer_closed = newer;
+        close_by_owner(&mut newer_closed, "closed again");
+        older.state = foundry_sdk::work_item::WorkItemState::Preserved;
+        assert_eq!(
+            settled_base(&ledger_of(vec![newer_closed.clone(), older]), "c", "p", PRESERVED_REF)
+                .map(|settled| settled.item_id),
+            Some(newer_closed.id),
+            "order in the file does not matter"
+        );
+    }
+
+    /// The last authorized cycle was refused before its agent ran. The
+    /// escalation must say so and name the stale ref, so the owner knows the
+    /// cycle bought nothing and what to do next.
+    #[tokio::test]
+    async fn an_exhausted_budget_after_a_refused_continuation_names_the_stale_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store
+            .add(Campaign {
+                cycles_completed: 6,
+                ..campaign_for_accumulation_test()
+            })
+            .unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = advance_decision_agent();
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let refusal = format!(
+            "continuation refused before any agent session: the preserved work at \
+             {PRESERVED_REF} (637e470) is 4 commit(s) behind trunk (a57afdf) and replaying it \
+             onto trunk conflicts in: RECOVERY-CONFORMANCE.md. The preserved ref is untouched; \
+             carry the work forward by reapplying it onto trunk"
+        );
+        let mut refused = run_result_with(TaskVerdict::RunnerError {
+            detail: refusal.clone(),
+        });
+        refused.summary.clone_from(&refusal);
+        refused.preservation_ref = None;
+        refused.land_blocked = Some(super::LandBlocked::ContinuationConflict);
+
+        let result = block.execute(&automatic_advance_trigger(refused)).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "an exhausted budget forms nothing");
+        let reason = terminal_reason(&result, &EventType::CampaignEscalated);
+        assert!(reason.contains("budget exhausted (6)"), "{reason}");
+        assert!(reason.contains("before any agent session ran"), "{reason}");
+        assert!(reason.contains(PRESERVED_REF), "the reason names the stale ref: {reason}");
+        assert!(reason.contains("RECOVERY-CONFORMANCE.md"), "{reason}");
+        assert!(
+            reason.contains("add a cycle"),
+            "the reason says what the owner can do: {reason}"
+        );
+        assert!(reason.contains("foundry queue close"), "{reason}");
     }
 
     // --- red done-gates dispatch an actionable objective ------------------
@@ -3805,7 +4281,7 @@ mod tests {
         let store_path = dir.path().join("campaigns.json");
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
-        let block = AdvanceCampaign::new(
+        let block = advance_block(
             FakeAgentGateway::success(),
             FakeShellGateway::success(),
             registry,
@@ -3831,7 +4307,7 @@ mod tests {
         std::fs::write(&store_path, "not valid json{{{").unwrap();
         let registry =
             super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
-        let block = AdvanceCampaign::new(
+        let block = advance_block(
             FakeAgentGateway::success(),
             FakeShellGateway::success(),
             registry,
@@ -3864,8 +4340,7 @@ mod tests {
         campaign.cycles_completed = campaign.budget.max_cycles;
         store.save(&store_path).unwrap();
         let agent = FakeAgentGateway::success_with("should never be asked");
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let mut trigger = manual_advance_trigger();
         trigger.payload["run_event_id"] = serde_json::json!("defect-result");
         trigger.payload["run_result"] = serde_json::json!({
@@ -3899,8 +4374,7 @@ mod tests {
         store.campaigns[0].budget.stages.formation_prompt_bytes = 128;
         store.save(&store_path).unwrap();
         let agent = FakeAgentGateway::success_with("should never be asked");
-        let block =
-            AdvanceCampaign::new(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
         assert!(agent.invocations().is_empty());
         assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("stage budget"));
@@ -3916,12 +4390,8 @@ mod tests {
         let agent = FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Repair the validator path diagnostics.\",\"reason\":\"preserved reviewer finding\"}\n```",
         );
-        let block = AdvanceCampaign::new(
-            agent.clone(),
-            FakeShellGateway::success(),
-            registry,
-            store_path.clone(),
-        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
         let mut trigger = manual_advance_trigger();
         trigger.payload["run_event_id"] = serde_json::json!("preserved-result");
         trigger.payload["run_result"] = serde_json::json!({
