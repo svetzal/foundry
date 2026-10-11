@@ -318,10 +318,12 @@ async fn task_workflow_happy_path() {
     assert_eq!(invocations.len(), 2);
     assert_ne!(invocations[0].working_dir, checkout);
     assert_eq!(invocations[0].working_dir, invocations[1].working_dir);
-    assert!(
-        invocations[0].working_dir.contains(".foundry/worktrees"),
-        "executor escaped isolated worktree: {}",
-        invocations[0].working_dir
+    let executor_worktree = PathBuf::from(&invocations[0].working_dir);
+    let project_worktrees = foundry_sdk::paths::worktrees_dir().join("test-project");
+    assert_eq!(
+        executor_worktree.parent(),
+        Some(project_worktrees.as_path()),
+        "executor escaped the configured isolated worktree root"
     );
 }
 
