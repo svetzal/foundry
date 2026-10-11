@@ -210,6 +210,7 @@ async fn advance_the_campaign(
     campaigns_path: std::path::PathBuf,
     registry: Arc<RwLock<Registry>>,
 ) -> Event {
+    let work_items_path = campaigns_path.with_file_name("work_items.json");
     let block = foundry_blocks::blocks::AdvanceCampaign::new(
         FakeAgentGateway::success_with(
             "```json\n{\"decision\":\"advance\",\"objective\":\"Close the next gap in the CLI surface.\",\"reason\":\"gap\"}\n```",
@@ -217,6 +218,7 @@ async fn advance_the_campaign(
         FakeShellGateway::success(),
         registry,
         campaigns_path,
+        work_items_path,
     );
     block
         .execute(request)

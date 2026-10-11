@@ -124,6 +124,7 @@ fn formation_service(
         FakeShellGateway::success(),
         registry.clone(),
         path.to_path_buf(),
+        path.with_file_name("work_items.json"),
     )));
     let trace_writer = Arc::new(TraceWriter::new(dir.path().to_str().unwrap()));
     let service = Arc::new(FoundryService::new(

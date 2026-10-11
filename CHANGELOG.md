@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A campaign cycle no longer continues from preserved work that was settled
+  outside the campaign. On production, campaign
+  mojentic-py-transient-recovery-v2 cycle 14 preserved its work; the owner
+  cherry-picked it onto main by hand, closed the item with `foundry queue
+  close`, recorded a decision to start from origin/main, added a cycle and
+  advanced. Cycle 15 still tried to continue from cycle 14's ref, the
+  continuation guard refused it (4 commits behind trunk, conflict in
+  `RECOVERY-CONFORMANCE.md`), and the owner's cycle was spent with no agent
+  session. Cycle 13 had failed the same way on cycle 12's closed ref. The
+  manual advance replayed the campaign's pending run result, and neither
+  `queue close` nor supersession detection touches the campaign store.
+  Formation now reads the work-item ledger: when the campaign's cycle item
+  whose disposition records the ref is settled `cancelled` or `landed`, the
+  next cycle starts from the registered trunk, and formation's prompt names the
+  ref, the item, its state and its reason so it does not treat that work as
+  pending. An item still open keeps carrying its work forward. An unreadable
+  ledger keeps the old behaviour, with a warning. `AdvanceCampaign::new` takes
+  the ledger path as a new argument.
+- When the last cycle the budget allowed was a refused continuation, the
+  campaign's escalation reason now says that the cycle was refused before any
+  agent session ran, includes the refusal summary (ref, preserved commit, how
+  far behind trunk, conflicting files), and says what the owner can do: add a
+  cycle and advance from trunk, and close the preserved item if its work was
+  reconciled by hand. It used to read only "campaign cycle budget exhausted (N)
+  after an unlanded non-complete result". The refused cycle is not refunded.
+
 ## [0.45.1] - 2026-10-11
 
 ### Fixed
