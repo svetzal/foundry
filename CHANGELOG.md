@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.2] - 2026-10-11
+
 ### Added
 
 - `FOUNDRY_GATE_TIMEOUT_SCALE` on the daemon stretches every gate timeout on
