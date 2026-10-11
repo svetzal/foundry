@@ -193,11 +193,13 @@ pub(crate) async fn commit_worktree(
     if status.is_empty() {
         return Ok(false);
     }
-    // Return the index under .foundry to HEAD, whatever the agent staged,
-    // then stage everything else.
-    checked(shell, worktree, &["reset", "HEAD", "--", FOUNDRY_DIR]).await?;
-    let exclude = format!(":(exclude){FOUNDRY_DIR}");
-    checked(shell, worktree, &["add", "-A", "--", ".", &exclude]).await?;
+    // Stage everything, then return the index under .foundry to HEAD,
+    // undoing whatever the agent or this `add` staged there. No exclude
+    // pathspec: when .gitignore ignores .foundry, git rejects a pathspec
+    // naming it ("paths are ignored", exit 1), while `add -A .` skips
+    // ignored paths without complaint.
+    checked(shell, worktree, &["add", "-A", "--", "."]).await?;
+    checked(shell, worktree, &["reset", "-q", "HEAD", "--", FOUNDRY_DIR]).await?;
     // With the index at HEAD, an index-to-worktree deletion is a file HEAD
     // tracks that the agent removed (or replaced with a directory).
     let deleted = nul_separated_paths(

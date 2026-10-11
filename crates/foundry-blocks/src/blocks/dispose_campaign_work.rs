@@ -458,8 +458,8 @@ mod tests {
                 stdout: " M src/main.rs".to_string(),
                 ..success.clone()
             },
+            success.clone(), // stage everything
             success.clone(), // return the .foundry index to HEAD
-            success.clone(), // stage everything outside .foundry
             success.clone(), // no tracked .foundry file was deleted
             foundry_sdk::gateway::CommandResult {
                 exit_code: 1,
@@ -474,10 +474,12 @@ mod tests {
         let issued: Vec<String> =
             shell.invocations().iter().map(|inv| inv.args.join(" ")).collect();
         assert!(summary.contains("preserved at"), "{summary}");
-        assert!(issued.iter().any(|a| a == "reset HEAD -- .foundry"), "{issued:?}");
+        // No exclude pathspec: git rejects one that names an ignored .foundry.
+        let staged = issued.iter().position(|a| a == "add -A -- .");
+        let reset = issued.iter().position(|a| a == "reset -q HEAD -- .foundry");
         assert!(
-            issued.iter().any(|a| a == "add -A -- . :(exclude).foundry"),
-            "nothing under .foundry is staged: {issued:?}"
+            staged.is_some() && reset.is_some() && staged < reset,
+            "everything is staged, then the .foundry index returns to HEAD: {issued:?}"
         );
         assert!(
             issued.iter().any(|a| a == "diff --name-only -z --diff-filter=D -- .foundry"),
