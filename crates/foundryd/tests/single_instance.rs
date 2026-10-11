@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -33,28 +34,43 @@ const CYCLE_TRACE: &str = "c0ffee00c0ffee00c0ffee00c0ffee00";
 /// `agent_session_ended`: the orphaned-session sweep's input.
 const ORPHANED_SESSIONS: [&str; 2] = ["orphan-task-session", "orphan-campaign-session"];
 
+/// Runs the tests in this file one at a time. `free_listen_addr` releases a
+/// port for the spawned foundryd to bind, while other tests bind `127.0.0.1:0`
+/// and hold it; in parallel, one of them can be handed that port first.
+/// foundryd binds its address before it takes the instance lock, so a stolen
+/// port turns the lock refusal under test into an address refusal, or stops a
+/// normal start. Every [`Home`] holds the guard, so every test takes it.
+///
+/// A std `Mutex` is sound across the async test's awaits: that test runs on
+/// its own runtime, so no executor thread ever blocks waiting for it. A
+/// poisoned lock is taken anyway, so one failing test does not fail the rest.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 /// A Foundry home in the shape the incident found: one task still running,
 /// one maintenance cycle with no completion, agent sessions with no end, and
 /// a campaign store.
 struct Home {
     dir: TempDir,
     item_id: String,
+    _serial: MutexGuard<'static, ()>,
 }
 
 impl Home {
     /// A machine where Foundry has never run: no `~/.foundry` at all.
     fn fresh() -> Self {
+        let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("empty-path")).unwrap();
         Self {
             dir,
             item_id: String::new(),
+            _serial: serial,
         }
     }
 
     fn new() -> Self {
-        let Self { dir, .. } = Self::fresh();
-        let foundry = dir.path().join(".foundry");
+        let home = Self::fresh();
+        let foundry = home.foundry();
         std::fs::create_dir_all(&foundry).unwrap();
 
         let mut store = WorkItemStore::default();
@@ -99,7 +115,7 @@ impl Home {
         )
         .unwrap();
 
-        Self { dir, item_id }
+        Self { item_id, ..home }
     }
 
     fn foundry(&self) -> PathBuf {
