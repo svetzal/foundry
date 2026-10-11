@@ -63,7 +63,20 @@ impl Drop for Daemon {
 }
 
 fn git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git").current_dir(path).args(args).output().unwrap();
+    // Isolate the fixture from inherited git configuration, such as an agent
+    // session's `remote.origin.pushurl` override, so its local push succeeds.
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(path)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS");
+    for index in 0..8 {
+        command.env_remove(format!("GIT_CONFIG_KEY_{index}"));
+        command.env_remove(format!("GIT_CONFIG_VALUE_{index}"));
+    }
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
         "git {args:?}: {}",
