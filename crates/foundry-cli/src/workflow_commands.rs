@@ -174,7 +174,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
         if event.event_id == response.event_id {
             own_trace = Some(event.trace_id.clone());
         }
-        if !on_own_trace(own_trace.as_deref(), &event) {
+        if !on_run_event(own_trace.as_deref(), &response.event_id, &event, is_system_run) {
             continue;
         }
         print!("{}", render::workflow::watch_event_line(&event));
@@ -206,6 +206,7 @@ fn is_run_complete(event_type: &str, payload_json: &str, is_system_run: bool) ->
     // System run: only exit on the service-level completion (has root_event_id).
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_json) {
         v.get("root_event_id").is_some()
+            && v.get("service_completed").and_then(serde_json::Value::as_bool) == Some(true)
     } else {
         false
     }
@@ -277,12 +278,31 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
 
 /// Whether `event` belongs to the run this client emitted.
 ///
-/// Until the root's own trace is known (its root has not been seen yet) every
-/// event passes, exactly as before pacing; after that only the trace's events
-/// do. A paced task's started root inherits the admitted root's trace, so the
+/// Until the root has been seen, events are ignored. Afterwards only its trace
+/// passes. A paced task's started root inherits the admitted root's trace, so the
 /// whole chain still shows.
 fn on_own_trace(own_trace: Option<&str>, event: &WatchResponse) -> bool {
     own_trace.is_some_and(|trace| trace.is_empty() || event.trace_id == trace)
+}
+
+fn on_run_event(
+    own_trace: Option<&str>,
+    root_id: &str,
+    event: &WatchResponse,
+    system: bool,
+) -> bool {
+    on_own_trace(own_trace, event)
+        || (system
+            && own_trace.is_some()
+            && event.event_type == "maintenance_summary_requested"
+            && serde_json::from_str::<serde_json::Value>(&event.payload_json).is_ok_and(
+                |payload| {
+                    payload.get("root_event_id").and_then(serde_json::Value::as_str)
+                        == Some(root_id)
+                        && payload.get("service_completed").and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                },
+            ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -541,8 +561,26 @@ mod tests {
 
     #[test]
     fn system_run_exits_on_summary_request() {
-        let service_payload = r#"{"root_event_id":"evt_abc123","total_duration_ms":1000}"#;
+        let service_payload =
+            r#"{"root_event_id":"evt_abc123","total_duration_ms":1000,"service_completed":true}"#;
         assert!(is_run_complete("maintenance_summary_requested", service_payload, true));
+    }
+
+    #[test]
+    fn system_run_accepts_only_its_final_correlated_summary_on_another_trace() {
+        let mut completed = watched(
+            "evt_done",
+            "maintenance_summary_requested",
+            "summary",
+            r#"{"root_event_id":"evt_mine","service_completed":true}"#,
+        );
+        assert!(on_run_event(Some("cycle"), "evt_mine", &completed, true));
+        assert!(!on_run_event(None, "evt_mine", &completed, true));
+        assert!(!on_run_event(Some("cycle"), "evt_other", &completed, true));
+        assert!(!on_run_event(Some("cycle"), "evt_mine", &completed, false));
+        completed.payload_json = r#"{"root_event_id":"evt_mine"}"#.into();
+        assert!(!on_run_event(Some("cycle"), "evt_mine", &completed, true));
+        assert!(!is_run_complete(&completed.event_type, &completed.payload_json, true));
     }
 
     #[test]

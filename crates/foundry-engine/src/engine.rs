@@ -286,10 +286,15 @@ impl Engine {
     /// block output, progress and scatter/gather retain their best-effort policy.
     /// Requires an event writer; intended for persistence-sensitive admission.
     pub async fn process_required(&self, event: Event) -> anyhow::Result<ProcessResult> {
-        let emitter = self.emitter.clone();
-        let root = event.clone();
-        tokio::task::spawn_blocking(move || emitter.persist_required(&root)).await??;
+        self.publish_required(event.clone()).await?;
         Ok(self.process_inner(event, true).await)
+    }
+
+    /// Durably append and broadcast a control notification without routing it
+    /// as another workflow. Failed persistence publishes nothing.
+    pub async fn publish_required(&self, event: Event) -> anyhow::Result<()> {
+        let emitter = self.emitter.clone();
+        tokio::task::spawn_blocking(move || emitter.persist_required(&event)).await?
     }
 
     async fn process_inner(&self, event: Event, root_recorded: bool) -> ProcessResult {
@@ -1727,6 +1732,47 @@ mod tests {
         assert!(observed.iter().any(|event| event.event_type.as_str() == "block_started"));
         assert!(observed.iter().any(|event| event.event_type.as_str() == "block_completed"));
         assert_eq!(std::fs::read_to_string(destination).unwrap(), "earlier bytes");
+    }
+
+    #[tokio::test]
+    async fn required_notification_is_durable_but_never_routes_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("events");
+        let (tx, mut rx) = broadcast::channel(16);
+        let mut engine = Engine::new()
+            .with_event_writer(Arc::new(EventWriter::new(&destination)))
+            .with_event_broadcaster(tx);
+        engine.register(Box::new(ScatterBlock {
+            name: "Must not run",
+            sinks: vec![EventType::GreetingRequested],
+            child_type: EventType::ProjectRunStarted,
+            child_count: 1,
+            on: vec![EventType::ProjectRunCompleted],
+            reduce_event_type: EventType::MaintenanceCycleCompleted,
+            reduce_project: "system",
+        }));
+        let notification = Event::new(
+            EventType::GreetingRequested,
+            "system".into(),
+            Throttle::Full,
+            serde_json::json!({"service_completed":true}),
+        );
+        engine.publish_required(notification.clone()).await.unwrap();
+        assert_eq!(rx.try_recv().unwrap().id, notification.id);
+        assert!(rx.try_recv().is_err(), "publication cannot route work or progress");
+        let file = destination.join(format!("{}.jsonl", notification.occurred_at.format("%Y-%m")));
+        let logged: Event =
+            serde_json::from_str(std::fs::read_to_string(file).unwrap().trim()).unwrap();
+        assert_eq!(logged, notification);
+
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let (tx, mut rx) = broadcast::channel(16);
+        let refused = Engine::new()
+            .with_event_writer(Arc::new(EventWriter::new(&blocked)))
+            .with_event_broadcaster(tx);
+        assert!(refused.publish_required(notification).await.is_err());
+        assert!(rx.try_recv().is_err(), "failed persistence publishes nothing");
     }
 
     #[tokio::test]
