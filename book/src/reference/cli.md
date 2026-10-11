@@ -330,9 +330,9 @@ Inspect the daemon-owned work-item ledger — the durable record of every unit o
 work Foundry dispatched. The overview, `show` and `open` are read-only.
 
 ```bash
-foundry queue [--json] [--offline]
+foundry queue [--source <kind>:<ref>] [--json] [--offline]
 foundry queue show <id> [--json] [--offline]
-foundry queue open [--json] [--offline]
+foundry queue open [--source <kind>:<ref>] [--json] [--offline]
 foundry queue hold <id> [--origin <text>]
 foundry queue release <id> [--origin <text>]
 ```
@@ -341,7 +341,7 @@ foundry queue release <id> [--origin <text>]
 | ---------- | ---------------------- | ----------------------------------------------------------------------------- |
 | *(none)*   | Yes unless `--offline` | Print running, queued, open and the newest 20 settled items on one screen      |
 | `show`     | Yes unless `--offline` | Print one item's full durable record, then its `work_item_*` events           |
-| `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed`         |
+| `open`     | Yes unless `--offline` | Print only the open group — `preserved`, `needs_decision` and `failed` — then every escalated campaign |
 | `close <id> --reason <text> [--origin <text>]` | Yes | Discharge an open obligation; `--offline` refused |
 | `cancel <id> [--origin <text>]` | Yes | Cancel submitted/queued/held work; `--offline` refused |
 | `hold <id> [--origin <text>]` | Yes | Take a `queued` item out of the scheduler's hands; `--offline` refused |
@@ -355,7 +355,8 @@ foundry queue release <id> [--origin <text>]
 | Option      | Description                                                        |
 | ----------- | ------------------------------------------------------------------ |
 | `--json`    | Emit machine-readable JSON instead of human output                 |
-| `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` (and, for `show`, `FOUNDRY_EVENTS_DIR`) directly instead of calling the daemon |
+| `--source`  | List only one source's items, as `<kind>:<ref>`; `campaign:<name>` also selects that campaign's escalation (overview and `open`) |
+| `--offline` | Read `FOUNDRY_WORK_ITEMS_PATH` (and `FOUNDRY_EVENTS_DIR`; for the overview and `open`, also `FOUNDRY_CAMPAIGNS_PATH`) directly instead of calling the daemon |
 
 The four groups are **running**, **queued** (`submitted`, `queued` or `held`), **open**
 (`preserved`, `needs_decision`, `failed` — settled but still needing a person),
@@ -365,6 +366,13 @@ carries the item's id, project, kind, lane, state, the timestamp that placed it
 in its group, and its one-line reason. Group order and the order within each
 group come from the daemon's `ListWorkItems` response — the CLI groups by state
 and never re-sorts.
+
+The open group ends with one row per escalated campaign, from `ListCampaigns`:
+`campaign`, its name, project, `escalated`, when and why it escalated, and a
+`next: foundry campaign show <name> (<controls>)` line. A campaign escalation is
+campaign state, not a ledger item, so `--json` for the overview and `open`
+emits `{"items": [...], "escalated_campaigns": [...]}`; through 0.44.4 it was a
+bare array of items. See [The work queue](../guide/work-queue.md#escalated-campaigns-wait-on-you-too).
 
 `show` renders every durable field, and an optional field the ledger never
 recorded produces no line at all rather than an empty string or `false`. A

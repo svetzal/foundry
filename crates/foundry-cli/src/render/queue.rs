@@ -6,6 +6,14 @@
 //! re-sorting here would silently disagree with it. The only arrangement these
 //! functions apply is *grouping by state*, which partitions the daemon order
 //! without disturbing the relative order inside any group.
+//!
+//! The overview and `open` views also take the escalated campaigns the command
+//! selected. A campaign escalation is campaign state, not a ledger record, so
+//! it renders as its own row kind at the end of the open group, and in JSON as
+//! its own `escalated_campaigns` array beside `items`. Every escalated campaign
+//! is listed, including one with an open cycle item of its own: the item is the
+//! work and its evidence, the campaign row is the decision and its commands,
+//! and the row names the item so the two read as one obligation.
 
 use std::fmt::Write as _;
 
@@ -13,7 +21,7 @@ use foundry_sdk::work_item::WorkItemState;
 use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 use serde::Serialize;
 
-use crate::proto::{WorkItem, WorkItemEvent};
+use crate::proto::{Campaign, WorkItem, WorkItemEvent};
 
 /// One wire source as text: `kind:ref`, with ` cycle <n>` when recorded.
 ///
@@ -235,26 +243,107 @@ fn settled_heading() -> String {
     format!("Settled (last {SETTLED_SHOWN})")
 }
 
-/// The whole queue on one screen: running, queued, open, then the newest
-/// settled items.
+/// The whole queue on one screen: running, queued, open (with the escalated
+/// campaigns), then the newest settled items.
 #[must_use]
-pub fn queue_overview(items: &[WorkItem]) -> String {
+pub fn queue_overview(items: &[WorkItem], escalated: &[Campaign]) -> String {
     let groups = group(items);
     let mut out = String::new();
     section(&mut out, RUNNING_HEADING, &groups.running);
     section(&mut out, QUEUED_HEADING, &groups.queued);
-    section(&mut out, OPEN_HEADING, &groups.open);
+    open_section(&mut out, &groups.open, escalated);
     section(&mut out, &settled_heading(), &groups.settled);
     out
 }
 
-/// Only the open group — the items that still hold an obligation.
+/// Only what needs a person: the open items, then the escalated campaigns.
 #[must_use]
-pub fn open_only(items: &[WorkItem]) -> String {
+pub fn open_only(items: &[WorkItem], escalated: &[Campaign]) -> String {
     let groups = group(items);
     let mut out = String::new();
-    section(&mut out, OPEN_HEADING, &groups.open);
+    open_section(&mut out, &groups.open, escalated);
     out
+}
+
+/// The open group: its items, then one row per escalated campaign, or
+/// `(none)` when both are empty.
+fn open_section(out: &mut String, items: &[&WorkItem], escalated: &[Campaign]) {
+    let _ = writeln!(out, "{OPEN_HEADING}");
+    if items.is_empty() && escalated.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    }
+    if !items.is_empty() {
+        let widths = Widths::of(items);
+        for item in items {
+            let _ = writeln!(out, "{}", item_line(item, &widths));
+        }
+    }
+    let name_width = escalated.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let project_width = escalated.iter().map(|c| c.project.len()).max().unwrap_or(0);
+    for campaign in escalated {
+        let _ = writeln!(
+            out,
+            "{}",
+            escalated_campaign_line(campaign, items, name_width, project_width)
+        );
+    }
+    let _ = writeln!(out);
+}
+
+/// The reason printed for an escalated campaign whose reason was never
+/// recorded, on the campaign or in the event log.
+pub const UNRECORDED_ESCALATION: &str = "(reason not recorded)";
+
+/// The ids of the open items that are cycles of `campaign`, in list order.
+fn open_cycles<'a>(campaign: &Campaign, open: &[&'a WorkItem]) -> Vec<&'a str> {
+    open.iter()
+        .filter(|item| {
+            item.source.as_ref().is_some_and(|source| {
+                source.kind == WorkSourceKind::Campaign.tag() && source.r#ref == campaign.name
+            })
+        })
+        .map(|item| item.id.as_str())
+        .collect()
+}
+
+/// The owner's options for an escalated campaign row.
+fn row_options(campaign: &Campaign) -> Vec<foundry_sdk::campaign::OwnerOption> {
+    super::campaign::campaign_options(
+        &campaign.name,
+        &campaign.status,
+        &campaign.authorized_by,
+        campaign.cycles_completed,
+        campaign.max_cycles,
+    )
+}
+
+/// One escalated campaign as two lines: `campaign`, its name, project, status,
+/// when it escalated and why (naming its open cycle items), then the command
+/// that shows its options and the verbs it offers.
+fn escalated_campaign_line(
+    campaign: &Campaign,
+    open: &[&WorkItem],
+    name_width: usize,
+    project_width: usize,
+) -> String {
+    let escalation = campaign.open_escalation.as_ref();
+    let stamp = escalation.map_or("-", |e| e.escalated_at.as_str());
+    let reason = escalation.map_or(UNRECORDED_ESCALATION, |e| e.reason.as_str());
+    let cycles = open_cycles(campaign, open);
+    let cycles = if cycles.is_empty() {
+        String::new()
+    } else {
+        format!(" (open cycle {})", cycles.join(", "))
+    };
+    let verbs: Vec<String> =
+        row_options(campaign).into_iter().map(|option| option.control).collect();
+    format!(
+        "  campaign  {name:<name_width$}  {project:<project_width$}  {status}  {stamp}  {reason}{cycles}\n            next: foundry campaign show {name} ({verbs})",
+        name = campaign.name,
+        project = campaign.project,
+        status = campaign.status,
+        verbs = verbs.join(", "),
+    )
 }
 
 /// Append one labelled field, skipping it entirely when the value is absent.
@@ -524,22 +613,74 @@ pub(crate) fn to_pretty<T: Serialize>(value: &T) -> String {
     out
 }
 
-/// Every fetched item as a JSON array, in the order it arrived.
+/// JSON projection of one escalated campaign row.
+#[derive(Serialize)]
+struct JsonEscalatedCampaign<'a> {
+    name: &'a str,
+    project: &'a str,
+    status: &'a str,
+    cycles_completed: u64,
+    cycles_landed: u64,
+    max_cycles: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_escalation: Option<super::campaign::JsonEscalation<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    open_cycles: Vec<&'a str>,
+    owner_options: Vec<foundry_sdk::campaign::OwnerOption>,
+}
+
+/// The list forms' JSON: the ledger items and, beside them, the escalated
+/// campaigns.
+#[derive(Serialize)]
+struct JsonQueueList<'a> {
+    items: Vec<JsonItem<'a>>,
+    escalated_campaigns: Vec<JsonEscalatedCampaign<'a>>,
+}
+
+fn queue_list_json<'a>(
+    items: Vec<&'a WorkItem>,
+    open: &[&'a WorkItem],
+    escalated: &'a [Campaign],
+) -> String {
+    to_pretty(&JsonQueueList {
+        items: items.into_iter().map(JsonItem::from).collect(),
+        escalated_campaigns: escalated
+            .iter()
+            .map(|campaign| JsonEscalatedCampaign {
+                name: &campaign.name,
+                project: &campaign.project,
+                status: &campaign.status,
+                cycles_completed: campaign.cycles_completed,
+                cycles_landed: campaign.cycles_landed,
+                max_cycles: campaign.max_cycles,
+                open_escalation: campaign
+                    .open_escalation
+                    .as_ref()
+                    .map(super::campaign::JsonEscalation::from),
+                open_cycles: open_cycles(campaign, open),
+                owner_options: row_options(campaign),
+            })
+            .collect(),
+    })
+}
+
+/// Every fetched item, in the order it arrived, as the object
+/// `{"items": [...], "escalated_campaigns": [...]}`.
 ///
 /// No grouping and no cap: the JSON form is the fetched data, and a consumer
 /// that wants groups applies [`group`]'s rules itself.
 #[must_use]
-pub fn items_json(items: &[WorkItem]) -> String {
-    let projected: Vec<JsonItem<'_>> = items.iter().map(JsonItem::from).collect();
-    to_pretty(&projected)
+pub fn items_json(items: &[WorkItem], escalated: &[Campaign]) -> String {
+    let open = group(items).open;
+    queue_list_json(items.iter().collect(), &open, escalated)
 }
 
-/// Only the open group as a JSON array, in the order it arrived.
+/// Only the open group, in the order it arrived, as the object
+/// `{"items": [...], "escalated_campaigns": [...]}`.
 #[must_use]
-pub fn open_json(items: &[WorkItem]) -> String {
-    let groups = group(items);
-    let projected: Vec<JsonItem<'_>> = groups.open.into_iter().map(JsonItem::from).collect();
-    to_pretty(&projected)
+pub fn open_json(items: &[WorkItem], escalated: &[Campaign]) -> String {
+    let open = group(items).open;
+    queue_list_json(open.clone(), &open, escalated)
 }
 
 /// `queue show --json`: one item as a JSON object carrying every record key
@@ -682,7 +823,7 @@ mod tests {
     #[test]
     fn the_overview_prints_every_id_under_its_own_heading_in_order() {
         let items = every_state();
-        let out = queue_overview(&items);
+        let out = queue_overview(&items, &[]);
 
         let headings = [
             RUNNING_HEADING.to_string(),
@@ -716,7 +857,7 @@ mod tests {
 
     #[test]
     fn an_overview_line_carries_id_project_kind_lane_state_stamp_and_reason() {
-        let out = queue_overview(&[item("wi_one", "running")]);
+        let out = queue_overview(&[item("wi_one", "running")], &[]);
         let line = out
             .lines()
             .find(|line| line.contains("wi_one"))
@@ -736,7 +877,7 @@ mod tests {
 
     #[test]
     fn an_empty_group_renders_as_none_rather_than_a_bare_heading() {
-        let out = queue_overview(&[]);
+        let out = queue_overview(&[], &[]);
         assert_eq!(out.matches("  (none)").count(), 4, "all four groups empty:\n{out}");
     }
 
@@ -744,7 +885,7 @@ mod tests {
     fn a_running_item_with_no_started_at_shows_a_dash_for_its_stamp() {
         let mut running = item("wi_nostart", "running");
         running.started_at = None;
-        let out = queue_overview(&[running]);
+        let out = queue_overview(&[running], &[]);
         let line = out.lines().find(|line| line.contains("wi_nostart")).expect("line present");
         assert!(line.contains(" - "), "line '{line}' should show a dash stamp");
     }
@@ -753,7 +894,7 @@ mod tests {
 
     #[test]
     fn open_only_carries_the_open_ids_and_none_of_the_running_or_landed_ids() {
-        let out = open_only(&every_state());
+        let out = open_only(&every_state(), &[]);
         for present in ["wi_preserved", "wi_needs", "wi_failed"] {
             assert!(out.contains(present), "{present} must appear in:\n{out}");
         }
@@ -770,7 +911,7 @@ mod tests {
 
     #[test]
     fn open_only_prints_no_other_heading() {
-        let out = open_only(&every_state());
+        let out = open_only(&every_state(), &[]);
         assert!(out.contains(OPEN_HEADING));
         assert!(!out.contains(RUNNING_HEADING));
         assert!(!out.contains(QUEUED_HEADING));
@@ -816,14 +957,14 @@ mod tests {
         assert!(out.contains("Depends on:       wi_dep, wi_other"), "got:\n{out}");
         assert!(out.contains("Not before:       2026-10-11T09:00:00+00:00"), "got:\n{out}");
 
-        let row = queue_overview(&[queued.clone()]);
+        let row = queue_overview(&[queued.clone()], &[]);
         assert!(row.contains("waits on wi_dep"), "the row carries the reason:\n{row}");
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&items_json(&[queued])).expect("items_json must parse");
-        assert_eq!(parsed[0]["reason"], "waits on wi_dep");
-        assert_eq!(parsed[0]["depends_on"], serde_json::json!(["wi_dep", "wi_other"]));
-        assert_eq!(parsed[0]["not_before"], "2026-10-11T09:00:00+00:00");
+            serde_json::from_str(&items_json(&[queued], &[])).expect("items_json must parse");
+        assert_eq!(parsed["items"][0]["reason"], "waits on wi_dep");
+        assert_eq!(parsed["items"][0]["depends_on"], serde_json::json!(["wi_dep", "wi_other"]));
+        assert_eq!(parsed["items"][0]["not_before"], "2026-10-11T09:00:00+00:00");
     }
 
     #[test]
@@ -866,8 +1007,8 @@ mod tests {
     fn items_json_round_trips_ids_and_states_in_the_fetched_order() {
         let items = every_state();
         let parsed: serde_json::Value =
-            serde_json::from_str(&items_json(&items)).expect("items_json must parse");
-        let array = parsed.as_array().expect("an array");
+            serde_json::from_str(&items_json(&items, &[])).expect("items_json must parse");
+        let array = parsed["items"].as_array().expect("an array");
 
         assert_eq!(array.len(), items.len());
         for (rendered, source) in array.iter().zip(&items) {
@@ -881,8 +1022,9 @@ mod tests {
     fn items_json_is_not_capped_or_grouped() {
         let items: Vec<WorkItem> =
             (0..25).map(|n| item(&format!("wi_t{n:02}"), "landed")).collect();
-        let parsed: serde_json::Value = serde_json::from_str(&items_json(&items)).expect("parse");
-        assert_eq!(parsed.as_array().expect("array").len(), 25);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&items_json(&items, &[])).expect("parse");
+        assert_eq!(parsed["items"].as_array().expect("array").len(), 25);
     }
 
     #[test]
@@ -923,8 +1065,8 @@ mod tests {
     #[test]
     fn open_json_carries_only_the_open_ids() {
         let parsed: serde_json::Value =
-            serde_json::from_str(&open_json(&every_state())).expect("open_json must parse");
-        let found: Vec<&str> = parsed
+            serde_json::from_str(&open_json(&every_state(), &[])).expect("open_json must parse");
+        let found: Vec<&str> = parsed["items"]
             .as_array()
             .expect("array")
             .iter()
@@ -936,8 +1078,8 @@ mod tests {
     #[test]
     fn every_json_document_ends_with_exactly_one_newline() {
         for rendered in [
-            items_json(&every_state()),
-            open_json(&every_state()),
+            items_json(&every_state(), &[]),
+            open_json(&every_state(), &[]),
             item_with_events_json(&item("wi_one", "running"), &[]),
         ] {
             assert!(rendered.ends_with('\n'), "must end with a newline: {rendered}");
@@ -983,7 +1125,7 @@ mod tests {
         let mut cycle = item("wi_cycle", "running");
         cycle.source = Some(wire_source("campaign", "tidy-cli", Some(3)));
         let unsourced = item("wi_old", "running");
-        let out = queue_overview(&[cycle, unsourced]);
+        let out = queue_overview(&[cycle, unsourced], &[]);
         let cycle_line = out.lines().find(|line| line.contains("wi_cycle")).expect("row");
         assert!(cycle_line.contains("campaign:tidy-cli cycle 3"), "got: {cycle_line}");
         let old_line = out.lines().find(|line| line.contains("wi_old")).expect("row");
@@ -1021,9 +1163,10 @@ mod tests {
 
         let mut host = item("wi_task", "running");
         host.source = Some(wire_source("operator", "workbench", None));
-        let listed: serde_json::Value = serde_json::from_str(&items_json(&[host])).expect("parses");
+        let listed: serde_json::Value =
+            serde_json::from_str(&items_json(&[host], &[])).expect("parses");
         assert_eq!(
-            listed[0]["source"],
+            listed["items"][0]["source"],
             serde_json::json!({"kind": "operator", "ref": "workbench"})
         );
 
@@ -1093,8 +1236,8 @@ mod tests {
         record.worktree = Some("/tmp/wt".to_string());
         record.worktree_removed = Some(false);
         let listed: serde_json::Value =
-            serde_json::from_str(&items_json(std::slice::from_ref(&record))).expect("parses");
-        let without = &listed[0];
+            serde_json::from_str(&items_json(std::slice::from_ref(&record), &[])).expect("parses");
+        let without = &listed["items"][0];
         let with: serde_json::Value =
             serde_json::from_str(&item_with_events_json(&record, &three_events()))
                 .expect("item_with_events_json parses");
@@ -1125,13 +1268,13 @@ mod tests {
         let mut child = item("wi_child", "preserved");
         child.resumes = Some("wi_parent".to_string());
         assert!(item_detail(&child).contains("wi_parent"));
-        assert!(queue_overview(&[child.clone()]).contains("resumes wi_parent"));
-        assert!(open_only(&[child.clone()]).contains("resumes wi_parent"));
-        let json: serde_json::Value = serde_json::from_str(&items_json(&[child])).unwrap();
-        assert_eq!(json[0]["resumes"], "wi_parent");
+        assert!(queue_overview(&[child.clone()], &[]).contains("resumes wi_parent"));
+        assert!(open_only(&[child.clone()], &[]).contains("resumes wi_parent"));
+        let json: serde_json::Value = serde_json::from_str(&items_json(&[child], &[])).unwrap();
+        assert_eq!(json["items"][0]["resumes"], "wi_parent");
         let legacy: serde_json::Value =
-            serde_json::from_str(&items_json(&[item("wi_old", "landed")])).unwrap();
-        assert!(legacy[0].get("resumes").is_none());
+            serde_json::from_str(&items_json(&[item("wi_old", "landed")], &[])).unwrap();
+        assert!(legacy["items"][0].get("resumes").is_none());
     }
 
     #[test]
@@ -1139,11 +1282,125 @@ mod tests {
         let mut follow_up = item("wi_follow_up", "running");
         follow_up.continues = vec!["wi_a".to_string(), "wi_b".to_string()];
         assert!(item_detail(&follow_up).contains("Continues:        wi_a, wi_b"));
-        assert!(queue_overview(&[follow_up.clone()]).contains("(continues wi_a, wi_b)"));
-        let json: serde_json::Value = serde_json::from_str(&items_json(&[follow_up])).unwrap();
-        assert_eq!(json[0]["continues"], serde_json::json!(["wi_a", "wi_b"]));
+        assert!(queue_overview(&[follow_up.clone()], &[]).contains("(continues wi_a, wi_b)"));
+        let json: serde_json::Value = serde_json::from_str(&items_json(&[follow_up], &[])).unwrap();
+        assert_eq!(json["items"][0]["continues"], serde_json::json!(["wi_a", "wi_b"]));
         let legacy: serde_json::Value =
-            serde_json::from_str(&items_json(&[item("wi_old", "landed")])).unwrap();
-        assert!(legacy[0].get("continues").is_none());
+            serde_json::from_str(&items_json(&[item("wi_old", "landed")], &[])).unwrap();
+        assert!(legacy["items"][0].get("continues").is_none());
+    }
+
+    // ── escalated campaigns ───────────────────────────────────────────────────
+
+    fn escalated_campaign(name: &str, reason: Option<&str>) -> Campaign {
+        Campaign {
+            name: name.to_string(),
+            project: "mojentic-ex".to_string(),
+            mission: "recover".to_string(),
+            status: "escalated".to_string(),
+            cycles_completed: 6,
+            cycles_landed: 6,
+            max_cycles: 6,
+            authorized_by: "stacey".to_string(),
+            agent_provider: String::new(),
+            last_run_event_id: String::new(),
+            open_escalation: reason.map(|reason| crate::proto::CampaignEscalation {
+                reason: reason.to_string(),
+                escalated_at: "2026-10-11T03:12:40+00:00".to_string(),
+                cycles_completed: 6,
+                cycles_landed: 6,
+                question: None,
+                choices: vec![],
+                from_event_log: true,
+            }),
+        }
+    }
+
+    /// Production on 2026-10-11: a campaign escalated after its last cycle
+    /// landed has no open ledger item, and `queue open` must still show it.
+    #[test]
+    fn open_lists_an_escalated_campaign_with_no_ledger_item_its_reason_and_next_command() {
+        let campaign =
+            escalated_campaign("mojentic-ex-v2", Some("campaign cycle budget exhausted (6)"));
+        for out in [
+            open_only(&[], std::slice::from_ref(&campaign)),
+            queue_overview(&every_state(), std::slice::from_ref(&campaign)),
+        ] {
+            let open = &out[out.find(OPEN_HEADING).expect("open heading")..];
+            let open = &open[..open.find("\n\n").expect("section end")];
+            assert!(!open.contains("(none)"), "{out}");
+            let row = open
+                .lines()
+                .find(|line| line.trim_start().starts_with("campaign  mojentic-ex-v2"))
+                .unwrap_or_else(|| panic!("no campaign row under the open heading:\n{out}"));
+            for field in [
+                "mojentic-ex",
+                "escalated",
+                "2026-10-11T03:12:40+00:00",
+                "campaign cycle budget exhausted (6)",
+            ] {
+                assert!(row.contains(field), "row '{row}' should carry '{field}'");
+            }
+            assert!(
+                open.contains(
+                    "next: foundry campaign show mojentic-ex-v2 (decide, resume, complete, cancel)"
+                ),
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_escalated_campaign_names_its_open_cycle_and_the_item_stays_listed() {
+        let mut cycle = item("wi_cycle", "preserved");
+        cycle.source = Some(wire_source("campaign", "mojentic-sw", Some(4)));
+        let out = open_only(
+            &[cycle],
+            &[escalated_campaign(
+                "mojentic-sw",
+                Some("owner decision required"),
+            )],
+        );
+        assert!(
+            out.lines().any(|line| line.contains("wi_cycle") && line.contains("preserved")),
+            "{out}"
+        );
+        assert!(out.contains("owner decision required (open cycle wi_cycle)"), "{out}");
+    }
+
+    #[test]
+    fn an_escalated_campaign_with_no_recorded_reason_says_so() {
+        let out = open_only(&[], &[escalated_campaign("silent", None)]);
+        assert!(out.contains(UNRECORDED_ESCALATION), "{out}");
+        assert!(open_only(&[], &[]).contains("  (none)"));
+    }
+
+    #[test]
+    fn list_json_puts_escalated_campaigns_beside_the_items_not_among_them() {
+        let mut cycle = item("wi_cycle", "preserved");
+        cycle.source = Some(wire_source("campaign", "mojentic-sw", Some(4)));
+        let campaigns = [
+            escalated_campaign("mojentic-sw", Some("owner decision required")),
+            escalated_campaign("mojentic-ex-v2", None),
+        ];
+        for rendered in [
+            open_json(&[cycle.clone()], &campaigns),
+            items_json(&[cycle.clone()], &campaigns),
+        ] {
+            let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("parses");
+            assert_eq!(parsed["items"].as_array().expect("items").len(), 1);
+            assert_eq!(parsed["items"][0]["id"], "wi_cycle");
+            let rows = parsed["escalated_campaigns"].as_array().expect("escalated_campaigns");
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["name"], "mojentic-sw");
+            assert_eq!(rows[0]["status"], "escalated");
+            assert_eq!(rows[0]["open_escalation"]["reason"], "owner decision required");
+            assert_eq!(rows[0]["open_cycles"], serde_json::json!(["wi_cycle"]));
+            assert_eq!(rows[0]["owner_options"][0]["control"], "decide");
+            assert!(rows[1].get("open_escalation").is_none(), "unknown reason, no key");
+            assert!(rows[1].get("open_cycles").is_none(), "no open cycle, no key");
+        }
+        let empty: serde_json::Value = serde_json::from_str(&open_json(&[], &[])).expect("parses");
+        assert_eq!(empty, serde_json::json!({"items": [], "escalated_campaigns": []}));
     }
 }

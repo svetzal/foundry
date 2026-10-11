@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
+use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
@@ -177,6 +178,15 @@ fn make_service_with_registry(
     state_dir: &std::path::Path,
     registry: Registry,
 ) -> FoundryService {
+    make_service_with_campaigns(work_items_path, state_dir, registry, std::path::PathBuf::new())
+}
+
+fn make_service_with_campaigns(
+    work_items_path: std::path::PathBuf,
+    state_dir: &std::path::Path,
+    registry: Registry,
+    campaigns_path: std::path::PathBuf,
+) -> FoundryService {
     let (event_tx, _rx) = broadcast::channel(64);
     let registry = Arc::new(RwLock::new(registry));
     let mut engine = Engine::new();
@@ -212,7 +222,7 @@ fn make_service_with_registry(
     let stores = StoreConfig {
         work_items_path,
         events_dir: state_dir.join("events"),
-        campaigns_path: std::path::PathBuf::new(),
+        campaigns_path,
         registry_path: std::path::PathBuf::new(),
         sentinels: Arc::new(RwLock::new(SentinelStore {
             version: 1,
@@ -327,6 +337,7 @@ fn run_foundry(
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("FOUNDRY_WORK_ITEMS_PATH", work_items_path)
+        .env("FOUNDRY_CAMPAIGNS_PATH", client_campaigns_path(home))
         .output()
         .expect("run foundry binary")
 }
@@ -347,8 +358,14 @@ fn run_foundry_with_events(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("FOUNDRY_WORK_ITEMS_PATH", work_items_path)
         .env("FOUNDRY_EVENTS_DIR", events_dir)
+        .env("FOUNDRY_CAMPAIGNS_PATH", client_campaigns_path(home))
         .output()
         .expect("run foundry binary")
+}
+
+/// The client-side campaign store `--offline` reads, inside the client home.
+fn client_campaigns_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".foundry/campaigns.json")
 }
 
 /// The `Events:` block of `queue show` output: every line after the heading.
@@ -466,7 +483,12 @@ async fn online_queue_json_parses_and_carries_the_same_ids_and_states() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout_string(&output)).expect("--json output must parse");
-    let array = parsed.as_array().expect("an array");
+    let array = parsed["items"].as_array().expect("an items array");
+    assert_eq!(
+        parsed["escalated_campaigns"],
+        serde_json::json!([]),
+        "no campaign store, no escalated campaigns"
+    );
 
     let mut seen: Vec<(String, String)> = array
         .iter()
@@ -1652,4 +1674,179 @@ async fn reconcile_cli_prints_daemon_invocation_and_rejects_offline() {
         run_foundry(home.path(), &absent_client_ledger, DUMMY_ADDR, &["queue", "reconcile"]);
     assert!(!unavailable.status.success());
     assert!(!absent_client_ledger.exists());
+}
+
+// ── escalated campaigns wait on their owner too ───────────────────────────────
+
+const RECORDED_REASON: &str = "campaign cycle budget exhausted (6)";
+const LOGGED_REASON: &str = "owner decision required";
+
+fn campaign(name: &str, status: CampaignStatus) -> Campaign {
+    let mut campaign: Campaign = serde_json::from_value(serde_json::json!({
+        "name": name, "project": "mojentic", "mission": "recover",
+        "done_evidence": [{"kind": "review", "statement": "recovered"}],
+        "budget": {"max_cycles": 6}, "cycles_completed": 6, "cycles_landed": 6,
+        "authorized_by": "stacey"
+    }))
+    .expect("campaign");
+    campaign.status = status;
+    campaign
+}
+
+/// Production on 2026-10-11: `recorded` escalated after its last cycle landed
+/// and has no open ledger item; `legacy` escalated before the record existed,
+/// so its reason is only in the event log; `busy` waits on nobody.
+fn seed_campaigns(path: &std::path::Path, events_dir: &std::path::Path) {
+    let mut recorded = campaign("recorded", CampaignStatus::Escalated);
+    recorded.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
+        reason: RECORDED_REASON.to_string(),
+        escalated_at: at(6_000),
+        cycles_completed: 6,
+        cycles_landed: 6,
+        question: None,
+        choices: vec![],
+        from_event_log: false,
+    });
+    CampaignStore {
+        version: 1,
+        campaigns: vec![
+            recorded,
+            campaign("legacy", CampaignStatus::Escalated),
+            campaign("busy", CampaignStatus::Active),
+        ],
+    }
+    .save(path)
+    .expect("save campaigns");
+    let mut logged = Event::new(
+        EventType::CampaignEscalated,
+        "mojentic".to_string(),
+        Throttle::Full,
+        Event::serialize_payload(&foundry_sdk::payload::CampaignTerminalPayload {
+            campaign: "legacy".to_string(),
+            project: "mojentic".to_string(),
+            reason: LOGGED_REASON.to_string(),
+            cycles_completed: 3,
+            cycles_landed: 2,
+        })
+        .expect("payload"),
+    );
+    logged.occurred_at = at(5_500);
+    write_events(events_dir, &[logged]);
+}
+
+fn assert_open_rows(out: &str, present: &[(&str, &str)], absent: &[&str]) {
+    let open = section_after(out, "Open — needs a person");
+    for (name, reason) in present {
+        let row = open
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("campaign  {name} ")))
+            .unwrap_or_else(|| panic!("no row for campaign {name} in:\n{out}"));
+        assert!(row.contains("escalated") && row.contains(reason), "row '{row}'");
+        assert!(open.contains(&format!("next: foundry campaign show {name} (decide")), "{out}");
+    }
+    for name in absent {
+        assert!(!open.contains(&format!("campaign  {name} ")), "{name} must not appear:\n{out}");
+    }
+}
+
+fn escalated_names(parsed: &serde_json::Value) -> Vec<String> {
+    parsed["escalated_campaigns"]
+        .as_array()
+        .expect("escalated_campaigns array")
+        .iter()
+        .map(|row| row["name"].as_str().expect("name").to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_open_lists_escalated_campaigns_beside_the_open_items() {
+    let ledger = NamedTempFile::new().expect("ledger");
+    seeded_ledger().save(ledger.path()).expect("seed ledger");
+    let state = tempfile::tempdir().expect("daemon state");
+    let daemon_campaigns = state.path().join("campaigns.json");
+    seed_campaigns(&daemon_campaigns, &state.path().join("events"));
+    let service = make_service_with_campaigns(
+        ledger.path().to_path_buf(),
+        state.path(),
+        Registry {
+            version: 2,
+            projects: vec![],
+        },
+        daemon_campaigns,
+    );
+    let addr = start_server(service).await;
+    let home = tempfile::tempdir().expect("client home");
+    let run = |args: &[&str]| {
+        let output = run_foundry(home.path(), ledger.path(), &addr, args);
+        assert_command_succeeded(&output);
+        stdout_string(&output)
+    };
+
+    let present = [("legacy", LOGGED_REASON), ("recorded", RECORDED_REASON)];
+    for args in [&["queue", "open"][..], &["queue"][..]] {
+        let out = run(args);
+        assert_ids_under(&out, "Open — needs a person", &["wi_preserved", "wi_needs", "wi_failed"]);
+        assert_open_rows(&out, &present, &["busy"]);
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&run(&["queue", "open", "--json"])).expect("--json parses");
+    assert_eq!(escalated_names(&parsed), ["legacy", "recorded"]);
+    assert_eq!(parsed["escalated_campaigns"][0]["open_escalation"]["from_event_log"], true);
+    assert_eq!(parsed["escalated_campaigns"][1]["open_escalation"]["reason"], RECORDED_REASON);
+    assert_eq!(parsed["items"].as_array().expect("items").len(), 3);
+    let overview: serde_json::Value =
+        serde_json::from_str(&run(&["queue", "--json"])).expect("--json parses");
+    assert_eq!(escalated_names(&overview), ["legacy", "recorded"]);
+
+    let one = run(&["queue", "open", "--source", "campaign:recorded"]);
+    assert_open_rows(&one, &[("recorded", RECORDED_REASON)], &["legacy", "busy"]);
+    let one: serde_json::Value =
+        serde_json::from_str(&run(&["queue", "open", "--source", "campaign:recorded", "--json"]))
+            .expect("parses");
+    assert_eq!(escalated_names(&one), ["recorded"]);
+    let other: serde_json::Value =
+        serde_json::from_str(&run(&["queue", "open", "--source", "sentinel:nightly", "--json"]))
+            .expect("parses");
+    assert!(escalated_names(&other).is_empty(), "a sentinel never escalates a campaign");
+    assert!(
+        !client_campaigns_path(home.path()).exists(),
+        "online never touches client files"
+    );
+}
+
+#[test]
+fn offline_queue_open_reads_escalated_campaigns_from_the_store_and_event_log() {
+    let home = tempfile::tempdir().expect("client home");
+    let ledger = NamedTempFile::new().expect("ledger");
+    seeded_ledger().save(ledger.path()).expect("seed ledger");
+    let campaigns = client_campaigns_path(home.path());
+    std::fs::create_dir_all(campaigns.parent().expect("parent")).expect("foundry home");
+    seed_campaigns(&campaigns, &home.path().join(".foundry/events"));
+    let before = std::fs::read(&campaigns).expect("read campaigns");
+
+    let output =
+        run_foundry(home.path(), ledger.path(), DUMMY_ADDR, &["--offline", "queue", "open"]);
+    assert_command_succeeded(&output);
+    assert_open_rows(
+        &stdout_string(&output),
+        &[("legacy", LOGGED_REASON), ("recorded", RECORDED_REASON)],
+        &["busy"],
+    );
+
+    let json = run_foundry(
+        home.path(),
+        ledger.path(),
+        DUMMY_ADDR,
+        &["--offline", "queue", "open", "--json"],
+    );
+    assert_command_succeeded(&json);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_string(&json)).expect("--json parses");
+    assert_eq!(escalated_names(&parsed), ["legacy", "recorded"]);
+    assert_eq!(
+        std::fs::read(&campaigns).expect("read campaigns"),
+        before,
+        "a read writes nothing"
+    );
 }

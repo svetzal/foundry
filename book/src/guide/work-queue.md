@@ -132,8 +132,11 @@ foundry queue open --source operator:workbench            # open work asked for 
 
 The filter is an exact match on kind and ref, applied by the daemon's
 `ListWorkItems` (and by the same selection offline); an unknown kind, or a kind
-with no ref, is refused. `foundry campaign show <name>` lists the campaign's
-cycles through this same filter.
+with no ref, is refused. `--source` goes before or after `open`. `foundry
+campaign show <name>` lists the campaign's cycles through this same filter. The
+filter also selects [escalated campaigns](#escalated-campaigns-wait-on-you-too):
+`campaign:<name>` shows that campaign's escalation, and every other kind shows
+none.
 
 ## The states
 
@@ -155,8 +158,41 @@ which is why the ledger says an item **settles** rather than completes.
 
 `landed` and `cancelled` are **terminal** — nothing more is owed.
 `preserved`, `needs_decision` and `failed` are **open** — settled, but still
-carrying something for you to discharge. `foundry queue open` is exactly that
-set.
+carrying something for you to discharge. `foundry queue open` is that set, plus
+every escalated campaign.
+
+### Escalated campaigns wait on you too
+
+An escalated campaign has stopped until its owner decides, resumes, completes or
+cancels it. That is as much "waiting on you" as a preserved item, but it is
+campaign state, not a unit of executed work, so the ledger never records it as
+an item. On 2026-10-11 two of four escalated campaigns had no open item at all,
+because they escalated after their final cycle landed, and `queue open` did not
+show them.
+
+So `foundry queue open`, and the open group of the `foundry queue` overview,
+list every escalated campaign after the open items, one row each:
+
+```text
+Open — needs a person
+  wi_ccc3  beta  major_upgrade  maintenance  sentinel:nightly-maintenance  preserved  2026-09-29T03:10:00+00:00  gates red after the bump
+  campaign  mojentic-ex-v2  mojentic-ex  escalated  2026-10-11T03:12:40+00:00  campaign cycle budget exhausted (6)
+            next: foundry campaign show mojentic-ex-v2 (decide, resume, complete, cancel)
+```
+
+The row carries the campaign, its project, when it escalated and why (see
+[What an escalated campaign shows its owner](./campaigns.md#what-an-escalated-campaign-shows-its-owner)),
+then the command that prints the full reason and the owner's command lines.
+The reason reads `(reason not recorded)` when neither the campaign nor the
+event log has one.
+
+Every escalated campaign is listed, including one that also has an open cycle
+item. The two are not duplicates: the item is the work and its evidence (a
+preserved ref, a failure), the campaign row is the decision and the commands
+that answer it. The row names the item, as `(open cycle wi_…)`, so they read as
+one obligation. Hiding the campaign row when an item exists would hide the
+reason and the commands again, which is the defect this fixes; hiding the item
+would make the ledger view incomplete.
 
 Every kind enters `queued` and starts only when the shared scheduler permits.
 Its `reason` names what it waits on, or says `ready`. The `submitted` state
@@ -303,9 +339,9 @@ reading the log itself is an error, never an empty history.
 
 ### `foundry queue open`
 
-Prints only the open group — the work that still needs a person. This is the
-command to run when you want the shortest possible answer to "what is waiting
-on me?"
+Prints only the open group — the work that still needs a person, then the
+escalated campaigns. This is the command to run when you want the shortest
+possible answer to "what is waiting on me?"
 
 ### `--json`
 
@@ -313,7 +349,16 @@ All three commands take `--json`. The JSON form renders from the same fetched
 data as the human form, so the two can never disagree about which items the
 daemon returned.
 
-- `foundry queue --json` and `foundry queue open --json` emit a JSON array.
+- `foundry queue --json` and `foundry queue open --json` emit one object with
+  two arrays: `items`, the ledger records, and `escalated_campaigns`, one entry
+  per escalated campaign the view lists. Through 0.44.4 both emitted a
+  bare array of items; a script that read `.[]` now reads `.items[]`. A campaign
+  entry carries `name`, `project`, `status`, `cycles_completed`,
+  `cycles_landed`, `max_cycles`, `open_escalation` (absent when no reason was
+  recorded), `open_cycles` (the ids of its open items, absent when none) and
+  `owner_options` (`control`, `command`, `effect` for each). The two arrays are
+  separate because a campaign escalation is not a ledger record: a consumer
+  that counts items never counts a campaign.
 - `foundry queue show <id> --json` emits a single JSON object: the record's
   keys, unchanged, plus an `events` array. Each event carries `id`,
   `event_type`, `occurred_at`, `state`, `reason` and, when it has one,
@@ -323,7 +368,8 @@ Optional fields are **absent** when unset rather than emitted as `null`, `""`
 or `false`, so the JSON round-trips the same facts the record carries:
 
 ```json
-[
+{
+  "items": [
   {
     "id": "wi_ccc3",
     "project": "beta",
@@ -343,22 +389,24 @@ or `false`, so the JSON round-trips the same facts the record carries:
     "worktree": "/home/you/.foundry/worktrees/beta/x",
     "worktree_removed": false
   }
-]
+  ],
+  "escalated_campaigns": []
+}
 ```
 
 Note what is *not* there: `landed_commit`. The item did not land, so the field
 was never recorded, so it is absent. A `source` has the same keys the ledger
 writes (`kind`, `ref`, and `cycle` for a campaign); an item that records none
-has no `source` key. The `--json` array is the fetched list unchanged — neither
+has no `source` key. The `items` array is the fetched list unchanged — neither
 grouped nor capped at 20 — so a consumer can apply its own rules.
 
 ## Online versus offline
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`; `--source` is its exact-match source filter |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`; `--source` is its exact-match source filter. The open group adds the escalated campaigns from `ListCampaigns` |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem`, then `ListWorkItemEvents` |
-| `foundry queue open [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only |
+| `foundry queue open [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only, then the escalated campaigns from `ListCampaigns` |
 
 **Online** is the default and is daemon-authoritative. All three commands render
 the daemon's response directly and never read, create or mutate the client-side
@@ -383,6 +431,10 @@ differs from the online path only in transport, never in reading order.
   parse failure.
 - `--source` applies the same exact-match selection to the file the daemon
   applies to its store, so a filtered `--offline` read lists the same items.
+- The overview and `open` read escalated campaigns from
+  `FOUNDRY_CAMPAIGNS_PATH`, and recover a pre-record escalation reason from
+  `FOUNDRY_EVENTS_DIR`, the same way `ListCampaigns` does. A missing campaign
+  store has no campaigns, and a read never creates it.
 
 ### Close or cancel an item
 

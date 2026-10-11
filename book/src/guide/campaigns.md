@@ -459,8 +459,10 @@ advanced, prints `(none recorded)`.
 
 ### What an escalated campaign shows its owner
 
-An escalated campaign stops and waits for you, so `campaign show` says why and
-what you can do:
+An escalated campaign stops and waits for you. `foundry queue open` lists it,
+with its reason, beside the open ledger items (see
+[The work queue](./work-queue.md#escalated-campaigns-wait-on-you-too)), and
+`campaign show` says why and what you can do:
 
 ```text
 Escalation:

@@ -472,7 +472,7 @@ dispatched. `foundry queue`, `show` and `open` read it.
 # Everything on one screen: running, queued, open, newest 20 settled
 foundry queue
 
-# Only the work that still needs a person
+# Only what still needs a person: open items, then escalated campaigns
 foundry queue open
 
 # One item's full durable record, then its work_item_* events
@@ -493,6 +493,16 @@ The four groups are **running**, **queued** (`submitted`, `queued` or `held`), *
 a person), and the newest 20 **settled** items (`landed`, `cancelled`). The
 20-item cap applies to the settled group alone.
 
+The open group ends with every **escalated campaign**, one row each
+(`campaign <name> <project> escalated <when> <reason>` and a
+`next: foundry campaign show <name> (<controls>)` line). An escalation is
+campaign state, not a ledger item, so it is never written to the ledger; the row
+comes from `ListCampaigns` and names any open cycle item of the campaign as
+`(open cycle <id>)`. `--source campaign:<name>` keeps that campaign's row;
+other source kinds show no campaign rows. The list forms' `--json` is an object,
+`{"items": [...], "escalated_campaigns": [...]}`; through 0.44.4 it was a bare
+array of items.
+
 Every item records a typed `source` beside its free-text `origin`: what
 dispatched it, as a closed kind with one ref — `campaign:<name>` with the
 `cycle` number, `sentinel:<name>` (the nightly's per-project runs, its majors
@@ -506,7 +516,8 @@ read that as "not recorded", never as a kind. `--source` is an exact match on
 kind and ref; an unknown kind, or a kind with no ref, is refused.
 
 Start with `foundry queue open` when you want the shortest answer to "what is
-waiting on me?" — those three states are settled but unfinished.
+waiting on me?" — those three states are settled but unfinished, and an
+escalated campaign has stopped until its owner acts.
 
 `show` prints every durable field, including `verdict`, `landed_commit`,
 `preservation_ref`, `worktree`, `worktree_removed`, `trace_id`, and for paced

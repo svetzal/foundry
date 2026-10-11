@@ -309,8 +309,8 @@ enum Commands {
         /// List only the items one source dispatched, as `<kind>:<ref>`:
         /// `campaign:<name>` (every cycle), `sentinel:<name>`,
         /// `operator:<host>` or `work_item:<parent id>`. Applies to the list
-        /// forms.
-        #[arg(long, value_name = "KIND:REF")]
+        /// forms, before or after `open`.
+        #[arg(long, value_name = "KIND:REF", global = true)]
         source: Option<String>,
     },
 
@@ -829,10 +829,16 @@ async fn handle_queue_command(
     }
     let work_items_path = &foundry_sdk::paths::work_items_path();
     let events_dir = &foundry_sdk::paths::events_dir();
+    let campaigns_path = &foundry_sdk::paths::campaigns_path();
+    let list_paths = queue_commands::ListPaths {
+        work_items: work_items_path,
+        campaigns: campaigns_path,
+        events_dir,
+    };
     match command {
         None => {
             queue_commands::list(
-                work_items_path,
+                list_paths,
                 addr,
                 offline,
                 queue_commands::View::Overview,
@@ -872,7 +878,7 @@ async fn handle_queue_command(
         }
         Some(QueueCommands::Open { json }) => {
             queue_commands::list(
-                work_items_path,
+                list_paths,
                 addr,
                 offline,
                 queue_commands::View::Open,
