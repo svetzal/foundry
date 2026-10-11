@@ -211,8 +211,7 @@ impl Drain {
     /// A running item the stream never settles is checked against a fresh
     /// `GetPacing`: anything no longer running there is gone.
     pub(crate) fn reconcile(&mut self, running: &[PacingItem]) {
-        let still: Vec<String> = running.iter().map(|item| item.id.clone()).collect();
-        self.running.retain(|id, _| still.contains(id));
+        self.running = running.iter().map(|item| (item.id.clone(), item.clone())).collect();
     }
 }
 
@@ -256,21 +255,23 @@ pub async fn drain(
     println!("waiting for {} running item(s) to settle", drain.remaining().len());
 
     while !drain.is_idle() {
-        let next = stream.message();
-        let message = match deadline {
-            Some(deadline) => match tokio::time::timeout_at(deadline, next).await {
-                Ok(message) => message,
-                Err(_elapsed) => {
-                    let fresh = fetch_online(addr).await?;
-                    drain.reconcile(&fresh.running_items);
-                    if drain.is_idle() {
-                        break;
-                    }
-                    print!("{}", render::pacing::still_running(&drain.remaining()));
-                    std::process::exit(1);
-                }
-            },
-            None => next.await,
+        if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now()) {
+            let fresh = fetch_online(addr).await?;
+            drain.reconcile(&fresh.running_items);
+            if drain.is_idle() {
+                break;
+            }
+            print!("{}", render::pacing::still_running(&drain.remaining()));
+            std::process::exit(1);
+        }
+        // Typed settlement can precede cleanup without another settlement fact.
+        // Poll occupancy as well as consuming the event stream.
+        let Ok(message) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.message()).await
+        else {
+            let fresh = fetch_online(addr).await?;
+            drain.reconcile(&fresh.running_items);
+            continue;
         };
         let Some(event) = message.map_err(status_to_anyhow)? else {
             // The stream closed under us; the daemon is the authority on
@@ -284,6 +285,9 @@ pub async fn drain(
         };
         if let Some(line) = drain.observe(&event.event_type, &event.payload_json) {
             print!("{line}");
+            // A task verdict may precede cleanup; only admission owns capacity.
+            let fresh = fetch_online(addr).await?;
+            drain.reconcile(&fresh.running_items);
         }
     }
     println!("idle: nothing is running");
@@ -330,6 +334,17 @@ mod tests {
             )
             .expect("wi_b cancelled");
         assert_eq!(line, "settled wi_b: cancelled — stopped\n");
+        assert!(drain.is_idle());
+    }
+
+    #[test]
+    fn a_settled_task_with_cleanup_running_still_prevents_drain_completion() {
+        let item = running("wi_cleanup");
+        let mut drain = Drain::new(std::slice::from_ref(&item));
+        drain.observe("work_item_settled", r#"{"item_id":"wi_cleanup","state":"landed"}"#);
+        drain.reconcile(&[item]);
+        assert!(!drain.is_idle());
+        drain.reconcile(&[]);
         assert!(drain.is_idle());
     }
 

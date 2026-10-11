@@ -29,7 +29,8 @@ pub(crate) fn settle_running(store: &mut WorkItemStore) -> Vec<WorkItem> {
     let now = Utc::now();
     let mut settled = Vec::new();
     for item in &mut store.items {
-        if item.is_running() {
+        if item.occupies_slot() {
+            item.execution_completed = true;
             item.settle_failed(RESTART_REASON, now);
             settled.push(item.clone());
         }

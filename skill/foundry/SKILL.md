@@ -557,12 +557,12 @@ Concurrent requests for one item can succeed only once.
 
 ### 12. Pace the work
 
-Every task-shaped item (`foundry task`, a campaign cycle, a nightly majors-lane
-upgrade, a `queue resume` child) is recorded `queued` with a reason, and the
-scheduler inside `foundryd` starts it when, in this order: no running item of
-any kind (maintenance included) occupies its repository; the host running cap
-(`max_running`, default 2) is not reached; its `--not-before` has passed;
-every `--after` item has settled `landed`; its lane is not paused. Interactive
+Every engineering workflow is recorded `queued` before it runs. Tasks, campaign
+formation and cycles, manual and nightly maintenance, iteration, validation,
+releases, remediation, supply-chain scans and digest agents share this queue.
+The scheduler starts a root when no executing item occupies its repository,
+the host cap (`max_running`, default 2) allows it, its `--not-before` has passed,
+every `--after` item has settled `landed`, and its lane is not paused. Interactive
 work is considered first, then oldest submission first. A queued item's reason
 is the scheduler's current verdict (`repository busy: wi_…`,
 `host at capacity N/N`, `not before <time>`, `waits on wi_…`, `lane paused`,
@@ -570,6 +570,15 @@ is the scheduler's current verdict (`repository busy: wi_…`,
 A dependency that settles any way other than landed moves the dependent to
 `needs_decision` with `waits on <id>, which settled <state>`; `queue release`
 returns it to the queue.
+
+The nightly stages every project before waiting. Queued and held maintenance
+keeps its gather open across a restart. Cancelling a child reports failure.
+Downstream release, remediation and cleanup steps retain their parent's slot.
+Independent derived tasks queue before the parent releases its slot.
+System summaries and digest agents use host capacity without project locks.
+Supply-chain auto-fix reserves all active repositories for its sequential scan;
+audit-only scans use a system slot. Dry runs also queue; observers run within
+the cap, mutators remain simulated, and settlement states that explicitly.
 
 ```bash
 foundry pacing show [--json] [--offline]                   # limits, running, waiting with reasons, paused lanes

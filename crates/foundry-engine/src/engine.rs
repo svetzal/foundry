@@ -7,6 +7,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::task_block::TaskBlock;
 pub use foundry_sdk::trace::{BlockExecution, ProcessResult};
 
+use crate::admission::{Admission, WorkAdmission};
 use crate::dispatch::{Dispatch, classify_dispatch, make_block_execution};
 use crate::emit::EventEmitter;
 use crate::event_writer::EventWriter;
@@ -19,6 +20,7 @@ pub struct Engine {
     blocks: Vec<Box<dyn TaskBlock>>,
     emitter: EventEmitter,
     stamper: SpanStamper,
+    admission: Option<Arc<dyn WorkAdmission>>,
 }
 
 impl Default for Engine {
@@ -33,7 +35,47 @@ impl Engine {
             blocks: vec![],
             emitter: EventEmitter::new(),
             stamper: SpanStamper::new(),
+            admission: None,
         }
+    }
+
+    /// Apply the host's durable work admission before routing execution roots.
+    #[must_use]
+    pub fn with_work_admission(mut self, admission: Arc<dyn WorkAdmission>) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
+    /// The admission wake shared with the host's pacing scheduler.
+    pub fn admission_wake(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.admission.as_ref().map(|admission| admission.wake_handle())
+    }
+
+    fn refuse(
+        &self,
+        event: &Event,
+        error: &anyhow::Error,
+        state: &mut ProcessState,
+        executions: &mut Vec<BlockExecution>,
+    ) {
+        admission_failure(event, error, executions);
+        if let Some(admission) = &self.admission {
+            let propagator = Propagator::new(&self.emitter, &self.stamper);
+            for terminal in admission.failure_events(event, &error.to_string()) {
+                self.emitter.persist_one(&terminal);
+                propagator.deliver_reduce_if_satisfied(&terminal, state);
+                state.all_events.push(terminal);
+            }
+        }
+    }
+
+    /// Rejoin durable work after the host restores a waiting coordinator.
+    pub async fn join_work(&self, id: &str) -> anyhow::Result<ProcessResult> {
+        let admission = self
+            .admission
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("work admission is not configured"))?;
+        admission.wait(id).await
     }
 
     /// Register additional event types that open a new trace span when emitted.
@@ -267,10 +309,38 @@ impl Engine {
         }
 
         let mut block_executions = Vec::new();
+        let root = event.clone();
         let mut state = ProcessState::new(event);
+        if let Some(admission) = &self.admission {
+            match admission.owner(&root) {
+                Ok(owner) => state.owner = owner,
+                Err(error) => {
+                    state.queue.clear();
+                    self.refuse(&root, &error, &mut state, &mut block_executions);
+                }
+            }
+        }
 
         loop {
             self.drain_queue(&mut state, &mut block_executions).await;
+            if let Some((child, id)) = state.deferred.pop() {
+                if let Some(admission) = &self.admission {
+                    match admission.wait(&id).await {
+                        Ok(result) => {
+                            let propagator = Propagator::new(&self.emitter, &self.stamper);
+                            for event in &result.events {
+                                propagator.deliver_reduce_if_satisfied(event, &mut state);
+                            }
+                            state.all_events.extend(result.events);
+                            block_executions.extend(result.block_executions);
+                        }
+                        Err(error) => {
+                            self.refuse(&child, &error, &mut state, &mut block_executions);
+                        }
+                    }
+                }
+                continue;
+            }
             // Nothing left to run. A gather still open now waits for
             // completions no block can produce any more: close it, so one
             // failed child cannot keep the fan-in from completing.
@@ -287,12 +357,26 @@ impl Engine {
             }
         }
 
-        ProcessResult {
+        let mut result = ProcessResult {
             events: state.all_events,
             block_executions,
             total_duration_ms: u64::try_from(process_start.elapsed().as_millis())
                 .unwrap_or(u64::MAX),
+        };
+        if state.owner.is_some()
+            && let Some(admission) = &self.admission
+        {
+            match admission.complete(&root, &result) {
+                Ok(events) => {
+                    for event in &events {
+                        self.emitter.persist_one(event);
+                    }
+                    result.events.extend(events);
+                }
+                Err(error) => admission_failure(&root, &error, &mut result.block_executions),
+            }
         }
+        result
     }
 
     /// Dispatch queued events to their blocks until the queue is empty.
@@ -301,7 +385,36 @@ impl Engine {
         state: &mut ProcessState,
         block_executions: &mut Vec<foundry_sdk::trace::BlockExecution>,
     ) {
-        while let Some(current) = state.queue.pop() {
+        while !state.queue.is_empty() {
+            // Stage every currently available root before awaiting any one of
+            // them. A nightly scatter therefore appears in the durable queue
+            // in full even when its first project is busy or held.
+            let mut runnable = Vec::new();
+            for current in std::mem::take(&mut state.queue) {
+                let decision = self.admission.as_ref().map_or_else(
+                    || Ok(Admission::Execute),
+                    |admission| admission.prepare(&current, state.owner.as_deref()),
+                );
+                match decision {
+                    Ok(Admission::Execute) => runnable.push(current),
+                    Ok(Admission::Deferred { id, submitted }) => {
+                        if let Some(event) = submitted {
+                            self.emitter.persist_one(&event);
+                            state.all_events.push(*event);
+                        }
+                        if current.id == state.root_id
+                            || (current.gather_id.is_some() && state.owner.is_none())
+                        {
+                            state.deferred.push((current, id));
+                        }
+                    }
+                    Err(error) => self.refuse(&current, &error, state, block_executions),
+                }
+            }
+            state.queue = runnable;
+            let Some(current) = state.queue.pop() else {
+                break;
+            };
             let matching: Vec<&dyn TaskBlock> = self
                 .blocks
                 .iter()
@@ -331,6 +444,12 @@ impl Engine {
     pub fn list_blocks(&self) -> Vec<(&str, &[EventType])> {
         self.blocks.iter().map(|b| (b.name(), b.sinks_on())).collect()
     }
+}
+
+fn admission_failure(event: &Event, error: &anyhow::Error, executions: &mut Vec<BlockExecution>) {
+    let mut execution = BlockExecution::new("Work admission", &event.id, 0, event.payload.clone());
+    execution.summary = format!("work admission failed: {error}");
+    executions.push(execution);
 }
 
 /// Why each child of a fan-out stopped, keyed by `(gather_id, project)`: the

@@ -374,6 +374,13 @@ pub fn repository_key(registry: &Registry, project: &str) -> String {
     )
 }
 
+fn repositories(item: &WorkItem, repository_of: &dyn Fn(&str) -> String) -> Vec<String> {
+    std::iter::once(&item.project)
+        .chain(&item.reserved_projects)
+        .map(|project| repository_of(project))
+        .collect()
+}
+
 /// Decide every `queued` item in `items`, in priority order.
 ///
 /// `repository_of` maps a project to the repository it mutates (see
@@ -389,10 +396,12 @@ pub fn evaluate(
     repository_of: &dyn Fn(&str) -> String,
 ) -> Vec<Verdict> {
     let mut busy: HashMap<String, String> = HashMap::new();
-    for item in items.iter().filter(|item| item.is_running()) {
-        busy.entry(repository_of(&item.project)).or_insert_with(|| item.id.clone());
+    for item in items.iter().filter(|item| item.occupies_slot()) {
+        for repository in repositories(item, repository_of) {
+            busy.entry(repository).or_insert_with(|| item.id.clone());
+        }
     }
-    let mut running = items.iter().filter(|item| item.is_running()).count();
+    let mut running = items.iter().filter(|item| item.occupies_slot()).count();
 
     let mut candidates: Vec<&WorkItem> = items.iter().filter(|item| item.is_queued()).collect();
     candidates.sort_by(|left, right| {
@@ -405,10 +414,12 @@ pub fn evaluate(
 
     let mut verdicts = Vec::with_capacity(candidates.len());
     for item in candidates {
-        let repository = repository_of(&item.project);
-        let decision = decide(item, items, &busy, running, limits, pauses, now, &repository);
+        let repositories = repositories(item, repository_of);
+        let decision = decide(item, items, &busy, running, limits, pauses, now, &repositories);
         if decision == Decision::Start {
-            busy.insert(repository, item.id.clone());
+            for repository in repositories {
+                busy.insert(repository, item.id.clone());
+            }
             running += 1;
         }
         verdicts.push(Verdict {
@@ -470,14 +481,14 @@ pub fn snapshot(
     let entry = |item: &WorkItem, since: Option<DateTime<Utc>>| SnapshotItem {
         id: item.id.clone(),
         project: item.project.clone(),
-        repository: repository_of(&item.project),
+        repository: repositories(item, repository_of).join(", "),
         kind: item.kind,
         lane: item.lane,
         state: item.state,
         reason: item.reason.clone(),
         since,
     };
-    let mut running: Vec<&WorkItem> = items.iter().filter(|item| item.is_running()).collect();
+    let mut running: Vec<&WorkItem> = items.iter().filter(|item| item.occupies_slot()).collect();
     running.sort_by(|left, right| (left.started_at, &left.id).cmp(&(right.started_at, &right.id)));
     let mut queued: Vec<&WorkItem> = items.iter().filter(|item| item.is_queued()).collect();
     queued.sort_by(|left, right| {
@@ -511,7 +522,7 @@ fn decide(
     limits: &Limits,
     pauses: &PauseState,
     now: DateTime<Utc>,
-    repository: &str,
+    repositories: &[String],
 ) -> Decision {
     // A dependency that can never land takes the item out of the queue
     // whatever else holds it: waiting would not change the answer.
@@ -525,7 +536,7 @@ fn decide(
             }
         }
     }
-    if let Some(holder) = busy.get(repository) {
+    if let Some(holder) = repositories.iter().find_map(|repository| busy.get(repository)) {
         return Decision::Wait(repository_busy(holder));
     }
     if running >= limits.max_running {
@@ -1023,5 +1034,35 @@ mod tests {
         assert_eq!(repository_key(&registry, "alpha-docs"), "owner/alpha");
         assert_eq!(repository_key(&registry, "beta"), "/src/beta");
         assert_eq!(repository_key(&registry, "unknown"), "unknown");
+    }
+    #[test]
+    fn system_workflows_share_output_resources_and_use_host_capacity() {
+        let items = [
+            queued("wi_digest", "system", WorkLane::Maintenance, 1),
+            queued("wi_summary", "system", WorkLane::Maintenance, 2),
+        ];
+        let verdicts = evaluate(
+            &items,
+            &Limits { max_running: 2 },
+            &PauseState::default(),
+            at(30),
+            &str::to_string,
+        );
+        assert_eq!(verdicts[0].decision, Decision::Start);
+        assert_eq!(verdicts[1].decision, Decision::Wait(repository_busy("wi_digest")));
+        let limited = evaluate(
+            &items,
+            &Limits { max_running: 1 },
+            &PauseState::default(),
+            at(30),
+            &str::to_string,
+        );
+        assert_eq!(limited[1].decision, Decision::Wait(repository_busy("wi_digest")));
+        assert!(
+            snapshot(&items, &Limits::default(), &PauseState::default(), &str::to_string)
+                .waiting
+                .iter()
+                .all(|item| item.repository == "system")
+        );
     }
 }

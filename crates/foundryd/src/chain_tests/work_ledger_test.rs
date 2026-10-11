@@ -234,12 +234,60 @@ fn register_other_repository(dir: &Path, registry: &Arc<RwLock<Registry>>) {
     registry.projects.push(other);
 }
 
+/// Legacy recorder fixtures still admit synchronously. Retain durable owner
+/// validation and traversal completion while those fixtures are migrated.
+struct LegacyExecutionCompletion(crate::work_admission::DurableWorkAdmission);
+impl foundry_engine::admission::WorkAdmission for LegacyExecutionCompletion {
+    fn wake_handle(&self) -> Arc<tokio::sync::Notify> {
+        self.0.wake_handle()
+    }
+    fn failure_events(&self, root: &Event, reason: &str) -> Vec<Event> {
+        self.0.failure_events(root, reason)
+    }
+    fn owner(&self, root: &Event) -> anyhow::Result<Option<String>> {
+        self.0.owner(root)
+    }
+    fn prepare(
+        &self,
+        _event: &Event,
+        _owner: Option<&str>,
+    ) -> anyhow::Result<foundry_engine::admission::Admission> {
+        Ok(foundry_engine::admission::Admission::Execute)
+    }
+    fn wait(&self, id: &str) -> foundry_engine::admission::ResultFuture<'_> {
+        self.0.wait(id)
+    }
+    fn complete(
+        &self,
+        root: &Event,
+        result: &foundry_sdk::trace::ProcessResult,
+    ) -> anyhow::Result<Vec<Event>> {
+        self.0.complete(root, result)
+    }
+}
+
 /// The ledger blocks that bracket the task chain.
 fn register_ledger_blocks(
     engine: &mut Engine,
     store_path: &Path,
     registry: &Arc<RwLock<Registry>>,
 ) {
+    let dir = store_path.parent().unwrap();
+    let writer = Arc::new(foundry_engine::event_writer::EventWriter::new(dir.join("events")));
+    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    let completion = LegacyExecutionCompletion(crate::work_admission::DurableWorkAdmission::new(
+        store_path.to_path_buf(),
+        registry.clone(),
+        pacing_paths_beside(store_path),
+        event_tx,
+        writer.clone(),
+        Arc::new(foundry_blocks::trace_writer::TraceWriter::new(
+            dir.join("traces").to_str().unwrap(),
+        )),
+    ));
+    *engine = std::mem::take(engine)
+        .with_event_writer(writer)
+        .with_work_admission(Arc::new(completion));
     engine.register(Box::new(foundry_blocks::blocks::AdmitWorkItem::new(
         store_path.to_path_buf(),
         registry.clone(),

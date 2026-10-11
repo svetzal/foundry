@@ -7,6 +7,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- All engineering workflows now enter the same durable queue before execution.
+  Manual and nightly maintenance, campaign formation, releases, remediation,
+  iteration, validation, supply-chain scans and digest agents obey the shared
+  host cap and repository ownership. Downstream steps retain ownership through
+  installation and cleanup. Independent derived tasks queue before it releases.
+  Dry runs also queue because observers can invoke agents or checks. Mutator
+  simulation stays active, and the settlement reason identifies the dry run.
+- The nightly stages all project roots before waiting. Queued and held children
+  survive restart and recovery rejoins their gather. Cancellation publishes a
+  typed failed terminal so watchers and the maintenance cycle complete honestly.
+- Supply-chain auto-fix reserves all active repositories for its sequential scan.
+  A busy repository delays the scan instead of being skipped. Audit-only scans
+  consume a system slot without project reservations.
+
+### Compatibility
+
+- The new `workflow` work-item kind and persisted start evidence extend the
+  ledger schema. Older binaries cannot read records with this kind. Preserve
+  the ledger and event stream before promotion. Prefer a forward fix after new
+  work is admitted; do not discard queue records to permit a binary rollback.
+
 ## [0.42.1] - 2026-10-10
 
 ### Changed

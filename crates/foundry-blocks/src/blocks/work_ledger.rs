@@ -112,7 +112,7 @@ fn classify_dispatch(
 /// majors lane names the sentinel that fired the nightly. A root that names
 /// none (a raw emit, an older client) records none. The reason it waits with
 /// is the caller's to set, from the ledger it is admitted into.
-fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
+pub fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) -> WorkItem {
     let (kind, lane, origin) = classify(
         &payload.prompt,
         payload.chain.campaign.as_deref(),

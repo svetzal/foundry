@@ -84,7 +84,7 @@ impl RemediateSupplyChain {
             registry,
             shell,
             scanner: Arc::new(crate::gateway::ProcessScannerGateway),
-            enabled: remediation_enabled_from_env(),
+            enabled: supply_chain_remediation_enabled(),
         }
     }
 
@@ -119,7 +119,7 @@ impl RemediateSupplyChain {
 /// The auto-fix engine ships dark: it acts only when this env var is truthy,
 /// so it stays inert on every install until deliberately switched on — even
 /// under `Full` throttle.
-fn remediation_enabled_from_env() -> bool {
+pub fn supply_chain_remediation_enabled() -> bool {
     std::env::var("FOUNDRY_SUPPLY_CHAIN_REMEDIATE").is_ok_and(|v| {
         matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     })

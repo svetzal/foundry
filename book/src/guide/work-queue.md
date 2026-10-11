@@ -28,16 +28,21 @@ The ledger lives in a single JSON file, `~/.foundry/work-items.json`
 authoritative: every mutation loads the file, applies the change, and saves it
 through a same-directory temp-file rename.
 
-## The six kinds
+## The seven kinds
 
-| Kind | What it is | Recorded at | Settled from |
-|------|------------|-------------|--------------|
-| `task` | A one-shot `foundry task` execution | `ExecutionRequested` | `TaskRunCompleted` |
-| `campaign_cycle` | One cycle of a durable campaign | `ExecutionRequested` | `TaskRunCompleted` |
-| `major_upgrade` | A major dependency upgrade from the nightly majors lane | `ExecutionRequested` | `TaskRunCompleted` |
-| `maintenance` | A per-project maintenance run | `ProjectRunStarted` | `ProjectRunCompleted` |
-| `release` | A release run | `ReleaseRequested`, or a clean `MainBranchAudited` | `ReleaseCompleted` |
-| `remediation` | A pipeline or vulnerability remediation run | a dirty `MainBranchAudited`, or a failing `PipelineChecked` | `RemediationCompleted` |
+| Kind | What it is | Admitted root | Settlement |
+|------|------------|---------------|------------|
+| `task` | A one-shot task | Task `ExecutionRequested` | Typed `TaskRunCompleted` |
+| `campaign_cycle` | One campaign cycle | Task `ExecutionRequested` | Typed `TaskRunCompleted` |
+| `major_upgrade` | A nightly major upgrade | Task `ExecutionRequested` | Typed `TaskRunCompleted` |
+| `maintenance` | A project maintenance run | `ProjectRunStarted`, `ProjectMaintenanceRequested` | Whole project traversal |
+| `release` | A release | `ReleaseRequested` | Release, pipeline and installation traversal |
+| `remediation` | Pipeline or vulnerability work | Pipeline and vulnerability roots | Whole remediation traversal |
+| `workflow` | Other engineering work, including agents | Iteration, validation, formation, digest, summary and scan roots | Whole traversal |
+
+Task settlement retains its typed verdict. Its execution slot stays occupied
+until task cleanup finishes. Other kinds settle after the whole traversal.
+A release reached during remediation uses that root's existing ownership.
 
 ## The three lanes
 
@@ -102,15 +107,14 @@ dispatcher, and, for a campaign, the `cycle` number:
 | `campaign` | the campaign name | a campaign advance dispatches a cycle; `cycle` is the cycle number, whoever asked for the advance |
 | `sentinel` | the sentinel name | a sentinel-fired chain dispatches an item: the nightly's per-project maintenance runs, its majors-lane upgrades, a remediation or release it reaches |
 | `operator` | the hostname of the CLI that asked | `foundry task`, `foundry iterate`, `foundry run`, `foundry release`, `foundry pipeline`, and any item a chain they start reaches |
-| `work_item` | the parent item id | an item created from another item: a `queue resume` child or a nightly continuation (its `resumes` link is unchanged), or a release cut after a remediation on the same run |
+| `work_item` | the parent item id | an item created from another item: a `queue resume` child or a nightly continuation (its `resumes` link is unchanged) |
 
 The kinds are a closed enum; adding one is a code change, never a free
 string. The source travels on the event envelope: whatever emits a root event
 names it there, and every event below the root inherits it verbatim (see
 [Tracing](../architecture/tracing.md)), which is how a per-project run three
 hops below the nightly's root still knows which sentinel fired it. A release
-that follows a remediation is the one case resolved from the ledger instead:
-the newest remediation item on the same trace and project is its parent.
+that follows remediation retains the root's source and execution slot.
 
 An item recorded before the source existed has none, and so does one whose
 root named none (a raw `foundry emit`). Every reader treats that as **not
@@ -154,12 +158,9 @@ which is why the ledger says an item **settles** rather than completes.
 carrying something for you to discharge. `foundry queue open` is exactly that
 set.
 
-Task-shaped work (`task`, `campaign_cycle`, `major_upgrade`, and a `queue
-resume` child) enters the ledger `queued` and starts only when the pacing
-scheduler says it may; its `reason` names what it waits on, or `ready`. Run-shaped
-work (`maintenance`, `release`, `remediation`) is already under way when it is
-recorded, so it goes straight to `running`. The `submitted` state exists in the
-model and is rendered, but in practice you will rarely catch an item in it.
+Every kind enters `queued` and starts only when the shared scheduler permits.
+Its `reason` names what it waits on, or says `ready`. The `submitted` state
+exists in the model, but normal admission records the queued state directly.
 
 Queued and held items survive a daemon restart as they are: the scheduler reads
 them back off the ledger and picks up where it left off.
@@ -286,14 +287,14 @@ event log (`FOUNDRY_EVENTS_DIR`, one `YYYY-MM.jsonl` file per month) through the
 daemon's `ListWorkItemEvents` RPC, and are:
 
 - **selected by the item's id in the event payload** — never by trace or
-  project. One maintenance run can hold a `maintenance`, a `remediation` and a
-  `release` item on the same trace and project; each shows only its own events.
+  project. Multiple independently queued roots can share a trace and project;
+  each shows only its own events.
 - **read from every monthly file**, however old, so an item from last year still
   shows its history rather than a false "no events".
 - **in chronological order** — oldest first, ties in the order they were logged.
 
 An item with no events in the log (or no event log at all) prints
-`  (no events)` under the heading rather than nothing. A line in the log that is
+`(no events)` under the heading rather than nothing. A line in the log that is
 not valid JSON — or that holds two events run together — is skipped with a
 warning in the daemon log; the item's other events are still shown. A fault
 reading the log itself is an error, never an empty history.
@@ -380,7 +381,6 @@ differs from the online path only in transport, never in reading order.
   parse failure.
 - `--source` applies the same exact-match selection to the file the daemon
   applies to its store, so a filtered `--offline` read lists the same items.
-
 
 ### Close or cancel an item
 
@@ -526,11 +526,37 @@ running work. To stop an in-flight campaign cycle use `foundry campaign cancel
 
 ## Pacing
 
-Pacing is the stage between a work item's admission and its start. Every
-task-shaped item (`foundry task`, a campaign cycle, a nightly majors-lane
-upgrade, a `queue resume` child) is recorded `queued` with a reason, and a
-scheduler inside `foundryd` starts it when the rules allow. Run-shaped work is
-not paced, but a running maintenance item still occupies its repository.
+Pacing is the stage between admission and execution. Every engineering workflow
+enters the same durable queue before any block runs. This includes manual and
+nightly maintenance, tasks, campaign formation and cycles, iteration, validation,
+releases, remediation, supply-chain scans, and agents that write digests.
+Raw emitted events pass through the same boundary.
+
+The nightly records all project roots before it waits for their results.
+Queued or held maintenance remains outstanding in its cycle's gather. A restart
+rejoins these roots. Cancellation produces a failed project completion, so the
+cycle reports what stopped instead of reporting success.
+
+One admitted root owns its downstream workflow through release installation
+and task cleanup. Those continuations use the existing slot. Independent tasks
+and campaign advances enter the queue before their parent releases its slot;
+they cannot deadlock by waiting inside that parent.
+
+System digests and maintenance summaries consume host capacity without locking
+project repositories. They share a system resource lock so concurrent digests
+cannot overwrite shared output files or watermarks. A supply-chain scan with auto-fix enabled reserves every
+active repository it can change. The current scanner handles those projects
+sequentially and writes one aggregate digest. This conservative reservation can
+wait behind a busy repository; it never skips that repository. With auto-fix
+disabled, the scan consumes only a system slot.
+
+Dry runs use the same queue because observers can run agents or checks.
+Mutators remain simulated, and the settlement reason says
+`dry-run completed; mutations simulated`. Lightweight status,
+work reconciliation and operator controls remain immediate. Submission and
+start lifecycle writes must succeed before execution begins. The scheduler
+validates the complete persisted root; a payload with an item id cannot grant
+execution ownership.
 
 ### The rules
 
@@ -539,8 +565,8 @@ starts the first items the rules let through:
 
 1. **One mutating item per repository.** A repository is the registered GitHub
    slug, or the registered checkout path when there is no slug, so two projects
-   on one slug share a repository. A running item of any kind, maintenance
-   included, occupies it.
+   on one slug share a repository. An admitted workflow
+   occupies it until all its side effects finish.
 2. **Host running cap.** At most `max_running` items (default 2) run on the
    host at once, whatever their lane.
 3. **`not_before` has passed.**

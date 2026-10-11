@@ -9,6 +9,7 @@
 //! lets new blocks and workflows plug in without touching the engine.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod admission;
 pub mod dispatch;
 pub mod emit;
 pub mod engine;

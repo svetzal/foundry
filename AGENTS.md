@@ -84,8 +84,9 @@ argument is a usage error (non-zero exit). To check the installed version,
 nightly, the sentinels, the work-item ledger and every registered project's
 tasks and campaigns. Reach it over SSH: `ssh mojility-ops-01.local foundry
 queue`. The daemon on the Mac (`com.mojility.foundryd` under launchd, its own
-`~/.foundry`) is the **development daemon**, and plain `foundry` on the Mac
-targets it; the Mac carries no `FOUNDRY_DAEMON_ADDR`.
+`~/.foundry`) is the **development daemon**. An inherited
+`FOUNDRY_DAEMON_ADDR` can target production. Pass
+`--addr http://127.0.0.1:50051` explicitly for Mac sandbox commands.
 
 The development daemon is synthetic. Its registry holds only sandbox projects
 under `~/.foundry/sandbox/`, seeded by `scripts/dev-home.sh`: today
@@ -115,8 +116,8 @@ Work on Foundry itself happens on the Mac and is promoted to ops-01
 - Promote by the manual release procedure under "CI / Release". The quiet
   point is made, not found: `foundry pacing drain` on ops-01 holds every lane
   and waits for running work to settle, the restart follows, and
-  `foundry pacing resume --lane all` lifts the hold. Never during the 02:00
-  UTC nightly.
+  `foundry pacing resume --lane all` lifts the hold. Do this outside the configured nightly maintenance window
+  (02:00 in the daemon timezone).
 - **Never dispatch a `foundry task` or a campaign against the `foundry`
   project on the production daemon.** A Foundry change produced by production
   Foundry means a daemon restart under other projects' running work, and a
@@ -661,20 +662,47 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 
 - `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
 - `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; owned by `foundryd` for normal online reads and mutations, with direct file access reserved for explicit `--offline` recovery
-- `~/.foundry/work-items.json` — the work-item ledger: one durable record per unit of work Foundry dispatched, with its kind, lane, origin, typed source, state and settlement disposition. The source (`foundry_sdk::work_source::WorkSource`) is a closed enum — `campaign` (name, with the cycle number), `sentinel` (name), `operator` (the submitting CLI's hostname), `work_item` (the parent item id: a resume child, or a release cut after a remediation on the same trace) — recorded at submission beside the opaque `origin` and never changed. It rides the `Event` envelope (`Event::source`), stamped on the root by whatever emits it and propagated set-if-unset like `trace_id`/`gather_id`, so the recording blocks read it off the event that opens the item's chain; a root that names none (a raw `foundry emit`, a pre-source record) leaves it absent, and every reader treats absence as "not recorded". All six kinds are recorded, each from the root of its own chain and settled from that chain's own typed terminal:
+- `~/.foundry/work-items.json` — one durable queue for all engineering workflows.
+  Every root enters `queued` before blocks run, including raw emitted roots.
+  The engine admission boundary shares the scheduler's ledger write gate.
+  Submission and start lifecycle writes must succeed before dispatch.
+  The complete persisted `started_root` proves execution ownership; a payload
+  with `admitted_work_item_id` alone is insufficient.
 
-  | Kind | Recorded at | Settled from |
-  |------|-------------|--------------|
-  | `task` | `ExecutionRequested` (`foundry task`) | `TaskRunCompleted` |
-  | `campaign_cycle` | `ExecutionRequested` (a campaign cycle) | `TaskRunCompleted`, or `CampaignCancelled` with `terminated_now` |
-  | `major_upgrade` | `ExecutionRequested` (nightly majors lane) | `TaskRunCompleted` |
-  | `maintenance` | `ProjectRunStarted` inside a cycle's fan-out | `ProjectRunCompleted` |
-  | `release` | `ReleaseRequested`, or a clean `MainBranchAudited` | `ReleaseCompleted` |
-  | `remediation` | a dirty `MainBranchAudited`, or a failing `PipelineChecked` | `RemediationCompleted` |
+  | Kind | Root | Completion |
+  |------|------|------------|
+  | `task`, `campaign_cycle`, `major_upgrade` | Task `ExecutionRequested` | Typed `TaskRunCompleted`, with slot retained through cleanup |
+  | `maintenance` | `ProjectRunStarted`, `ProjectMaintenanceRequested` | Whole project traversal |
+  | `release` | `ReleaseRequested` | Whole release, pipeline and installation traversal |
+  | `remediation` | Vulnerability and pipeline roots | Whole remediation traversal |
+  | `workflow` | Iteration, validation, campaign formation, summaries, scans, digests and other roots | Whole traversal |
 
-  Recording begins at the **root** of each chain — for a task, the `ExecutionRequested` itself, not preflight — so a dispatch that stops early (a failed charter check, a failed preflight) is still in the ledger and is settled `failed` with that event's own reason. Whether a run-shaped root is recorded is decided by the same predicate the dispatching block's `accepts()` already uses, so an item exists exactly when the run does; a `DryRun` throttle records nothing. Daemon-owned and authoritative — every mutation loads the file, applies the change, and saves it through a same-directory temp-file rename, and every mutation in the daemon process takes the one shared ledger write gate (`foundry_sdk::work_item::ledger_write_gate`) so concurrent workflows cannot interleave a load→modify→save and lose a write. Settlement correlation differs by shape: a task-shaped result correlates by `trace_id` alone (a result naming a trace no running task-shaped item carries settles nothing, and the project-newest-running fallback applies only to a result carrying no trace at all), while a run-shaped terminal correlates on trace, project *and* kind — a cycle's fan-out siblings share one trace, and one per-project run can hold a `maintenance`, a `remediation` and a `release` item at once on that same trace and project. `ReleasePipelineCompleted` and `LocalInstallCompleted` are downstream observation of an already-settled release and change no item. On daemon start every item still `running` is settled `failed` with the reason `daemon restarted`. Owner `queue close`/`queue cancel` settle by exact id independently of chain terminals, preserving original identity and disposition. A `campaign cancel --now` also settles outside its chain's terminal: the abort means no `TaskRunCompleted` will ever arrive, so `DisposeCampaignWork` settles the item carrying the aborted workflow's trace (`CampaignCancelledPayload::aborted_trace_id`) `cancelled` with the operator's `--reason`, recording the disposal it just observed, and emits `work_item_cancelled` on that same trace. It settles there rather than in the `CancelCampaign` RPC because that is the one place the disposal outcome is known; correlation is by trace alone with no project-newest fallback, and a ledger fault never fails the cancellation
+  Downstream steps on an owned repository reuse the root's slot. Independent
+  tasks and campaign advances queue before the parent releases its slot.
+  The nightly stages every project before waiting for gathered results.
+  Queued and held items survive restart. Recovery rejoins their maintenance
+  gathers instead of closing them as interrupted. Cancellation emits a typed
+  failed terminal. Items interrupted during execution settle `failed` with
+  `daemon restarted`. Dry runs also queue because observers can run agents or checks. Mutator
+  simulation remains active; successful dry-run records say
+  `dry-run completed; mutations simulated`. Lightweight control queries,
+  reconciliation and operator controls remain immediate.
+
+  Source, trace, span and gather membership survive admission and dispatch.
+  Typed task settlement retains supersession and preservation evidence.
+  System digest and summary agents consume host capacity and share a system
+  resource lock for their output files. They do not lock project repositories.
+  Supply-chain auto-fix reserves all active project repositories for
+  its sequential scan and aggregate digest. This can delay the whole scan;
+  no busy project is omitted. Audit-only scans use a system slot.
+
+  The `workflow` kind is new in 0.43. Older binaries cannot read its ledger
+  records. Save the pre-upgrade ledger and events before promotion. After new
+  work is admitted, prefer a forward fix. Do not roll back by deleting queued
+  records or restoring an old ledger over new work.
+
 - `~/.foundry/pacing.json` — operator-edited pacing limits: `{"max_running": 2}` (the host running cap). Missing means the defaults; malformed falls back to the defaults with a warning. Read on every scheduler tick and every `GetPacing`; never written by the daemon.
-- `~/.foundry/pacing-state.json` — daemon-owned pause state: `{"version": 1, "paused": ["campaign"]}` in lane order. Written by `PausePacing`/`ResumePacing` through an atomic rename; in force after a restart. A malformed file fails closed: every lane is treated as paused until repaired. The scheduler (`foundryd::pacing::PacingScheduler`) ticks under the ledger write gate: it loads the ledger and both files, runs the pure rules in `foundry_sdk::pacing::evaluate` (dependency settled non-landed or unknown → `needs_decision` first; then repository busy → host at capacity → not before → waits on → lane paused → start; interactive lane first, then oldest submission), saves the ledger once, then announces `work_item_started`/`work_item_settled` and dispatches each started root through `spawn_workflow`. It wakes on every `work_item_*`/`pacing_*` broadcast event, on the resume-admission wake handle, at the earliest `not_before`, and every 15 s. Admission is `AdmitWorkItem` (engine block, `ExecutionRequested` roots that `awaits_admission`) and `admit_resume` (the resume RPC); the started root is a fresh `ExecutionRequested` carrying `admitted_work_item_id`, which `CheckCharter` requires before it accepts a task-shaped root.
+- `~/.foundry/pacing-state.json` — daemon-owned pause state: `{"version": 1, "paused": ["campaign"]}` in lane order. Written by `PausePacing`/`ResumePacing` through an atomic rename; in force after a restart. A malformed file fails closed: every lane is treated as paused until repaired. The scheduler (`foundryd::pacing::PacingScheduler`) ticks under the ledger write gate: it loads the ledger and both files, runs the pure rules in `foundry_sdk::pacing::evaluate` (dependency settled non-landed or unknown → `needs_decision` first; then repository busy → host at capacity → not before → waits on → lane paused → start; interactive lane first, then oldest submission), saves the ledger once, then announces `work_item_started`/`work_item_settled` and dispatches each started root through `spawn_workflow`. It wakes on every `work_item_*`/`pacing_*` broadcast event, on the resume-admission wake handle, at the earliest `not_before`, and every 15 s. Admission is `DurableWorkAdmission` at the engine routing boundary and `admit_resume` for preserved task continuations. The scheduler retains each exact started root as durable ownership proof. It starts the original event type on the same source, trace and gather. `CheckCharter` also requires the marker for task roots.
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)
