@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-10
+
 ### Changed
 
 - All engineering workflows now enter the same durable queue before execution.
