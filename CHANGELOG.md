@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.4] - 2026-10-11
+
 ### Fixed
 
 - A task or campaign cycle in a repository whose `.gitignore` ignores
