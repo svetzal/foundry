@@ -662,8 +662,9 @@ is unreadable. Rejected advances and no-op advances do not mutate either store.
 **CLI:** `foundry campaign advance <name>` routes through this RPC by default.
 The online CLI prints the returned root `event_id`, watches the daemon-owned
 workflow stream for that advance's own trace only, stops at its
-`campaign_advance_completed` (or at its work item's settlement when the
-formed outcome was discarded), and renders the daemon trace for that event.
+`campaign_advance_completed` (a decision, or `stood_down` when the campaign
+was stopped first; or its work item's settlement when the advance failed
+without one), and renders the daemon trace for that event.
 For a no-op it prints one line naming the in-flight work and the command to
 inspect it, and exits 0 without watching. It does not re-read
 `FOUNDRY_CAMPAIGNS_PATH`.

@@ -260,7 +260,9 @@ definition schema and lifecycle.
 `advance` has no offline formation path. It re-runs campaign done-evidence
 against delivered trunk, inspects recent objective history and accumulated
 preserved work, and chooses exactly one of done, one next objective, or
-escalation. A dispatched task runs the project's resolved gates in its isolated
+escalation. An advance whose campaign is paused, cancelled, completed or
+escalated before its outcome applies stands down instead (`stood_down`), and
+its work item settles `landed`. A dispatched task runs the project's resolved gates in its isolated
 worktree; campaign gate commands are not copied into task acceptance evidence.
 
 Each advance prints and watches a root event ID. Its events carry trace and span

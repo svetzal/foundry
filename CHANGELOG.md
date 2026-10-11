@@ -30,8 +30,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   whole project and stopped at the first `campaign_advance_completed`, so on
   2026-10-11 two clients printed and exited on another campaign's formation.
   It now follows the advance's own trace and also stops when its work item
-  settles without a campaign event, which is what an advance whose formed
-  outcome was discarded produces.
+  settles without a campaign event, which is what an advance that fails
+  without one produces (one whose campaign changed during every formation).
 
 - A campaign formation no longer blocks every other campaign. On 2026-10-11
   five concurrent `foundry campaign advance` calls on production, one per
@@ -44,15 +44,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
   sections: it records the arriving run result and saves it, releases the
   lock, runs the gates and agent, then locks again and applies the outcome
   only if the campaign record is unchanged since it read it. A campaign paused,
-  cancelled, completed or escalated while it formed keeps that status and the
-  outcome is discarded without events. A campaign edited in any other way
-  keeps the edit, and the advance reports failure so its work item shows in
-  `foundry queue open`; run `campaign advance` again to form from the current
-  record. The process-wide mutex is now one mutex per campaign, so different
-  campaigns form at the same time and one campaign never forms twice at once.
-  Tests in `crates/foundryd/tests/campaign_advance_concurrency.rs` reproduce
-  the hang.
-
+  cancelled, completed or escalated while it formed keeps that status, the
+  outcome is discarded, and the advance stands down (see the next entry). A
+  campaign edited in any other way (a budget or mission change) keeps the
+  edit, and the advance forms again from the edited record, still holding
+  that campaign's formation lock. The second pass re-runs every check the
+  first made, so a budget cut mid-formation is enforced; it records the
+  arriving run result only once, so no cycle is counted twice. After three
+  formations that each found the record changed, the advance fails with a
+  summary that says so, and its work item shows in `foundry queue open`. The
+  process-wide mutex is now one mutex per campaign, so different campaigns
+  form at the same time and one campaign never forms twice at once. Tests in
+  `crates/foundryd/tests/campaign_advance_concurrency.rs` reproduce the hang.
+- An advance that stands down because its campaign was stopped now settles
+  `landed`, not `failed`. Before, an advance that found its campaign paused or
+  cancelled (when the cycle's result arrived, or while it formed) emitted no
+  `campaign_advance_completed`, so the work-item ledger settled it `failed`
+  and `foundry queue open` listed it as needing a person, although it had done
+  what the operator asked. It now emits `campaign_advance_completed` with
+  `decision: "stood_down"`, `campaign_status` (the status that stopped it) and
+  a `reason`. A stand-down dispatches nothing, changes no status and counts no
+  cycle; a cancelled campaign stays `cancelled` and a paused campaign keeps the
+  arriving result pending for the advance after `resume`. The same applies
+  when the campaign was completed or escalated while it formed. The payload
+  also gains `success`: `true` for a decision or a stand-down, `false` for a
+  fault (campaign store unreadable, save failed, campaign missing). Those
+  faults emitted an `escalate` completion with no `success` field, so their
+  work items settled `landed`; they now settle `failed`. Events written before
+  the field read as `success: true`. `failed` is now reserved for faults.
 - The work-item ledger no longer reports a workflow that succeeded as failed
   because it read the workflow's result while it was being written. The
   ledger and the trace store both write `{root}.json` for a started root, and

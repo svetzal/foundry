@@ -56,6 +56,9 @@ pub struct FormationDecisionReport {
     pub event_id: String,
     pub trace_id: String,
     pub occurred_at: String,
+    /// `done`, `advance` or `escalate`; or `stood_down` for an advance that
+    /// applied nothing because the campaign was stopped first. A stand-down
+    /// dispatched no cycle.
     pub decision: String,
     pub reason: String,
     pub last_task_run_event_id: Option<String>,

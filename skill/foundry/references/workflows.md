@@ -164,9 +164,11 @@ Online reads and mutations render daemon-owned responses directly rather than
 re-reading `FOUNDRY_CAMPAIGNS_PATH`. Each decision reloads the durable campaign
 record under the store lock, releases the lock while the gates and agent run,
 and applies its outcome only if the record is unchanged when it locks again.
-A campaign paused, cancelled or edited meanwhile keeps that change and the
-outcome is discarded. One campaign forms at a time; different campaigns form
-concurrently.
+A campaign paused, cancelled, completed or escalated meanwhile keeps that
+status and the advance stands down (`decision: "stood_down"`, item settles
+`landed`). A campaign edited in any other way keeps the edit and forms again
+from it, up to three formations; past that the advance fails. One campaign
+forms at a time; different campaigns form concurrently.
 
 ```text
 CampaignAdvanceRequested {campaign, run_event_id?, run_result?}
@@ -180,9 +182,10 @@ CampaignAdvanceRequested {campaign, run_event_id?, run_result?}
        │              └─ TaskRunCompleted
        │                   └─ RequestCampaignAdvance
        │                        └─ CampaignAdvanceRequested
-       └─ [escalate] CampaignAdvanceCompleted {decision: "escalate"}
-            └─ CampaignEscalated
-                 └─ SurfaceCampaignTerminal → OpsDigestStarted {forced_event}
+       ├─ [escalate] CampaignAdvanceCompleted {decision: "escalate"}
+       │    └─ CampaignEscalated
+       │         └─ SurfaceCampaignTerminal → OpsDigestStarted {forced_event}
+       └─ [stopped] CampaignAdvanceCompleted {decision: "stood_down", campaign_status}
 ```
 
 The decision block checks live repository state, neutral context files, typed
@@ -190,9 +193,11 @@ task results, and required done evidence. It cuts exactly one next objective.
 Campaign budget is spent only on dispatched tasks. A final budgeted task still
 receives completion evaluation; only an attempted additional dispatch escalates
 for budget exhaustion. Paused **and cancelled** campaigns record an in-flight
-result without advancing — that is the whole graceful-stop mechanism for
-`campaign cancel`: the running cycle finishes, its work is preserved as usual,
-and no successor is dispatched. `campaign cancel --now` instead aborts the
+result without advancing and the advance stands down — that is the whole
+graceful-stop mechanism for `campaign cancel`: the running cycle finishes, its
+work is preserved as usual, and no successor is dispatched. A stand-down
+settles its advance work item `landed`; `success: false` on
+`CampaignAdvanceCompleted` marks a fault and settles it `failed`. `campaign cancel --now` instead aborts the
 campaign's daemon task outright, which kills the running agent and leaves an
 orphaned worktree for `DisposeCampaignWork` to preserve or discard.
 Provider-unavailable failures pause without consuming a cycle;
