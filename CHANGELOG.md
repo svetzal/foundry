@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `FOUNDRY_GATE_TIMEOUT_SCALE` on the daemon stretches every gate timeout on
+  that host, both a gate's own `timeout` and the ten-minute default, so gate
+  files stay calibrated to the fastest development machine and a slower host
+  sets one factor (ops-01 uses `2.0`). Unset or invalid means `1.0`.
+
+### Changed
+
+- Foundry's own coverage gate may run for 40 minutes instead of 20.
+
 ## [0.44.1] - 2026-10-11
 
 ### Changed

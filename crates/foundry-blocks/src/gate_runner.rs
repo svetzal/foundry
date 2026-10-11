@@ -19,6 +19,46 @@ const DISABLE_CARGO_INCREMENTAL: (&str, &str) = ("CARGO_INCREMENTAL", "0");
 /// and other housekeeping, not builds. A gate that needs longer sets its own.
 pub const DEFAULT_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Environment variable that stretches every gate timeout on this host.
+///
+/// Gate files are written and calibrated on the fastest development machine;
+/// a slower host sets a factor (for example `2.0`) on its daemon instead of
+/// every repository carrying limits for the slowest host. Unset, empty,
+/// non-numeric or non-positive values mean `1.0`.
+pub const GATE_TIMEOUT_SCALE_ENV: &str = "FOUNDRY_GATE_TIMEOUT_SCALE";
+
+/// Parse a gate-timeout scale factor, falling back to `1.0` for anything that
+/// is not a finite positive number.
+#[must_use]
+pub fn parse_gate_timeout_scale(raw: Option<&str>) -> f64 {
+    raw.and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|f| f.is_finite() && *f > 0.0)
+        .unwrap_or(1.0)
+}
+
+/// The timeout a gate runs under: its own, or [`DEFAULT_GATE_TIMEOUT`], scaled
+/// by `factor`.
+#[must_use]
+pub fn effective_gate_timeout(
+    own: Option<std::time::Duration>,
+    factor: f64,
+) -> std::time::Duration {
+    own.unwrap_or(DEFAULT_GATE_TIMEOUT).mul_f64(factor)
+}
+
+fn host_gate_timeout_scale() -> f64 {
+    static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| {
+        let raw = std::env::var(GATE_TIMEOUT_SCALE_ENV).ok();
+        let set = raw.as_deref().is_some_and(|r| !r.trim().is_empty());
+        let valid = raw.as_deref().and_then(|r| r.trim().parse::<f64>().ok()).is_some_and(|f| f.is_finite() && f > 0.0);
+        if set && !valid {
+            tracing::warn!(value = ?raw, "{GATE_TIMEOUT_SCALE_ENV} is not a positive number; using 1.0");
+        }
+        parse_gate_timeout_scale(raw.as_deref())
+    })
+}
+
 /// Run all gates sequentially and return an aggregated result.
 ///
 /// Self-healing: when a gate fails and declares a `fix_command`, the runner runs
@@ -103,7 +143,7 @@ async fn run_command(
 ) -> (bool, String, i32) {
     let (key, value) = DISABLE_CARGO_INCREMENTAL;
     let env = [(key.to_string(), value.to_string())];
-    let timeout = timeout.or(Some(DEFAULT_GATE_TIMEOUT));
+    let timeout = Some(effective_gate_timeout(timeout, host_gate_timeout_scale()));
     match shell.run(working_dir, "sh", &["-c", command], Some(&env), timeout).await {
         Ok(r) => {
             let combined = format!("{}\n{}", r.stdout, r.stderr);
@@ -153,6 +193,32 @@ mod tests {
             timeout: None,
             fix_command: Some(fix.to_string()),
         }
+    }
+
+    #[test]
+    fn the_host_scale_stretches_both_default_and_own_timeouts() {
+        use std::time::Duration;
+        assert_eq!(effective_gate_timeout(None, 1.0), Duration::from_secs(600));
+        assert_eq!(effective_gate_timeout(None, 2.0), Duration::from_secs(1_200));
+        assert_eq!(
+            effective_gate_timeout(Some(Duration::from_secs(2_400)), 2.0),
+            Duration::from_secs(4_800)
+        );
+        assert_eq!(
+            effective_gate_timeout(Some(Duration::from_secs(60)), 1.5),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn a_missing_or_invalid_scale_is_one() {
+        assert!((parse_gate_timeout_scale(None) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some("")) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some("fast")) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some("0")) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some("-2")) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some("inf")) - 1.0).abs() < f64::EPSILON);
+        assert!((parse_gate_timeout_scale(Some(" 2.0 ")) - 2.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
