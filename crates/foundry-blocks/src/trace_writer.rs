@@ -22,13 +22,34 @@ impl TraceWriter {
     ///
     /// Creates the date directory if it does not yet exist.  Write failures
     /// are propagated to the caller; the caller may choose to log and ignore.
+    ///
+    /// The file is written beside its destination and renamed into place, so
+    /// a concurrent [`read`](Self::read) sees the previous file or this one,
+    /// never a truncated one. The work-item ledger and the trace store both
+    /// write a workflow's result under its root id, and the ledger reads it
+    /// back the moment it settles.
     pub fn write(&self, event_id: &str, result: &ProcessResult) -> Result<()> {
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let date = Utc::now().format("%Y-%m-%d").to_string();
         let dir = self.base_dir.join(&date);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{event_id}.json"));
         let json = serde_json::to_string_pretty(result)?;
-        std::fs::write(path, json)?;
+        // Not `.json`, so a listing never reads a file still being written.
+        let staging = dir.join(format!(
+            ".{event_id}.{}.{}.tmp",
+            std::process::id(),
+            WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&staging, json)?;
+        if let Err(error) = std::fs::rename(&staging, &path) {
+            if let Err(cleanup) = std::fs::remove_file(&staging) {
+                // Best-effort: the rename error below is the fault that
+                // matters; a stray staging file is skipped by every reader.
+                tracing::warn!(path = %staging.display(), error = %cleanup, "could not remove trace staging file");
+            }
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -169,6 +190,55 @@ mod tests {
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
     use foundry_sdk::trace::BlockExecution;
+
+    /// The work-item ledger reads a workflow's result back the moment it is
+    /// written, while the trace store may be writing the same file for the
+    /// same root. A reader must see the old file or the new one, never a
+    /// truncated one: a failed read makes the ledger's waiter synthesize a
+    /// failure terminal for a workflow that succeeded.
+    #[test]
+    fn a_reader_never_sees_a_half_written_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = std::sync::Arc::new(TraceWriter::new(dir.path().to_str().unwrap()));
+        let mut result = sample_result(EventType::CampaignAdvanceRequested, "p");
+        for _ in 0..200 {
+            result.events.push(Event::new(
+                EventType::CampaignAdvanceCompleted,
+                "p".to_string(),
+                Throttle::Full,
+                serde_json::json!({"reason": "x".repeat(200)}),
+            ));
+        }
+        let id = result.events[0].id.clone();
+        writer.write(&id, &result).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (0..2)
+            .map(|_| {
+                let writer = std::sync::Arc::clone(&writer);
+                let stop = std::sync::Arc::clone(&stop);
+                let result = result.clone();
+                let id = id.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        writer.write(&id, &result).unwrap();
+                    }
+                })
+            })
+            .collect();
+        let misses = (0..600).filter(|_| writer.read(&id).is_none()).count();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for handle in writers {
+            handle.join().unwrap();
+        }
+        assert_eq!(misses, 0, "reads that found no complete result");
+        let leftovers: Vec<_> =
+            std::fs::read_dir(dir.path().join(Utc::now().format("%Y-%m-%d").to_string()))
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect();
+        assert_eq!(leftovers.len(), 1, "only the result file remains: {leftovers:?}");
+    }
 
     fn sample_result(event_type: EventType, project: &str) -> ProcessResult {
         let event =
