@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-11
+
 ### Added
 
 - `foundry task <project> "<description>" --continues <id>` (repeatable)
@@ -34,6 +36,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   settles `cancelled` with `carried forward by campaign <name> cycle <n> (<item
   id>)`; when the campaign completes or is cancelled, its open formation runs
   settle with the terminal reason. Only a cycle carries other items.
+
+### Fixed
+
+- A cancelled workflow retains its host slot and repository ownership until its
+  traversal finishes. Closing an item refuses active cleanup. Immediate campaign
+  cancellation records completion after abort and disposal; deferred joins wait
+  for the owner to finish. Restart recovery releases interrupted ownership while
+  preserving the recorded cancellation decision.
 
 ## [0.43.0] - 2026-10-11
 
