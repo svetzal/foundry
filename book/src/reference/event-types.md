@@ -191,8 +191,9 @@ Every event carries these common fields:
 | `summary`          | string             | Human-readable terminal summary                                                            |
 | `verdict`          | string             | `complete`, `remainder`, `defect`, `blocked_on_decision`, or `runner_error`                |
 | `preservation_ref` | string (optional)  | Continuation ref: landed commit SHA, or remote branch / `bundle:<path>` for preserved work |
-| `land_blocked`     | string (optional)  | Why landing-eligible work did not land: `trunk_moved_conflict`, `trunk_moved_gates_failed`, `trunk_moved_repeatedly`, `checkout_not_ready`, or `git_failed`. The verdict is unchanged |
-| `trunk_arrivals`   | array (optional)   | Trunk commits (`commit`, `subject`) that arrived during the run, oldest first; absent when trunk did not move |
+| `land_blocked`     | string (optional)  | Why work did not land: `trunk_moved_conflict`, `trunk_moved_gates_failed`, `stale_base_conflict`, `stale_base_gates_failed`, `trunk_moved_repeatedly`, `checkout_not_ready`, or `git_failed` for landing-eligible work; `continuation_conflict` for a continuation refused before its agent session (with `runner_error`). The verdict is unchanged |
+| `trunk_arrivals`   | array (optional)   | Trunk commits (`commit`, `subject`) the task branch lacked at landing, oldest first; absent when trunk did not move |
+| `workspace_base`   | object (optional)  | Where the task worktree started: `commit` (its first `HEAD`) and `trunk` (the trunk commit observed while preparing it). Absent for runs that failed before preparation and for runs that predate it |
 | `campaign`         | string (optional)  | Campaign that dispatched the task                                                          |
 | `campaign_cycle`   | integer (optional) | Campaign cycle that dispatched the task                                                    |
 

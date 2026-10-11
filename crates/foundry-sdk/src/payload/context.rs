@@ -178,6 +178,28 @@ pub struct LoopContext {
     /// commit. `None` for workflows Foundry does not guard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_base: Option<RunBase>,
+    /// Where an isolated task workspace started, recorded when the executor
+    /// prepared it. `None` for workflows without a task workspace, and for
+    /// task runs started before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base: Option<WorkspaceBase>,
+}
+
+/// Where an isolated task workspace started, and the trunk it was measured
+/// against.
+///
+/// Recorded once, before the agent session, so finalize can say truthfully why
+/// a landing needed a rebase: trunk advanced after the run started, or the run
+/// started from a base that already lacked trunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceBase {
+    /// The workspace's `HEAD` before the agent session: trunk for a fresh
+    /// task; for a continuation, the preserved work, rebased onto trunk when
+    /// it was behind.
+    pub commit: String,
+    /// The registered trunk (`origin/<branch>`, or the local branch when it
+    /// could not be fetched) observed while the workspace was prepared.
+    pub trunk: String,
 }
 
 /// The commits an agent run started from.
@@ -232,6 +254,9 @@ impl LoopContext {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             run_base: payload.get("run_base").and_then(|v| serde_json::from_value(v.clone()).ok()),
+            workspace_base: payload
+                .get("workspace_base")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
         }
     }
 }

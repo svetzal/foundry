@@ -81,13 +81,20 @@ pub struct TaskReviewedPayload {
     pub context: LoopContext,
 }
 
-/// Why landing-eligible work (a `complete`, or a converging `remainder` with
-/// green required gates) did not reach trunk.
+/// Why work did not reach trunk: landing-eligible work (a `complete`, or a
+/// converging `remainder` with green required gates) that finalize could not
+/// land, or preserved work a continuation could not carry onto trunk.
 ///
 /// Landing is Foundry's integration step, not part of the reviewer's judgement,
 /// so a blocked landing never rewrites the verdict. It is recorded beside it:
 /// a `complete` that could not land is still complete work, preserved for
 /// reconciliation rather than reported as a defect.
+///
+/// The `trunk_moved_*` reasons say trunk advanced *during the run*. When the
+/// run recorded where it started ([`super::WorkspaceBase`]) and its base
+/// already lacked trunk, finalize reports the `stale_base_*` reason instead,
+/// so a stale start is never reported as a race. A run that recorded no start
+/// keeps the `trunk_moved_*` tag, and its detail says the cause is unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandBlocked {
@@ -97,6 +104,17 @@ pub enum LandBlocked {
     /// Trunk advanced during the run; the rebase was clean but a required
     /// gate failed on the rebased tree.
     TrunkMovedGatesFailed,
+    /// The run started from a base that already lacked trunk, and rebasing
+    /// the task branch onto trunk conflicted.
+    StaleBaseConflict,
+    /// The run started from a base that already lacked trunk; the rebase was
+    /// clean but a required gate failed on the rebased tree.
+    StaleBaseGatesFailed,
+    /// A continuation was refused before any agent session: the preserved
+    /// work it was to continue is behind trunk and conflicts with it. The
+    /// preservation ref is untouched; the result's summary names it, the
+    /// commit, and the conflicting files.
+    ContinuationConflict,
     /// Trunk kept advancing: it moved again after the final permitted rebase.
     TrunkMovedRepeatedly,
     /// The registered checkout was not safe to land into (dirty, or on the
@@ -114,6 +132,9 @@ impl LandBlocked {
         match self {
             Self::TrunkMovedConflict => "trunk_moved_conflict",
             Self::TrunkMovedGatesFailed => "trunk_moved_gates_failed",
+            Self::StaleBaseConflict => "stale_base_conflict",
+            Self::StaleBaseGatesFailed => "stale_base_gates_failed",
+            Self::ContinuationConflict => "continuation_conflict",
             Self::TrunkMovedRepeatedly => "trunk_moved_repeatedly",
             Self::CheckoutNotReady => "checkout_not_ready",
             Self::GitFailed => "git_failed",
@@ -143,12 +164,16 @@ pub struct TaskRunCompletedPayload {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preservation_ref: Option<String>,
-    /// Set when landing-eligible work could not reach trunk. The verdict is
-    /// left exactly as the reviewer returned it.
+    /// Set when landing-eligible work could not reach trunk, or when a
+    /// continuation was refused before its agent session
+    /// ([`LandBlocked::ContinuationConflict`]). The verdict is left exactly
+    /// as the reviewer (or, for a refusal, the runner) returned it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land_blocked: Option<LandBlocked>,
-    /// Trunk commits that arrived while the task ran, oldest first. Empty
-    /// when trunk did not move.
+    /// Trunk commits the task branch lacked when finalize came to land it,
+    /// oldest first. Empty when trunk did not move. These arrived during the
+    /// run unless the run started behind trunk, which `land_blocked` and the
+    /// summary then say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trunk_arrivals: Vec<TrunkArrival>,
     /// Durable directory holding early acceptance proof and its copied logs.
@@ -230,6 +255,9 @@ mod tests {
         for reason in [
             LandBlocked::TrunkMovedConflict,
             LandBlocked::TrunkMovedGatesFailed,
+            LandBlocked::StaleBaseConflict,
+            LandBlocked::StaleBaseGatesFailed,
+            LandBlocked::ContinuationConflict,
             LandBlocked::TrunkMovedRepeatedly,
             LandBlocked::CheckoutNotReady,
             LandBlocked::GitFailed,

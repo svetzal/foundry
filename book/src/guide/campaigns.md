@@ -153,23 +153,68 @@ change. A `complete` that could not land is still `complete`, with `landed:
 false`, `success: false`, and a typed `land_blocked` reason in the
 `task_run_completed` payload:
 
-| `land_blocked`             | Meaning                                                              |
-| -------------------------- | -------------------------------------------------------------------- |
-| `trunk_moved_conflict`     | Trunk moved and the rebase conflicted                                |
-| `trunk_moved_gates_failed` | The rebase was clean, but a required gate failed on the rebased tree |
-| `trunk_moved_repeatedly`   | Trunk moved again after the second rebase                            |
-| `checkout_not_ready`       | The registered checkout was dirty or on the wrong branch             |
-| `git_failed`               | Another git operation needed to land failed                          |
+| `land_blocked`             | Meaning                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| `trunk_moved_conflict`     | Trunk moved during the run and the rebase conflicted                                  |
+| `trunk_moved_gates_failed` | Trunk moved during the run; the rebase was clean, but a required gate failed after it |
+| `stale_base_conflict`      | The run started from a base already behind trunk and the rebase conflicted            |
+| `stale_base_gates_failed`  | The run started behind trunk; the rebase was clean, but a required gate failed        |
+| `trunk_moved_repeatedly`   | Trunk moved again after the second rebase                                             |
+| `checkout_not_ready`       | The registered checkout was dirty or on the wrong branch                              |
+| `git_failed`               | Another git operation needed to land failed                                           |
 
-The payload also lists in `trunk_arrivals` the trunk commits that arrived
-during the run (commit and subject, oldest first). This list is present when
-the work landed after a rebase too. When trunk did not move, the payload has
-neither field and the result is the same as before.
+Foundry tells "moved during the run" from "started behind" by the start the
+executor records when it prepares the task worktree (`workspace_base`: the
+worktree's first commit and the trunk commit it observed). A run that recorded
+no start, because it began before Foundry recorded one, keeps the
+`trunk_moved_*` reason, and its summary says that the cause is unknown.
+
+The payload also lists in `trunk_arrivals` the trunk commits that the task
+branch did not contain (commit and subject, oldest first). This list is
+present when the work landed after a rebase too. When trunk did not move, the
+payload has neither field and the result is the same as before.
+
+### When a continuation starts behind trunk
+
+A campaign cycle that follows an unlanded cycle, a `foundry queue resume`, and
+a nightly majors continuation start from preserved work: a branch, a commit,
+or a `bundle:<path>`. Trunk can move between the cycle that preserved the work
+and the cycle that continues it. Before the agent session starts, Foundry
+brings the continuation onto current trunk:
+
+1. It fetches the registered trunk (`origin/<branch>`). If origin cannot be
+   reached, it uses the local branch, which is where finalize lands.
+2. If the preserved commit already contains trunk, the worktree starts on the
+   preserved commit, as before.
+3. If not, it rebases the preserved commits onto trunk in the new task
+   worktree. The worker then starts from trunk plus the preserved work. The
+   preservation ref is not rewritten; only the new task branch moves.
+4. If that rebase conflicts, Foundry refuses the continuation before any agent
+   session and removes the worktree it made.
+
+An agent cannot repair a conflicting continuation. It may not rewrite history,
+so finalize would replay the same preserved commits onto trunk and hit the
+same conflict after the full session. The refused run ends with
+`runner_error`, `landed: false`, no `preservation_ref`, and `land_blocked:
+continuation_conflict`. Its summary names the continuation ref, the preserved
+commit, how many commits it was behind and each conflicting file. Its work
+item settles `failed` with that summary as the reason. The preserved work
+stays at its ref, and the item that preserved it stays open.
+
+A campaign does not escalate a refused continuation as a runner fault.
+Formation runs as usual and sees the refusal in the last run result. The next
+cycle starts from trunk, because the refused run carries no preservation ref,
+so formation cannot ask for the same refused base again. To keep the
+preserved work, formation cuts an objective that reapplies it onto trunk (the
+preserved commit is readable with `git show`). Otherwise it cuts the next
+objective from trunk, or escalates. The refused cycle counts against the cycle
+budget like any other dispatched cycle, but it spends no agent session.
 
 A `complete` with a `land_blocked` reason is preserved work to reconcile, not
 a defect. Its work item settles `preserved` and its reason names the block.
-The next campaign cycle starts from the preserved branch, and the campaign
-history shows the cycle as `complete, did not land (<reason>)`. The nightly
+The next campaign cycle starts from the preserved branch (brought onto
+current trunk first, see below), and the campaign history shows the cycle as
+`complete, did not land (<reason>)`. The nightly
 majors lane does not dispatch the same upgrade again while that branch
 exists.
 

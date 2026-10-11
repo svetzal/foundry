@@ -1407,6 +1407,33 @@ mod tests {
         assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("runner_error"));
     }
 
+    /// A refused continuation ran nothing and preserved nothing of its own:
+    /// the item fails with the refusal, which names the base and the files,
+    /// and claims no preservation ref. The continued work's own item keeps it.
+    #[test]
+    fn a_refused_continuation_settles_failed_naming_the_conflict_and_no_ref() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        let refusal = "continuation refused before any agent session: the preserved work at \
+                       foundry-task/a (abc123) is 3 commit(s) behind trunk (def456) and \
+                       replaying it onto trunk conflicts in: README.md";
+        let mut result = run_result(
+            TaskVerdict::RunnerError {
+                detail: refusal.to_string(),
+            },
+            false,
+        );
+        result.preservation_ref = None;
+        result.land_blocked = Some(crate::payload::LandBlocked::ContinuationConflict);
+        result.context.task_worktree = None;
+        item.settle_from_task_run(&result, None, now());
+
+        assert_eq!(item.state, WorkItemState::Failed);
+        assert_eq!(item.reason, refusal);
+        let disposition = item.disposition.unwrap();
+        assert_eq!(disposition.preservation_ref, None);
+        assert_eq!(disposition.verdict.as_deref(), Some("runner_error"));
+    }
+
     #[test]
     fn settling_failed_records_the_reason_and_the_time() {
         let at = now();

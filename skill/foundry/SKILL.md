@@ -778,7 +778,7 @@ daemon and refuses `--offline`. Only a `preserved` item with a usable
 preservation ref and a registered project can be resumed. Foundry records a
 new task with the original objective, `queued` for the pacing scheduler, that
 starts from the preserved local branch, remote ref or `bundle:<path>` through
-the existing continuation path. The new record and its lifecycle payloads expose
+the existing continuation path. When the preserved work does not contain current trunk, Foundry rebases it onto freshly fetched trunk before the agent starts (the preservation ref itself is not rewritten). If that rebase conflicts, the child is refused before any agent session: it settles `failed` with `land_blocked: continuation_conflict` and a reason that names the conflicting files, and the original stays `preserved`. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON
 output. Submission identity and the parent's prior evidence remain intact;
 the child records the hostname and optional origin in its `resume` operator

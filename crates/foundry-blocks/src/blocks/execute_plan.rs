@@ -3,8 +3,8 @@ use std::sync::Arc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gateway::AgentFailureMetadata;
 use foundry_sdk::payload::{
-    ExecutionCompletedPayload, LoopContext, PlanCompletedPayload, TaskRunCompletedPayload,
-    TaskVerdict,
+    ExecutionCompletedPayload, LandBlocked, LoopContext, PlanCompletedPayload,
+    TaskRunCompletedPayload, TaskVerdict,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -175,31 +175,15 @@ impl TaskBlock for ExecutePlan {
                         execution_payload["task_worktree"] =
                             serde_json::json!(workspace.path.to_string_lossy());
                         execution_payload["task_branch"] = serde_json::json!(workspace.branch);
+                        execution_payload["workspace_base"] = serde_json::json!(workspace.base);
                         workspace.path
                     }
                     Err(error) => {
-                        let context = LoopContext::extract_from(&execution_payload);
-                        return super::emit_event_result(
-                            format!("{project}: task workspace preparation failed"),
-                            false,
-                            EventType::TaskRunCompleted,
+                        return workspace_failure_result(
                             &project,
                             throttle,
-                            &TaskRunCompletedPayload {
-                                project: project.clone(),
-                                success: false,
-                                landed: false,
-                                summary: error.to_string(),
-                                preservation_ref: None,
-                                land_blocked: None,
-                                proof_evidence: None,
-                                uncommitted_artifacts: None,
-                                trunk_arrivals: Vec::new(),
-                                verdict: TaskVerdict::RunnerError {
-                                    detail: error.to_string(),
-                                },
-                                context,
-                            },
+                            &execution_payload,
+                            &error,
                         );
                     }
                 }
@@ -231,6 +215,49 @@ impl TaskBlock for ExecutePlan {
             Ok(super::execute_agent_block(&*agent, &*shell, &execution_entry, &ctx, prompt).await)
         })
     }
+}
+
+/// The terminal result for a task whose workspace could not be prepared.
+///
+/// A refused continuation is typed so the ledger and the campaign can tell it
+/// from a runner fault: no agent ran, and the preserved work is still at its
+/// ref.
+fn workspace_failure_result(
+    project: &str,
+    throttle: foundry_sdk::throttle::Throttle,
+    payload: &serde_json::Value,
+    error: &anyhow::Error,
+) -> anyhow::Result<TaskBlockResult> {
+    let land_blocked = error
+        .downcast_ref::<super::task_workspace::ContinuationConflict>()
+        .map(|_| LandBlocked::ContinuationConflict);
+    let headline = if land_blocked.is_some() {
+        "continuation refused before its agent session"
+    } else {
+        "task workspace preparation failed"
+    };
+    super::emit_event_result(
+        format!("{project}: {headline}"),
+        false,
+        EventType::TaskRunCompleted,
+        project,
+        throttle,
+        &TaskRunCompletedPayload {
+            project: project.to_string(),
+            success: false,
+            landed: false,
+            summary: error.to_string(),
+            preservation_ref: None,
+            land_blocked,
+            proof_evidence: None,
+            uncommitted_artifacts: None,
+            trunk_arrivals: Vec::new(),
+            verdict: TaskVerdict::RunnerError {
+                detail: error.to_string(),
+            },
+            context: LoopContext::extract_from(payload),
+        },
+    )
 }
 
 fn build_no_correction_result(
@@ -470,6 +497,100 @@ mod tests {
             "no-correction path must set changes_detected=false"
         );
         assert_eq!(events[0].payload["workflow"], "iterate");
+    }
+
+    /// A continuation whose preserved work conflicts with trunk is refused
+    /// before the agent runs, with a typed reason the ledger and campaign
+    /// read, and no preservation ref of its own: the work stays where it was.
+    #[tokio::test]
+    async fn a_conflicting_continuation_ends_typed_without_invoking_the_agent() {
+        use crate::blocks::test_helpers::git_repo::{CleanProcessShellGateway, commit, git, repo};
+
+        let fixture = repo();
+        git(&fixture.work, &["checkout", "-q", "-b", "foundry-task/refused"]);
+        commit(&fixture.work, "README.md", "preserved edit", "preserved slice");
+        git(&fixture.work, &["checkout", "-q", "main"]);
+        commit(&fixture.work, "README.md", "trunk edit", "trunk moved on");
+        git(&fixture.work, &["push", "-q", "origin", "main"]);
+
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project(
+            "execute-plan-refusal",
+            fixture.work.to_str().unwrap(),
+        );
+        let block =
+            ExecutePlan::with_gateways(agent.clone(), registry, Arc::new(CleanProcessShellGateway));
+        let trigger = test_event!(EventType::PlanCompleted, "execute-plan-refusal", {
+            "project": "execute-plan-refusal",
+            "plan": "continue the preserved work",
+            "principle": "",
+            "category": "",
+            "workflow": "task",
+            "correction_needed": true,
+            "base_ref": "foundry-task/refused",
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert!(!result.success);
+        assert_eq!(result.events.len(), 1);
+        let payload = &result.events[0].payload;
+        assert_eq!(result.events[0].event_type, EventType::TaskRunCompleted);
+        assert_eq!(payload["land_blocked"], "continuation_conflict");
+        assert_eq!(payload["verdict"], "runner_error");
+        assert!(payload.get("preservation_ref").is_none());
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("README.md"), "{summary}");
+        assert!(summary.contains("foundry-task/refused"), "{summary}");
+        assert!(
+            result.summary.contains("continuation refused before its agent session"),
+            "{}",
+            result.summary
+        );
+        let (path, _) = crate::workspace::task_workspace_paths(
+            "execute-plan-refusal",
+            &crate::workspace::run_workspace_id(&trigger.id),
+        );
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir(path.parent().unwrap());
+    }
+
+    /// The start preparation recorded travels with the run, so finalize can
+    /// tell a trunk that moved during the run from a stale start.
+    #[tokio::test]
+    async fn a_task_execution_carries_where_its_workspace_started() {
+        use crate::blocks::test_helpers::git_repo::{CleanProcessShellGateway, git, repo};
+
+        let fixture = repo();
+        let trunk = git(&fixture.work, &["rev-parse", "HEAD"]);
+        let agent = FakeAgentGateway::success();
+        let registry = test_helpers::registry_with_project(
+            "execute-plan-start",
+            fixture.work.to_str().unwrap(),
+        );
+        let block =
+            ExecutePlan::with_gateways(agent.clone(), registry, Arc::new(CleanProcessShellGateway));
+        let trigger = test_event!(EventType::PlanCompleted, "execute-plan-start", {
+            "project": "execute-plan-start",
+            "plan": "make a change",
+            "principle": "",
+            "category": "",
+            "workflow": "task",
+            "correction_needed": true,
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert_eq!(agent.invocations().len(), 1);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["workspace_base"]["trunk"], trunk);
+        assert_eq!(payload["workspace_base"]["commit"], trunk);
+        let worktree = std::path::PathBuf::from(payload["task_worktree"].as_str().unwrap());
+        // Test fixture owns the worktree and branch it created.
+        git(&fixture.work, &["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+        git(&fixture.work, &["branch", "-D", payload["task_branch"].as_str().unwrap()]);
+        let _ = std::fs::remove_dir(worktree.parent().unwrap());
     }
 
     #[tokio::test]
