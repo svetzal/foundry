@@ -21,12 +21,20 @@ pub(crate) struct ProcessState {
     pub(crate) queue: Vec<Event>,
     /// Open scatter/gather groups for the duration of this traversal.
     pub(crate) gather_store: GatherStore,
+    /// Deferred child roots and their durable identities.
+    pub(crate) deferred: Vec<(Event, String)>,
+    /// Execution ownership validated from the scheduler-started root.
+    pub(crate) owner: Option<String>,
+    pub(crate) root_id: String,
 }
 
 impl ProcessState {
     /// Initialise a fresh traversal state from the root event.
     pub(crate) fn new(root_event: Event) -> Self {
         Self {
+            root_id: root_event.id.clone(),
+            deferred: Vec::new(),
+            owner: None,
             all_events: vec![root_event.clone()],
             queue: vec![root_event],
             gather_store: GatherStore::new(),

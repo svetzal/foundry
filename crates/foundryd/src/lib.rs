@@ -30,6 +30,7 @@ pub mod proto {
 // public API) but must be declared here so that engine.rs test helpers that
 // reference `crate::blocks` and `crate::gateway` compile under the lib target.
 mod orchestrator;
+pub mod work_admission;
 
 // Engine↔block integration tests relocated here when the engine and blocks
 // moved to their own crates (they wire real blocks into a foundry_engine::Engine).

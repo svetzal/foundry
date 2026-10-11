@@ -20,6 +20,7 @@ mod pacing;
 mod scheduler;
 mod service;
 mod trace_store;
+pub mod work_admission;
 mod workflow_tracker;
 
 pub mod proto {
@@ -622,7 +623,7 @@ fn load_registry_or_exit(
 /// the restart settlement.
 fn spawn_pacing(ctx: &service::RuntimeContext) -> (foundry_sdk::pacing::PacingPaths, Arc<Notify>) {
     let pacing = foundry_sdk::pacing::PacingPaths::from_env();
-    let wake = Arc::new(Notify::new());
+    let wake = ctx.engine.admission_wake().unwrap_or_else(|| Arc::new(Notify::new()));
     service::spawn_pacing_scheduler(
         ctx,
         foundry_sdk::paths::work_items_path(),
@@ -760,8 +761,16 @@ fn register_blocks(
     paths: BlockPaths,
 ) -> foundry_engine::engine::Engine {
     let mut engine = foundry_engine::engine::Engine::new()
-        .with_event_writer(event_writer)
-        .with_event_broadcaster(event_tx.clone());
+        .with_event_writer(event_writer.clone())
+        .with_event_broadcaster(event_tx.clone())
+        .with_work_admission(Arc::new(work_admission::DurableWorkAdmission::new(
+            foundry_sdk::paths::work_items_path(),
+            registry.clone(),
+            foundry_sdk::pacing::PacingPaths::from_env(),
+            event_tx.clone(),
+            event_writer,
+            trace_writer.clone(),
+        )));
     let agent = build_agent_gateway(event_tx);
     let shell: Arc<dyn foundry_blocks::gateway::ShellGateway> =
         Arc::new(foundry_blocks::gateway::ProcessShellGateway);
@@ -769,7 +778,7 @@ fn register_blocks(
     // Registered first so a run-shaped item is in the ledger `running` before
     // the block that dispatches the run is reached: blocks run in
     // registration order for a given trigger.
-    register_run_ledger_blocks(&mut engine, registry);
+
     register_core_blocks(&mut engine, registry);
     register_release_blocks(&mut engine, &agent, registry);
     register_gate_blocks(&mut engine, &shell, registry);
@@ -780,22 +789,6 @@ fn register_blocks(
     register_digest_blocks(&mut engine, &agent, &shell, registry, paths.digest);
 
     engine
-}
-
-/// The work-item ledger's run-shaped bracket: one block opens a maintenance
-/// run, a release or a remediation from the root of its chain, and one closes
-/// it from that chain's own typed terminal. Neither changes a dispatch.
-fn register_run_ledger_blocks(
-    engine: &mut foundry_engine::engine::Engine,
-    registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
-) {
-    engine.register(Box::new(foundry_blocks::blocks::RecordRunWorkItem::new(
-        foundry_sdk::paths::work_items_path(),
-        registry.clone(),
-    )));
-    engine.register(Box::new(foundry_blocks::blocks::SettleRunWorkItem::new(
-        foundry_sdk::paths::work_items_path(),
-    )));
 }
 
 fn register_campaign_blocks(
@@ -924,16 +917,9 @@ fn register_iterate_blocks(
         registry.clone(),
     )));
     engine.register(Box::new(foundry_blocks::blocks::DirectPrompt));
-    // The ledger blocks bracket the task chain: `AdmitWorkItem` queues the item
-    // from the workflow's root `ExecutionRequested`, holding that root for the
-    // pacing scheduler to start it from; `SettleFailedDispatch` closes it when
-    // the started chain stops ahead of the coding agent, and `SettleWorkItem`
-    // closes it from the terminal task result.
-    engine.register(Box::new(foundry_blocks::blocks::AdmitWorkItem::new(
-        foundry_sdk::paths::work_items_path(),
-        registry.clone(),
-        foundry_sdk::pacing::PacingPaths::from_env(),
-    )));
+    // Admission brackets the whole traversal. These blocks retain typed task
+    // verdicts and preservation evidence, including dispatch failure before
+    // the coding agent starts. Capacity is released only after cleanup ends.
     engine.register(Box::new(foundry_blocks::blocks::SettleFailedDispatch::new(
         foundry_sdk::paths::work_items_path(),
     )));

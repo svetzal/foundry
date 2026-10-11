@@ -181,7 +181,7 @@ pub use plan_major_upgrades::PlanMajorUpgrades;
 pub use release::{CutRelease, ExecuteRelease};
 pub use remediate::RemediateVulnerability;
 pub use remediate_pipeline::RemediatePipeline;
-pub use remediate_supply_chain::RemediateSupplyChain;
+pub use remediate_supply_chain::{RemediateSupplyChain, supply_chain_remediation_enabled};
 pub use request_campaign_advance::RequestCampaignAdvance;
 pub use resolve_gates::ResolveGates;
 pub use retry_execution::RetryExecution;
@@ -189,7 +189,8 @@ pub use review_task::ReviewTask;
 pub use route_gate_result::RouteGateResult;
 pub use route_project::RouteProjectWorkflow;
 pub use route_validation_result::RouteValidationResult;
-pub use run_ledger::{RecordRunWorkItem, SettleRunWorkItem};
+pub use run_ledger::RecordRunWorkItem;
+pub use run_ledger::SettleRunWorkItem;
 pub use run_preflight_gates::RunPreflightGates;
 pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
@@ -205,9 +206,10 @@ pub use triage_assessment::TriageAssessment;
 pub use triage_maintenance::TriageMaintenance;
 pub use validate::ValidateProject;
 pub use watch_pipeline::WatchPipeline;
+pub use work_ledger::AdmitWorkItem;
 pub use work_ledger::{
-    ADMITTED_WORK_ITEM_KEY, AdmitWorkItem, SettleFailedDispatch, SettleWorkItem, awaits_admission,
-    queued_reason,
+    ADMITTED_WORK_ITEM_KEY, SettleFailedDispatch, SettleWorkItem, awaits_admission,
+    item_from_dispatch, queued_reason,
 };
 pub use write_commit_digest::WriteCommitDigest;
 pub use write_ops_digest::WriteOpsDigest;

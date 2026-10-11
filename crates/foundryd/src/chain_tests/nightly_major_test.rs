@@ -285,7 +285,10 @@ impl Nightly {
             &self.ctx,
             self.ledger(),
             self.pacing(),
-            Arc::new(tokio::sync::Notify::new()),
+            self.ctx
+                .engine
+                .admission_wake()
+                .unwrap_or_else(|| Arc::new(tokio::sync::Notify::new())),
         );
     }
 

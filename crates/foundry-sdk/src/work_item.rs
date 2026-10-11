@@ -12,11 +12,9 @@
 //! every mutation loads the file, applies the change, and saves it. Nothing
 //! caches items between mutations.
 //!
-//! The task-shaped kinds are *paced*: admission records them `queued`, holding
-//! the root event that will start them, and the daemon's scheduler moves them
-//! to `running` when the rules in [`crate::pacing`] allow. The run-shaped
-//! kinds keep their own orchestration and go `submitted` → `queued` →
-//! `running` in one step, exactly as before.
+//! Every engineering workflow is admitted `queued` with its root event.
+//! The daemon scheduler starts it when [`crate::pacing`] allows. Downstream
+//! work retains that slot until the traversal, including cleanup, completes.
 
 use std::path::{Path, PathBuf};
 
@@ -33,10 +31,9 @@ pub const WORK_ITEM_STORE_VERSION: u32 = 1;
 
 /// What sort of work a [`WorkItem`] represents.
 ///
-/// All six kinds are recorded: the three task-shaped kinds (`Task`,
-/// `CampaignCycle`, `MajorUpgrade`) from a task workflow's root
-/// `ExecutionRequested`, and the three run-shaped kinds (`Maintenance`,
-/// `Release`, `Remediation`) from the root event of the run each one names.
+/// Task kinds retain typed task verdicts. Maintenance, release, remediation
+/// and general workflows share the same durable admission and scheduler.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemKind {
@@ -52,6 +49,8 @@ pub enum WorkItemKind {
     Release,
     /// A pipeline or vulnerability remediation run.
     Remediation,
+    /// An admitted engineering workflow such as formation, validation or iteration.
+    Workflow,
 }
 
 /// Which queue a [`WorkItem`] belongs to.
@@ -161,6 +160,7 @@ impl WorkItemKind {
             Self::MajorUpgrade => "major_upgrade",
             Self::Release => "release",
             Self::Remediation => "remediation",
+            Self::Workflow => "workflow",
         }
     }
 }
@@ -308,6 +308,15 @@ pub struct WorkItem {
     /// queued item survives a daemon restart with everything it needs to run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_root: Option<Event>,
+    /// The exact root dispatched by the scheduler, retained as admission proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_root: Option<Event>,
+    /// Additional projects whose repositories this workflow uses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reserved_projects: Vec<String>,
+    /// Whether the entire admitted traversal has ended, including cleanup.
+    #[serde(default)]
+    pub execution_completed: bool,
 }
 
 /// Generate a fresh work-item id as `wi_` followed by 24 lowercase hex
@@ -364,6 +373,9 @@ impl WorkItem {
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
+            started_root: None,
+            reserved_projects: Vec::new(),
+            execution_completed: false,
         }
     }
 
@@ -384,8 +396,20 @@ impl WorkItem {
         item
     }
 
-    /// Move the item to `running`, dropping the held root: the started root
-    /// is on its way into the engine and the ledger no longer needs a copy.
+    /// Whether this item still occupies execution capacity. A typed task
+    /// verdict can settle before its cleanup finishes; admission keeps the
+    /// slot until the complete traversal returns.
+    #[must_use]
+    pub fn occupies_slot(&self) -> bool {
+        self.is_running()
+            || (self.started_root.is_some()
+                && !self.execution_completed
+                && self.state != WorkItemState::Cancelled
+                && self.reason != "daemon restarted")
+    }
+
+    /// Move the item to `running`, dropping the held root. The scheduler
+    /// retains the actual dispatched event in [`Self::started_root`].
     pub fn start(&mut self, at: DateTime<Utc>) {
         self.state = WorkItemState::Running;
         self.started_at = Some(at);
@@ -410,10 +434,8 @@ impl WorkItem {
 
     /// Admit, queue and start an item in one step.
     ///
-    /// The run-shaped kinds (a maintenance run, a release, a remediation) are
-    /// not paced: the chain that records them is already running them, so the
-    /// three transitions happen together rather than a scheduler moving the
-    /// item between them.
+    /// Compatibility constructor for already-running records and test fixtures.
+    /// Daemon execution uses [`Self::queued`] and the shared scheduler instead.
     #[must_use]
     pub fn dispatched(spec: WorkItemSpec, at: DateTime<Utc>) -> Self {
         let mut item = Self::submitted(spec, at);
@@ -721,9 +743,8 @@ impl WorkItemStore {
     /// Only the task-shaped kinds are eligible. A maintenance, release or
     /// remediation item can share a trace — and a project — with the task run
     /// this result belongs to, and settling one of those with a task verdict
-    /// would report the wrong unit of work as finished. Those kinds settle
-    /// through [`WorkItemStore::running_of_kind`] from their own terminal
-    /// instead. For a task item the correlation is unchanged.
+    /// would report the wrong unit of work as finished. The admission owner
+    /// settles other workflows after the whole traversal ends.
     pub fn running_for_settlement(
         &mut self,
         trace_id: Option<&str>,
@@ -793,7 +814,10 @@ impl WorkItemStore {
 fn settles_from_task_run(kind: WorkItemKind) -> bool {
     match kind {
         WorkItemKind::Task | WorkItemKind::CampaignCycle | WorkItemKind::MajorUpgrade => true,
-        WorkItemKind::Maintenance | WorkItemKind::Release | WorkItemKind::Remediation => false,
+        WorkItemKind::Maintenance
+        | WorkItemKind::Release
+        | WorkItemKind::Remediation
+        | WorkItemKind::Workflow => false,
     }
 }
 

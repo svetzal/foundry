@@ -44,7 +44,7 @@ mod sentinel_ops;
 mod session_recovery;
 mod tracing_ops;
 mod work_item_ops;
-mod work_ledger;
+pub(crate) mod work_ledger;
 
 /// The Arc cluster shared between `spawn_workflow`, `spawn_scheduler`, and
 /// `FoundryService`. Grouping them here eliminates recurring long positional
@@ -1843,6 +1843,9 @@ mod tests {
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
+            started_root: None,
+            reserved_projects: Vec::new(),
+            execution_completed: false,
         }
     }
 
@@ -2161,6 +2164,9 @@ mod tests {
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
+            started_root: None,
+            reserved_projects: Vec::new(),
+            execution_completed: false,
             disposition: Some(WorkDisposition {
                 task_branch: None,
                 branch_cleanup: Vec::new(),

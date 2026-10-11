@@ -115,17 +115,17 @@ Triggered by `foundry task <project> "<description>"`. Mutating, isolated, and
 intentionally not retried. The user-provided description is the single
 objective.
 
-The `ExecutionRequested` a submitter emits is admitted, not run: `AdmitWorkItem`
-records the item `queued` with the reason it waits on, holding that root, and
-`CheckCharter` declines it. The pacing scheduler inside `foundryd` starts the
-item when the rules allow by emitting a fresh `ExecutionRequested` that names
-the item (`admitted_work_item_id`) on the same trace; that started root runs
-the chain below. Campaign cycles, nightly majors-lane upgrades and `queue
-resume` children pass through the same stage.
+The daemon admits the submitter's `ExecutionRequested` at the engine routing
+boundary. It records the item `queued` and retains the root event. The shared
+pacing scheduler starts it by emitting a fresh root on the same trace.
+The daemon checks that root against the complete persisted start record.
+Campaign formation, campaign cycles, nightly maintenance, releases, remediation,
+digest agents, and raw emitted roots use the same boundary. Downstream steps
+retain their root's slot; independently derived tasks queue before it releases.
 
 ```text
 ExecutionRequested {workflow: "task", prompt: "..."}            — admitted root
-  └─ AdmitWorkItem → WorkItemSubmitted {state: queued, reason}
+  └─ Durable admission → WorkItemSubmitted {state: queued, reason}
        … pacing scheduler: WorkItemStarted …
 ExecutionRequested {workflow: "task", admitted_work_item_id}   — started root
   └─ CheckCharter (Observer)

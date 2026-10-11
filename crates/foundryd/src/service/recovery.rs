@@ -6,13 +6,11 @@
 //! projects still to run, came back at 12:03, and the cycle was never
 //! reported.
 //!
-//! On start, foundryd looks back [`LOOKBACK_DAYS`] for system cycles with no
-//! `MaintenanceCycleCompleted` on the same trace. Nothing can be running at
-//! that point, so each one is interrupted. For each, it records a
-//! `MaintenanceCycleCompleted` whose `missing` children name the projects
-//! that did not finish, and runs the summary phase over the events the cycle
-//! did log. The summary says the cycle was interrupted, lists the unfinished
-//! projects as failed, and dispatches nothing.
+//! On start, foundryd rejoins durable queued or held maintenance children.
+//! Their gather remains open until scheduled work completes or is cancelled.
+//! It then records `MaintenanceCycleCompleted` and runs the summary phase.
+//! Missing or failed children mark the recovered cycle interrupted; a cycle
+//! whose queued children all complete normally remains an ordinary success.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -50,7 +48,7 @@ impl InterruptedRun {
             gather_id: self.gather_id.clone().unwrap_or_default(),
             expected: self.expected,
             arrived: self.children.len(),
-            context: serde_json::json!({ "interrupted": true }),
+            context: serde_json::json!({ "interrupted": !self.record.unfinished.is_empty() || self.children.iter().any(|child| child.success == Some(false)) }),
             children: self.children.clone(),
             missing: self
                 .record
@@ -75,6 +73,7 @@ impl InterruptedRun {
             payload,
         )
         .with_trace_id(self.root.trace_id.clone())
+        .with_source(self.root.source.clone())
         .with_span_ids(self.root.span_id.clone(), self.root.parent_span_id.clone())
         .with_causation_id(Some(self.root.id.clone()))
     }
@@ -129,7 +128,11 @@ pub(crate) fn find_interrupted_cycles(
 fn interrupted_run(root: &Event, events: Vec<Event>) -> InterruptedRun {
     let starts: Vec<&Event> = events
         .iter()
-        .filter(|e| e.event_type == EventType::ProjectRunStarted && e.project != "system")
+        .filter(|e| {
+            e.event_type == EventType::ProjectRunStarted
+                && e.project != "system"
+                && e.payload.get(foundry_blocks::blocks::ADMITTED_WORK_ITEM_KEY).is_none()
+        })
         .collect();
     let completions: Vec<&Event> = events
         .iter()
@@ -166,11 +169,91 @@ fn interrupted_run(root: &Event, events: Vec<Event>) -> InterruptedRun {
     }
 }
 
+/// Waiting children belong to the durable queue, even after their coordinator
+/// was lost. Rejoin them before closing the cycle; held work stays held.
+async fn rejoin_waiting_maintenance(ctx: &RuntimeContext, run: &mut InterruptedRun, path: &Path) {
+    let store = match foundry_sdk::work_item::WorkItemStore::load(path) {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(%error, "could not rejoin maintenance ledger");
+            return;
+        }
+    };
+    let waiting: Vec<_> = store
+        .items
+        .iter()
+        .filter(|item| {
+            item.kind == foundry_sdk::work_item::WorkItemKind::Maintenance
+                && item.trace_id == run.root.trace_id
+                && !run.events.iter().any(|event| {
+                    event.event_type == EventType::ProjectRunCompleted
+                        && event.project == item.project
+                })
+                && item.pending_root.as_ref().or(item.started_root.as_ref()).is_some_and(|root| {
+                    root.event_type == EventType::ProjectRunStarted && root.gather_id.is_some()
+                })
+        })
+        .map(|item| item.id.clone())
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    for id in waiting {
+        match ctx.engine.join_work(&id).await {
+            Ok(result) => run.events.extend(result.events),
+            Err(error) => {
+                tracing::error!(%error, item_id = %id, "could not rejoin queued maintenance child");
+            }
+        }
+    }
+    *run = interrupted_run(&run.root, run.events.clone());
+}
+
+/// Held children can outlive the ordinary event lookback. Include the prior
+/// day so their system cycle root, emitted before the scatter, remains visible.
+fn recovery_since(now: DateTime<Utc>, items: &[foundry_sdk::work_item::WorkItem]) -> DateTime<Utc> {
+    items
+        .iter()
+        .filter(|item| {
+            item.kind == foundry_sdk::work_item::WorkItemKind::Maintenance
+                && (item.pending_root.is_some()
+                    || item.reason == super::work_ledger::RESTART_REASON)
+        })
+        .filter_map(|item| {
+            item.pending_root
+                .as_ref()
+                .or(item.started_root.as_ref())
+                .filter(|root| {
+                    root.event_type == EventType::ProjectRunStarted && root.gather_id.is_some()
+                })
+                .map(|root| item.submitted_at.min(root.occurred_at) - Duration::days(1))
+        })
+        .fold(now - Duration::days(LOOKBACK_DAYS), DateTime::min)
+}
+
 /// Find and close every interrupted cycle in the last [`LOOKBACK_DAYS`].
 pub(crate) async fn recover_interrupted_cycles(ctx: &RuntimeContext, events_dir: &Path) {
-    let since = Utc::now() - Duration::days(LOOKBACK_DAYS);
+    let path = foundry_sdk::paths::work_items_path();
+    let items = match foundry_sdk::work_item::WorkItemStore::load(&path) {
+        Ok(store) => store.items,
+        Err(error) => {
+            tracing::error!(%error, "could not load durable maintenance recovery bound");
+            return;
+        }
+    };
+    let since = recovery_since(Utc::now(), &items);
     let events = foundry_blocks::blocks::triage_core::read_events_jsonl(events_dir, since);
-    for run in find_interrupted_cycles(&events, since) {
+    for mut run in find_interrupted_cycles(&events, since) {
+        rejoin_waiting_maintenance(ctx, &mut run, &foundry_sdk::paths::work_items_path()).await;
+        let recorded = foundry_blocks::blocks::triage_core::read_events_jsonl(events_dir, since);
+        let seen: std::collections::HashSet<_> =
+            run.events.iter().map(|event| event.id.clone()).collect();
+        run.events.extend(
+            recorded
+                .into_iter()
+                .filter(|event| event.trace_id == run.root.trace_id && !seen.contains(&event.id)),
+        );
+        run = interrupted_run(&run.root, run.events.clone());
         tracing::warn!(
             root_event_id = %run.root.id,
             started_at = %run.record.started_at,
@@ -188,7 +271,9 @@ pub(crate) async fn recover_interrupted_cycles(ctx: &RuntimeContext, events_dir:
             ctx,
             run.root.throttle,
             &run.root.id,
-            Some(run.record.clone()),
+            (!run.record.unfinished.is_empty()
+                || run.children.iter().any(|child| child.success == Some(false)))
+            .then(|| run.record.clone()),
         )
         .await;
     }
@@ -289,5 +374,53 @@ mod tests {
         let result = run.process_result(run.completion_event());
         assert_eq!(result.total_duration_ms, 162 * 60 * 1000);
         assert_eq!(result.events.len(), killed_cycle().len() + 1);
+    }
+    #[test]
+    fn a_maintenance_child_held_over_a_week_retains_its_original_cycle() {
+        use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
+        let now = Utc::now();
+        let mut cycle = Event::new(
+            EventType::MaintenanceCycleStarted,
+            "system".into(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(Some("old-cycle".into()));
+        cycle.occurred_at = now - Duration::days(20);
+        let mut child = Event::new(
+            EventType::ProjectRunStarted,
+            "alpha".into(),
+            Throttle::Full,
+            serde_json::json!({}),
+        )
+        .with_trace_id(cycle.trace_id.clone())
+        .with_gather_id(Some("old-gather".into()));
+        child.occurred_at = cycle.occurred_at + Duration::seconds(1);
+        let mut item = WorkItem::queued(
+            WorkItemSpec {
+                project: "alpha".into(),
+                objective: "maintenance".into(),
+                kind: WorkItemKind::Maintenance,
+                lane: WorkLane::Maintenance,
+                origin: "nightly".into(),
+                trace_id: cycle.trace_id.clone(),
+            },
+            child.clone(),
+            child.occurred_at,
+        );
+        item.hold();
+        let since = recovery_since(now, std::slice::from_ref(&item));
+        assert!(since < cycle.occurred_at);
+        // A held child can start now, long after the original cycle. Its fresh
+        // scheduler root must not shorten the historical recovery window.
+        item.start(now);
+        let mut started = child.clone();
+        started.occurred_at = now;
+        item.started_root = Some(started);
+        item.settle_failed(super::super::work_ledger::RESTART_REASON, now);
+        assert!(recovery_since(now, &[item]) < cycle.occurred_at);
+        let recovered = find_interrupted_cycles(&[cycle, child], since);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].record.unfinished, ["alpha"]);
     }
 }

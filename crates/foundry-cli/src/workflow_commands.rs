@@ -34,8 +34,7 @@ impl WatchedRun {
             .iter()
             .rev()
             .find(|event| {
-                event.event_type == "execution_requested"
-                    && event.event_id != self.event_id
+                event.event_id != self.event_id
                     && serde_json::from_str::<serde_json::Value>(&event.payload_json)
                         .is_ok_and(|v| v.get("admitted_work_item_id").is_some())
             })
@@ -98,6 +97,9 @@ impl WorkflowRunner {
             }
             if !on_own_trace(own_trace.as_deref(), &event) {
                 continue;
+            }
+            if event.event_type == "work_item_cancelled" || event.event_type == "workflow_refused" {
+                anyhow::bail!("workflow stopped: {}", event.payload_json);
             }
             let done = is_terminal(&event.event_type, &event.payload_json);
             print!("{}", render::workflow::watch_event_line(&event));
@@ -166,10 +168,20 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     println!("Event: {}", response.event_id);
     println!();
 
-    // Stream progress events until the maintenance run completes.
+    // A queued run can overlap unrelated completions on the same project.
+    let mut own_trace = None;
     while let Some(event) = stream.message().await? {
+        if event.event_id == response.event_id {
+            own_trace = Some(event.trace_id.clone());
+        }
+        if !on_own_trace(own_trace.as_deref(), &event) {
+            continue;
+        }
         print!("{}", render::workflow::watch_event_line(&event));
 
+        if event.event_type == "work_item_cancelled" || event.event_type == "workflow_refused" {
+            anyhow::bail!("maintenance stopped: {}", event.payload_json);
+        }
         if is_run_complete(&event.event_type, &event.payload_json, is_system_run) {
             break;
         }
@@ -270,7 +282,7 @@ pub async fn iterate(addr: &str, project: &str, agent: Option<&str>) -> Result<(
 /// do. A paced task's started root inherits the admitted root's trace, so the
 /// whole chain still shows.
 fn on_own_trace(own_trace: Option<&str>, event: &WatchResponse) -> bool {
-    own_trace.is_none_or(|trace| trace.is_empty() || event.trace_id == trace)
+    own_trace.is_some_and(|trace| trace.is_empty() || event.trace_id == trace)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -645,7 +657,10 @@ mod tests {
     fn only_the_runs_own_trace_passes_once_the_root_is_seen() {
         let mine = watched("evt_1", "task_run_completed", "mine", "{}");
         let other = watched("evt_2", "task_run_completed", "other", "{}");
-        assert!(super::on_own_trace(None, &other), "before the root is seen, everything passes");
+        assert!(
+            !super::on_own_trace(None, &other),
+            "another terminal before our root cannot finish the run"
+        );
         assert!(super::on_own_trace(Some("mine"), &mine));
         assert!(!super::on_own_trace(Some("mine"), &other), "another run's terminal is not ours");
         assert!(super::on_own_trace(Some(""), &other), "a traceless root filters nothing");

@@ -1,8 +1,8 @@
 //! The pacing scheduler: the stage between a work item's admission and its
 //! start.
 //!
-//! Admission (see `foundry_blocks::blocks::AdmitWorkItem`, and the resume
-//! path in `service::work_item_ops`) records a task-shaped item `queued`,
+//! Admission (see `crate::work_admission::DurableWorkAdmission`, and the resume
+//! path in `service::work_item_ops`) records every engineering root `queued`,
 //! holding the root event that will run it. This scheduler ticks over the
 //! ledger and starts items as the rules in [`foundry_sdk::pacing`] allow.
 //!
@@ -32,8 +32,8 @@
 //! ## The started root
 //!
 //! The root held on the item is the request as admitted. The started root is
-//! a fresh `ExecutionRequested`, built from it, that names the item (the
-//! `admitted_work_item_id` key) so the task chain runs and admission records
+//! a fresh event of the original type that names the item (the
+//! `admitted_work_item_id` key), validated against its persisted envelope, so
 //! nothing twice. It keeps the admitted root's trace, source and gather
 //! membership, and opens its span under the admitted root's span, so a
 //! campaign cycle's start still sits under the advance that derived it.
@@ -193,7 +193,27 @@ impl PacingScheduler {
                 root_event_id = %root.id,
                 "starting a queued work item"
             );
-            self.ctx.engine.process(lifecycle_event(EventType::WorkItemStarted, item)).await;
+            if let Err(error) = self
+                .ctx
+                .engine
+                .process_required(lifecycle_event(EventType::WorkItemStarted, item))
+                .await
+            {
+                tracing::error!(%error, item_id = %item.id, "started lifecycle could not be persisted; execution refused");
+                let _gate =
+                    ledger_write_gate().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(mut store) = WorkItemStore::load(&self.work_items_path)
+                    && let Some(item) = store.find_mut(&item.id)
+                {
+                    item.settle_failed("started lifecycle persistence failed", (self.clock)());
+                    item.execution_completed = true;
+                    if let Err(error) = store.save(&self.work_items_path) {
+                        tracing::error!(%error, "could not record refused start");
+                    }
+                }
+                self.wake.notify_waiters();
+                continue;
+            }
             (self.dispatch)(root.clone());
         }
         outcome
@@ -265,6 +285,7 @@ fn apply_tick(
                 if let Some(root) = item.pending_root.clone() {
                     item.start(now);
                     let started = build_started_root(&root, &item.id);
+                    item.started_root = Some(started.clone());
                     outcome.started.push((item.clone(), started));
                 } else {
                     item.settle_failed(NO_ROOT_REASON, now);
@@ -279,7 +300,6 @@ fn apply_tick(
             }
             Decision::NeedsDecision(reason) => {
                 item.settle_needs_decision(&reason, now);
-                item.pending_root = None;
                 outcome.settled.push(item.clone());
             }
         }
@@ -317,6 +337,7 @@ pub fn build_started_root(admitted: &Event, item_id: &str) -> Event {
     .with_trace_id(admitted.trace_id.clone())
     .with_span_ids(Some(mint_span_id()), admitted.span_id.clone())
     .with_gather_id(admitted.gather_id.clone())
+    .with_causation_id(Some(admitted.id.clone()))
     .with_source(admitted.source.clone())
 }
 
@@ -492,6 +513,7 @@ mod tests {
             let mut store = self.ledger();
             let item = store.find_mut(id).expect("item");
             item.state = state;
+            item.execution_completed = true;
             item.settled_at = Some(at(40));
             store.save(&self.ledger_path()).expect("save");
         }
@@ -685,7 +707,13 @@ mod tests {
         let ledger = dir.path().join("work-items.json");
         let (event_tx, _events) = broadcast::channel(16);
         let ctx = RuntimeContext {
-            engine: Arc::new(Engine::new().with_event_broadcaster(event_tx.clone())),
+            engine: Arc::new(
+                Engine::new()
+                    .with_event_broadcaster(event_tx.clone())
+                    .with_event_writer(Arc::new(foundry_engine::event_writer::EventWriter::new(
+                        dir.path().join("events"),
+                    ))),
+            ),
             trace_store: Arc::new(crate::trace_store::TraceStore::new(Duration::from_secs(60))),
             workflow_tracker: Arc::new(crate::workflow_tracker::WorkflowTracker::new()),
             trace_writer: Arc::new(foundry_blocks::trace_writer::TraceWriter::new(

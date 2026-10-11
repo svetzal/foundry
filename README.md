@@ -30,6 +30,11 @@ the system a few useful properties:
 - broader missions can continue across multiple evidence-reviewed tasks without
   relying on a stale, pre-cut backlog.
 
+Every engineering workflow uses one durable queue. Manual and nightly maintenance,
+campaigns, tasks, releases, remediation, scans and digest agents share the host
+cap and repository ownership. Queued work can be held or cancelled, and survives
+a daemon restart. Inspect it with `foundry queue` and `foundry pacing show`.
+
 ## Install
 
 ### Homebrew
