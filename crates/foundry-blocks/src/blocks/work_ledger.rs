@@ -24,7 +24,8 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{
-    WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
+    WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane,
+    ledger_write_gate,
 };
 use foundry_sdk::workflow::WorkflowType;
 
@@ -124,6 +125,7 @@ pub fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) 
     .with_source(trigger.source.clone());
     item.depends_on.clone_from(&payload.depends_on);
     item.not_before = payload.not_before;
+    item.continues.clone_from(&payload.continues);
     item
 }
 
@@ -402,16 +404,19 @@ impl SettleWorkItem {
             else {
                 return (Vec::new(), Vec::new());
             };
-            // The exact resume parent already settles through the existing linked
-            // continuation proof. Supersession checks the remaining obligations:
-            // every open item that preserved work on a ref.
+            // The exact resume parent and the items this run continues already
+            // settle through their recorded lineage when it lands. Supersession
+            // checks the remaining obligations: every open item that preserved
+            // work on a ref.
             let resumes = running.resumes.clone();
+            let continues = running.continues.clone();
             store
                 .items
                 .into_iter()
                 .filter(|item| {
                     item.project == trigger.project
                         && resumes.as_deref() != Some(item.id.as_str())
+                        && !continues.contains(&item.id)
                         && is_supersession_candidate(item)
                 })
                 .collect::<Vec<_>>()
@@ -488,6 +493,9 @@ impl SettleWorkItem {
                 None
             };
         let mut additional: Vec<_> = parent.into_iter().collect();
+        if result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed {
+            additional.extend(settle_continued(&mut store, &settled, Utc::now()));
+        }
         for (candidate, commit) in verified.iter().filter(|_| {
             result.landed
                 && settled.project == trigger.project
@@ -506,6 +514,51 @@ impl SettleWorkItem {
         }
         save_ledger(&store, &self.store_path).then_some((settled, additional))
     }
+}
+
+/// Settle `landed` every item `continuation` names in `continues` that is
+/// still open in `store`, as superseded by the continuation's landed commit,
+/// and return them.
+///
+/// Called under the ledger write gate on the ledger as loaded under it, so an
+/// owner's close or cancel that reached the ledger first wins: a continued
+/// item that is no longer open, or that belongs to another project, is left
+/// exactly as it is. Preservation evidence is kept.
+fn settle_continued(
+    store: &mut WorkItemStore,
+    continuation: &WorkItem,
+    at: chrono::DateTime<Utc>,
+) -> Vec<WorkItem> {
+    let Some(commit) = continuation
+        .disposition
+        .as_ref()
+        .and_then(|d| d.landed_commit.clone())
+        .filter(|commit| !commit.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    let reason = format!("superseded by {commit} via {}", continuation.id);
+    let mut settled = Vec::new();
+    for item in store.items.iter_mut().filter(|item| {
+        continuation.continues.contains(&item.id)
+            && item.project == continuation.project
+            && item.state.is_open()
+    }) {
+        item.disposition
+            .get_or_insert_with(|| WorkDisposition {
+                task_branch: None,
+                branch_cleanup: Vec::new(),
+                verdict: None,
+                landed_commit: None,
+                preservation_ref: None,
+                worktree: None,
+                worktree_removed: None,
+            })
+            .landed_commit = Some(commit.clone());
+        item.settle_landed(&reason, at);
+        settled.push(item.clone());
+    }
+    settled
 }
 
 /// Whether the run's isolated worktree is gone.
@@ -1357,6 +1410,128 @@ mod tests {
             assert_eq!(after.find(&cancelled.id), Some(&cancelled));
             assert_eq!(after.find(&edited.id), Some(&edited));
             assert_eq!(after.find(&unrelated.id), Some(&unrelated));
+        }
+    }
+
+    /// A ledger with a running follow-up that continues four items: two open
+    /// ones of its project, one an owner already cancelled, and one open item
+    /// of another project. Returns the ledger path and the four items.
+    fn continuation_ledger(dir: &std::path::Path) -> (std::path::PathBuf, [WorkItem; 4]) {
+        let path = dir.join("work-items.json");
+        let continues = [
+            "wi_preserved",
+            "wi_needs_decision",
+            "wi_cancelled",
+            "wi_elsewhere",
+        ];
+        seed_dispatch(&path, &dispatch(&serde_json::json!({"continues": continues})));
+        start_queued(&path);
+        let mut store = WorkItemStore::load(&path).unwrap();
+        let running = store.items[0].clone();
+        assert_eq!(running.continues, continues, "the dispatch's lineage reaches the item");
+        let mut preserved =
+            open_candidate(&running, "wi_preserved", TaskVerdict::Remainder { gaps: vec![] });
+        preserved.trace_id = Some("c".repeat(32));
+        let mut needs_decision = open_candidate(
+            &running,
+            "wi_needs_decision",
+            TaskVerdict::BlockedOnDecision {
+                finding: "which schema?".into(),
+                options: vec![],
+            },
+        );
+        // A needs_decision item blocked on a dependency carries no disposition.
+        needs_decision.disposition = None;
+        needs_decision.trace_id = Some("d".repeat(32));
+        let mut cancelled =
+            open_candidate(&running, "wi_cancelled", TaskVerdict::Remainder { gaps: vec![] });
+        let evidence = cancelled.disposition.clone();
+        cancelled.settle_cancelled("owner closed", evidence, Utc::now());
+        let mut elsewhere = open_candidate(
+            &running,
+            "wi_elsewhere",
+            TaskVerdict::RunnerError {
+                detail: "crashed".into(),
+            },
+        );
+        elsewhere.project = "beta".into();
+        let followed = [preserved, needs_decision, cancelled, elsewhere];
+        for item in &followed {
+            store.upsert(item.clone());
+        }
+        store.save(&path).unwrap();
+        (path, followed)
+    }
+
+    #[tokio::test]
+    async fn a_landed_continuation_supersedes_the_open_items_it_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, [preserved, needs_decision, cancelled, elsewhere]) =
+            continuation_ledger(dir.path());
+        let trigger = completion(TaskVerdict::Complete, true, None);
+        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+
+        let (follow_up, additional) =
+            SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+
+        assert_eq!(follow_up.state, WorkItemState::Landed);
+        let reason = format!("superseded by ref-or-commit via {}", follow_up.id);
+        assert_eq!(
+            additional.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["wi_preserved", "wi_needs_decision"]
+        );
+        let after = WorkItemStore::load(&path).unwrap();
+        for before in [&preserved, &needs_decision] {
+            let landed = after.find(&before.id).unwrap();
+            assert_eq!(landed.state, WorkItemState::Landed);
+            assert_eq!(landed.reason, reason);
+            assert_eq!(
+                landed.disposition.as_ref().unwrap().landed_commit.as_deref(),
+                Some("ref-or-commit")
+            );
+            assert_eq!(landed.operator_action, None);
+        }
+        assert_eq!(
+            after
+                .find(&preserved.id)
+                .unwrap()
+                .disposition
+                .as_ref()
+                .unwrap()
+                .preservation_ref,
+            preserved.disposition.as_ref().unwrap().preservation_ref,
+            "preservation evidence is kept"
+        );
+        assert_eq!(after.find(&cancelled.id), Some(&cancelled), "the owner's close wins");
+        assert_eq!(after.find(&elsewhere.id), Some(&elsewhere), "another project is untouched");
+    }
+
+    #[tokio::test]
+    async fn a_continuation_that_does_not_land_leaves_the_continued_items_open() {
+        for (verdict, landed) in [
+            (TaskVerdict::Remainder { gaps: vec![] }, false),
+            // Complete without a deliverable settles landed but landed nothing.
+            (TaskVerdict::Complete, false),
+            (
+                TaskVerdict::RunnerError {
+                    detail: "crashed".into(),
+                },
+                false,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, continued) = continuation_ledger(dir.path());
+            let trigger = completion(verdict.clone(), landed, None);
+            let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+
+            let (_, additional) =
+                SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+
+            assert!(additional.is_empty(), "{verdict:?}");
+            let after = WorkItemStore::load(&path).unwrap();
+            for before in &continued {
+                assert_eq!(after.find(&before.id), Some(before), "{verdict:?}");
+            }
         }
     }
 }

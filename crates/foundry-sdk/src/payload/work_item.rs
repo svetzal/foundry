@@ -39,6 +39,9 @@ pub struct WorkItemEventPayload {
     /// Exact preserved item this task continues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<String>,
+    /// Open items this task follows up on. Absent when it continues none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continues: Vec<String>,
     /// Owner action, without replacing the original submission origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<crate::work_item::WorkItemOperatorAction>,
@@ -67,6 +70,7 @@ impl WorkItemEventPayload {
             disposition: item.disposition.clone(),
             operator_action: item.operator_action.clone(),
             resumes: item.resumes.clone(),
+            continues: item.continues.clone(),
             depends_on: item.depends_on.clone(),
             not_before: item.not_before,
         }

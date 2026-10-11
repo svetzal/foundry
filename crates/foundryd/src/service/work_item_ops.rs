@@ -180,6 +180,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         source: item.source.as_ref().map(source_to_proto),
         depends_on: item.depends_on.clone(),
         not_before: item.not_before.map(|at| at.to_rfc3339()),
+        continues: item.continues.clone(),
     }
 }
 
@@ -606,6 +607,43 @@ pub(super) fn require_known_dependencies(
         return Err(Status::invalid_argument(format!(
             "work item '{unknown}' named by --after is not in the ledger"
         )));
+    }
+    Ok(())
+}
+
+/// Every id in `continues` must name an open item of `project`.
+///
+/// A follow-up records lineage to work a person still owes, so the submitter
+/// is told now about an id that does not exist (`INVALID_ARGUMENT`, as for
+/// `--after`), belongs to another project, or is no longer open
+/// (`FAILED_PRECONDITION`).
+pub(super) fn require_open_continuations(
+    store: &WorkItemStore,
+    project: &str,
+    continues: &[String],
+) -> Result<(), Status> {
+    for id in continues {
+        if id.trim().is_empty() {
+            return Err(Status::invalid_argument("--continues needs a work item id"));
+        }
+        let item = store.find(id).ok_or_else(|| {
+            Status::invalid_argument(format!(
+                "work item '{id}' named by --continues is not in the ledger"
+            ))
+        })?;
+        if item.project != project {
+            return Err(Status::failed_precondition(format!(
+                "work item '{id}' named by --continues belongs to project '{}', not '{project}'",
+                item.project
+            )));
+        }
+        if !item.state.is_open() {
+            return Err(Status::failed_precondition(format!(
+                "work item '{id}' named by --continues is {}, not open \
+                 (preserved, needs_decision or failed)",
+                item.state.tag()
+            )));
+        }
     }
     Ok(())
 }

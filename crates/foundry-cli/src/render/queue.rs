@@ -184,8 +184,13 @@ impl Widths {
 /// state, the timestamp that placed it in its group, then the one-line reason.
 fn item_line(item: &WorkItem, widths: &Widths) -> String {
     let resumes = item.resumes.as_ref().map_or_else(String::new, |id| format!(" (resumes {id})"));
+    let continues = if item.continues.is_empty() {
+        String::new()
+    } else {
+        format!(" (continues {})", item.continues.join(", "))
+    };
     format!(
-        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {source:<source_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}{resumes}",
+        "  {id:<id_w$}  {project:<project_w$}  {kind:<kind_w$}  {lane:<lane_w$}  {source:<source_w$}  {state:<state_w$}  {stamp:<stamp_w$}  {reason}{resumes}{continues}",
         id = item.id,
         project = item.project,
         kind = item.kind,
@@ -284,6 +289,9 @@ pub fn item_detail(item: &WorkItem) -> String {
     optional_field(&mut out, "Started:", item.started_at.as_deref());
     optional_field(&mut out, "Settled:", item.settled_at.as_deref());
     optional_field(&mut out, "Resumes:", item.resumes.as_deref());
+    if !item.continues.is_empty() {
+        let _ = writeln!(out, "{:<18}{}", "Continues:", item.continues.join(", "));
+    }
     if !item.depends_on.is_empty() {
         let _ = writeln!(out, "{:<18}{}", "Depends on:", item.depends_on.join(", "));
     }
@@ -421,6 +429,8 @@ struct JsonItem<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resumes: Option<&'a str>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    continues: &'a [String],
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
     depends_on: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     not_before: Option<&'a str>,
@@ -473,6 +483,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
         Self {
             id: &item.id,
             resumes: item.resumes.as_deref(),
+            continues: &item.continues,
             project: &item.project,
             objective: &item.objective,
             kind: &item.kind,
@@ -571,6 +582,7 @@ mod tests {
             source: None,
             depends_on: Vec::new(),
             not_before: None,
+            continues: Vec::new(),
         }
     }
 
@@ -891,6 +903,7 @@ mod tests {
             "worktree_removed",
             "depends_on",
             "not_before",
+            "continues",
         ] {
             assert!(!object.contains_key(absent), "'{absent}' must be absent from {parsed}");
         }
@@ -1118,5 +1131,18 @@ mod tests {
         let legacy: serde_json::Value =
             serde_json::from_str(&items_json(&[item("wi_old", "landed")])).unwrap();
         assert!(legacy[0].get("resumes").is_none());
+    }
+
+    #[test]
+    fn continuation_lineage_is_visible_in_human_and_json_reads() {
+        let mut follow_up = item("wi_follow_up", "running");
+        follow_up.continues = vec!["wi_a".to_string(), "wi_b".to_string()];
+        assert!(item_detail(&follow_up).contains("Continues:        wi_a, wi_b"));
+        assert!(queue_overview(&[follow_up.clone()]).contains("(continues wi_a, wi_b)"));
+        let json: serde_json::Value = serde_json::from_str(&items_json(&[follow_up])).unwrap();
+        assert_eq!(json[0]["continues"], serde_json::json!(["wi_a", "wi_b"]));
+        let legacy: serde_json::Value =
+            serde_json::from_str(&items_json(&[item("wi_old", "landed")])).unwrap();
+        assert!(legacy[0].get("continues").is_none());
     }
 }

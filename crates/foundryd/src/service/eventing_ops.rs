@@ -499,11 +499,13 @@ pub(super) async fn run_workflow_result(
     result
 }
 
-/// Refuse a task dispatch whose pacing fields could never be honoured: a
-/// `--after` id that is not in the ledger, or a `--not-before` that is not a
-/// time. Checked here so the submitter is told now, not left watching a
-/// queued item that never starts. Every other root passes through untouched.
-fn check_pacing_fields(event: &Event, work_items_path: &std::path::Path) -> Result<(), Status> {
+/// Refuse a task dispatch whose pacing or lineage fields could never be
+/// honoured: a `--after` id that is not in the ledger, a `--not-before` that
+/// is not a time, or a `--continues` id that is unknown, belongs to another
+/// project or is no longer open. Checked here, before anything is spawned, so
+/// the submitter is told now and a refused dispatch admits and runs nothing.
+/// Every other root passes through untouched.
+fn check_dispatch_fields(event: &Event, work_items_path: &std::path::Path) -> Result<(), Status> {
     if event.event_type != EventType::ExecutionRequested {
         return Ok(());
     }
@@ -513,17 +515,27 @@ fn check_pacing_fields(event: &Event, work_items_path: &std::path::Path) -> Resu
         })?;
         super::work_item_ops::parse_not_before(text)?;
     }
-    let Some(depends_on) = event.payload.get("depends_on") else {
-        return Ok(());
-    };
-    let ids: Vec<String> = serde_json::from_value(depends_on.clone())
-        .map_err(|_| Status::invalid_argument("depends_on must be an array of work item ids"))?;
-    if ids.is_empty() {
+    let depends_on = id_list(event, "depends_on")?;
+    let continues = id_list(event, "continues")?;
+    if depends_on.is_empty() && continues.is_empty() {
         return Ok(());
     }
     let store = foundry_sdk::work_item::WorkItemStore::load(work_items_path)
         .map_err(|error| Status::internal(format!("work-item ledger is unreadable: {error}")))?;
-    super::work_item_ops::require_known_dependencies(&store, &ids)
+    super::work_item_ops::require_known_dependencies(&store, &depends_on)?;
+    super::work_item_ops::require_open_continuations(&store, &event.project, &continues)
+}
+
+/// The work-item ids under `key` in a dispatch payload; empty when absent.
+fn id_list(event: &Event, key: &str) -> Result<Vec<String>, Status> {
+    event.payload.get(key).map_or_else(
+        || Ok(Vec::new()),
+        |value| {
+            serde_json::from_value(value.clone()).map_err(|_| {
+                Status::invalid_argument(format!("{key} must be an array of work item ids"))
+            })
+        },
+    )
 }
 
 pub(super) fn emit_rpc(
@@ -532,7 +544,7 @@ pub(super) fn emit_rpc(
     request: Request<EmitRequest>,
 ) -> Result<Response<EmitResponse>, Status> {
     let event = parse_emit_request(request.into_inner())?;
-    check_pacing_fields(&event, work_items_path)?;
+    check_dispatch_fields(&event, work_items_path)?;
     let event_id = event.id.clone();
 
     tracing::info!(

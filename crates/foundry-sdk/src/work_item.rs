@@ -292,6 +292,12 @@ pub struct WorkItem {
     /// Exact preserved item this task continues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<String>,
+    /// Open items this task follows up on (`foundry task --continues`).
+    /// Lineage only: it changes neither the task's base nor its objective.
+    /// When this item lands, each one still open settles `landed` as
+    /// superseded by it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continues: Vec<String>,
     /// Latest owner action. Absent on records predating owner controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<WorkItemOperatorAction>,
@@ -370,6 +376,7 @@ impl WorkItem {
             disposition: None,
             operator_action: None,
             resumes: None,
+            continues: Vec::new(),
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,

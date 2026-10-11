@@ -1843,6 +1843,7 @@ mod tests {
             disposition: None,
             operator_action: None,
             resumes: None,
+            continues: Vec::new(),
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
@@ -1994,6 +1995,61 @@ mod tests {
         );
         let service = test_service_with_work_items_path(tmp.path().to_path_buf());
         assert_eq!(listed_ids(&service, "alpha", "failed").await, vec!["wi_a_failed"]);
+    }
+
+    fn task_with_continues(project: &str, continues: &[&str]) -> Request<EmitRequest> {
+        Request::new(EmitRequest {
+            event_type: "execution_requested".to_string(),
+            project: project.to_string(),
+            throttle: 0,
+            payload_json: serde_json::json!({
+                "project": project,
+                "workflow": "task",
+                "prompt": "fix the review findings",
+                "continues": continues,
+            })
+            .to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+            source: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_continues_id_must_be_an_open_item_of_the_same_project() {
+        use foundry_sdk::work_item::WorkItemState as S;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write_ledger(
+            tmp.path(),
+            vec![
+                ledger_item("wi_open", "alpha", S::Preserved, 10, Some(20), Some(30)),
+                ledger_item("wi_other", "beta", S::NeedsDecision, 11, Some(21), Some(31)),
+                ledger_item("wi_landed", "alpha", S::Landed, 12, Some(22), Some(32)),
+                ledger_item("wi_closed", "alpha", S::Cancelled, 13, Some(23), Some(33)),
+            ],
+        );
+        let before = std::fs::read(tmp.path()).unwrap();
+        let service = test_service_with_work_items_path(tmp.path().to_path_buf());
+        for (continues, code) in [
+            (vec!["wi_absent"], tonic::Code::InvalidArgument),
+            (vec!["wi_open", ""], tonic::Code::InvalidArgument),
+            (vec!["wi_other"], tonic::Code::FailedPrecondition),
+            (vec!["wi_open", "wi_landed"], tonic::Code::FailedPrecondition),
+            (vec!["wi_closed"], tonic::Code::FailedPrecondition),
+        ] {
+            let error = service
+                .emit(task_with_continues("alpha", &continues))
+                .await
+                .expect_err("a refused continuation dispatches nothing");
+            assert_eq!(error.code(), code, "{continues:?}: {}", error.message());
+            assert!(error.message().contains("--continues"), "{}", error.message());
+        }
+        assert_eq!(std::fs::read(tmp.path()).unwrap(), before, "nothing was admitted");
+        service
+            .emit(task_with_continues("alpha", &["wi_open"]))
+            .await
+            .expect("an open item of the same project may be continued");
     }
 
     #[tokio::test]
@@ -2164,6 +2220,7 @@ mod tests {
             trace_id: Some("a".repeat(32)),
             operator_action: None,
             resumes: None,
+            continues: Vec::new(),
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,

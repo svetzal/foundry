@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry task <project> "<description>" --continues <id>` (repeatable)
+  records that a follow-up task continues open work, such as fixing the review
+  findings on an earlier item's branch. Before, the follow-up was a plain task
+  whose objective named the branch, nothing recorded the lineage, and the
+  original stayed open until someone closed it by hand. Each id must be an open
+  item (`preserved`, `needs_decision` or `failed`) of the same project; an
+  unknown id is `INVALID_ARGUMENT`, another project's item or a settled one is
+  `FAILED_PRECONDITION`, and a refused dispatch admits nothing. The new item
+  records the ids in `continues`, shown by `queue show` (human and JSON), the
+  queue overview and lifecycle payloads. When it lands, each continued item
+  still open settles `landed` with `landed_commit` set and the reason
+  `superseded by <commit> via <new item id>`, on its own trace, followed by the
+  guarded branch cleanup. It is lineage only: the task's base and objective
+  are unchanged, it does not wait (use `--after`), and a continuation that
+  does not land leaves the continued items open. `queue resume` is unchanged.
+
 ### Changed
 
 - A campaign's formation runs no longer stay open after the campaign moves on.
