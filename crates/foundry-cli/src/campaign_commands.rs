@@ -10,7 +10,7 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use foundry_sdk::campaign::{
-    Campaign, CampaignStatus, CampaignStore, Transition, check_inline_context_budget,
+    Campaign, CampaignStatus, CampaignStore, DoneEvidence, Transition, check_inline_context_budget,
 };
 use foundry_sdk::registry::Registry;
 
@@ -103,53 +103,131 @@ pub async fn list(store_path: &Path, addr: &str, offline: bool) -> Result<()> {
 /// (`campaign:<name>`), never by inferring them from traces. Offline, the
 /// ledger file is read through the same selection `foundry queue --offline`
 /// applies, so the two paths differ only in transport.
+///
+/// An escalated campaign prints why it waits on its owner. Offline applies the
+/// daemon's rule: the reason comes from the campaign record, or, for an
+/// escalation that predates the record, from the newest `campaign_escalated`
+/// event in `events_dir`. The human and JSON forms render from the same data.
 pub async fn show(
-    store_path: &Path,
-    work_items_path: &Path,
+    paths: ShowPaths<'_>,
     addr: &str,
     offline: bool,
     name: &str,
+    json: bool,
 ) -> Result<()> {
     let cycles = crate::queue_commands::SourceFilter::campaign(name);
-    if offline {
-        let store = CampaignStore::load(store_path)?;
+    let (detail, items) = if offline {
+        let mut store = CampaignStore::load(paths.campaigns)?;
+        foundry_sdk::campaign::escalation::resolve_open_escalations(
+            &mut store.campaigns,
+            paths.events_dir,
+        )
+        .context("could not read campaign escalations from the event log")?;
         let campaign =
             store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
         let items = crate::queue_commands::filter_by_source(
-            crate::queue_commands::load_offline(work_items_path)?,
+            crate::queue_commands::load_offline(paths.work_items)?,
             Some(&cycles),
         );
+        (detail_to_proto(campaign), items)
+    } else {
+        let mut client =
+            connect_daemon_required(addr, &campaign_offline_hint(&format!("show {name}"))).await?;
+        let detail = client
+            .get_campaign(GetCampaignRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .campaign
+            .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?;
+        let items = client
+            .list_work_items(crate::queue_commands::list_request(Some(&cycles)))
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .items;
+        (detail, items)
+    };
+    if json {
+        print!("{}", render::campaign::campaign_show_json(&detail, &items));
+    } else {
         print!(
             "{}\n{}",
-            render::campaign::campaign_detail(campaign),
+            render::campaign::campaign_detail_proto(&detail),
             render::campaign::campaign_cycles(&items)
         );
-        return Ok(());
     }
-
-    let mut client =
-        connect_daemon_required(addr, &campaign_offline_hint(&format!("show {name}"))).await?;
-    let detail = client
-        .get_campaign(GetCampaignRequest {
-            name: name.to_string(),
-        })
-        .await
-        .map_err(status_to_anyhow)?
-        .into_inner()
-        .campaign
-        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?;
-    let items = client
-        .list_work_items(crate::queue_commands::list_request(Some(&cycles)))
-        .await
-        .map_err(status_to_anyhow)?
-        .into_inner()
-        .items;
-    print!(
-        "{}\n{}",
-        render::campaign::campaign_detail_proto(&detail),
-        render::campaign::campaign_cycles(&items)
-    );
     Ok(())
+}
+
+/// The client-side files `campaign show --offline` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ShowPaths<'a> {
+    /// The campaign store.
+    pub campaigns: &'a Path,
+    /// The work-item ledger, for the campaign's cycles.
+    pub work_items: &'a Path,
+    /// The event log, for escalations that predate the campaign record.
+    pub events_dir: &'a Path,
+}
+
+/// Wire form of one campaign's detail, matching what `GetCampaign` would have
+/// sent, so `--offline` renders through the same functions as the online path.
+pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDetail {
+    crate::proto::CampaignDetail {
+        name: campaign.name.clone(),
+        project: campaign.project.clone(),
+        mission: campaign.mission.clone(),
+        status: campaign.status.to_string(),
+        cycles_completed: campaign.cycles_completed,
+        cycles_landed: campaign.cycles_landed,
+        max_cycles: campaign.budget.max_cycles,
+        authorized_by: campaign.authorized_by.clone().unwrap_or_default(),
+        agent_provider: campaign.agent_provider.clone().unwrap_or_default(),
+        last_run_event_id: campaign.last_run_event_id.clone().unwrap_or_default(),
+        intent_refs: campaign.intent_refs.clone(),
+        context_paths: campaign.context_paths.clone(),
+        done_evidence: campaign
+            .done_evidence
+            .iter()
+            .map(|evidence| match evidence {
+                DoneEvidence::Gate {
+                    command,
+                    required,
+                    artifacts,
+                } => crate::proto::DoneEvidence {
+                    kind: "gate".to_string(),
+                    command: command.clone(),
+                    required: *required,
+                    statement: String::new(),
+                    artifacts: artifacts.clone(),
+                },
+                DoneEvidence::Review { statement } => crate::proto::DoneEvidence {
+                    kind: "review".to_string(),
+                    command: String::new(),
+                    required: false,
+                    statement: statement.clone(),
+                    artifacts: vec![],
+                },
+            })
+            .collect(),
+        escalation: campaign.escalation.clone(),
+        owner_decisions: campaign
+            .owner_decisions
+            .iter()
+            .map(|decision| crate::proto::OwnerDecision {
+                decision: decision.decision.clone(),
+                authorized_by: decision.authorized_by.clone(),
+                decided_at: decision.decided_at.to_rfc3339(),
+            })
+            .collect(),
+        open_escalation: campaign
+            .open_escalation
+            .as_ref()
+            .map(render::campaign::escalation_to_proto),
+    }
 }
 
 /// Pause a campaign via the daemon (online path) or the campaign store
@@ -725,7 +803,14 @@ mod tests {
         // No ledger file yet: the offline show renders the campaign with no
         // recorded cycles rather than failing on the absent ledger.
         let ledger = dir.path().join("work-items.json");
-        show(&store, &ledger, "http://127.0.0.1:0", true, "c").await.unwrap();
+        let events = dir.path().join("events");
+        let paths = ShowPaths {
+            campaigns: &store,
+            work_items: &ledger,
+            events_dir: &events,
+        };
+        show(paths, "http://127.0.0.1:0", true, "c", false).await.unwrap();
+        show(paths, "http://127.0.0.1:0", true, "c", true).await.unwrap();
         pause(&store, "http://127.0.0.1:0", true, "c").await.unwrap();
         assert_eq!(
             CampaignStore::load(&store).unwrap().find("c").unwrap().status,
@@ -874,6 +959,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();
@@ -1224,6 +1310,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             })
             .unwrap();

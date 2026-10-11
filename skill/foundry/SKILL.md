@@ -238,7 +238,7 @@ preserve full reassessment and useful evidence. The charter defines this princip
 ```bash
 foundry campaign add ./campaign.json
 foundry campaign list
-foundry campaign show <name>
+foundry campaign show <name> [--json]
 foundry campaign report <name> [--json]
 foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
@@ -248,7 +248,10 @@ foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
 ```
 
-`foundry campaign show <name>` prints the campaign and then its cycles as the
+`foundry campaign show <name>` prints the campaign; for an escalated campaign,
+an `Escalation:` block with the reason (and the task agent's question and
+choices when a task asked one); `Owner options:` with the command lines the
+owner can run now; and then its cycles as the
 work-item ledger records them (`Cycles in the ledger:`), read through the
 `ListWorkItems` source filter `campaign:<name>` — the same list
 `foundry queue --source campaign:<name>` prints — never inferred from traces.

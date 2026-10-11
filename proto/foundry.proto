@@ -356,6 +356,29 @@ message Campaign {
     string authorized_by = 8;
     string agent_provider = 9;
     string last_run_event_id = 10;
+    // Why the campaign waits on its owner. Set only while status is
+    // "escalated", and then absent only when no reason was ever recorded.
+    CampaignEscalation open_escalation = 11;
+}
+
+// Why an escalated campaign waits on its owner.
+//
+// The daemon reads it from the campaign record, which formation writes when it
+// escalates the campaign. A campaign that escalated before the record existed
+// has none, so the daemon recovers it from the newest `campaign_escalated`
+// event naming the campaign and sets from_event_log. It never writes that
+// recovered record back into the campaign store.
+message CampaignEscalation {
+    string reason = 1;
+    // RFC 3339.
+    string escalated_at = 2;
+    uint64 cycles_completed = 3;
+    uint64 cycles_landed = 4;
+    // The task agent's question, when a task stopped with blocked_on_decision.
+    optional string question = 5;
+    // The choices the task agent offered with its question.
+    repeated string choices = 6;
+    bool from_event_log = 7;
 }
 
 message ListCampaignsResponse {
@@ -405,6 +428,8 @@ message CampaignDetail {
     repeated DoneEvidence done_evidence = 13;
     repeated string escalation = 14;
     repeated OwnerDecision owner_decisions = 15;
+    // Why the campaign waits on its owner; see Campaign.open_escalation.
+    CampaignEscalation open_escalation = 16;
 }
 
 message CampaignReportResponse {

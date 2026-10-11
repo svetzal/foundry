@@ -1,7 +1,8 @@
 use std::fmt::Write as _;
 
 use comfy_table::{ContentArrangement, Table};
-use foundry_sdk::campaign::{Campaign, DoneEvidence};
+use foundry_sdk::campaign::{Campaign, CampaignStatus, DoneEvidence, OwnerOption, owner_options};
+use serde::Serialize;
 
 /// Render a `CampaignDetail` received from the daemon gRPC response.
 ///
@@ -69,7 +70,234 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
             decision.decided_at, decision.authorized_by, decision.decision
         );
     }
+    if detail.status == CampaignStatus::Escalated.to_string() {
+        out.push_str(&escalation_section(detail.open_escalation.as_ref()));
+    }
+    out.push_str(&options_section(&detail_options(detail)));
     out
+}
+
+/// The line under the `Escalation:` heading when the campaign is escalated but
+/// no reason was ever recorded, neither on the campaign nor in the event log.
+pub const REASON_NOT_RECORDED: &str = "(not recorded)";
+
+/// Why an escalated campaign waits on its owner, under an `Escalation:`
+/// heading: the reason, when and at which cycle, the agent's question and
+/// choices when a task asked one, and a note when the record was recovered
+/// from the event log.
+#[must_use]
+pub fn escalation_section(escalation: Option<&crate::proto::CampaignEscalation>) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Escalation:");
+    let Some(escalation) = escalation else {
+        let _ = writeln!(out, "  Reason:     {REASON_NOT_RECORDED}");
+        return out;
+    };
+    let _ = writeln!(out, "  Reason:     {}", escalation.reason);
+    let _ = writeln!(
+        out,
+        "  Escalated:  {} at {} cycles ({} landed)",
+        escalation.escalated_at, escalation.cycles_completed, escalation.cycles_landed
+    );
+    if let Some(question) = &escalation.question {
+        let _ = writeln!(out, "  Question:   {question}");
+    }
+    for choice in &escalation.choices {
+        let _ = writeln!(out, "  Choice:     {choice}");
+    }
+    if escalation.from_event_log {
+        let _ = writeln!(
+            out,
+            "  Recorded:   recovered from the event log; the campaign escalated before Foundry kept the reason on the campaign"
+        );
+    }
+    out
+}
+
+/// Wire form of an open escalation, matching what the daemon sends, so the
+/// offline paths render through the same functions as the online ones.
+#[must_use]
+pub fn escalation_to_proto(
+    escalation: &foundry_sdk::campaign::CampaignEscalation,
+) -> crate::proto::CampaignEscalation {
+    crate::proto::CampaignEscalation {
+        reason: escalation.reason.clone(),
+        escalated_at: escalation.escalated_at.to_rfc3339(),
+        cycles_completed: escalation.cycles_completed,
+        cycles_landed: escalation.cycles_landed,
+        question: escalation.question.clone(),
+        choices: escalation.choices.clone(),
+        from_event_log: escalation.from_event_log,
+    }
+}
+
+/// What the owner can run now, one command line per row with its effect, under
+/// an `Owner options:` heading. Empty when there is nothing to run (a
+/// completed or cancelled campaign).
+#[must_use]
+pub fn options_section(options: &[OwnerOption]) -> String {
+    let mut out = String::new();
+    if options.is_empty() {
+        return out;
+    }
+    let width = options.iter().map(|o| o.command.len()).max().unwrap_or(0);
+    let _ = writeln!(out, "Owner options:");
+    for option in options {
+        let _ = writeln!(out, "  {:<width$}  {}", option.command, option.effect);
+    }
+    out
+}
+
+/// The owner options for a campaign as the daemon describes it. A status this
+/// build does not know offers nothing rather than guessing.
+#[must_use]
+pub fn campaign_options(
+    name: &str,
+    status: &str,
+    authorized_by: &str,
+    cycles_completed: u64,
+    max_cycles: u64,
+) -> Vec<OwnerOption> {
+    CampaignStatus::from_tag(status).map_or_else(Vec::new, |status| {
+        owner_options(name, status, !authorized_by.is_empty(), cycles_completed >= max_cycles)
+    })
+}
+
+fn detail_options(detail: &crate::proto::CampaignDetail) -> Vec<OwnerOption> {
+    campaign_options(
+        &detail.name,
+        &detail.status,
+        &detail.authorized_by,
+        detail.cycles_completed,
+        detail.max_cycles,
+    )
+}
+
+/// JSON projection of an open escalation, shared by `campaign show --json` and
+/// the queue's escalated-campaign rows. Optional keys are absent when unset.
+#[derive(Serialize)]
+pub(crate) struct JsonEscalation<'a> {
+    reason: &'a str,
+    escalated_at: &'a str,
+    cycles_completed: u64,
+    cycles_landed: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    question: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    choices: &'a [String],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    from_event_log: bool,
+}
+
+impl<'a> From<&'a crate::proto::CampaignEscalation> for JsonEscalation<'a> {
+    fn from(escalation: &'a crate::proto::CampaignEscalation) -> Self {
+        Self {
+            reason: &escalation.reason,
+            escalated_at: &escalation.escalated_at,
+            cycles_completed: escalation.cycles_completed,
+            cycles_landed: escalation.cycles_landed,
+            question: escalation.question.as_deref(),
+            choices: &escalation.choices,
+            from_event_log: escalation.from_event_log,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonDoneEvidence<'a> {
+    kind: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    command: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required: Option<bool>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    artifacts: &'a [String],
+    #[serde(skip_serializing_if = "str::is_empty")]
+    statement: &'a str,
+}
+
+#[derive(Serialize)]
+struct JsonOwnerDecision<'a> {
+    decision: &'a str,
+    authorized_by: &'a str,
+    decided_at: &'a str,
+}
+
+/// `campaign show --json`: the campaign, its open escalation, the owner's
+/// options and its ledger cycles, from the same fetched data as the human form.
+#[derive(Serialize)]
+struct JsonCampaignShow<'a> {
+    name: &'a str,
+    project: &'a str,
+    mission: &'a str,
+    status: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    authorized_by: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    agent_provider: &'a str,
+    cycles_completed: u64,
+    cycles_landed: u64,
+    max_cycles: u64,
+    intent_refs: &'a [String],
+    context_paths: &'a [String],
+    done_evidence: Vec<JsonDoneEvidence<'a>>,
+    escalation: &'a [String],
+    owner_decisions: Vec<JsonOwnerDecision<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_escalation: Option<JsonEscalation<'a>>,
+    owner_options: Vec<OwnerOption>,
+    cycles: Vec<super::queue::JsonItem<'a>>,
+}
+
+/// `campaign show --json` as a pretty-printed object.
+///
+/// Keys follow the campaign definition (`escalation` is the definition's
+/// escalation rules); `open_escalation` is absent unless the campaign is
+/// escalated with a known reason, `owner_options` lists what the owner can run
+/// now, and `cycles` carries the ledger records `queue --json` would print.
+#[must_use]
+pub fn campaign_show_json(
+    detail: &crate::proto::CampaignDetail,
+    items: &[crate::proto::WorkItem],
+) -> String {
+    let show = JsonCampaignShow {
+        name: &detail.name,
+        project: &detail.project,
+        mission: &detail.mission,
+        status: &detail.status,
+        authorized_by: &detail.authorized_by,
+        agent_provider: &detail.agent_provider,
+        cycles_completed: detail.cycles_completed,
+        cycles_landed: detail.cycles_landed,
+        max_cycles: detail.max_cycles,
+        intent_refs: &detail.intent_refs,
+        context_paths: &detail.context_paths,
+        done_evidence: detail
+            .done_evidence
+            .iter()
+            .map(|e| JsonDoneEvidence {
+                kind: &e.kind,
+                command: &e.command,
+                required: (e.kind == "gate").then_some(e.required),
+                artifacts: &e.artifacts,
+                statement: &e.statement,
+            })
+            .collect(),
+        escalation: &detail.escalation,
+        owner_decisions: detail
+            .owner_decisions
+            .iter()
+            .map(|d| JsonOwnerDecision {
+                decision: &d.decision,
+                authorized_by: &d.authorized_by,
+                decided_at: &d.decided_at,
+            })
+            .collect(),
+        open_escalation: detail.open_escalation.as_ref().map(JsonEscalation::from),
+        owner_options: detail_options(detail),
+        cycles: items.iter().map(super::queue::JsonItem::from).collect(),
+    };
+    super::queue::to_pretty(&show)
 }
 
 /// The heading above a campaign's cycles as the work-item ledger records them.
@@ -289,6 +517,11 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
     for reason in &report.external_completion_reasons {
         let _ = writeln!(out, "{reason}");
     }
+    if report.status == CampaignStatus::Escalated.to_string() {
+        let wire = report.open_escalation.as_ref().map(escalation_to_proto);
+        out.push_str(&escalation_section(wire.as_ref()));
+    }
+    out.push_str(&options_section(&report.owner_options));
     let _ = writeln!(
         out,
         "Legacy stage inference: {} sessions; incomplete log lines: {}",
@@ -354,6 +587,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         }
     }
@@ -375,6 +609,7 @@ mod tests {
             done_evidence: vec![],
             escalation: vec![],
             owner_decisions: vec![],
+            open_escalation: None,
         }
     }
 
@@ -636,5 +871,115 @@ mod tests {
         );
         assert!(out.contains("review: it works end to end"), "got: {out}");
         assert!(out.contains("mystery: (unknown kind)"), "got: {out}");
+    }
+
+    // -- escalation and owner options --
+
+    fn escalated_detail(
+        escalation: Option<crate::proto::CampaignEscalation>,
+    ) -> crate::proto::CampaignDetail {
+        crate::proto::CampaignDetail {
+            status: "escalated".to_string(),
+            cycles_completed: 5,
+            open_escalation: escalation,
+            ..proto_detail_fixture()
+        }
+    }
+
+    fn logged_escalation() -> crate::proto::CampaignEscalation {
+        crate::proto::CampaignEscalation {
+            reason: "campaign cycle budget exhausted (5)".to_string(),
+            escalated_at: "2026-10-11T03:00:00+00:00".to_string(),
+            cycles_completed: 5,
+            cycles_landed: 5,
+            question: None,
+            choices: vec![],
+            from_event_log: true,
+        }
+    }
+
+    #[test]
+    fn escalated_detail_prints_reason_provenance_and_owner_options() {
+        let out = campaign_detail_proto(&escalated_detail(Some(logged_escalation())));
+        assert!(
+            out.contains("Escalation:\n  Reason:     campaign cycle budget exhausted (5)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Escalated:  2026-10-11T03:00:00+00:00 at 5 cycles (5 landed)"),
+            "{out}"
+        );
+        assert!(out.contains("Recorded:   recovered from the event log"), "{out}");
+        assert!(!out.contains("Question:"), "{out}");
+        // Five of five cycles: resume needs --add-cycles, so that is what is offered.
+        assert!(out.contains("foundry campaign resume harden-auth --add-cycles <n>"), "{out}");
+        let decide = out.find("decide harden-auth").expect("decide offered");
+        let cancel = out.find("cancel harden-auth").expect("cancel offered");
+        assert!(decide < cancel, "options follow the status table order:\n{out}");
+    }
+
+    #[test]
+    fn escalated_detail_without_any_recorded_reason_says_so() {
+        let out = campaign_detail_proto(&escalated_detail(None));
+        assert!(
+            out.contains(&format!("Escalation:\n  Reason:     {REASON_NOT_RECORDED}\n")),
+            "{out}"
+        );
+        assert!(out.contains("Owner options:"), "{out}");
+    }
+
+    #[test]
+    fn a_non_escalated_campaign_prints_no_escalation_but_its_own_options() {
+        let out = campaign_detail_proto(&proto_detail_fixture());
+        assert!(!out.contains("Escalation:"), "{out}");
+        assert!(out.contains("foundry campaign advance harden-auth"), "{out}");
+        let done = crate::proto::CampaignDetail {
+            status: "completed".to_string(),
+            ..proto_detail_fixture()
+        };
+        assert!(!campaign_detail_proto(&done).contains("Owner options:"));
+    }
+
+    #[test]
+    fn show_json_carries_the_escalation_options_and_cycles_from_the_same_data() {
+        let parsed: serde_json::Value = serde_json::from_str(&campaign_show_json(
+            &escalated_detail(Some(logged_escalation())),
+            &[],
+        ))
+        .expect("parses");
+        assert_eq!(parsed["open_escalation"]["reason"], "campaign cycle budget exhausted (5)");
+        assert_eq!(parsed["open_escalation"]["from_event_log"], true);
+        assert!(parsed["open_escalation"].get("question").is_none());
+        assert_eq!(
+            parsed["owner_options"][1]["command"],
+            "foundry campaign resume harden-auth --add-cycles <n>"
+        );
+        assert_eq!(parsed["cycles"], serde_json::json!([]));
+        assert_eq!(parsed["authorized_by"], "stacey");
+        assert!(parsed.get("agent_provider").is_none(), "an empty optional is absent");
+
+        let active: serde_json::Value =
+            serde_json::from_str(&campaign_show_json(&proto_detail_fixture(), &[])).unwrap();
+        assert!(active.get("open_escalation").is_none());
+    }
+
+    #[test]
+    fn report_prints_the_escalation_and_options_of_an_escalated_campaign() {
+        use foundry_sdk::campaign::report::CampaignReport;
+        let mut data: CampaignReport = serde_json::from_value(serde_json::json!({
+            "name":"stuck", "status":"escalated", "cycles_dispatched":5, "cycles_landed":5,
+            "stage_limits":{}, "writable_repositories":[], "external_completion_reasons":[],
+            "inferred_stage_sessions":0, "incomplete_log_lines":0, "stages":{},
+            "open_escalation": {"reason":"owner decision required",
+                "escalated_at":"2026-10-11T03:00:00Z","cycles_completed":5,"cycles_landed":5},
+            "owner_options": [{"command":"foundry campaign cancel stuck --reason \"<text>\"",
+                "effect":"stop it permanently"}]
+        }))
+        .unwrap();
+        let out = report(&data);
+        assert!(out.contains("Reason:     owner decision required"), "{out}");
+        assert!(out.contains("foundry campaign cancel stuck"), "{out}");
+        data.status = "active".to_string();
+        assert!(!report(&data).contains("Escalation:"));
     }
 }

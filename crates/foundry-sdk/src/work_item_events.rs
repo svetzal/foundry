@@ -103,7 +103,7 @@ pub fn read_work_item_events(
 
 /// The log files in `events_dir`, in file-name order (`YYYY-MM.jsonl` sorts
 /// chronologically). A missing directory has none.
-fn log_files(events_dir: &Path) -> Result<Vec<PathBuf>, EventLogReadError> {
+pub(crate) fn log_files(events_dir: &Path) -> Result<Vec<PathBuf>, EventLogReadError> {
     let entries = match std::fs::read_dir(events_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

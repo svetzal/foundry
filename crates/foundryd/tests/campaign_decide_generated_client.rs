@@ -165,6 +165,7 @@ fn escalated_campaign(name: &str) -> Campaign {
             },
         }),
         objective_history: vec![],
+        open_escalation: None,
         writable_repositories: vec![],
     }
 }

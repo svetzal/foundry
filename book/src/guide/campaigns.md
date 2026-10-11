@@ -453,6 +453,53 @@ through the `ListWorkItems` source filter (`campaign:<name>`), the same list
 from traces. A campaign whose cycles predate the typed source, or that never
 advanced, prints `(none recorded)`.
 
+`--json` prints the same data as one object: the campaign's fields,
+`open_escalation`, `owner_options` and `cycles` (the ledger records
+`foundry queue --json` would print).
+
+### What an escalated campaign shows its owner
+
+An escalated campaign stops and waits for you, so `campaign show` says why and
+what you can do:
+
+```text
+Escalation:
+  Reason:     campaign cycle budget exhausted (6)
+  Escalated:  2026-10-11T03:12:40+00:00 at 6 cycles (6 landed)
+Owner options:
+  foundry campaign decide mojentic-x --decision "<text>"  record a binding owner decision and return to active; advance continues it
+  foundry campaign resume mojentic-x --add-cycles <n>     authorize n more cycles and return to active; advance continues it
+  foundry campaign complete mojentic-x --reason "<text>"  close it: owner-verified evidence shows the mission shipped
+  foundry campaign cancel mojentic-x --reason "<text>"    stop it permanently
+```
+
+When a task stopped with `blocked_on_decision`, the block also prints the
+agent's `Question:` and each `Choice:` as the agent wrote them. The options
+follow the status table below. `resume`, `decide` and `complete` need an
+`authorized_by` owner, so an unauthorized campaign is offered only `cancel`.
+When the cycle budget is spent, `resume` is offered with `--add-cycles`, the
+only form the engine accepts. Every other status prints its own options too,
+and a completed or cancelled campaign prints none. `foundry campaign report`
+prints the same `Escalation:` block and options, and its `--json` carries
+`open_escalation` and `owner_options`.
+
+The reason lives on the campaign record as `open_escalation`. Formation writes
+it in the same store save that moves the campaign to `escalated`, from the same
+reason the `campaign_escalated` event carries. It is present only while the
+campaign is `escalated`: `decide`, `resume`, `complete`, `cancel` and `pause`
+each clear it, because a reason for a question already answered is stale. The
+event log keeps every escalation. While the campaign stays escalated the first
+reason stands; a later result that reaches it only restates the status
+(`campaign is escalated and requires owner resumption`) and does not replace
+the question you have to answer.
+
+A campaign that escalated before Foundry kept this record has no
+`open_escalation` in its store. Reads recover the reason from the newest
+`campaign_escalated` event naming the campaign, across every monthly event
+file, and print `Recorded: recovered from the event log`. Nothing is written
+back: the store changes only when the campaign does. An escalated campaign with
+no record and no event prints `Reason: (not recorded)` beside its options.
+
 An earlier cycle the campaign has moved past does not stay in the open list.
 When the next cycle starts, each earlier cycle still `preserved`,
 `needs_decision` or `failed` settles `cancelled` with the reason `carried

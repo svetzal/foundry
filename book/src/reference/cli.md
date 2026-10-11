@@ -220,7 +220,7 @@ Manage durable, evidence-terminated engineering objectives.
 ```bash
 foundry campaign add <definition.json>
 foundry campaign list
-foundry campaign show <name>
+foundry campaign show <name> [--json]
 foundry campaign advance <name> [--origin <text>]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
@@ -235,7 +235,7 @@ foundry campaign resume <name> --add-cycles 2
 | ---------- | ---------------------- | --------------------------------------------------------------------------- |
 | `add`      | Yes unless `--offline` | Validate and atomically add one JSON definition                             |
 | `list`     | Yes unless `--offline` | Show campaign status and cycle counts                                       |
-| `show`     | Yes unless `--offline` | Show the complete stored campaign record                                    |
+| `show`     | Yes unless `--offline` | Show the complete stored campaign record; for an escalated campaign, why it waits on its owner; the owner's options as command lines; then its ledger cycles. `--json` emits one object |
 | `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate. `--origin <text>` records a free-text note, beside this machine's hostname, on the work item of the cycle it dispatches |
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
 | `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active   |

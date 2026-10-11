@@ -132,6 +132,7 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         })
         .unwrap();

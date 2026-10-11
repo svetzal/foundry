@@ -173,6 +173,7 @@ fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campai
         owner_decisions: vec![],
         pending_run_result: None,
         objective_history: vec![],
+        open_escalation: None,
         writable_repositories: vec![],
     }
 }
@@ -219,6 +220,7 @@ fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
             },
         }),
         objective_history: vec![],
+        open_escalation: None,
         writable_repositories: vec![],
     }
 }

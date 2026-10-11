@@ -306,14 +306,18 @@ impl Foundry for FoundryService {
         &self,
         request: Request<ListCampaignsRequest>,
     ) -> Result<Response<ListCampaignsResponse>, Status> {
-        campaign_ops::list(&self.campaigns_path, request)
+        let (campaigns, events) = (self.campaigns_path.clone(), self.events_dir.clone());
+        // The event-log fallback for a pre-record escalation reads every
+        // monthly file, so it runs off the runtime workers.
+        campaign_ops::blocking(move || campaign_ops::list(&campaigns, &events, request)).await
     }
 
     async fn get_campaign(
         &self,
         request: Request<GetCampaignRequest>,
     ) -> Result<Response<GetCampaignResponse>, Status> {
-        campaign_ops::get(&self.campaigns_path, request)
+        let (campaigns, events) = (self.campaigns_path.clone(), self.events_dir.clone());
+        campaign_ops::blocking(move || campaign_ops::get(&campaigns, &events, request)).await
     }
 
     async fn get_campaign_report(
@@ -1646,6 +1650,7 @@ mod tests {
             owner_decisions: vec![],
             pending_run_result: None,
             objective_history: vec![],
+            open_escalation: None,
             writable_repositories: vec![],
         };
         let store = CampaignStore {
@@ -1723,6 +1728,7 @@ mod tests {
                 owner_decisions: vec![],
                 pending_run_result: None,
                 objective_history: vec![],
+                open_escalation: None,
                 writable_repositories: vec![],
             }],
         };

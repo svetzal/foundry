@@ -7,6 +7,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `foundry campaign show` now says why an escalated campaign waits on its owner
+  and what the owner can run. On 2026-10-11 four mojentic recovery campaigns
+  sat `escalated` on production, and no operator surface showed the reason: it
+  lived only in the `campaign_escalated` event. Formation now records the
+  escalation on the campaign itself (`open_escalation`: reason, time, cycles,
+  and the task agent's question and choices for a `blocked_on_decision`), in
+  the same store save as the status. It is present only while the campaign is
+  `escalated`; `decide`, `resume`, `complete`, `cancel` and `pause` clear it.
+  `GetCampaign` and `ListCampaigns` carry it as a new `CampaignEscalation`
+  message. A campaign that escalated before this release, such as the four on
+  production, has no record, so reads recover the reason from the newest
+  `campaign_escalated` event in the event log and say so; nothing is written
+  back. `campaign show` prints an `Escalation:` block and `Owner options:` with
+  the real command lines from the status table (`decide`, `resume`, `complete`,
+  `cancel` for an escalated campaign, `resume --add-cycles <n>` when the budget
+  is spent). `campaign report` prints the same, and its `--json` gains
+  `open_escalation` and `owner_options`. `campaign show` gains `--json`.
+
 ## [0.44.4] - 2026-10-11
 
 ### Fixed
