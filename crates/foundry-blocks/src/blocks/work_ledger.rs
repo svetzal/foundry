@@ -36,7 +36,7 @@ use foundry_sdk::workflow::WorkflowType;
 pub const ADMITTED_WORK_ITEM_KEY: &str = "admitted_work_item_id";
 
 use super::SimulatedSuccess;
-use super::work_supersession::{prove_supersession, verified_commit};
+use super::work_supersession::{is_supersession_candidate, prove_supersession, verified_commit};
 
 /// How a task dispatch reached the engine, as the ledger records it.
 ///
@@ -403,7 +403,8 @@ impl SettleWorkItem {
                 return (Vec::new(), Vec::new());
             };
             // The exact resume parent already settles through the existing linked
-            // continuation proof. Supersession checks the remaining obligations.
+            // continuation proof. Supersession checks the remaining obligations:
+            // every open item that preserved work on a ref.
             let resumes = running.resumes.clone();
             store
                 .items
@@ -411,7 +412,7 @@ impl SettleWorkItem {
                 .filter(|item| {
                     item.project == trigger.project
                         && resumes.as_deref() != Some(item.id.as_str())
-                        && item.state == foundry_sdk::work_item::WorkItemState::Preserved
+                        && is_supersession_candidate(item)
                 })
                 .collect::<Vec<_>>()
         };
@@ -421,11 +422,17 @@ impl SettleWorkItem {
         let mut diagnostics = Vec::new();
         for item in candidates {
             let proof = match &trunk {
-                Ok(trunk) => prove_supersession(path, trunk, &item).await,
+                Ok(trunk) => {
+                    prove_supersession(path, trunk, &item).await.map(|proof| (trunk.clone(), proof))
+                }
                 Err(error) => Err(anyhow::anyhow!("registered trunk unavailable: {error}")),
             };
             match proof {
-                Ok(commit) => verified.push((item, commit)),
+                Ok((commit, proof)) => {
+                    tracing::info!(item_id = %item.id, project = %item.project,
+                        state = item.state.tag(), %commit, %proof, "supersession proved");
+                    verified.push((item, commit));
+                }
                 Err(error) => {
                     // Best-effort: unresolved evidence leaves the obligation open;
                     // bookkeeping must never interrupt a task that already landed.
@@ -489,6 +496,7 @@ impl SettleWorkItem {
             // Recheck the entire snapshot under the owner-controls write gate.
             // An owner cancellation or another writer must win over stale Git evidence.
             if let Some(item) = store.items.iter_mut().find(|item| **item == *candidate)
+                && item.state.is_open()
                 && let Some(disposition) = item.disposition.as_mut()
             {
                 disposition.landed_commit = Some(commit.clone());
@@ -1265,50 +1273,90 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn supersession_reloads_after_owner_cancellation_and_keeps_unrelated_updates() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work-items.json");
-        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
-        start_queued(&path);
-        let mut store = WorkItemStore::load(&path).unwrap();
-        let mut candidate = store.items[0].clone();
-        candidate.id = "wi_preserved_candidate".into();
+    /// An open item settled from `verdict`, with its own id and the
+    /// completion's preservation ref.
+    fn open_candidate(running: &WorkItem, id: &str, verdict: TaskVerdict) -> WorkItem {
+        let mut candidate = running.clone();
+        candidate.id = id.into();
         candidate.settle_from_task_run(
-            &completion(TaskVerdict::Remainder { gaps: vec![] }, false, None)
+            &completion(verdict, false, None)
                 .parse_payload::<TaskRunCompletedPayload>()
                 .unwrap(),
             None,
             Utc::now(),
         );
-        let verified = vec![(candidate.clone(), "verified-trunk-commit".to_string())];
-        // The Git proof snapshot predates an owner mutation under the same gate.
-        candidate.settle_cancelled("owner stopped", None, Utc::now());
-        let unrelated = WorkItem::dispatched(
-            foundry_sdk::work_item::WorkItemSpec {
-                project: "other-project".into(),
-                objective: "new unrelated update".into(),
-                kind: WorkItemKind::Task,
-                lane: WorkLane::Interactive,
-                origin: "owner".into(),
-                trace_id: Some("b".repeat(32)),
+        assert!(candidate.state.is_open(), "{id} must be open, not {:?}", candidate.state);
+        candidate
+    }
+
+    #[tokio::test]
+    async fn supersession_settles_any_open_item_the_owner_and_other_writers_left_alone() {
+        for verdict in [
+            TaskVerdict::Remainder { gaps: vec![] },
+            TaskVerdict::BlockedOnDecision {
+                finding: "which schema?".into(),
+                options: vec![],
             },
-            Utc::now(),
-        );
-        {
-            let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
-            store.upsert(candidate.clone());
-            store.upsert(unrelated.clone());
-            store.save(&path).unwrap();
+            TaskVerdict::RunnerError {
+                detail: "agent crashed".into(),
+            },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("work-items.json");
+            seed_dispatch(&path, &dispatch(&serde_json::json!({})));
+            start_queued(&path);
+            let mut store = WorkItemStore::load(&path).unwrap();
+            let running = store.items[0].clone();
+            let unchanged = open_candidate(&running, "wi_unchanged", verdict.clone());
+            let mut cancelled = open_candidate(&running, "wi_owner_cancelled", verdict.clone());
+            let mut edited = open_candidate(&running, "wi_edited", verdict.clone());
+            let verified: Vec<_> = [&unchanged, &cancelled, &edited]
+                .into_iter()
+                .map(|item| (item.clone(), "verified-trunk-commit".to_string()))
+                .collect();
+            // The Git proof snapshot predates an owner cancellation and an
+            // unrelated write to a still-open item, both under the same gate.
+            cancelled.settle_cancelled("owner stopped", None, Utc::now());
+            edited.reason = "a later writer's reason".into();
+            let unrelated = WorkItem::dispatched(
+                foundry_sdk::work_item::WorkItemSpec {
+                    project: "other-project".into(),
+                    objective: "new unrelated update".into(),
+                    kind: WorkItemKind::Task,
+                    lane: WorkLane::Interactive,
+                    origin: "owner".into(),
+                    trace_id: Some("b".repeat(32)),
+                },
+                Utc::now(),
+            );
+            {
+                let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
+                for item in [&unchanged, &cancelled, &edited, &unrelated] {
+                    store.upsert(item.clone());
+                }
+                store.save(&path).unwrap();
+            }
+            let trigger = completion(TaskVerdict::Complete, true, None);
+            let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+            let (_, additional) =
+                SettleWorkItem::new(path.clone()).settle(&trigger, &result, &verified).unwrap();
+            let after = WorkItemStore::load(&path).unwrap();
+            assert_eq!(after.items[0].state, WorkItemState::Landed);
+            assert_eq!(
+                additional.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+                vec!["wi_unchanged"],
+                "{verdict:?}"
+            );
+            let landed = after.find(&unchanged.id).unwrap();
+            assert_eq!(landed.state, WorkItemState::Landed);
+            assert_eq!(landed.reason, "superseded by verified-trunk-commit");
+            assert_eq!(
+                landed.disposition.as_ref().unwrap().landed_commit.as_deref(),
+                Some("verified-trunk-commit")
+            );
+            assert_eq!(after.find(&cancelled.id), Some(&cancelled));
+            assert_eq!(after.find(&edited.id), Some(&edited));
+            assert_eq!(after.find(&unrelated.id), Some(&unrelated));
         }
-        let trigger = completion(TaskVerdict::Complete, true, None);
-        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
-        let outcome =
-            SettleWorkItem::new(path.clone()).settle(&trigger, &result, &verified).unwrap();
-        assert!(outcome.1.is_empty());
-        let after = WorkItemStore::load(&path).unwrap();
-        assert_eq!(after.find(&candidate.id), Some(&candidate));
-        assert_eq!(after.find(&unrelated.id), Some(&unrelated));
-        assert_eq!(after.items[0].state, WorkItemState::Landed);
     }
 }

@@ -73,6 +73,8 @@ fn supersession_fixture(
         WorkItemState::Running,
         WorkItemState::Landed,
         WorkItemState::Cancelled,
+        // Open, but started after the preserved commit was made: these runs
+        // committed nothing of their own, so no landing supersedes them.
         WorkItemState::Failed,
         WorkItemState::NeedsDecision,
     ] {
@@ -431,6 +433,117 @@ async fn supersession_git_failures_no_landing_and_failed_save_are_not_proof() {
                 assert_eq!(event.payload["item_id"], running.id);
             }
         }
+    }
+}
+
+/// Commit `files` on the current branch of `checkout`.
+fn commit_files(checkout: &Path, files: &[(&str, &str)], message: &str) {
+    for (name, content) in files {
+        std::fs::write(checkout.join(name), content).unwrap();
+    }
+    assert!(git_ok(Some(checkout), &["add", "--all"]));
+    assert!(git_ok(Some(checkout), &["commit", "-m", message]));
+}
+
+/// A landing settles every open item whose preserved work trunk already
+/// holds, whatever the item's open state, by ancestry or, for a squashed
+/// continuation, by content containment. Owner-cancelled items and runs that
+/// stopped before committing keep their state.
+#[tokio::test]
+async fn landing_settles_needs_decision_and_failed_items_whose_work_reached_trunk() {
+    for shape in ["ancestry", "squash"] {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = task_project(dir.path());
+        // A run that blocked before committing preserves its base unchanged.
+        assert!(git_ok(Some(&checkout), &["branch", "no-commits", "main"]));
+        let parent = preserved_parent(&checkout);
+        assert!(git_ok(Some(&checkout), &["checkout", "preserved-work"]));
+        commit_files(&checkout, &[("extra.txt", "second half")], "second preserved commit");
+        assert!(git_ok(Some(&checkout), &["checkout", "main"]));
+        if shape == "ancestry" {
+            assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+        } else {
+            commit_files(
+                &checkout,
+                &[
+                    ("preserved.txt", "preserved change"),
+                    ("extra.txt", "second half"),
+                ],
+                "squashed continuation",
+            );
+        }
+        commit_files(&checkout, &[("later.txt", "unrelated")], "later cycle");
+        let commit = hash(&checkout, "main");
+        let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+        let open = |id: &str, state: WorkItemState| {
+            let mut item = parent.clone();
+            item.id = id.into();
+            item.state = state;
+            item.started_at = Some(earlier);
+            item
+        };
+        let settling = [
+            open("wi_preserved", WorkItemState::Preserved),
+            open("wi_needs_decision", WorkItemState::NeedsDecision),
+            open("wi_failed", WorkItemState::Failed),
+        ];
+        let mut cancelled = open("wi_owner_cancelled", WorkItemState::NeedsDecision);
+        cancelled.settle_cancelled("owner stopped", cancelled.disposition.clone(), earlier);
+        let mut blocked = parent.clone();
+        blocked.id = "wi_blocked_without_commits".into();
+        blocked.state = WorkItemState::NeedsDecision;
+        blocked.disposition.as_mut().unwrap().preservation_ref = Some("no-commits".into());
+        let mut running = parent.clone();
+        running.id = "wi_actual_task".into();
+        running.state = WorkItemState::Running;
+        running.trace_id = Some(mint_trace_id());
+        running.disposition = None;
+        let ledger = dir.path().join("work-items.json");
+        let mut items = settling.to_vec();
+        items.extend([cancelled.clone(), blocked.clone(), running.clone()]);
+        WorkItemStore { version: 1, items }.save(&ledger).unwrap();
+        let registry =
+            test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
+        let mut engine = Engine::new();
+        engine.register(Box::new(foundry_blocks::blocks::SettleWorkItem::with_registry(
+            ledger.clone(),
+            registry,
+        )));
+
+        let outcome = engine.process(terminal(&running, true, &commit)).await;
+
+        let store = WorkItemStore::load(&ledger).unwrap();
+        let mut announced: Vec<_> = outcome
+            .events
+            .iter()
+            .filter(|event| event.event_type == EventType::WorkItemSettled)
+            .map(|event| event.payload["item_id"].as_str().unwrap().to_string())
+            .collect();
+        announced.sort();
+        assert_eq!(
+            announced,
+            vec![
+                "wi_actual_task",
+                "wi_failed",
+                "wi_needs_decision",
+                "wi_preserved"
+            ],
+            "{shape}"
+        );
+        for item in &settling {
+            let landed = store.find(&item.id).unwrap();
+            assert_eq!(landed.state, WorkItemState::Landed, "{shape} {}", item.id);
+            assert_eq!(landed.reason, format!("superseded by {commit}"));
+            assert_eq!(landed.disposition.as_ref().unwrap().landed_commit.as_ref(), Some(&commit));
+        }
+        assert_eq!(store.find(&cancelled.id), Some(&cancelled), "{shape}");
+        assert_eq!(store.find(&blocked.id), Some(&blocked), "{shape}");
+        assert!(
+            outcome.block_executions.iter().any(|execution| execution
+                .summary
+                .contains("no commit made after the item started")),
+            "{shape}"
+        );
     }
 }
 

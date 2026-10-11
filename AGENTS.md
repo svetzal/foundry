@@ -762,8 +762,8 @@ inspection, fetch, ledger and digest-write failures surface as gRPC INTERNAL.
 
 Once an item settles landed, Foundry deletes only its recorded task branch
 locally and its recorded preservation branch locally and on origin, best-effort.
-Each deletion requires fresh ancestry or patch-equivalence proof against the
-registered trunk and refuses branches checked out in any worktree. A changed
+Each deletion requires fresh ancestry, patch-equivalence or content-containment
+proof against the registered trunk and refuses branches checked out in any worktree. A changed
 ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
 unlanded items in any registered project sharing the repository are retained.
 Ownership compares exact refs across repository slugs and shared Git common
