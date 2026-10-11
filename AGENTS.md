@@ -598,7 +598,9 @@ The script builds in a detached worktree with one target directory
 (`~/.cache/foundry-release/target`) and deletes both when it exits, pass or
 fail; only the tarball stays. Do not build releases anywhere else on the host:
 release build output is tens of gigabytes, and leftover target directories
-filled the root filesystem on 2026-09-25. Log the install in
+filled the root filesystem on 2026-09-25. The script gives gates temporary campaign,
+ledger, worktree and preservation paths. Use the same path overrides for Linux
+coverage runs so fixtures cannot wait on production campaign locks. Log the install in
 `Automation/infrastructure/servers/mojility-ops-01.md` in the Operations repo.
 
 Local build validation, installation, and daemon reload are required for the
