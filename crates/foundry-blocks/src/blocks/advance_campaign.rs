@@ -12,7 +12,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
 use foundry_sdk::payload::{
     CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
-    CampaignDecision, CampaignStandDown, CampaignTerminalPayload, TaskVerdict,
+    CampaignDecision, CampaignStandDown, CampaignTerminalPayload, LandBlocked, TaskVerdict,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -158,6 +158,18 @@ fn next_base_ref(request: &CampaignAdvanceRequestedPayload) -> Option<&str> {
         .and_then(|result| result.preservation_ref.as_deref())
 }
 
+/// Whether the last cycle was a continuation refused before its agent session
+/// because its preserved work conflicts with trunk.
+///
+/// Such a result carries no preservation ref, so the next cycle starts from
+/// trunk instead of re-trying the same refused base.
+fn continuation_refused(request: &CampaignAdvanceRequestedPayload) -> bool {
+    request
+        .run_result
+        .as_ref()
+        .is_some_and(|result| result.land_blocked == Some(LandBlocked::ContinuationConflict))
+}
+
 /// Work reachable from the next cycle's base ref but absent from the canonical
 /// checkout.
 ///
@@ -165,8 +177,22 @@ fn next_base_ref(request: &CampaignAdvanceRequestedPayload) -> Option<&str> {
 /// forward, so from the second such cycle onward the canonical checkout no
 /// longer reflects what the executor will actually start from. Without this the
 /// decision agent re-cuts objectives the accumulated work already satisfies.
-async fn accumulated_work(shell: &dyn ShellGateway, repo: &Path, base_ref: Option<&str>) -> String {
-    let Some(reference) = base_ref else {
+async fn accumulated_work(
+    shell: &dyn ShellGateway,
+    repo: &Path,
+    request: &CampaignAdvanceRequestedPayload,
+) -> String {
+    let Some(reference) = next_base_ref(request) else {
+        if continuation_refused(request) {
+            return "NEXT CYCLE BASE: the live checkout above. The last cycle was refused before \
+                    its agent session: the preserved work it was to continue is behind trunk and \
+                    conflicts with it (LAST TYPED RUN RESULT names the ref, the commit and the \
+                    conflicting files). That work is still durable at its ref but no longer \
+                    carries forward. If it is still needed, cut an objective that reapplies it \
+                    onto trunk, resolving those files (the commit is readable with git show); \
+                    otherwise cut the next objective from trunk, or escalate."
+                .to_string();
+        }
         return "NEXT CYCLE BASE: the live checkout above — no preserved work carries forward."
             .to_string();
     };
@@ -896,6 +922,10 @@ fn update_run_and_forced_outcome(
                     reason: format!("provider unusable: {detail}"),
                 });
             }
+            // A refused continuation ran no agent and is not a runner fault:
+            // its preserved work conflicts with trunk. Formation decides what
+            // to do about that, from trunk, with the refusal in front of it.
+            TaskVerdict::RunnerError { .. } if continuation_refused(request) => {}
             TaskVerdict::RunnerError { detail } => {
                 return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
                     reason: format!("runner/provider unavailable: {detail}"),
@@ -992,7 +1022,7 @@ async fn derive_advance_outcome(
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let context = read_context_files(repo, &campaign.context_paths)?;
     let snapshot = repo_snapshot(shell, repo).await;
-    let accumulated = accumulated_work(shell, repo, next_base_ref(request)).await;
+    let accumulated = accumulated_work(shell, repo, request).await;
     // The gates, the snapshot, and the prompt are all deterministic for this
     // advance, so a retry re-asks the same question rather than re-deriving it.
     let decision_request = DecisionRequest {
@@ -3647,6 +3677,60 @@ mod tests {
             CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
             CampaignStatus::Escalated
         );
+    }
+
+    /// A continuation refused because its preserved work conflicts with trunk
+    /// is not a runner fault: formation decides, from trunk, with the refusal
+    /// and its files in front of it, and the next cycle does not retry the
+    /// refused base.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_continuation_reaches_formation_and_the_next_cycle_starts_from_trunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Reapply the preserved slice onto trunk.\",\"reason\":\"refused continuation\"}\n```",
+        );
+        let block = AdvanceCampaign::new(
+            agent.clone(),
+            FakeShellGateway::success(),
+            registry,
+            store_path.clone(),
+        );
+        let refusal = "continuation refused before any agent session: the preserved work at \
+                       foundry-task/p-c14 (637e470) is 3 commit(s) behind trunk (a57afdf) and \
+                       replaying it onto trunk conflicts in: Package.swift, README.md";
+        let mut refused = run_result_with(TaskVerdict::RunnerError {
+            detail: refusal.to_string(),
+        });
+        refused.summary = refusal.to_string();
+        refused.preservation_ref = None;
+        refused.land_blocked = Some(super::LandBlocked::ContinuationConflict);
+
+        let result = block.execute(&automatic_advance_trigger(refused)).await.unwrap();
+
+        assert!(
+            result
+                .events
+                .iter()
+                .all(|event| event.event_type != EventType::CampaignEscalated),
+            "a refused continuation must not escalate as a runner fault: {:?}",
+            result.events
+        );
+        let execution = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .expect("formation dispatched the next cycle");
+        assert!(
+            execution.payload.get("base_ref").is_none(),
+            "the next cycle must start from trunk, not the refused base"
+        );
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1, "formation ran once");
+        let prompt = &invocations[0].prompt;
+        assert!(prompt.contains("continuation_conflict"), "{prompt}");
+        assert!(prompt.contains("Package.swift, README.md"), "{prompt}");
+        assert!(prompt.contains("no longer carries forward"), "{prompt}");
     }
 
     // --- red done-gates dispatch an actionable objective ------------------

@@ -6,7 +6,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::{GateDefinition, GateResult};
 use foundry_sdk::payload::{
     LandBlocked, LoopContext, TaskReviewedPayload, TaskRunCompletedPayload, TaskVerdict,
-    TrunkArrival,
+    TrunkArrival, WorkspaceBase,
 };
 use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
@@ -222,8 +222,105 @@ const MAX_REBASES: usize = 2;
 struct Landing {
     /// `None` when the work landed.
     blocked: Option<(LandBlocked, String)>,
-    /// Trunk commits that arrived during the run, oldest first.
+    /// Trunk commits the task branch lacked, oldest first.
     arrivals: Vec<TrunkArrival>,
+    /// Why a rebase was needed, when one was.
+    drift: Option<StartDrift>,
+}
+
+/// Why the task branch lacked trunk when finalize came to land it, read from
+/// the start the run recorded ([`WorkspaceBase`]).
+///
+/// Reporting every rebase as "trunk advanced during the run" sent operators and
+/// campaigns after a race that never happened when the run had simply started
+/// from a stale continuation base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartDrift {
+    /// The run started on the trunk it observed, so trunk moved after it
+    /// started.
+    MovedDuringRun,
+    /// The run started this many commits behind the trunk it observed.
+    BehindAtStart(u64),
+    /// The run recorded no start, so the cause cannot be told.
+    Unrecorded,
+}
+
+impl StartDrift {
+    async fn of(
+        shell: &dyn ShellGateway,
+        checkout: &Path,
+        start: Option<&WorkspaceBase>,
+    ) -> Result<Self> {
+        let Some(start) = start else {
+            return Ok(Self::Unrecorded);
+        };
+        let ancestry =
+            run(shell, checkout, &["merge-base", "--is-ancestor", &start.trunk, &start.commit])
+                .await?;
+        match ancestry.exit_code {
+            0 => Ok(Self::MovedDuringRun),
+            1 => {
+                let range = format!("{}..{}", start.commit, start.trunk);
+                let behind = checked(shell, checkout, &["rev-list", "--count", &range]).await?;
+                Ok(Self::BehindAtStart(behind.parse()?))
+            }
+            code => anyhow::bail!(
+                "git merge-base --is-ancestor failed ({code}): {}",
+                ancestry.stderr.trim()
+            ),
+        }
+    }
+
+    /// The typed reason and its wording for a rebase that conflicted.
+    fn conflict(self) -> (LandBlocked, String) {
+        match self {
+            Self::MovedDuringRun => (
+                LandBlocked::TrunkMovedConflict,
+                "trunk advanced during the run and rebasing onto it conflicted".to_string(),
+            ),
+            Self::BehindAtStart(behind) => (
+                LandBlocked::StaleBaseConflict,
+                format!(
+                    "the run started {behind} commit(s) behind trunk and rebasing onto trunk conflicted"
+                ),
+            ),
+            Self::Unrecorded => (
+                LandBlocked::TrunkMovedConflict,
+                "trunk is ahead of the task branch and rebasing onto it conflicted (the run \
+                 recorded no start, so whether trunk moved during the run is unknown)"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// The typed reason and its wording for a clean rebase whose required
+    /// gates then failed.
+    fn gates_failed(self) -> (LandBlocked, String) {
+        match self {
+            Self::MovedDuringRun => {
+                (LandBlocked::TrunkMovedGatesFailed, "trunk advanced during the run".to_string())
+            }
+            Self::BehindAtStart(behind) => (
+                LandBlocked::StaleBaseGatesFailed,
+                format!("the run started {behind} commit(s) behind trunk"),
+            ),
+            Self::Unrecorded => (
+                LandBlocked::TrunkMovedGatesFailed,
+                "trunk is ahead of the task branch (the run recorded no start, so whether \
+                 trunk moved during the run is unknown)"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// How the landed summary describes the trunk commits rebased onto.
+    fn arrivals(self) -> &'static str {
+        match self {
+            Self::MovedDuringRun => "that arrived during the run",
+            Self::BehindAtStart(_) => "that the run's starting base lacked",
+            Self::Unrecorded => "that trunk held beyond the task branch",
+        }
+    }
 }
 
 /// Land the task branch, rebasing it onto trunk when trunk moved during the
@@ -241,9 +338,11 @@ async fn land_with_rebase(
     base_branch: &str,
     task_branch: &str,
     push_enabled: bool,
+    start: Option<&WorkspaceBase>,
 ) -> Landing {
     let mut arrivals = Vec::new();
     let mut reviewed_head: Option<String> = None;
+    let mut drift: Option<StartDrift> = None;
     let mut rebases = 0;
     let blocked = loop {
         let blocked =
@@ -268,7 +367,18 @@ async fn land_with_rebase(
                             Err(error) => break Some((LandBlocked::GitFailed, error.to_string())),
                         }
                     }
-                    match rebase_and_verify(shell, worktree, base_branch).await {
+                    // Only the first rebase can be owed to the start; trunk
+                    // moving again after it is movement during the run.
+                    let cause = match drift {
+                        Some(StartDrift::Unrecorded) => StartDrift::Unrecorded,
+                        Some(_) => StartDrift::MovedDuringRun,
+                        None => match StartDrift::of(shell, checkout, start).await {
+                            Ok(cause) => cause,
+                            Err(error) => break Some((LandBlocked::GitFailed, error.to_string())),
+                        },
+                    };
+                    drift.get_or_insert(cause);
+                    match rebase_and_verify(shell, worktree, base_branch, cause).await {
                         Ok(()) => continue,
                         Err(blocked) => blocked,
                     }
@@ -281,7 +391,11 @@ async fn land_with_rebase(
     {
         restore_reviewed_head(shell, worktree, &head).await;
     }
-    Landing { blocked, arrivals }
+    Landing {
+        blocked,
+        arrivals,
+        drift,
+    }
 }
 
 /// Commits on trunk that the task branch does not contain, oldest first.
@@ -321,6 +435,7 @@ async fn rebase_and_verify(
     shell: &dyn ShellGateway,
     worktree: &Path,
     base_branch: &str,
+    cause: StartDrift,
 ) -> Result<(), (LandBlocked, String)> {
     let rebase = run(shell, worktree, &["rebase", base_branch])
         .await
@@ -330,22 +445,18 @@ async fn rebase_and_verify(
         // reviewed head; an abort that fails leaves nothing that restore does
         // not also reset.
         run_best_effort(shell, worktree, &["rebase", "--abort"]).await;
-        return Err((
-            LandBlocked::TrunkMovedConflict,
-            format!(
-                "trunk advanced during the run and rebasing onto it conflicted: {}",
-                rebase.stderr.trim()
-            ),
-        ));
+        let (reason, why) = cause.conflict();
+        return Err((reason, format!("{why}: {}", rebase.stderr.trim())));
     }
-    let failed = rerun_required_gates(shell, worktree).await?;
+    let failed = rerun_required_gates(shell, worktree, cause).await?;
     if failed.is_empty() {
         Ok(())
     } else {
+        let (reason, why) = cause.gates_failed();
         Err((
-            LandBlocked::TrunkMovedGatesFailed,
+            reason,
             format!(
-                "trunk advanced during the run; the rebase was clean but required gate(s) failed on the rebased tree: {}",
+                "{why}; the rebase was clean but required gate(s) failed on the rebased tree: {}",
                 failed.join(", ")
             ),
         ))
@@ -361,14 +472,11 @@ async fn rebase_and_verify(
 async fn rerun_required_gates(
     shell: &dyn ShellGateway,
     worktree: &Path,
+    cause: StartDrift,
 ) -> Result<Vec<String>, (LandBlocked, String)> {
+    let reason = cause.gates_failed().0;
     let gates: Vec<GateDefinition> = crate::gate_file::read_gates(worktree)
-        .map_err(|error| {
-            (
-                LandBlocked::TrunkMovedGatesFailed,
-                format!("could not read the rebased tree's gates: {error}"),
-            )
-        })?
+        .map_err(|error| (reason, format!("could not read the rebased tree's gates: {error}")))?
         .into_iter()
         .filter(|gate| gate.required)
         .map(|gate| GateDefinition {
@@ -378,7 +486,7 @@ async fn rerun_required_gates(
         .collect();
     let run = crate::gate_runner::run_gates(&gates, worktree, shell)
         .await
-        .map_err(|error| (LandBlocked::TrunkMovedGatesFailed, error.to_string()))?;
+        .map_err(|error| (reason, error.to_string()))?;
     Ok(run
         .results
         .into_iter()
@@ -450,7 +558,12 @@ fn task_location(context: &LoopContext) -> Result<(PathBuf, &str), String> {
     Ok((worktree, branch))
 }
 
-fn task_summary(verdict: &TaskVerdict, landed: bool, arrivals: usize) -> String {
+fn task_summary(
+    verdict: &TaskVerdict,
+    landed: bool,
+    arrivals: usize,
+    drift: Option<StartDrift>,
+) -> String {
     let summary = match (landed, verdict) {
         (true, TaskVerdict::Remainder { gaps }) => {
             format!("converging task landed on trunk with {} gap(s) carried forward", gaps.len())
@@ -462,9 +575,8 @@ fn task_summary(verdict: &TaskVerdict, landed: bool, arrivals: usize) -> String 
         (false, _) => "task stopped with a typed non-complete verdict; work preserved".to_string(),
     };
     if landed && arrivals > 0 {
-        format!(
-            "{summary} after rebasing onto {arrivals} trunk commit(s) that arrived during the run"
-        )
+        let which = drift.unwrap_or(StartDrift::MovedDuringRun).arrivals();
+        format!("{summary} after rebasing onto {arrivals} trunk commit(s) {which}")
     } else {
         summary
     }
@@ -681,6 +793,7 @@ impl TaskBlock for FinalizeTask {
             };
 
             let mut arrivals = Vec::new();
+            let mut drift = None;
             let landed = if may_land(&verdict, &payload.gate_results) && deliverable {
                 let landing = land_with_rebase(
                     &*shell,
@@ -689,9 +802,11 @@ impl TaskBlock for FinalizeTask {
                     &entry.branch,
                     branch,
                     entry.actions.push,
+                    context.workspace_base.as_ref(),
                 )
                 .await;
                 arrivals = landing.arrivals;
+                drift = landing.drift;
                 if let Some((reason, detail)) = landing.blocked {
                     // FinalizeTask owns the task workspace it is finalizing.
                     remove_workspace(&*shell, checkout, &worktree).await;
@@ -727,7 +842,7 @@ impl TaskBlock for FinalizeTask {
             // ownership and fresh trunk proof and records each cleanup result.
             // FinalizeTask owns the task workspace it is finalizing.
             remove_workspace(&*shell, checkout, &worktree).await;
-            let summary = task_summary(&verdict, landed, arrivals.len());
+            let summary = task_summary(&verdict, landed, arrivals.len(), drift);
             let mut result =
                 run_completed(&project, landed, summary, preservation_ref, verdict, context);
             result.trunk_arrivals = arrivals;
@@ -749,7 +864,7 @@ mod tests {
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::gateway::{CommandResult, ShellGateway};
-    use foundry_sdk::payload::{LoopContext, TaskReviewedPayload, TaskVerdict};
+    use foundry_sdk::payload::{LoopContext, TaskReviewedPayload, TaskVerdict, WorkspaceBase};
     use foundry_sdk::registry::{ActionFlags, ProjectEntry, Stack};
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
@@ -1339,6 +1454,8 @@ mod tests {
         checkout: std::path::PathBuf,
         worktree: std::path::PathBuf,
         other: std::path::PathBuf,
+        /// What workspace preparation recorded: the task started on trunk.
+        start: WorkspaceBase,
     }
 
     fn shared_trunk(dir: &Path, branch: &str, required_gate: &str) -> SharedTrunk {
@@ -1381,6 +1498,7 @@ mod tests {
                 "main",
             ],
         );
+        let started_on = git(&worktree, &["rev-parse", "HEAD"]);
         std::fs::write(worktree.join("README.md"), "base\ntask change\n").unwrap();
         git(&worktree, &["add", "README.md"]);
         git(&worktree, &["commit", "-m", "task change"]);
@@ -1388,6 +1506,10 @@ mod tests {
             checkout,
             worktree,
             other,
+            start: WorkspaceBase {
+                commit: started_on.clone(),
+                trunk: started_on,
+            },
         }
     }
 
@@ -1407,11 +1529,23 @@ mod tests {
     }
 
     async fn finalize_complete(shared: &SharedTrunk, branch: &str) -> serde_json::Value {
+        finalize_complete_from(shared, branch, Some(shared.start.clone())).await
+    }
+
+    /// Finalize a reviewed-complete task whose preparation recorded `start`.
+    async fn finalize_complete_from(
+        shared: &SharedTrunk,
+        branch: &str,
+        start: Option<WorkspaceBase>,
+    ) -> serde_json::Value {
         let registry =
             super::super::test_helpers::registry_with_entry(pushing_entry(&shared.checkout));
         let block =
             FinalizeTask::with_gateways(registry, std::sync::Arc::new(CleanProcessShellGateway));
-        let trigger = task_trigger(&shared.worktree, branch, TaskVerdict::Complete);
+        let mut trigger = task_trigger(&shared.worktree, branch, TaskVerdict::Complete);
+        if let Some(start) = start {
+            trigger.payload["workspace_base"] = serde_json::to_value(start).unwrap();
+        }
         let result = block.execute(&trigger).await.unwrap();
         let payload = result.events[0].payload.clone();
         assert_eq!(result.success, payload["land_blocked"].is_null());
@@ -1512,7 +1646,8 @@ mod tests {
         assert_eq!(payload["land_blocked"], "trunk_moved_conflict");
         assert!(
             payload["summary"].as_str().unwrap().starts_with(
-                "complete work preserved but could not land on trunk (trunk_moved_conflict)"
+                "complete work preserved but could not land on trunk (trunk_moved_conflict): \
+                 trunk advanced during the run and rebasing onto it conflicted"
             ),
             "{}",
             payload["summary"]
@@ -1529,6 +1664,80 @@ mod tests {
         assert!(
             git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).contains(&task_head)
         );
+    }
+
+    /// The production mojentic-sw case: the run started from a continuation
+    /// base that already lacked trunk, and nothing reached trunk while it ran.
+    /// That is a stale start, not a race, and the reason must say so.
+    #[tokio::test]
+    async fn a_run_that_started_behind_trunk_reports_a_stale_base_not_a_moved_trunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/stale-base-conflict";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let task_head = git(&shared.worktree, &["rev-parse", "HEAD"]);
+        // Trunk was already here when the run started; it never moved after.
+        let trunk = advance_trunk(&shared.other, "README.md", "base\ntrunk change\n", "edit");
+        let start = WorkspaceBase {
+            commit: shared.start.commit.clone(),
+            trunk,
+        };
+
+        let payload = finalize_complete_from(&shared, branch, Some(start)).await;
+
+        assert_eq!(payload["landed"], false);
+        assert_eq!(payload["verdict"], "complete");
+        assert_eq!(payload["land_blocked"], "stale_base_conflict");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(
+            summary.starts_with(
+                "complete work preserved but could not land on trunk (stale_base_conflict): \
+                 the run started 1 commit(s) behind trunk and rebasing onto trunk conflicted"
+            ),
+            "{summary}"
+        );
+        assert!(!summary.contains("during the run"), "{summary}");
+        assert_eq!(git(&shared.checkout, &["rev-parse", branch]), task_head);
+    }
+
+    /// A clean rebase after a stale start lands, and the summary does not
+    /// call the commits it lacked arrivals during the run.
+    #[tokio::test]
+    async fn a_stale_start_whose_rebase_is_clean_lands_without_claiming_trunk_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/stale-base-clean";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let trunk = advance_trunk(&shared.other, "NOTES.md", "notes\n", "docs: add notes");
+        let start = WorkspaceBase {
+            commit: shared.start.commit.clone(),
+            trunk,
+        };
+
+        let payload = finalize_complete_from(&shared, branch, Some(start)).await;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert_eq!(
+            payload["summary"],
+            "task completed, reviewed, and landed after rebasing onto 1 trunk commit(s) that \
+             the run's starting base lacked"
+        );
+    }
+
+    /// A run that recorded no start (it began before Foundry recorded one)
+    /// keeps the stable tag, but its detail does not assert a race it cannot
+    /// know about.
+    #[tokio::test]
+    async fn a_run_with_no_recorded_start_does_not_claim_trunk_moved_during_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/unrecorded-start";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        advance_trunk(&shared.other, "README.md", "base\ntrunk change\n", "edit readme");
+
+        let payload = finalize_complete_from(&shared, branch, None).await;
+
+        assert_eq!(payload["land_blocked"], "trunk_moved_conflict");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("whether trunk moved during the run is unknown"), "{summary}");
+        assert!(!summary.contains("trunk advanced during the run"), "{summary}");
     }
 
     /// A clean rebase is not enough: a required gate that goes red on the

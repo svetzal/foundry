@@ -154,6 +154,7 @@ mod tests {
             "task_branch": "foundry-task/a",
             "base_ref": "preserved-a",
             "agent_provider": "codex",
+            "workspace_base": {"commit": "start-a", "trunk": "trunk-a"},
         });
         let lc = LoopContext::extract_from(&source);
         assert!(lc.loop_context.is_some());
@@ -166,6 +167,8 @@ mod tests {
         assert_eq!(json["task_branch"], "foundry-task/a");
         assert_eq!(json["base_ref"], "preserved-a");
         assert_eq!(json["agent_provider"], "codex");
+        assert_eq!(json["workspace_base"]["commit"], "start-a");
+        assert_eq!(json["workspace_base"]["trunk"], "trunk-a");
         assert!(json.get("gates").is_none());
     }
 

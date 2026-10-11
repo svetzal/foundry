@@ -9,6 +9,39 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A continuation (a campaign cycle after an unlanded cycle, `foundry queue
+  resume`, a nightly majors continuation) now starts on current trunk. On
+  2026-10-11 mojentic-sw cycle 15 continued from a branch preserved on a base
+  three commits behind trunk, worked about 17 minutes, and then failed at
+  finalize with "trunk advanced during the run", although trunk had not moved
+  during the run. mojentic-py cycle 12 failed the same way that evening.
+  Workspace preparation now fetches the registered trunk and, when the
+  preserved commit does not contain it, rebases the preserved commits onto
+  trunk in the new task worktree before the agent starts. The preservation ref
+  is not rewritten. A continuation that already contains trunk starts exactly
+  where it did before. When origin cannot be fetched, the local branch is the
+  trunk, so bundle continuations still work while origin is down.
+- A continuation whose rebase onto trunk conflicts is refused before any agent
+  session, instead of running a full session on a stale base that finalize
+  cannot land. An agent may not rewrite history, so it cannot repair the
+  conflict; finalize would replay the same commits and conflict again. The
+  refused run ends `runner_error` with the new `land_blocked` value
+  `continuation_conflict`, no `preservation_ref`, and a summary that names the
+  continuation ref, the preserved commit, how far behind trunk it was and each
+  conflicting file. Its work item settles `failed` with that reason; the
+  preserved work and the item that preserved it are untouched. A campaign does
+  not escalate this as a runner fault: formation runs from trunk with the
+  refusal in its prompt and decides whether to reapply the work, cut another
+  objective, or escalate.
+- Finalize no longer reports every rebase as "trunk advanced during the run".
+  The executor records where each task worktree started (`workspace_base`:
+  its first commit and the trunk commit it observed) and carries it on the
+  run's payloads. When that start already lacked trunk, a blocked landing
+  reports the new `stale_base_conflict` or `stale_base_gates_failed`, and a
+  landed summary says it rebased onto commits "that the run's starting base
+  lacked". A run with no recorded start keeps `trunk_moved_conflict` /
+  `trunk_moved_gates_failed`, with a detail that says the cause is unknown.
+  Existing `land_blocked` values are unchanged on the wire.
 - A second `foundry campaign advance` for a campaign no longer starts a
   second advance workflow. On 2026-10-11 an operator retried a hung advance on
   production and got two advance workflows for one campaign, which had to be

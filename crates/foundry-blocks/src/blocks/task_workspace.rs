@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use foundry_sdk::payload::WorkspaceBase;
 use foundry_sdk::registry::ProjectEntry;
 
 use crate::gateway::ShellGateway;
@@ -9,7 +10,50 @@ use crate::workspace::task_workspace_paths;
 pub(crate) struct TaskWorkspace {
     pub path: PathBuf,
     pub branch: String,
+    /// Where the workspace started and the trunk observed while preparing it.
+    pub base: WorkspaceBase,
 }
+
+/// A continuation refused before any agent session: the preserved work it was
+/// to continue is behind trunk, and replaying it onto trunk conflicts.
+///
+/// An agent cannot repair this. It may not rewrite history, so finalize would
+/// replay the same preserved commits onto trunk and hit the same conflict after
+/// the whole session had been spent. Preparation refuses instead and names the
+/// files, so whoever dispatched the continuation can choose what to do with the
+/// preserved work, which stays untouched at its ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContinuationConflict {
+    /// The continuation ref as dispatched: a branch, a commit, or `bundle:<path>`.
+    pub base_ref: String,
+    /// The preserved commit that ref resolved to.
+    pub preserved: String,
+    /// The trunk commit observed while preparing.
+    pub trunk: String,
+    /// Trunk commits the preserved work's base lacked.
+    pub behind: u64,
+    /// Paths left conflicted where the rebase stopped (the first preserved
+    /// commit that conflicted), in Git's order.
+    pub files: Vec<String>,
+}
+
+impl std::fmt::Display for ContinuationConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "continuation refused before any agent session: the preserved work at {} ({}) is \
+             {} commit(s) behind trunk ({}) and replaying it onto trunk conflicts in: {}. \
+             The preserved ref is untouched; carry the work forward by reapplying it onto trunk",
+            self.base_ref,
+            self.preserved,
+            self.behind,
+            self.trunk,
+            self.files.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ContinuationConflict {}
 
 async fn checked(
     shell: &dyn ShellGateway,
@@ -37,6 +81,35 @@ async fn ref_exists_locally(shell: &dyn ShellGateway, cwd: &Path, reference: &st
     Ok(result.success)
 }
 
+/// The exact commit `reference` names, so a later fetch that rewrites
+/// `FETCH_HEAD` cannot change what preparation acts on.
+async fn commit_of(shell: &dyn ShellGateway, cwd: &Path, reference: &str) -> Result<String> {
+    checked(
+        shell,
+        cwd,
+        "git",
+        &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+    )
+    .await
+}
+
+/// Whether `ancestor` is reachable from `descendant`.
+async fn is_ancestor(
+    shell: &dyn ShellGateway,
+    cwd: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool> {
+    let result = shell
+        .run(cwd, "git", &["merge-base", "--is-ancestor", ancestor, descendant], None, None)
+        .await?;
+    match result.exit_code {
+        0 => Ok(true),
+        1 => Ok(false),
+        code => bail!("git merge-base --is-ancestor failed ({code}): {}", result.stderr.trim()),
+    }
+}
+
 /// The branch ref a preservation bundle carries.
 ///
 /// Resume reads the ref out of the artifact rather than relying on the bundle's
@@ -55,8 +128,57 @@ async fn bundle_branch_ref(shell: &dyn ShellGateway, repo: &Path, bundle: &str) 
         .with_context(|| format!("preservation bundle carries no branch ref: {bundle}"))
 }
 
+/// The commit a continuation ref (local branch or commit, remote ref, or
+/// `bundle:<path>`) resolves to, fetching it into the object store when it is
+/// not local.
+async fn continuation_commit(
+    shell: &dyn ShellGateway,
+    repo: &Path,
+    base_ref: &str,
+) -> Result<String> {
+    if let Some(bundle) = base_ref.strip_prefix("bundle:") {
+        let reference = bundle_branch_ref(shell, repo, bundle).await?;
+        checked(shell, repo, "git", &["fetch", bundle, &reference]).await?;
+        commit_of(shell, repo, "FETCH_HEAD").await
+    } else if ref_exists_locally(shell, repo, base_ref).await? {
+        commit_of(shell, repo, base_ref).await
+    } else {
+        checked(shell, repo, "git", &["fetch", "origin", base_ref]).await?;
+        commit_of(shell, repo, "FETCH_HEAD").await
+    }
+}
+
+/// The registered trunk a continuation is measured against: freshly fetched
+/// `origin/<branch>`, or the local branch when origin cannot be reached.
+///
+/// The fetch takes no tags: measuring trunk needs only the branch, and a tag
+/// configuration that would clobber a local tag must not fail it into the
+/// fallback. The fallback keeps a bundle continuation working when origin is
+/// down, which is when bundles get written. The local branch is what finalize
+/// lands onto, so it is a truthful trunk for that run.
+async fn continuation_trunk(shell: &dyn ShellGateway, repo: &Path, branch: &str) -> Result<String> {
+    match checked(shell, repo, "git", &["fetch", "--no-tags", "origin", branch]).await {
+        Ok(_) => commit_of(shell, repo, "FETCH_HEAD").await,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %branch,
+                "could not fetch trunk for a continuation; measuring it against the local branch"
+            );
+            commit_of(shell, repo, &format!("refs/heads/{branch}")).await
+        }
+    }
+}
+
 /// Create a fresh branch and worktree from the current remote base (or a
 /// preserved continuation ref) without touching the registered checkout.
+///
+/// A continuation starts from current trunk plus its preserved work: when the
+/// preserved commit does not already contain trunk, it is rebased onto trunk
+/// in the new workspace before any agent session. The preservation ref itself
+/// is never rewritten; only the new workspace branch moves. A rebase that
+/// conflicts is refused with a typed [`ContinuationConflict`] (reachable
+/// through `anyhow::Error::downcast_ref`) and leaves nothing behind.
 ///
 /// `workspace_id` names the workspace. Callers derive it from
 /// [`crate::workspace`] — campaign cycles use an id that encodes the campaign
@@ -107,20 +229,14 @@ async fn prepare_task_workspace_unchecked(
     std::fs::create_dir_all(path.parent().context("worktree path has no parent")?)
         .with_context(|| format!("create task worktree parent for {}", path.display()))?;
 
-    let source = if let Some(bundle) = base_ref.and_then(|r| r.strip_prefix("bundle:")) {
-        let reference = bundle_branch_ref(shell, repo, bundle).await?;
-        checked(shell, repo, "git", &["fetch", bundle, &reference]).await?;
-        "FETCH_HEAD".to_string()
-    } else if let Some(reference) = base_ref {
-        if ref_exists_locally(shell, repo, reference).await? {
-            reference.to_string()
-        } else {
-            checked(shell, repo, "git", &["fetch", "origin", reference]).await?;
-            "FETCH_HEAD".to_string()
-        }
+    let (source, trunk) = if let Some(reference) = base_ref {
+        let preserved = continuation_commit(shell, repo, reference).await?;
+        let trunk = continuation_trunk(shell, repo, &entry.branch).await?;
+        (preserved, trunk)
     } else {
         checked(shell, repo, "git", &["fetch", "origin", &entry.branch]).await?;
-        "FETCH_HEAD".to_string()
+        let trunk = commit_of(shell, repo, "FETCH_HEAD").await?;
+        (trunk.clone(), trunk)
     };
 
     let path_text = path.to_string_lossy().to_string();
@@ -141,7 +257,83 @@ async fn prepare_task_workspace_unchecked(
         );
     }
 
-    Ok(TaskWorkspace { path, branch })
+    if let Some(reference) = base_ref
+        && !is_ancestor(shell, repo, &trunk, &source).await?
+        && let Err(error) = rebase_onto_trunk(shell, &path, reference, &source, &trunk).await
+    {
+        discard_refused_workspace(shell, repo, &path_text, &branch).await;
+        return Err(error);
+    }
+    let commit = commit_of(shell, &path, "HEAD").await?;
+
+    Ok(TaskWorkspace {
+        path,
+        branch,
+        base: WorkspaceBase { commit, trunk },
+    })
+}
+
+/// Replay the preserved work onto `trunk` inside the new workspace.
+///
+/// A conflict is aborted and returned as a [`ContinuationConflict`]; any other
+/// rebase failure is an ordinary error.
+async fn rebase_onto_trunk(
+    shell: &dyn ShellGateway,
+    worktree: &Path,
+    base_ref: &str,
+    preserved: &str,
+    trunk: &str,
+) -> Result<()> {
+    let behind = checked(
+        shell,
+        worktree,
+        "git",
+        &["rev-list", "--count", &format!("{preserved}..{trunk}")],
+    )
+    .await?
+    .parse::<u64>()
+    .context("parse the count of trunk commits a continuation lacks")?;
+    let rebase = shell.run(worktree, "git", &["rebase", trunk], None, None).await?;
+    if rebase.success {
+        return Ok(());
+    }
+    let files = checked(shell, worktree, "git", &["diff", "--name-only", "--diff-filter=U"])
+        .await
+        .unwrap_or_default();
+    // Best-effort: the workspace is discarded next whether or not the abort
+    // succeeds; the abort only keeps that removal from tripping on a rebase
+    // in progress.
+    crate::workspace::run_best_effort(shell, worktree, &["rebase", "--abort"]).await;
+    let files: Vec<String> = files.lines().map(str::to_string).collect();
+    if files.is_empty() {
+        bail!(
+            "rebasing the continuation {base_ref} ({preserved}) onto trunk ({trunk}) failed: {}",
+            rebase.stderr.trim()
+        );
+    }
+    Err(ContinuationConflict {
+        base_ref: base_ref.to_string(),
+        preserved: preserved.to_string(),
+        trunk: trunk.to_string(),
+        behind,
+        files,
+    }
+    .into())
+}
+
+/// Remove a workspace preparation created and then refused. It holds no agent
+/// work: only the preserved commits, which stay at their own ref.
+async fn discard_refused_workspace(
+    shell: &dyn ShellGateway,
+    repo: &Path,
+    worktree: &str,
+    branch: &str,
+) {
+    // Owner removal: preparation discards the workspace it just created and
+    // refused, before any agent session wrote to it.
+    crate::workspace::run_best_effort(shell, repo, &["worktree", "remove", "--force", worktree])
+        .await;
+    crate::workspace::run_best_effort(shell, repo, &["branch", "-D", branch]).await;
 }
 
 #[cfg(test)]
@@ -517,6 +709,175 @@ mod tests {
         git(&checkout, &["worktree", "remove", next.path.to_str().unwrap()]);
         git(&checkout, &["branch", "-D", &next.branch]);
         let _ = std::fs::remove_dir(next.path.parent().unwrap());
+    }
+
+    use crate::blocks::test_helpers::git_repo;
+
+    /// A registered checkout whose trunk moved after a task branch was
+    /// preserved from it. `preserved_change` and `trunk_change` are
+    /// `(file, contents)` pairs; the same file makes them conflict.
+    struct MovedTrunk {
+        repo: git_repo::Repo,
+        preserved_branch: String,
+        preserved: String,
+        trunk: String,
+    }
+
+    fn moved_trunk(
+        branch: &str,
+        preserved_change: (&str, &str),
+        trunk_change: (&str, &str),
+    ) -> MovedTrunk {
+        let repo = git_repo::repo();
+        git_repo::git(&repo.work, &["checkout", "-q", "-b", branch]);
+        git_repo::commit(&repo.work, preserved_change.0, preserved_change.1, "preserved slice");
+        let preserved = git_repo::git(&repo.work, &["rev-parse", "HEAD"]);
+        git_repo::git(&repo.work, &["checkout", "-q", "main"]);
+        git_repo::commit(&repo.work, trunk_change.0, trunk_change.1, "trunk moved on");
+        git_repo::git(&repo.work, &["push", "-q", "origin", "main"]);
+        let trunk = git_repo::git(&repo.work, &["rev-parse", "HEAD"]);
+        MovedTrunk {
+            repo,
+            preserved_branch: branch.to_string(),
+            preserved,
+            trunk,
+        }
+    }
+
+    /// Test fixture owns the worktree and branch it created.
+    fn remove_fixture_workspace(checkout: &Path, workspace: &super::TaskWorkspace) {
+        git_repo::git(
+            checkout,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                workspace.path.to_str().unwrap(),
+            ],
+        );
+        git_repo::git(checkout, &["branch", "-D", &workspace.branch]);
+        let _ = std::fs::remove_dir(workspace.path.parent().unwrap());
+    }
+
+    /// The mojentic-sw cycle 15 case, resolved at the start: trunk moved after
+    /// the preserved cycle, so the next cycle starts from trunk plus that
+    /// work, and the preservation ref is left exactly where it was.
+    #[tokio::test]
+    async fn a_continuation_behind_trunk_starts_from_trunk_plus_its_preserved_work() {
+        let fixture = moved_trunk(
+            "foundry-task/rebase-clean",
+            ("feature.txt", "preserved work\n"),
+            ("trunk.txt", "trunk work\n"),
+        );
+        let checkout = &fixture.repo.work;
+
+        let workspace = prepare_task_workspace(
+            &CleanProcessShellGateway,
+            &test_entry("foundry-continuation-clean", checkout),
+            "evt_contclean01",
+            Some(&fixture.preserved_branch),
+        )
+        .await
+        .unwrap();
+
+        let head = git(&workspace.path, &["rev-parse", "HEAD"]);
+        assert_eq!(git(&workspace.path, &["rev-parse", "HEAD^"]), fixture.trunk);
+        assert_eq!(git(&workspace.path, &["log", "-1", "--format=%s"]), "preserved slice");
+        assert!(workspace.path.join("feature.txt").exists(), "preserved work carried");
+        assert!(workspace.path.join("trunk.txt").exists(), "trunk work present");
+        assert_eq!(
+            git(checkout, &["rev-parse", &fixture.preserved_branch]),
+            fixture.preserved,
+            "the preservation ref must not be rewritten"
+        );
+        assert_eq!(workspace.base.commit, head);
+        assert_eq!(workspace.base.trunk, fixture.trunk);
+
+        remove_fixture_workspace(checkout, &workspace);
+    }
+
+    /// A continuation that already contains trunk starts exactly where it was
+    /// preserved, as it always did.
+    #[tokio::test]
+    async fn an_up_to_date_continuation_starts_exactly_on_its_preserved_commit() {
+        let repo = git_repo::repo();
+        let checkout = &repo.work;
+        let trunk = git(checkout, &["rev-parse", "HEAD"]);
+        git(checkout, &["checkout", "-q", "-b", "foundry-task/current"]);
+        git_repo::commit(checkout, "feature.txt", "preserved\n", "preserved slice");
+        let preserved = git(checkout, &["rev-parse", "HEAD"]);
+        git(checkout, &["checkout", "-q", "main"]);
+
+        let workspace = prepare_task_workspace(
+            &CleanProcessShellGateway,
+            &test_entry("foundry-continuation-current", checkout),
+            "evt_contcurrent",
+            Some("foundry-task/current"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(git(&workspace.path, &["rev-parse", "HEAD"]), preserved);
+        assert_eq!(workspace.base.commit, preserved);
+        assert_eq!(workspace.base.trunk, trunk);
+
+        remove_fixture_workspace(checkout, &workspace);
+    }
+
+    /// Preserved work that conflicts with trunk cannot be carried by an agent
+    /// that may not rewrite history, so it is refused before any session,
+    /// naming the files, with nothing left behind and the preserved ref intact.
+    #[tokio::test]
+    async fn a_conflicting_continuation_is_refused_before_any_session_and_leaves_nothing_behind() {
+        let fixture = moved_trunk(
+            "foundry-task/rebase-conflict",
+            ("README.md", "preserved edit\n"),
+            ("README.md", "trunk edit\n"),
+        );
+        let checkout = &fixture.repo.work;
+        let entry = test_entry("foundry-continuation-conflict", checkout);
+        let (path, branch) =
+            crate::workspace::task_workspace_paths(&entry.name, "evt_contconflict");
+
+        let Err(error) = prepare_task_workspace(
+            &CleanProcessShellGateway,
+            &entry,
+            "evt_contconflict",
+            Some(&fixture.preserved_branch),
+        )
+        .await
+        else {
+            panic!("a conflicting continuation must be refused");
+        };
+
+        let refusal = error
+            .downcast_ref::<super::ContinuationConflict>()
+            .expect("the refusal is typed");
+        assert_eq!(
+            refusal,
+            &super::ContinuationConflict {
+                base_ref: fixture.preserved_branch.clone(),
+                preserved: fixture.preserved.clone(),
+                trunk: fixture.trunk.clone(),
+                behind: 1,
+                files: vec!["README.md".to_string()],
+            }
+        );
+        let message = error.to_string();
+        assert!(message.contains("before any agent session"), "{message}");
+        assert!(message.contains("README.md"), "{message}");
+        assert!(!path.exists(), "the refused worktree must be removed");
+        assert!(
+            git(checkout, &["branch", "--list", &branch]).is_empty(),
+            "the refused workspace branch must be deleted"
+        );
+        assert_eq!(
+            git(checkout, &["rev-parse", &fixture.preserved_branch]),
+            fixture.preserved,
+            "the preservation ref must be untouched"
+        );
+        assert_eq!(git(checkout, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir(path.parent().unwrap());
     }
 
     #[test]

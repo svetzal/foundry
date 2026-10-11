@@ -471,7 +471,7 @@ requires a live daemon and refuses `--offline`. Only a `preserved` item with a
 usable preservation ref and a registered project can be resumed. Foundry
 records a new task with the original objective, `queued` for the pacing
 scheduler, that starts from the preserved local branch, remote ref or
-`bundle:<path>` through the existing continuation path. `--after` and
+`bundle:<path>` through the existing continuation path. When the preserved work does not contain current trunk, Foundry rebases it onto freshly fetched trunk before the agent starts (the preservation ref itself is not rewritten). If that rebase conflicts, the child is refused before any agent session: it settles `failed` with `land_blocked: continuation_conflict` and a reason that names the conflicting files, and the original stays `preserved`. `--after` and
 `--not-before` mean what they mean on `foundry task`; an `--after` id not in
 the ledger, or an unparsable `--not-before`, is `INVALID_ARGUMENT`. The new record and its lifecycle payloads expose
 `resumes`, the exact original id. Queue reads show this link in human and JSON

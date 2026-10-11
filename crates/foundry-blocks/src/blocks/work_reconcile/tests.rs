@@ -210,9 +210,12 @@ async fn fixture(root: &Path) -> Fixture {
     let competitor = git(&producer, &["rev-parse", "HEAD"]).await;
     git(&producer, &["push", "origin", "competitor"]).await;
     git(&remote, &["symbolic-ref", "HEAD", "refs/heads/competitor"]).await;
+    // The preserved work touches its own file, so a continuation replays it
+    // onto the moved trunk cleanly (startup rebases a continuation onto trunk).
     git(&producer, &["checkout", "-b", "preserved", &base]).await;
-    std::fs::write(producer.join("content"), "preserved").unwrap();
-    git(&producer, &["commit", "-am", "preserved commit"]).await;
+    std::fs::write(producer.join("preserved-work"), "preserved").unwrap();
+    git(&producer, &["add", "preserved-work"]).await;
+    git(&producer, &["commit", "-m", "preserved commit"]).await;
     let preserved = git(&producer, &["rev-parse", "HEAD"]).await;
     git(&producer, &["push", "origin", "preserved"]).await;
     let bundle = root.join("preserved.bundle");
@@ -278,7 +281,6 @@ async fn scenario(mode: &str) {
         "bundle" => Some(bundle_ref.as_str()),
         _ => unreachable!(),
     };
-    let expected = if mode == "fresh" { &trunk } else { &preserved };
     let workspace =
         crate::blocks::task_workspace::prepare_task_workspace(&shell, &entry, mode, continuation)
             .await
@@ -313,10 +315,21 @@ async fn scenario(mode: &str) {
         )
     );
     assert!(!root.join("ledger.json").exists());
+    // A fresh task starts on trunk; a continuation starts on the preserved
+    // commit replayed onto trunk, the preservation ref itself untouched.
+    let started_on_trunk = if mode == "fresh" {
+        head == trunk
+    } else {
+        git(&workspace.path, &["rev-parse", "HEAD^"]).await == trunk
+            && git(&workspace.path, &["log", "-1", "--format=%s"]).await == "preserved commit"
+            && head != preserved
+    };
     assert!(
-        head == *expected && branch == *expected && before == after,
+        started_on_trunk && branch == head && before == after,
         "reconciliation changed exact startup heads, FETCH_HEAD, tags or protected evidence"
     );
+    assert_eq!(workspace.base.trunk, trunk);
+    assert_eq!(workspace.base.commit, head);
 }
 
 async fn isolated(mode: &str, name: &str) {
