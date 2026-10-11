@@ -38,7 +38,7 @@ fn map_store_error(error: StoreError) -> Status {
     }
 }
 
-fn load_store(path: &Path) -> Result<WorkItemStore, Status> {
+pub(super) fn load_store(path: &Path) -> Result<WorkItemStore, Status> {
     WorkItemStore::load(path).map_err(map_store_error)
 }
 

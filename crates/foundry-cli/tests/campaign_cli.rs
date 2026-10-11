@@ -362,7 +362,10 @@ fn spawn_advance_terminal_bridge(event_tx: broadcast::Sender<Event>) {
                         "cycles_landed": 1,
                         "reason": DAEMON_ADVANCE_REASON
                     }),
-                );
+                )
+                // A real formation's completion inherits the advance's trace,
+                // which is what the CLI follows.
+                .with_trace_id(event.trace_id.clone());
                 let _ = event_tx.send(completed);
                 break;
             }

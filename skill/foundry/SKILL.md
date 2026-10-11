@@ -261,6 +261,13 @@ when a later cycle starts, and the remaining open cycles settle
 `cancelled` when the campaign completes or is cancelled. An escalated cycle
 stays open until the campaign advances again or ends.
 
+`foundry campaign advance <name>` returns promptly whatever other campaigns
+are forming. It never duplicates work: when the campaign already has an advance
+or a cycle submitted, queued, held or running, it dispatches nothing, prints
+`Campaign '<name>' already has a cycle in flight: work item <id> (<state>).
+Nothing dispatched.` with `next: foundry queue show <id>`, and exits 0. Do not
+retry a slow advance; check `foundry queue` instead.
+
 Campaign definitions live in the daemon-owned campaign store. By default,
 `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all go
 through typed gRPC and do not read or mutate the client-side

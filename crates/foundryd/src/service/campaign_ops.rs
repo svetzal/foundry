@@ -14,11 +14,15 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
+use foundry_sdk::work_source::WorkSourceKind;
+
+use crate::workflow_tracker::ActiveWorkflow;
 
 use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
     Campaign as ProtoCampaign, CampaignDetail, CampaignEscalation as ProtoCampaignEscalation,
-    CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
+    CampaignWorkInFlight, CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
     CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse,
     DoneEvidence as ProtoDoneEvidence, GetCampaignRequest, GetCampaignResponse,
     ListCampaignsRequest, ListCampaignsResponse, OwnerDecision as ProtoOwnerDecision,
@@ -645,14 +649,115 @@ pub(super) async fn cancel(
     Ok(response)
 }
 
+/// The label an in-flight advance carries on the wire.
+const IN_FLIGHT_ADVANCE: &str = "advance";
+/// The label an in-flight cycle carries on the wire.
+const IN_FLIGHT_CYCLE: &str = "cycle";
+
+fn in_flight_kind(root_type: &EventType) -> &'static str {
+    if *root_type == EventType::CampaignAdvanceRequested {
+        IN_FLIGHT_ADVANCE
+    } else {
+        IN_FLIGHT_CYCLE
+    }
+}
+
+/// Whether `item` is unsettled work for `campaign`: one of its cycles, or an
+/// advance of it, still submitted, queued, held or running (or still holding
+/// its execution slot through cleanup).
+fn is_campaign_work_in_flight(item: &WorkItem, campaign: &str) -> bool {
+    let unsettled = item.state.is_waiting() || item.is_running() || item.occupies_slot();
+    if !unsettled {
+        return false;
+    }
+    // Cycles carry the campaign as their typed source; an automatic advance
+    // inherits it from the cycle that asked for it.
+    let dispatched_by_campaign = item
+        .source
+        .as_ref()
+        .is_some_and(|source| source.matches(WorkSourceKind::Campaign, campaign));
+    // A manual advance records no source, so its root names the campaign.
+    let advances_campaign =
+        item.pending_root.as_ref().or(item.started_root.as_ref()).is_some_and(|root| {
+            root.event_type == EventType::CampaignAdvanceRequested
+                && root.payload_str("campaign") == Some(campaign)
+        });
+    dispatched_by_campaign || advances_campaign
+}
+
+/// The advance or cycle of `campaign` already in flight, if any.
+///
+/// The ledger is the durable record and is consulted first; a running item is
+/// preferred over a waiting one. The tracker covers the moment between an
+/// accepted advance RPC and its ledger admission, which happens later inside
+/// the spawned workflow, and a cycle's workflow while it submits the
+/// automatic advance that follows it.
+pub(super) fn find_campaign_work_in_flight(
+    campaign: &str,
+    ledger: &WorkItemStore,
+    tracked: &[ActiveWorkflow],
+) -> Option<CampaignWorkInFlight> {
+    let in_flight: Vec<&WorkItem> = ledger
+        .items
+        .iter()
+        .filter(|item| is_campaign_work_in_flight(item, campaign))
+        .collect();
+    let item = in_flight
+        .iter()
+        .find(|item| item.is_running())
+        .or_else(|| in_flight.first())
+        .copied();
+    if let Some(item) = item {
+        let root = item.pending_root.as_ref().or(item.started_root.as_ref());
+        return Some(CampaignWorkInFlight {
+            kind: root
+                .map_or(IN_FLIGHT_CYCLE, |root| in_flight_kind(&root.event_type))
+                .to_string(),
+            work_item_id: item.id.clone(),
+            state: item.state.tag().to_string(),
+            event_id: root.map(|root| root.id.clone()).unwrap_or_default(),
+        });
+    }
+    let advance = EventType::CampaignAdvanceRequested.to_string();
+    let cycle = EventType::ExecutionRequested.to_string();
+    tracked
+        .iter()
+        .filter(|workflow| workflow.campaign.as_deref() == Some(campaign))
+        .find(|workflow| workflow.event_type == advance || workflow.event_type == cycle)
+        .map(|workflow| CampaignWorkInFlight {
+            kind: if workflow.event_type == advance {
+                IN_FLIGHT_ADVANCE
+            } else {
+                IN_FLIGHT_CYCLE
+            }
+            .to_string(),
+            work_item_id: String::new(),
+            state: WorkItemState::Submitted.tag().to_string(),
+            event_id: workflow.event_id.clone(),
+        })
+}
+
 /// Dispatch one manual advance iteration for an active (or staged) campaign.
 ///
-/// Validates campaign existence and status under the exclusive lock, releases
-/// the lock, then emits `CampaignAdvanceRequested` through the engine.
-/// Returns `FAILED_PRECONDITION` for `paused`, `escalated`, or `completed`
-/// campaigns.
+/// Validates campaign existence and status under the exclusive store lock,
+/// then refuses to duplicate work: when the campaign already has an advance or
+/// a cycle submitted, queued, held or running, nothing is dispatched and the
+/// response names that work in `in_flight`. Otherwise it emits
+/// `CampaignAdvanceRequested` through the engine. Returns
+/// `FAILED_PRECONDITION` for `paused`, `escalated`, `completed` or
+/// `cancelled` campaigns.
+///
+/// The check and the dispatch happen under the same store lock, and
+/// `spawn_workflow` records the new workflow in the tracker before it
+/// returns. So of two simultaneous advances for one campaign, the second to
+/// take the lock always sees the first: exactly one workflow is dispatched.
+/// The ledger alone could not close that window, because admission to it
+/// happens later, inside the spawned workflow. The formation that workflow
+/// runs takes the same lock on the blocking pool and waits only until this
+/// function returns.
 pub(super) fn advance(
     campaigns_path: &Path,
+    work_items_path: &Path,
     ctx: &super::RuntimeContext,
     request: Request<AdvanceCampaignRequest>,
 ) -> Result<Response<AdvanceCampaignResponse>, Status> {
@@ -662,20 +767,39 @@ pub(super) fn advance(
     // parsed, and never a reason to refuse, delay or alter the dispatch.
     let operator_origin = Some(req.operator_origin).filter(|text| !text.is_empty());
 
-    // Validate under the exclusive lock; release before emitting to avoid a
-    // deadlock with the AdvanceCampaign block which also acquires the lock.
-    let (detail, project) = {
-        let guard = lock_store_exclusive(campaigns_path)?;
-        let campaign = guard
-            .store
-            .find(&name)
-            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+    let guard = lock_store_exclusive(campaigns_path)?;
+    let campaign = guard
+        .store
+        .find(&name)
+        .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+    campaign.check_advanceable().map_err(|e| map_transition_error(&e))?;
+    let detail = campaign_to_detail(campaign);
+    let project = campaign.project.clone();
 
-        campaign.check_advanceable().map_err(|e| map_transition_error(&e))?;
-
-        (campaign_to_detail(campaign), campaign.project.clone())
-        // guard drops here, releasing the exclusive lock before the event is emitted.
+    // Lock order: campaign store, then ledger gate, as everywhere else.
+    let ledger = {
+        let _gate = foundry_sdk::work_item::ledger_write_gate()
+            .lock()
+            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+        super::work_item_ops::load_store(work_items_path)?
     };
+    if let Some(in_flight) =
+        find_campaign_work_in_flight(&name, &ledger, &ctx.workflow_tracker.list())
+    {
+        tracing::info!(
+            campaign = %name,
+            kind = %in_flight.kind,
+            work_item_id = %in_flight.work_item_id,
+            event_id = %in_flight.event_id,
+            state = %in_flight.state,
+            "campaign advance requested while its work is in flight; nothing dispatched"
+        );
+        return Ok(Response::new(AdvanceCampaignResponse {
+            campaign: Some(detail),
+            event_id: String::new(),
+            in_flight: Some(in_flight),
+        }));
+    }
 
     // Emit CampaignAdvanceRequested through the existing engine path.
     let payload = Event::serialize_payload(&CampaignAdvanceRequestedPayload {
@@ -705,10 +829,13 @@ pub(super) fn advance(
     let event_id = event.id.clone();
 
     super::spawn_workflow(event, ctx);
+    // Released only now, after the tracker records the workflow.
+    drop(guard);
 
     Ok(Response::new(AdvanceCampaignResponse {
         campaign: Some(detail),
         event_id,
+        in_flight: None,
     }))
 }
 
@@ -734,6 +861,133 @@ pub(super) fn list(
     Ok(Response::new(ListCampaignsResponse {
         campaigns: campaigns.iter().map(campaign_to_proto).collect(),
     }))
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use chrono::Utc;
+    use foundry_sdk::event::{Event, EventType};
+    use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane};
+    use foundry_sdk::work_source::WorkSource;
+
+    use super::find_campaign_work_in_flight;
+    use crate::workflow_tracker::ActiveWorkflow;
+
+    fn root(event_type: EventType, campaign: &str, cycle: Option<u64>) -> Event {
+        Event::new(
+            event_type,
+            "p".to_string(),
+            Throttle::Full,
+            serde_json::json!({"campaign": campaign}),
+        )
+        .with_source(cycle.map(|n| WorkSource::campaign(campaign, n)))
+    }
+
+    fn queued(root: Event) -> WorkItem {
+        let source = root.source.clone();
+        WorkItem::queued(
+            WorkItemSpec {
+                project: "p".to_string(),
+                objective: "work".to_string(),
+                kind: WorkItemKind::Workflow,
+                lane: WorkLane::Campaign,
+                origin: "test".to_string(),
+                trace_id: None,
+            },
+            root,
+            Utc::now(),
+        )
+        .with_source(source)
+    }
+
+    fn started(root: Event) -> WorkItem {
+        let mut item = queued(root.clone());
+        item.start(Utc::now());
+        item.started_root = Some(root);
+        item
+    }
+
+    fn ledger(items: Vec<WorkItem>) -> WorkItemStore {
+        WorkItemStore {
+            items,
+            ..WorkItemStore::default()
+        }
+    }
+
+    fn tracked(event_type: &EventType, campaign: Option<&str>) -> ActiveWorkflow {
+        ActiveWorkflow {
+            event_id: "evt_tracked".to_string(),
+            event_type: event_type.to_string(),
+            project: "p".to_string(),
+            trace_id: "t".to_string(),
+            started_at: Utc::now(),
+            campaign: campaign.map(ToString::to_string),
+        }
+    }
+
+    #[test]
+    fn nothing_in_flight_is_none() {
+        assert!(find_campaign_work_in_flight("c", &ledger(vec![]), &[]).is_none());
+    }
+
+    #[test]
+    fn a_running_item_is_named_before_a_waiting_one() {
+        let waiting = queued(root(EventType::CampaignAdvanceRequested, "c", None));
+        let running = started(root(EventType::ExecutionRequested, "c", Some(2)));
+        let found = find_campaign_work_in_flight("c", &ledger(vec![waiting, running.clone()]), &[])
+            .unwrap();
+        assert_eq!(found.work_item_id, running.id);
+        assert_eq!(found.kind, "cycle");
+        assert_eq!(found.state, "running");
+    }
+
+    #[test]
+    fn an_automatic_advance_carrying_the_campaign_source_is_an_advance() {
+        let auto = queued(root(EventType::CampaignAdvanceRequested, "c", Some(3)));
+        let found = find_campaign_work_in_flight("c", &ledger(vec![auto.clone()]), &[]).unwrap();
+        assert_eq!(found.kind, "advance");
+        assert_eq!(found.work_item_id, auto.id);
+    }
+
+    #[test]
+    fn a_settled_cycle_still_holding_its_slot_is_in_flight() {
+        let mut cleaning_up = started(root(EventType::ExecutionRequested, "c", Some(1)));
+        cleaning_up.settle_landed("landed", Utc::now());
+        assert!(!cleaning_up.execution_completed);
+        let found =
+            find_campaign_work_in_flight("c", &ledger(vec![cleaning_up.clone()]), &[]).unwrap();
+        assert_eq!(found.work_item_id, cleaning_up.id);
+
+        cleaning_up.execution_completed = true;
+        assert!(find_campaign_work_in_flight("c", &ledger(vec![cleaning_up]), &[]).is_none());
+    }
+
+    #[test]
+    fn an_accepted_advance_not_yet_in_the_ledger_is_found_in_the_tracker() {
+        let found = find_campaign_work_in_flight(
+            "c",
+            &ledger(vec![]),
+            &[tracked(&EventType::CampaignAdvanceRequested, Some("c"))],
+        )
+        .unwrap();
+        assert_eq!(found.kind, "advance");
+        assert_eq!(found.state, "submitted");
+        assert!(found.work_item_id.is_empty());
+        assert_eq!(found.event_id, "evt_tracked");
+    }
+
+    #[test]
+    fn other_campaigns_and_terminal_roots_in_the_tracker_do_not_count() {
+        let tracker = [
+            tracked(&EventType::CampaignAdvanceRequested, Some("other")),
+            tracked(&EventType::CampaignCancelled, Some("c")),
+            tracked(&EventType::ExecutionRequested, None),
+        ];
+        assert!(find_campaign_work_in_flight("c", &ledger(vec![]), &tracker).is_none());
+    }
 }
 
 #[cfg(test)]

@@ -619,8 +619,22 @@ current detail with an empty `event_id` and emits no second event.
 ### `AdvanceCampaign(AdvanceCampaignRequest) → AdvanceCampaignResponse`
 
 Dispatch one manual campaign-advance workflow for an `active` or `staged`
-campaign. The daemon validates the current status under the exclusive lock,
-releases the lock, emits `CampaignAdvanceRequested`, and returns immediately.
+campaign. Under the exclusive campaign-store lock the daemon validates the
+current status, checks for campaign work already in flight, emits
+`CampaignAdvanceRequested` through `spawn_workflow` (which records the workflow
+in the tracker before it returns), then releases the lock and returns. A
+formation never holds that lock while its agent runs, so the call returns
+promptly whatever other campaigns are doing.
+
+An advance never duplicates work in flight. When the campaign already has, in
+the work-item ledger, an item submitted, queued, held or running (or still
+holding its slot) that is one of its cycles (source `campaign:<name>`) or an
+advance of it (a `CampaignAdvanceRequested` root naming it), or a tracked
+advance or cycle workflow not yet admitted to the ledger, the daemon
+dispatches nothing and returns `in_flight` instead of an `event_id`. Because
+the check and the dispatch happen under the same lock, two simultaneous
+advances for one campaign dispatch exactly one workflow. The automatic advance
+after a cycle completes is not an RPC and is unaffected.
 
 **Request:**
 
@@ -632,17 +646,27 @@ releases the lock, emits `CampaignAdvanceRequested`, and returns immediately.
 
 | Field      | Type           | Description                                                         |
 | ---------- | -------------- | ------------------------------------------------------------------- |
-| `campaign` | CampaignDetail | Current campaign detail at dispatch time                            |
-| `event_id` | string         | Root event ID of the dispatched `CampaignAdvanceRequested` workflow |
+| `campaign`  | CampaignDetail       | Current campaign detail at dispatch time                                                    |
+| `event_id`  | string               | Root event ID of the dispatched `CampaignAdvanceRequested` workflow; empty with `in_flight` |
+| `in_flight` | CampaignWorkInFlight | Set when the request was a no-op because campaign work was already in flight               |
+
+`CampaignWorkInFlight` carries `kind` (`advance` or `cycle`), `work_item_id`
+(empty for an accepted advance not yet in the ledger), `state` (`submitted`,
+`queued`, `held` or `running`) and the root `event_id`.
 
 **Errors:** `NOT_FOUND` when the name is absent; `FAILED_PRECONDITION` when the
-campaign is `paused`, `escalated`, or `completed`; `INTERNAL` when the store is
-unreadable. Rejected advances do not mutate the store.
+campaign is `paused`, `escalated`, `completed` or `cancelled`, or the
+work-item ledger is malformed; `INTERNAL` when the campaign store or the ledger
+is unreadable. Rejected advances and no-op advances do not mutate either store.
 
 **CLI:** `foundry campaign advance <name>` routes through this RPC by default.
 The online CLI prints the returned root `event_id`, watches the daemon-owned
-workflow stream, and renders the daemon trace for that event. It does not
-re-read `FOUNDRY_CAMPAIGNS_PATH`.
+workflow stream for that advance's own trace only, stops at its
+`campaign_advance_completed` (or at its work item's settlement when the
+formed outcome was discarded), and renders the daemon trace for that event.
+For a no-op it prints one line naming the in-flight work and the command to
+inspect it, and exits 0 without watching. It does not re-read
+`FOUNDRY_CAMPAIGNS_PATH`.
 
 ### `GetCampaign(GetCampaignRequest) → GetCampaignResponse`
 

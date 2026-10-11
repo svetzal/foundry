@@ -573,18 +573,67 @@ pub async fn advance(
         .await
         .map_err(status_to_anyhow)?
         .into_inner();
+    if let Some(in_flight) = &response.in_flight {
+        // A no-op: the work in flight belongs to someone else's advance, so
+        // there is no completion of ours to wait for.
+        print!("{}", render::campaign::advance_in_flight(name, in_flight));
+        return Ok(());
+    }
     println!("Event: {}", response.event_id);
     println!();
 
+    // The stream carries every workflow on the project, including other
+    // campaigns' formations; follow only this advance's trace.
+    let mut own_trace: Option<String> = None;
     while let Some(event) = stream.message().await? {
-        let done = event.event_type == "campaign_advance_completed";
+        if event.event_id == response.event_id {
+            own_trace = Some(event.trace_id.clone());
+        }
+        let Some(step) = advance_watch_step(own_trace.as_deref(), &event) else {
+            continue;
+        };
+        if step == AdvanceWatchStep::Stopped {
+            bail!("campaign advance stopped: {}", event.payload_json);
+        }
         print!("{}", render::workflow::watch_event_line(&event));
-        if done {
+        if step == AdvanceWatchStep::Done {
             break;
         }
     }
 
     WorkflowRunner::new(addr, &project).show_trace(&response.event_id).await
+}
+
+/// What one watched event means for `campaign advance`.
+#[derive(Debug, PartialEq, Eq)]
+enum AdvanceWatchStep {
+    /// Print it and keep watching.
+    Progress,
+    /// Print it and stop: the advance finished.
+    Done,
+    /// The advance was refused or cancelled before it formed.
+    Stopped,
+}
+
+/// Classify `event` for the advance whose root trace is `own_trace`, or
+/// `None` when it belongs to another workflow on the project.
+///
+/// The advance is done at its `campaign_advance_completed`, or when its own
+/// work item settles without one: a campaign paused or changed while it formed
+/// discards the formed outcome and emits no campaign event.
+fn advance_watch_step(
+    own_trace: Option<&str>,
+    event: &crate::proto::WatchResponse,
+) -> Option<AdvanceWatchStep> {
+    let trace = own_trace?;
+    if !trace.is_empty() && event.trace_id != trace {
+        return None;
+    }
+    Some(match event.event_type.as_str() {
+        "campaign_advance_completed" | "work_item_settled" => AdvanceWatchStep::Done,
+        "work_item_cancelled" | "workflow_refused" => AdvanceWatchStep::Stopped,
+        _ => AdvanceWatchStep::Progress,
+    })
 }
 
 fn validate_campaign_definition(campaign: &Campaign, registry_path: &Path) -> Result<()> {
@@ -1374,6 +1423,51 @@ mod tests {
             request.operator_origin.ends_with(": kicked off by hand"),
             "expected the origin text verbatim, got {:?}",
             request.operator_origin
+        );
+    }
+
+    fn watched(event_type: &str, trace: &str) -> crate::proto::WatchResponse {
+        crate::proto::WatchResponse {
+            event_id: "evt_x".to_string(),
+            event_type: event_type.to_string(),
+            project: "p".to_string(),
+            payload_json: "{}".to_string(),
+            trace_id: trace.to_string(),
+            span_id: String::new(),
+            parent_span_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_advance_ignores_other_workflows_on_its_project() {
+        use super::{AdvanceWatchStep, advance_watch_step};
+        // Another campaign's formation finishing first ended the watch on
+        // 2026-10-11; it must not.
+        assert_eq!(
+            advance_watch_step(Some("mine"), &watched("campaign_advance_completed", "theirs")),
+            None
+        );
+        assert_eq!(advance_watch_step(None, &watched("campaign_advance_completed", "mine")), None);
+        assert_eq!(
+            advance_watch_step(Some("mine"), &watched("campaign_advance_completed", "mine")),
+            Some(AdvanceWatchStep::Done)
+        );
+    }
+
+    #[test]
+    fn an_advance_whose_outcome_was_discarded_ends_at_its_settlement() {
+        use super::{AdvanceWatchStep, advance_watch_step};
+        assert_eq!(
+            advance_watch_step(Some("mine"), &watched("work_item_settled", "mine")),
+            Some(AdvanceWatchStep::Done)
+        );
+        assert_eq!(
+            advance_watch_step(Some("mine"), &watched("work_item_cancelled", "mine")),
+            Some(AdvanceWatchStep::Stopped)
+        );
+        assert_eq!(
+            advance_watch_step(Some("mine"), &watched("agent_session_started", "mine")),
+            Some(AdvanceWatchStep::Progress)
         );
     }
 

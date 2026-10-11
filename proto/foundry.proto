@@ -550,8 +550,27 @@ message AdvanceCampaignResponse {
     // The advance itself is asynchronous; poll GetCampaign to observe the
     // outcome.
     CampaignDetail campaign = 1;
-    // Root event ID of the CampaignAdvanceRequested workflow.
+    // Root event ID of the CampaignAdvanceRequested workflow. Empty when
+    // `in_flight` is set, because nothing was dispatched.
     string event_id = 2;
+    // Set when the campaign already had an advance or a cycle submitted,
+    // queued, held or running. The request was a no-op; this names the work
+    // a second advance would have duplicated.
+    CampaignWorkInFlight in_flight = 3;
+}
+
+// Campaign work that was already in flight when an advance was requested.
+message CampaignWorkInFlight {
+    // "advance" for a formation workflow, "cycle" for a dispatched task.
+    string kind = 1;
+    // Work-item id in the ledger. Empty for an advance the daemon accepted
+    // moments ago and has not yet recorded in the ledger.
+    string work_item_id = 2;
+    // Ledger state: submitted, queued, held or running. "submitted" also for
+    // an advance not yet recorded in the ledger.
+    string state = 3;
+    // Root event ID of the in-flight workflow, when known.
+    string event_id = 4;
 }
 
 // Wire form of a sentinel — a scheduled trigger that emits an event when due.

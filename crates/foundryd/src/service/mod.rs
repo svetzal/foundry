@@ -561,8 +561,11 @@ impl Foundry for FoundryService {
         &self,
         request: Request<AdvanceCampaignRequest>,
     ) -> Result<Response<AdvanceCampaignResponse>, Status> {
-        self.campaign_operation(move |path, ctx| campaign_ops::advance(path, ctx, request))
-            .await
+        let work_items_path = self.work_items_path.clone();
+        self.campaign_operation(move |path, ctx| {
+            campaign_ops::advance(path, &work_items_path, ctx, request)
+        })
+        .await
     }
 
     async fn sentinel_enable(
