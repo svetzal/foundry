@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-10-11
+
+### Changed
+
+- serde_json 1.0.151 to 1.0.152 (nightly maintenance).
+
+### Fixed
+
+- The run-completion gRPC tests isolate their git fixture from inherited git
+  configuration, such as an agent session's `remote.origin.pushurl` override,
+  so a local push in the fixture succeeds when the suite runs inside an agent
+  session or under coverage.
+
 ## [0.44.0] - 2026-10-11
 
 ### Added
