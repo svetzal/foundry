@@ -13,6 +13,12 @@ const MAX_OUTPUT_LINES: usize = 200;
 /// cost. Scoped to gates: agents that edit and rebuild keep incremental builds.
 const DISABLE_CARGO_INCREMENTAL: (&str, &str) = ("CARGO_INCREMENTAL", "0");
 
+/// How long a gate (or its `fix_command`) may run when its definition sets no
+/// `timeout`. Ten minutes: a full test suite on a large workspace routinely
+/// passes five, and the shell's general five-minute default is meant for git
+/// and other housekeeping, not builds. A gate that needs longer sets its own.
+pub const DEFAULT_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run all gates sequentially and return an aggregated result.
 ///
 /// Self-healing: when a gate fails and declares a `fix_command`, the runner runs
@@ -97,6 +103,7 @@ async fn run_command(
 ) -> (bool, String, i32) {
     let (key, value) = DISABLE_CARGO_INCREMENTAL;
     let env = [(key.to_string(), value.to_string())];
+    let timeout = timeout.or(Some(DEFAULT_GATE_TIMEOUT));
     match shell.run(working_dir, "sh", &["-c", command], Some(&env), timeout).await {
         Ok(r) => {
             let combined = format!("{}\n{}", r.stdout, r.stderr);
@@ -146,6 +153,22 @@ mod tests {
             timeout: None,
             fix_command: Some(fix.to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn a_gate_without_its_own_timeout_gets_ten_minutes() {
+        let shell = FakeShellGateway::success();
+        let mut timed = gate("slow", "cargo test --workspace", true);
+        timed.timeout = Some(std::time::Duration::from_secs(1_800));
+        let gates = vec![gate("test", "cargo test", true), timed];
+        let dir = std::env::temp_dir();
+
+        run_gates(&gates, &dir, shell.as_ref()).await.unwrap();
+
+        let calls = shell.invocations();
+        assert_eq!(calls[0].timeout, Some(DEFAULT_GATE_TIMEOUT));
+        assert_eq!(DEFAULT_GATE_TIMEOUT, std::time::Duration::from_secs(600));
+        assert_eq!(calls[1].timeout, Some(std::time::Duration::from_secs(1_800)));
     }
 
     #[tokio::test]

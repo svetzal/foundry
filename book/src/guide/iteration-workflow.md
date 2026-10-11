@@ -43,7 +43,7 @@ from the trigger event is forwarded through the chain so that gate routing
 can chain into the maintenance workflow afterwards.
 
 Each gate has a `name`, a `command`, a `required` flag, an optional
-`timeout` (seconds), and an optional **`fix_command`** — an in-place command
+`timeout` (seconds; 10 minutes when absent), and an optional **`fix_command`** — an in-place command
 that mechanically repairs the gate's failure. A gate looks like:
 
 ```json

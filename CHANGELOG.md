@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A quality gate (or its `fix_command`) without its own `timeout` now runs for
+  up to 10 minutes, not 5. The 5-minute limit was the shell runner's general
+  default for git and housekeeping commands, which gates inherited; a full test
+  suite on a large workspace routinely passes it. Set `timeout` (seconds) on a
+  gate in `.hone-gates.json` for a different limit.
+
 ### Fixed
 
 - Task finalization no longer destroys files under `.foundry/` without a
