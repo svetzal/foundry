@@ -29,6 +29,14 @@ git -C "$REPO" fetch -q --tags origin
 git -C "$REPO" worktree add -q --detach "$WT" "$TAG"
 cd "$WT"
 
+# Gate fixtures must not wait for or read the production campaign/ledger stores.
+GATE_STATE="$WORK/gate-state"
+mkdir -p "$GATE_STATE"
+export FOUNDRY_CAMPAIGNS_PATH="$GATE_STATE/campaigns.json"
+export FOUNDRY_WORK_ITEMS_PATH="$GATE_STATE/work-items.json"
+export FOUNDRY_WORKTREES_DIR="$GATE_STATE/worktrees"
+export FOUNDRY_PRESERVED_DIR="$GATE_STATE/preserved"
+
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

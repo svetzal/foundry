@@ -71,6 +71,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   A busy repository delays the scan instead of being skipped. Audit-only scans
   consume a system slot without project reservations.
 
+### Fixed
+
+- Maintenance commands wait for their own durable completion. Full maintenance
+  waits until its queued summary finishes. Unrelated completions cannot end a
+  waiting command.
+- Linux release gates use temporary campaign, ledger, worktree and preservation
+  paths, so fixtures cannot wait on production campaign locks.
+
 ### Compatibility
 
 - The new `workflow` work-item kind and persisted start evidence extend the
