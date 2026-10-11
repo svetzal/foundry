@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-11
+
 ### Fixed
 
 - `foundry campaign show` now says why an escalated campaign waits on its owner
