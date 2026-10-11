@@ -183,7 +183,7 @@ Foundry's `*Started`/`*Completed` pairing rule.
 | `work_item_submitted` | A unit of work entered the ledger; for paced work, `state` is `queued` and `reason` says why it waits |
 | `work_item_started` | An agent started on a ledger item |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
-| `work_item_cancelled` | An operator stopped a ledger item |
+| `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
 | `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
 
@@ -194,6 +194,8 @@ state that may still hold an obligation.
 `work_item_cancelled` is emitted by `foundry queue close`, `foundry queue
 cancel`, and `foundry campaign cancel <name> --reason … --now`, which stops the
 in-flight cycle outright and cancels the campaign's queued cycles with it. It
+is also emitted when a campaign moves past an open cycle (see "Campaign cycles
+the campaign has moved past" below). It
 carries the item's id, project, kind, lane, state, reason and origin, plus the
 settlement fields, and for the aborted cycle it rides the **aborted cycle's**
 trace rather than the cancellation's — so it sits with the rest of the events
@@ -717,14 +719,55 @@ itself:
   item carries the aborted run's trace, nothing is settled. Foundry never falls
   back to "the project's newest running item", because that would report an
   unrelated concurrent run as cancelled.
-- A **graceful** cancel (no `--now`) changes no item: the cycle finishes on its
-  own and settles the usual way. A `--now` cancel with nothing in flight, and
-  cancelling an already-cancelled campaign, both change no item either.
+- A **graceful** cancel (no `--now`) does not stop the in-flight cycle: it
+  finishes on its own and then settles `cancelled`, as described in the next
+  section. A `--now` cancel with nothing in flight, and cancelling an
+  already-cancelled campaign, both change no item either.
 
 The ledger is bookkeeping beside the cancellation, never a precondition for it:
 if the ledger cannot be read or written, the campaign is still cancelled and the
 `CampaignCancelled` event is still emitted — the fault is logged, and the item is
 left for the restart sweep.
+
+### Campaign cycles the campaign has moved past
+
+A campaign forms each cycle from the previous cycle's preserved ref, or from
+trunk. An earlier cycle left `preserved`, `needs_decision` or `failed` is
+therefore not owed by a person: the campaign carried it, and the campaign's own
+escalation is what reaches a person. Foundry settles such cycles itself, as
+`cancelled`, without an `operator_action`, keeping their preservation ref and
+worktree fields:
+
+- When the scheduler starts a later cycle of the same campaign, every open
+  cycle with a lower cycle number settles with the reason `carried forward by
+  campaign <name> cycle <n> (<item id>)`. This happens before the new cycle's
+  agent runs. The newest cycle submitted carries; one that was itself
+  cancelled carries nothing. An escalated (`needs_decision`) cycle
+  is the live question, so it stays open until the campaign advances again or
+  ends.
+- When the campaign completes (formation `done` or `foundry campaign
+  complete`) or is cancelled, its remaining open cycles settle with the reason
+  `campaign <name> completed` or `campaign <name> cancelled`, followed by `:
+  <reason>` when one was recorded.
+- A graceful cancel lets the in-flight cycle finish after `CampaignCancelled`.
+  When that cycle settles open, its own `work_item_settled` finds the campaign
+  already cancelled in the campaign store, and the cycle settles `cancelled`
+  then. It is not stranded open.
+
+Each settlement emits `work_item_cancelled` on that cycle's own trace. Only
+`campaign_cycle` items whose typed source names the campaign and a cycle are
+touched. The campaign's formation workflow, which durable admission records as
+a `workflow` item with the campaign's source, is not a cycle. An item
+recorded before the typed source existed, another campaign's item, a
+non-campaign item and a settled item never change. The decision is taken on the
+ledger as loaded under the shared write gate, in the same pass that writes it,
+so an owner action that landed first wins. The Settle Carried Campaign Work
+block runs on every campaign cycle's `work_item_submitted`,
+`work_item_started` and `work_item_settled`, and on `campaign_completed` and
+`campaign_cancelled`; each trigger decides from the current ledger, so a
+repeated or reordered trigger changes nothing more. Durable admission persists
+and broadcasts `work_item_submitted` without routing it to blocks, so in the
+daemon the carry happens at `work_item_started`.
 
 ## Work reconciliation
 
