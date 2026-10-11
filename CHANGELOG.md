@@ -7,6 +7,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The `foundryd` single-instance tests no longer fail at random. The 0.45.0
+  release build on `mojility-ops-01` failed once because the lock-held test
+  reported "address already in use" instead of "already running". The test
+  picked a free port, released it, and another test in the same binary bound
+  that port before the spawned `foundryd` could. `foundryd` binds its address
+  before it takes the instance lock, so the test hit the bind refusal. The
+  tests in `crates/foundryd/tests/single_instance.rs` now run one at a time on
+  a lock that every test `Home` holds. No assertion changed, and `foundryd`'s
+  start-up order is unchanged.
+
 ## [0.45.0] - 2026-10-11
 
 ### Fixed
