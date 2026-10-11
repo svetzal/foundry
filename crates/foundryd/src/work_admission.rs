@@ -265,7 +265,7 @@ impl WorkAdmission for DurableWorkAdmission {
                 let item = store
                     .find(&id)
                     .ok_or_else(|| anyhow::anyhow!("deferred item disappeared: {id}"))?;
-                if item.state == WorkItemState::Cancelled
+                if (item.state == WorkItemState::Cancelled && !item.occupies_slot())
                     || item.reason == "daemon restarted"
                     || (item.started_at.is_none() && !item.state.is_waiting())
                 {
@@ -560,6 +560,29 @@ mod tests {
         from: EventType,
         to: EventType,
     }
+
+    struct WaitingRoot {
+        entered: Arc<Notify>,
+        finish: Arc<Notify>,
+    }
+    impl TaskBlock for WaitingRoot {
+        fn name(&self) -> &'static str {
+            "Wait for root completion"
+        }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::ProjectRunStarted]
+        }
+        fn execute(&self, _event: &Event) -> BlockFuture<'_> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.finish.notified().await;
+                Ok(TaskBlockResult::success("finished cleanup", vec![]))
+            })
+        }
+    }
     impl TaskBlock for Continuation {
         fn name(&self) -> &'static str {
             "Synthetic continuation"
@@ -726,6 +749,81 @@ mod tests {
             .with_trace_id(Some("a".repeat(32)))
             .with_span_ids(Some("c".repeat(16)), None)
             .with_source(Some(WorkSource::sentinel("nightly-maintenance")))
+    }
+
+    #[tokio::test]
+    async fn cancelled_started_root_keeps_its_join_and_slot_until_traversal_returns() {
+        let entered = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let h = Harness::with_blocks(
+            true,
+            vec![Box::new(WaitingRoot {
+                entered: entered.clone(),
+                finish: finish.clone(),
+            })],
+        );
+        let pending = h.submit(EventType::ProjectRunStarted, "alpha");
+        h.admitted(1).await;
+        h.scheduler.tick().await;
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("root started");
+        let owner_id = h.items().remove(0).id;
+        {
+            let _gate = ledger_write_gate().lock().expect("gate");
+            let mut store = h.policy.store().expect("store");
+            store.find_mut(&owner_id).expect("owner").settle_cancelled(
+                "obligation cancelled during cleanup",
+                None,
+                Utc::now(),
+            );
+            store.save(&h.policy.path).expect("save");
+        }
+        let join = tokio::spawn({
+            let engine = h.engine.clone();
+            let id = owner_id.clone();
+            async move { engine.join_work(&id).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), async {
+                while !join.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_err(),
+            "cancelled root must not report traversal completion early"
+        );
+        let next = h.submit(EventType::ReleaseRequested, "alpha");
+        h.admitted(1).await;
+        h.scheduler.tick().await;
+        assert!(
+            h.items()
+                .iter()
+                .find(|item| item.id == owner_id)
+                .expect("owner")
+                .occupies_slot()
+        );
+        assert!(h.effects.lock().expect("effects").is_empty(), "same repository still owned");
+        finish.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .expect("root finished")
+            .expect("process join");
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("wait finished")
+            .expect("wait join")
+            .expect("result");
+        let owner = h.items().into_iter().find(|item| item.id == owner_id).expect("owner");
+        assert!(owner.execution_completed);
+        assert!(!owner.occupies_slot());
+        assert_eq!(owner.state, WorkItemState::Cancelled);
+        h.scheduler.tick().await;
+        tokio::time::timeout(Duration::from_secs(2), next)
+            .await
+            .expect("next ran")
+            .expect("next join");
     }
 
     #[tokio::test]

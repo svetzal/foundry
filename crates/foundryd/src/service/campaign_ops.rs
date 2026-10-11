@@ -439,6 +439,40 @@ pub(super) fn complete(
     }))
 }
 
+fn select_aborted_owner(
+    workflows: &[crate::workflow_tracker::ActiveWorkflow],
+    store: &foundry_sdk::work_item::WorkItemStore,
+) -> Option<crate::workflow_tracker::ActiveWorkflow> {
+    workflows
+        .iter()
+        .find(|workflow| {
+            store.items.iter().any(|item| {
+                item.occupies_slot()
+                    && item.project == workflow.project
+                    && item.trace_id.as_deref() == Some(workflow.trace_id.as_str())
+                    && item.started_root.as_ref().is_some_and(|root| root.id == workflow.event_id)
+            })
+        })
+        .or_else(|| workflows.first())
+        .cloned()
+}
+
+fn select_aborted_owner_in_file(
+    path: &Path,
+    workflows: &[crate::workflow_tracker::ActiveWorkflow],
+) -> Option<crate::workflow_tracker::ActiveWorkflow> {
+    if workflows.is_empty() {
+        return None;
+    }
+    match foundry_sdk::work_item::WorkItemStore::load(path) {
+        Ok(store) => select_aborted_owner(workflows, &store),
+        Err(error) => {
+            tracing::warn!(%error, "could not identify cancelled execution owner");
+            workflows.first().cloned()
+        }
+    }
+}
+
 /// Stop a campaign permanently, optionally killing its in-flight cycle first.
 ///
 /// Abort the target workflow before waiting for the store lock, so `--now`
@@ -475,17 +509,20 @@ pub(super) async fn cancel(
     // handle onto its partial events, and the trace is what correlates the
     // killed cycle with its `running` entry in the work-item ledger.
     let aborted = if req.terminate_now {
-        ctx.workflow_tracker.abort_campaign(&name).await.into_iter().next()
+        ctx.workflow_tracker.abort_campaign(&name).await
     } else {
-        None
+        Vec::new()
     };
-    let aborted_event_id = aborted.as_ref().map(|workflow| workflow.event_id.clone());
-    let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
 
     let campaigns_path = campaigns_path.to_path_buf();
     let work_items_path = work_items_path.to_path_buf();
     let spawn_ctx = ctx.clone();
     let (response, waiting_cycles) = blocking(move || {
+        // Both submission coordinators and dispatched roots are tracked. The
+        // ledger owner must identify disposal, regardless of HashMap order.
+        let aborted = select_aborted_owner_in_file(&work_items_path, &aborted);
+        let aborted_event_id = aborted.as_ref().map(|workflow| workflow.event_id.clone());
+        let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
         let (detail, event, waiting_cycles) = {
             let mut guard = lock_store_exclusive(&campaigns_path)?;
             let campaign = guard
@@ -662,6 +699,54 @@ mod tests {
     use foundry_sdk::campaign::{
         Campaign, CampaignBudget, CampaignStatus, DoneEvidence, OwnerDecision,
     };
+
+    #[test]
+    fn cancellation_selects_the_started_owner_instead_of_its_submission_coordinator() {
+        use foundry_sdk::work_item::{
+            WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+        };
+        let coordinator = crate::workflow_tracker::ActiveWorkflow {
+            event_id: "evt_submission".into(),
+            event_type: "execution_requested".into(),
+            project: "proj".into(),
+            trace_id: "a".repeat(32),
+            started_at: Utc::now(),
+            campaign: Some("campaign".into()),
+        };
+        let mut started = coordinator.clone();
+        started.event_id = "evt_started".into();
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "proj".into(),
+                objective: "work".into(),
+                kind: WorkItemKind::CampaignCycle,
+                lane: WorkLane::Campaign,
+                origin: "campaign".into(),
+                trace_id: Some(started.trace_id.clone()),
+            },
+            Utc::now(),
+        );
+        let mut root = Event::new(
+            EventType::ExecutionRequested,
+            "proj".into(),
+            Throttle::Full,
+            serde_json::json!({}),
+        );
+        root.id = started.event_id.clone();
+        item.started_root = Some(root);
+        let mut store = WorkItemStore::default();
+        for state in [
+            WorkItemState::Running,
+            WorkItemState::Preserved,
+            WorkItemState::Cancelled,
+        ] {
+            item.state = state;
+            store.upsert(item.clone());
+            let selected =
+                select_aborted_owner(&[coordinator.clone(), started.clone()], &store).unwrap();
+            assert_eq!(selected.event_id, started.event_id);
+        }
+    }
 
     fn sample_campaign(name: &str, project: &str) -> Campaign {
         Campaign {

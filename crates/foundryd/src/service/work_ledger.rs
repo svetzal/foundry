@@ -31,7 +31,9 @@ pub(crate) fn settle_running(store: &mut WorkItemStore) -> Vec<WorkItem> {
     for item in &mut store.items {
         if item.occupies_slot() {
             item.execution_completed = true;
-            item.settle_failed(RESTART_REASON, now);
+            if item.state != foundry_sdk::work_item::WorkItemState::Cancelled {
+                item.settle_failed(RESTART_REASON, now);
+            }
             settled.push(item.clone());
         }
     }
@@ -166,6 +168,27 @@ mod tests {
         assert!(settle_running(&mut store).is_empty());
         assert_eq!(store.items[0].state, WorkItemState::Landed);
         assert_eq!(store.items[0].reason, "task completed, reviewed, and landed");
+    }
+
+    #[test]
+    fn restart_releases_an_unfinished_cancelled_root_without_reopening_its_obligation() {
+        let mut item = running("alpha");
+        item.started_root = Some(foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::ExecutionRequested,
+            "alpha".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({}),
+        ));
+        item.settle_cancelled("campaign ended", None, Utc::now());
+        assert!(item.occupies_slot());
+        let mut store = WorkItemStore::default();
+        store.upsert(item);
+        let settled = settle_running(&mut store).remove(0);
+        assert!(settled.execution_completed);
+        assert!(!settled.occupies_slot());
+        assert_eq!(settled.state, WorkItemState::Cancelled);
+        assert_eq!(settled.reason, "campaign ended");
+        assert!(settle_running(&mut store).is_empty());
     }
 
     #[test]
