@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-10-11
+
 ### Fixed
 
 - A continuation (a campaign cycle after an unlanded cycle, `foundry queue
