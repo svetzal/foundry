@@ -33,9 +33,9 @@ drift detection across them.
 
 ## Which daemon you are talking to
 
-**Production Foundry** is `foundryd` on `mojility-ops-01.local`: the nightly,
+**Production Foundry** is `foundryd` on `mojility-ops-01`: the nightly,
 the sentinels, the ledger and every real project's work. Reach it over SSH
-(`ssh mojility-ops-01.local foundry queue`). On the Mac, plain `foundry`
+(`ssh mojility-ops-01 foundry queue`). On the Mac, plain `foundry`
 targets the **development daemon**, whose registry holds only synthetic
 sandbox projects under `~/.foundry/sandbox/` (`sample-rs`); never register a
 real project with it.

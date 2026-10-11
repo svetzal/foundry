@@ -80,9 +80,9 @@ argument is a usage error (non-zero exit). To check the installed version,
 
 ### Production and development daemons
 
-`foundryd` on `mojility-ops-01.local` is **production Foundry**. It runs the
+`foundryd` on `mojility-ops-01` is **production Foundry**. It runs the
 nightly, the sentinels, the work-item ledger and every registered project's
-tasks and campaigns. Reach it over SSH: `ssh mojility-ops-01.local foundry
+tasks and campaigns. Reach it over SSH: `ssh mojility-ops-01 foundry
 queue`. The daemon on the Mac (`com.mojility.foundryd` under launchd, its own
 `~/.foundry`) is the **development daemon**. An inherited
 `FOUNDRY_DAEMON_ADDR` can target production. Pass
@@ -575,7 +575,7 @@ launchctl unload ~/Library/LaunchAgents/com.mojility.foundryd.plist
 launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 ```
 
-#### On the Linux ops host (`mojility-ops-01.local`)
+#### On the Linux ops host (`mojility-ops-01`)
 
 Build the Linux release on the host itself, from the tag, and install the
 binaries it produced. Use the same Rust toolchain as release CI for packaging;
