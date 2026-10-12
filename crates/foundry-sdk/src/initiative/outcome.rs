@@ -112,12 +112,17 @@ impl CampaignStore {
                 "outcome evidence must identify every initiative trunk exactly once".into(),
             ));
         }
+        // Audit receipts identify observations, not the intent or policy being proved.
+        let mut members = initiative.members.clone();
+        for member in &mut members {
+            member.audit_finding_id = None;
+        }
         let bytes = serde_json::to_vec(&(
             &initiative.outcome,
             &initiative.intent_refs,
             &initiative.projects,
             &initiative.brief,
-            &initiative.members,
+            members,
             &initiative.done_evidence,
             &initiative.budget,
             &initiative.authorized_by,
