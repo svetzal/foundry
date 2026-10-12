@@ -678,7 +678,7 @@ git push origin main --tags
 #    Release workflow publishes distribution tarballs. Do not wait for GitHub
 #    publication before deploying a locally validated build.
 # 6. Swap the running daemon onto the new binary. Use ./install.sh — it does
-#    `cargo install` for both binary crates AND re-signs them on macOS with
+#    `cargo install --locked` for both binary crates AND re-signs them on macOS with
 #    stable code-signing identifiers. Do NOT run a bare `cargo install`:
 #    cargo's ad-hoc signature is hash-derived and changes every rebuild, so
 #    macOS TCC sees a brand-new app and re-prompts (or silently denies) the

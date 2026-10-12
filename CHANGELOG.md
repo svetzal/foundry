@@ -25,6 +25,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 Development and validation remain on the Mac. Promotion to ops-01 awaits
 Stacey's go-ahead.
 
+### Fixed
+
+- The canonical installer now uses the tested dependency lockfile for both
+  binaries instead of resolving a different dependency set during installation.
+
 ## [0.48.0] - 2026-10-12
 
 ### Added
