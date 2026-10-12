@@ -1294,6 +1294,8 @@ mod tests {
 
     fn escalated_campaign(name: &str, reason: Option<&str>) -> Campaign {
         Campaign {
+            initiative: None,
+            providers: None,
             name: name.to_string(),
             project: "mojentic-ex".to_string(),
             mission: "recover".to_string(),

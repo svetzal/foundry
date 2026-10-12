@@ -139,6 +139,8 @@ fn make_service_with_campaigns_path(
 
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -168,6 +170,8 @@ fn active_campaign(name: &str) -> Campaign {
 
 fn paused_campaign(name: &str, max_cycles: u64) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -204,6 +208,8 @@ fn cancelled_campaign(name: &str) -> Campaign {
 
 fn write_campaigns(file: &NamedTempFile, campaigns: Vec<Campaign>) {
     let store = CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns,
     };
@@ -337,6 +343,8 @@ async fn complete_persist_failure_returns_internal_keeps_store_bytes_and_emits_n
     let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
     let campaigns_path = campaigns_dir.path().join("campaigns.json");
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![paused_campaign("c", 10)],
     }

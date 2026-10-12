@@ -365,8 +365,12 @@ impl TaskBlock for ReviewTask {
         ) {
             return stop_for_review(project, throttle, reviewed);
         }
-        let prompt = task_review_prompt(&objective, &p.results, context.campaign.is_some());
-        let provider = super::chain_agent_provider(&payload);
+        let prompt = super::with_initiative_context(
+            &task_review_prompt(&objective, &p.results, context.campaign.is_some()),
+            &payload,
+        );
+        let provider =
+            super::chain_stage_provider(&payload, foundry_sdk::gateway::AgentStage::Review);
 
         Box::pin(async move {
             let outcome = invoke_agent(
@@ -392,21 +396,7 @@ impl TaskBlock for ReviewTask {
             )
             .await;
 
-            let (review, verdict) = match outcome {
-                crate::gateway::AgentOutcome::Success { stdout } => {
-                    let verdict = parse_verdict(&stdout).unwrap_or_else(|e| TaskVerdict::Defect {
-                        diagnosis: e.to_string(),
-                    });
-                    (stdout, verdict)
-                }
-                crate::gateway::AgentOutcome::AgentFailed { stderr, failure } => {
-                    let detail = failure.map_or(stderr.clone(), |f| f.execution_summary());
-                    (stderr, TaskVerdict::RunnerError { detail })
-                }
-                crate::gateway::AgentOutcome::Unavailable { error } => {
-                    (error.clone(), TaskVerdict::RunnerError { detail: error })
-                }
-            };
+            let (review, verdict) = review_outcome(outcome);
 
             super::emit_event_result(
                 format!("{project}: task reviewed"),
@@ -424,6 +414,24 @@ impl TaskBlock for ReviewTask {
                 },
             )
         })
+    }
+}
+
+fn review_outcome(outcome: crate::gateway::AgentOutcome) -> (String, TaskVerdict) {
+    match outcome {
+        crate::gateway::AgentOutcome::Success { stdout } => {
+            let verdict = parse_verdict(&stdout).unwrap_or_else(|error| TaskVerdict::Defect {
+                diagnosis: error.to_string(),
+            });
+            (stdout, verdict)
+        }
+        crate::gateway::AgentOutcome::AgentFailed { stderr, failure } => {
+            let detail = failure.map_or(stderr.clone(), |failure| failure.execution_summary());
+            (stderr, TaskVerdict::RunnerError { detail })
+        }
+        crate::gateway::AgentOutcome::Unavailable { error } => {
+            (error.clone(), TaskVerdict::RunnerError { detail: error })
+        }
     }
 }
 
@@ -482,6 +490,30 @@ fn needs_review_verdict(reason: String) -> TaskVerdict {
 #[cfg(test)]
 mod tests {
     use super::{build_review_prompt, parse_verdict};
+
+    #[tokio::test]
+    async fn reviewer_receives_its_provider_and_shared_brief_identity() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::{event::EventType, gateway::AgentProvider, task_block::TaskBlock};
+        let agent = FakeAgentGateway::success_with("{\"verdict\":\"complete\"}");
+        let block = super::ReviewTask::new(
+            agent.clone(),
+            test_helpers::registry_with_project("p", "/repo"),
+        );
+        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+            "project":"p", "workflow":"task", "all_passed":true, "required_passed":true,
+            "results":[], "retry_count":0, "task_worktree":"/repo/worktree", "prompt":"fix the diagnosis",
+            "agent_provider":"codex", "providers":{"execution":"codex", "review":"claude"},
+            "initiative_brief":{"path":"/brief/BRIEF.md","hash":"abc123"},
+            "initiative_findings":[{"id":"fnd_1","initiative":"i", "from":{"kind":"campaign","id":"other"}, "kind":"regression","text":"shared failure diagnosis"}]
+        });
+        block.execute(&trigger).await.unwrap();
+        let requests = agent.invocations();
+        assert_eq!(requests[0].provider, Some(AgentProvider::Claude));
+        assert!(requests[0].prompt.contains("/brief/BRIEF.md"));
+        assert!(requests[0].prompt.contains("abc123"));
+        assert!(requests[0].prompt.contains("shared failure diagnosis"));
+    }
 
     #[tokio::test]
     async fn a_task_foundry_stopped_for_review_is_blocked_without_a_review_session() {

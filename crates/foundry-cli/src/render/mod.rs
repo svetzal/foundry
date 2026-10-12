@@ -16,3 +16,5 @@ pub mod registry;
 pub mod sentinel;
 pub mod trace_tree;
 pub mod workflow;
+
+pub mod initiative;

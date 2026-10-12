@@ -81,6 +81,8 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 
 fn escalated_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Need owner policy".to_string(),
@@ -110,6 +112,8 @@ fn escalated_campaign(name: &str) -> Campaign {
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }

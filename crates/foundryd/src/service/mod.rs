@@ -37,6 +37,7 @@ use foundry_engine::engine::Engine;
 
 mod campaign_ops;
 pub(crate) mod eventing_ops;
+mod initiative_ops;
 mod pacing_ops;
 mod recovery;
 mod registry_ops;
@@ -102,6 +103,29 @@ impl FoundryService {
         let path = self.campaigns_path.clone();
         let ctx = self.ctx.clone();
         campaign_ops::blocking(move || operation(&path, &ctx)).await
+    }
+
+    fn announce_initiative(
+        &self,
+        kind: foundry_sdk::event::EventType,
+        initiative: &crate::proto::Initiative,
+        reason: Option<&str>,
+        decision: Option<&str>,
+        applicable_members: &[String],
+    ) {
+        let members: Vec<&str> =
+            initiative.members.iter().map(|member| member.name.as_str()).collect();
+        let budget = initiative.budget.as_ref().map(|budget| serde_json::json!({
+            "max_cycles":budget.max_cycles,"max_active_members":budget.max_active_members,"max_open_questions":budget.max_open_questions}));
+        let event = Event::new(
+            kind,
+            "system".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"projects":initiative.projects,
+                "intent_refs":initiative.intent_refs,"members":members,"status":initiative.status,"authorized_by":initiative.authorized_by,
+                "reason":reason,"decision":decision,"applicable_members":applicable_members,"budget":budget}),
+        );
+        spawn_workflow(event, &self.ctx);
     }
 
     /// A service over `stores`, reading the pacing files the environment
@@ -295,6 +319,215 @@ impl Foundry for FoundryService {
         registry_ops::edit(&self.ctx.registry, &self.registry_path, request)
     }
 
+    async fn add_initiative(
+        &self,
+        request: Request<crate::proto::AddInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let projects = self
+            .ctx
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?
+            .projects
+            .iter()
+            .map(|project| project.name.clone())
+            .collect::<Vec<_>>();
+        let definition = request.into_inner().definition_json;
+        let initiative = self
+            .campaign_operation(move |path, _| initiative_ops::add(path, &projects, &definition))
+            .await?;
+        self.announce_initiative(
+            foundry_sdk::event::EventType::InitiativeAdded,
+            &initiative,
+            None,
+            None,
+            &[],
+        );
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn list_initiatives(
+        &self,
+        _request: Request<crate::proto::ListInitiativesRequest>,
+    ) -> Result<Response<crate::proto::ListInitiativesResponse>, Status> {
+        let path = self.campaigns_path.clone();
+        let initiatives = campaign_ops::blocking(move || initiative_ops::list(&path)).await?;
+        Ok(Response::new(crate::proto::ListInitiativesResponse { initiatives }))
+    }
+
+    async fn get_initiative(
+        &self,
+        request: Request<crate::proto::GetInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let name = request.into_inner().name;
+        let path = self.campaigns_path.clone();
+        let initiative = campaign_ops::blocking(move || initiative_ops::get(&path, &name)).await?;
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn decide_initiative(
+        &self,
+        request: Request<crate::proto::DecideInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let decision = request.decision.clone();
+        let initiative = self
+            .campaign_operation(move |path, _| {
+                initiative_ops::decide(path, &request.name, &request.decision, &request.members)
+            })
+            .await?;
+        let members = initiative
+            .owner_decisions
+            .last()
+            .map(|decision| decision.members.as_slice())
+            .unwrap_or_default();
+        self.announce_initiative(
+            foundry_sdk::event::EventType::InitiativeDecided,
+            &initiative,
+            None,
+            Some(&decision),
+            members,
+        );
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn complete_initiative(
+        &self,
+        request: Request<crate::proto::EndInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let reason = request.reason.clone();
+        let work_items_path = self.work_items_path.clone();
+        let (initiative, changed, waiting) = self
+            .campaign_operation(move |path, _| {
+                let (initiative, changed) = initiative_ops::end(path, &request.name, &request.reason, true)?;
+                let members = initiative.members.iter().filter(|member| member.kind == "campaign")
+                    .map(|member| member.name.clone()).collect::<Vec<_>>();
+                let waiting = match work_item_ops::cancel_waiting_initiative(&work_items_path, &request.name, &members, &request.reason) {
+                    Ok(waiting) => waiting,
+                    Err(error) => {
+                        tracing::warn!(%error, initiative = %request.name, "could not cancel the initiative's waiting work");
+                        Vec::new()
+                    }
+                };
+                Ok((initiative, changed, waiting))
+            })
+            .await?;
+        work_item_ops::announce_cancelled(&self.ctx, &waiting).await;
+        if changed {
+            self.announce_initiative(
+                foundry_sdk::event::EventType::InitiativeCompleted,
+                &initiative,
+                Some(&reason),
+                None,
+                &[],
+            );
+        }
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn cancel_initiative(
+        &self,
+        request: Request<crate::proto::EndInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let reason = request.reason.clone();
+        let work_items_path = self.work_items_path.clone();
+        let (initiative, changed, waiting) = self
+            .campaign_operation(move |path, _| {
+                let (initiative, changed) = initiative_ops::end(path, &request.name, &request.reason, false)?;
+                let members = initiative.members.iter().filter(|member| member.kind == "campaign")
+                    .map(|member| member.name.clone()).collect::<Vec<_>>();
+                let waiting = match work_item_ops::cancel_waiting_initiative(&work_items_path, &request.name, &members, &request.reason) {
+                    Ok(waiting) => waiting,
+                    Err(error) => {
+                        tracing::warn!(%error, initiative = %request.name, "could not cancel the initiative's waiting work");
+                        Vec::new()
+                    }
+                };
+                Ok((initiative, changed, waiting))
+            })
+            .await?;
+        work_item_ops::announce_cancelled(&self.ctx, &waiting).await;
+        if changed {
+            self.announce_initiative(
+                foundry_sdk::event::EventType::InitiativeCancelled,
+                &initiative,
+                Some(&reason),
+                None,
+                &[],
+            );
+        }
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn set_initiative_brief(
+        &self,
+        request: Request<crate::proto::SetInitiativeBriefRequest>,
+    ) -> Result<Response<crate::proto::InitiativeBriefResponse>, Status> {
+        let request = request.into_inner();
+        let brief = self
+            .campaign_operation(move |path, _| {
+                initiative_ops::set_brief(path, &request.name, &request.content)
+            })
+            .await?;
+        Ok(Response::new(brief))
+    }
+
+    async fn get_initiative_brief(
+        &self,
+        request: Request<crate::proto::GetInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeBriefResponse>, Status> {
+        let path = self.campaigns_path.clone();
+        let name = request.into_inner().name;
+        let brief = campaign_ops::blocking(move || initiative_ops::get_brief(&path, &name)).await?;
+        Ok(Response::new(brief))
+    }
+
+    async fn add_finding(
+        &self,
+        request: Request<crate::proto::AddFindingRequest>,
+    ) -> Result<Response<crate::proto::FindingResponse>, Status> {
+        let json = request.into_inner().definition_json;
+        let finding = self
+            .campaign_operation(move |path, _| initiative_ops::add_finding(path, &json))
+            .await?;
+        let event = foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::FindingRecorded,
+            "system".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"id":finding.id,"finding_id":finding.id,"initiative":finding.initiative,"from":finding.from.as_ref().map(|from| serde_json::json!({"kind":from.kind,"id":from.id})),
+                "to":finding.to,"kind":finding.kind,"text":finding.text,"refs":finding.refs,"consumed_by":finding.consumed_by.iter().map(|c| serde_json::json!({"member":c.member,"work_item":c.work_item})).collect::<Vec<_>>(),"recorded_at":finding.recorded_at}),
+        );
+        spawn_workflow(event, &self.ctx);
+        Ok(Response::new(crate::proto::FindingResponse {
+            finding: Some(finding),
+        }))
+    }
+
+    async fn list_findings(
+        &self,
+        request: Request<crate::proto::ListFindingsRequest>,
+    ) -> Result<Response<crate::proto::ListFindingsResponse>, Status> {
+        let request = request.into_inner();
+        let path = self.campaigns_path.clone();
+        let findings = campaign_ops::blocking(move || {
+            initiative_ops::list_findings(&path, &request.initiative, &request.member)
+        })
+        .await?;
+        Ok(Response::new(crate::proto::ListFindingsResponse { findings }))
+    }
+
     async fn add_campaign(
         &self,
         request: Request<AddCampaignRequest>,
@@ -410,6 +643,7 @@ impl Foundry for FoundryService {
             work_item_ops::ScheduleHints::from_wire(request.depends_on, &request.not_before)?;
         let item = work_item_ops::resume_item(
             &self.work_items_path,
+            &self.campaigns_path,
             &self.ctx,
             &self.pacing,
             request.id,
@@ -1625,6 +1859,8 @@ mod tests {
         // Gate and a Review done-evidence entry.
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         let campaign = Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
             name: "service-campaign".to_string(),
             project: "service-project".to_string(),
             mission: "Prove the service detail path works end-to-end.".to_string(),
@@ -1658,6 +1894,8 @@ mod tests {
             writable_repositories: vec![],
         };
         let store = CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns: vec![campaign],
         };
@@ -1708,8 +1946,12 @@ mod tests {
 
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         let store = CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns: vec![Campaign {
+                initiative: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 name: "present".to_string(),
                 project: "p".to_string(),
                 mission: "m".to_string(),

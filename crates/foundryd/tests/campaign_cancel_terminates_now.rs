@@ -193,8 +193,12 @@ fn make_harness(block: Box<dyn TaskBlock>, store_path: &std::path::Path) -> Harn
 
 fn seed_active_campaign(path: &std::path::Path) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
             name: CAMPAIGN.to_string(),
             project: "test-project".to_string(),
             mission: "Run for a long time".to_string(),

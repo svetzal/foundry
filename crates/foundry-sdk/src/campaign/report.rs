@@ -46,6 +46,9 @@ pub struct CampaignReport {
     pub inferred_stage_sessions: u64,
     pub incomplete_log_lines: u64,
     pub stages: BTreeMap<String, StageReport>,
+    /// The effective provider for each stage, including explicit unknown legacy records.
+    #[serde(default)]
+    pub providers_by_stage: BTreeMap<String, BTreeMap<String, StageReport>>,
     #[serde(default)]
     pub formation_sessions: Vec<FormationSessionReport>,
     #[serde(default)]
@@ -191,19 +194,24 @@ pub fn aggregate(campaign: &Campaign, events: &[Value]) -> CampaignReport {
                 native_observation_error: None,
             });
         }
-        let stage = report.stages.entry(role.into()).or_default();
-        stage.sessions += 1;
-        let Some(end) = ends.get(id) else {
-            stage.running_sessions += 1;
-            continue;
-        };
-        let finish = &end["payload"];
-        if let (Some(start), Some(end)) =
-            (timestamp(&p["started_at"]), timestamp(&finish["ended_at"]))
-        {
-            stage.elapsed_ms += u64::try_from((end - start).num_milliseconds()).unwrap_or(0);
-        }
-        add_terminal_accounting(stage, finish);
+        let finish = ends.get(id).map(|event| &event["payload"]);
+        account_session(report.stages.entry(role.into()).or_default(), p, finish);
+        let provider = p["provider"].as_str().unwrap_or_else(|| match p["agent_type"].as_str() {
+            Some("claude-code") => "claude",
+            Some("codex") => "codex",
+            Some("opencode") => "opencode",
+            _ => "unknown",
+        });
+        account_session(
+            report
+                .providers_by_stage
+                .entry(role.into())
+                .or_default()
+                .entry(provider.into())
+                .or_default(),
+            p,
+            finish,
+        );
     }
     report
         .formation_sessions
@@ -237,6 +245,7 @@ fn initial_report(campaign: &Campaign, events: &[Value]) -> CampaignReport {
         open_escalation: open_escalation(campaign, events),
         owner_options: campaign.owner_options(),
         stages: BTreeMap::new(),
+        providers_by_stage: BTreeMap::new(),
         formation_sessions: Vec::new(),
         formation_decisions: events
             .iter()
@@ -275,6 +284,20 @@ fn open_escalation(campaign: &Campaign, events: &[Value]) -> Option<super::Campa
         .filter_map(|e| serde_json::from_value::<crate::event::Event>(e.clone()).ok());
     let name = BTreeSet::from([campaign.name.clone()]);
     super::escalation::newest_escalations(logged, &name).remove(&campaign.name)
+}
+
+fn account_session(stage: &mut StageReport, start: &Value, finish: Option<&Value>) {
+    stage.sessions += 1;
+    let Some(finish) = finish else {
+        stage.running_sessions += 1;
+        return;
+    };
+    if let (Some(start), Some(end)) =
+        (timestamp(&start["started_at"]), timestamp(&finish["ended_at"]))
+    {
+        stage.elapsed_ms += u64::try_from((end - start).num_milliseconds()).unwrap_or(0);
+    }
+    add_terminal_accounting(stage, finish);
 }
 
 fn add_terminal_accounting(stage: &mut StageReport, finish: &Value) {
@@ -316,6 +339,24 @@ fn text(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn same_stage_accounts_actual_providers_separately() {
+        let events = vec![
+            serde_json::json!({"project":"repo","trace_id":"trace","event_type":"campaign_cycle_dispatched","payload":{"campaign":"test"}}),
+            serde_json::json!({"project":"repo","trace_id":"trace","event_type":"agent_session_started","payload":{"session_id":"a","stage":"execution","provider":"claude","agent_type":"codex"}}),
+            serde_json::json!({"project":"repo","trace_id":"trace","event_type":"agent_session_started","payload":{"session_id":"b","stage":"execution","provider":"codex"}}),
+            serde_json::json!({"event_type":"agent_session_ended","payload":{"session_id":"a","usage":{"models":[{"input_tokens":11,"output_tokens":7}]}}}),
+            serde_json::json!({"event_type":"agent_session_ended","payload":{"session_id":"b","usage":{"models":[{"input_tokens":22,"output_tokens":9}]}}}),
+        ];
+        let mut campaign = campaign();
+        campaign.name = "test".into();
+        campaign.project = "repo".into();
+        let report = aggregate(&campaign, &events);
+        assert_eq!(report.stages["execution"].input_tokens, 33);
+        assert_eq!(report.providers_by_stage["execution"]["claude"].input_tokens, 11);
+        assert_eq!(report.providers_by_stage["execution"]["codex"].input_tokens, 22);
+    }
+
     use super::*;
     use serde_json::json;
     fn campaign() -> Campaign {

@@ -387,6 +387,19 @@ pub enum EventType {
     /// disposition into the stream and the ops digest.
     CampaignCancelled,
 
+    /// An owner added an initiative and its member references.
+    InitiativeAdded,
+    /// An owner decision was recorded and fanned out to member campaigns.
+    InitiativeDecided,
+    /// An owner affirmed initiative completion.
+    InitiativeCompleted,
+    /// An owner cancelled an initiative.
+    InitiativeCancelled,
+    /// A typed finding was recorded for initiative members.
+    FindingRecorded,
+    /// A member cycle landed after its formation saw a finding.
+    FindingConsumed,
+
     // Work-item ledger — the durable record of one dispatched unit of work.
     //
     // `WorkItemStarted` has no `*Completed` partner: an item does not
@@ -637,6 +650,12 @@ impl EventType {
             | EventType::CampaignPaused
             | EventType::CampaignCompleted
             | EventType::CampaignCancelled
+            | EventType::InitiativeAdded
+            | EventType::InitiativeDecided
+            | EventType::InitiativeCompleted
+            | EventType::InitiativeCancelled
+            | EventType::FindingRecorded
+            | EventType::FindingConsumed
             | EventType::WorkItemSubmitted
             | EventType::WorkItemStarted
             | EventType::WorkItemSettled

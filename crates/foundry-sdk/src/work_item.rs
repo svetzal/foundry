@@ -356,6 +356,36 @@ pub struct WorkItemSpec {
 }
 
 impl WorkItem {
+    /// The member campaign recorded on its admitted root, with legacy source fallback.
+    pub fn campaign_name(&self) -> Option<&str> {
+        self.started_root
+            .as_ref()
+            .or(self.pending_root.as_ref())
+            .and_then(|root| root.payload.get("campaign"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                self.source
+                    .as_ref()
+                    .filter(|source| source.kind == crate::work_source::WorkSourceKind::Campaign)
+                    .map(|source| source.reference.as_str())
+            })
+    }
+
+    /// The cycle of the member campaign, independent of the initiative source.
+    pub fn campaign_cycle(&self) -> Option<u64> {
+        self.started_root
+            .as_ref()
+            .or(self.pending_root.as_ref())
+            .and_then(|root| root.payload.get("campaign_cycle"))
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                self.source
+                    .as_ref()
+                    .filter(|source| source.kind == crate::work_source::WorkSourceKind::Campaign)
+                    .and_then(|source| source.cycle)
+            })
+    }
+
     /// Admit `spec` to the ledger as `submitted`.
     #[must_use]
     pub fn submitted(spec: WorkItemSpec, at: DateTime<Utc>) -> Self {

@@ -64,6 +64,8 @@ pub enum TransitionError {
     /// `resume` was requested with `add_cycles == 0` on a campaign that has
     /// already used its full budget.
     BudgetExhausted { name: String },
+    /// The initiative owns this campaign's cycle budget.
+    MemberBudgetOwned { name: String, initiative: String },
     /// Applying `add_cycles` to `budget.max_cycles` would overflow.
     BudgetOverflow { name: String, add_cycles: u64 },
 }
@@ -91,6 +93,10 @@ impl std::fmt::Display for TransitionError {
             Self::BudgetExhausted { name } => write!(
                 f,
                 "campaign '{name}' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
+            ),
+            Self::MemberBudgetOwned { name, initiative } => write!(
+                f,
+                "campaign '{name}' belongs to initiative '{initiative}'; its cycle budget is owned by the initiative"
             ),
             Self::BudgetOverflow { name, add_cycles } => {
                 write!(
@@ -133,6 +139,9 @@ impl Campaign {
     /// caller must pass a positive `add_cycles` to explicitly authorize more
     /// work. `add_cycles` is applied to `budget.max_cycles` via checked
     /// addition; overflow is rejected.
+    ///
+    /// Members of an initiative reject positive `add_cycles`: the initiative
+    /// owns their cycle budget.
     ///
     /// `pending_run_result` is intentionally left untouched — it remains
     /// pending for the next manual advance to consume.
@@ -177,6 +186,9 @@ impl Campaign {
     /// `add_cycles` is applied to `budget.max_cycles` via checked addition;
     /// overflow is rejected. Every check runs before anything is written, so
     /// a refusal records nothing.
+    ///
+    /// Initiative members reject positive `add_cycles` because their budget
+    /// belongs to the initiative.
     ///
     /// `pending_run_result` is intentionally left untouched.
     ///
@@ -223,6 +235,14 @@ impl Campaign {
     /// stopped campaign to active: a spent budget needs a positive
     /// `add_cycles`, and the addition is checked.
     fn extended_budget(&self, add_cycles: u64) -> Result<u64, TransitionError> {
+        if add_cycles > 0
+            && let Some(initiative) = &self.initiative
+        {
+            return Err(TransitionError::MemberBudgetOwned {
+                name: self.name.clone(),
+                initiative: initiative.clone(),
+            });
+        }
         if add_cycles == 0 && self.cycles_completed >= self.budget.max_cycles {
             return Err(TransitionError::BudgetExhausted {
                 name: self.name.clone(),
@@ -338,12 +358,23 @@ impl Campaign {
     /// [`owner_options`].
     #[must_use]
     pub fn owner_options(&self) -> Vec<OwnerOption> {
-        owner_options(
+        let mut options = owner_options(
             &self.name,
             self.status,
             self.authorized_by.is_some(),
             self.cycles_completed >= self.budget.max_cycles,
-        )
+        );
+        if let Some(initiative) = &self.initiative {
+            options.retain(|option| !option.command.contains("--add-cycles"));
+            if !self.status.is_terminal() {
+                options.push(OwnerOption {
+                    control: "show".into(),
+                    command: format!("foundry initiative show {initiative}"),
+                    effect: "review the initiative's shared budget and owner questions".into(),
+                });
+            }
+        }
+        options
     }
 
     /// Whether `advance` may run against this campaign's current status.
@@ -476,6 +507,8 @@ mod tests {
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),
+            initiative: None,
+            providers: crate::gateway::StageProviders::default(),
             intent_refs: vec![],
             context_paths: vec![],
             done_evidence: vec![DoneEvidence::Review {
@@ -541,6 +574,44 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn member_owner_options_offer_the_initiative_instead_of_member_budget_extensions() {
+        let mut campaign = campaign(CampaignStatus::Escalated, true);
+        campaign.initiative = Some("shared".into());
+        campaign.cycles_completed = campaign.budget.max_cycles;
+        let options = campaign.owner_options();
+        assert!(options.iter().all(|option| !option.command.contains("--add-cycles")));
+        assert!(options.iter().any(|option| option.command == "foundry initiative show shared"));
+    }
+
+    #[test]
+    fn members_cannot_extend_their_budget_through_resume_or_decide() {
+        for status in [CampaignStatus::Paused, CampaignStatus::Escalated] {
+            let mut campaign = campaign(status, true);
+            campaign.initiative = Some("shared".into());
+            let before = serde_json::to_string(&campaign).unwrap();
+            assert_eq!(
+                campaign.resume(1),
+                Err(TransitionError::MemberBudgetOwned {
+                    name: "c".into(),
+                    initiative: "shared".into()
+                })
+            );
+            assert_eq!(serde_json::to_string(&campaign).unwrap(), before);
+            if status == CampaignStatus::Escalated {
+                assert_eq!(
+                    campaign.record_owner_decision("Continue".into(), at(), 1),
+                    Err(TransitionError::MemberBudgetOwned {
+                        name: "c".into(),
+                        initiative: "shared".into()
+                    })
+                );
+                assert_eq!(serde_json::to_string(&campaign).unwrap(), before);
+            }
+            assert!(campaign.resume(0).is_ok());
         }
     }
 

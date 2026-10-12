@@ -28,6 +28,8 @@ pub enum WorkSourceKind {
     /// A campaign advance dispatched a cycle. The reference is the campaign
     /// name and [`WorkSource::cycle`] is the cycle number.
     Campaign,
+    /// An initiative dispatched a member cycle.
+    Initiative,
     /// A sentinel-fired chain dispatched the item: the nightly maintenance
     /// per-project runs, the majors lane, supply-chain remediation. The
     /// reference is the sentinel name.
@@ -42,8 +44,9 @@ pub enum WorkSourceKind {
 
 impl WorkSourceKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Campaign,
+        Self::Initiative,
         Self::Sentinel,
         Self::Operator,
         Self::WorkItem,
@@ -57,6 +60,7 @@ impl WorkSourceKind {
     pub fn tag(self) -> &'static str {
         match self {
             Self::Campaign => "campaign",
+            Self::Initiative => "initiative",
             Self::Sentinel => "sentinel",
             Self::Operator => "operator",
             Self::WorkItem => "work_item",
@@ -79,7 +83,7 @@ pub struct WorkSource {
     /// the sentinel name, the client hostname, or the parent item id.
     #[serde(rename = "ref")]
     pub reference: String,
-    /// The campaign cycle number. Present only for [`WorkSourceKind::Campaign`].
+    /// The member cycle number. Present for campaign and initiative dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cycle: Option<u64>,
 }
@@ -90,6 +94,16 @@ impl WorkSource {
     pub fn campaign(name: impl Into<String>, cycle: u64) -> Self {
         Self {
             kind: WorkSourceKind::Campaign,
+            reference: name.into(),
+            cycle: Some(cycle),
+        }
+    }
+
+    /// Cycle `cycle` dispatched for the initiative `name`.
+    #[must_use]
+    pub fn initiative(name: impl Into<String>, cycle: u64) -> Self {
+        Self {
+            kind: WorkSourceKind::Initiative,
             reference: name.into(),
             cycle: Some(cycle),
         }

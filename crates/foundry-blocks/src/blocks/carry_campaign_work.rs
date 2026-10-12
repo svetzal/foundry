@@ -45,7 +45,7 @@ use super::work_ledger::{ledger_lock, load_ledger, save_ledger};
 ///   cycle finish; that cycle's own `work_item_settled` finds the campaign
 ///   already terminal in the campaign store and settles it then.
 ///
-/// Items without a typed campaign source, other campaigns' items and settled
+/// Items without a recorded campaign identity, other campaigns' items and settled
 /// items are never touched. The decision and the write happen in one pass
 /// under the ledger write gate, on the ledger as loaded under that gate, so an
 /// owner action that landed first always wins. No `operator_action` is
@@ -80,11 +80,21 @@ fn sweep_for(trigger: &Event) -> Option<Sweep> {
     match trigger.event_type {
         EventType::WorkItemSubmitted | EventType::WorkItemStarted | EventType::WorkItemSettled => {
             let payload = trigger.parse_payload::<WorkItemEventPayload>().ok()?;
-            let source = payload.source?;
-            let cycle = payload.kind == WorkItemKind::CampaignCycle && source.cycle.is_some();
+            let campaign = payload.campaign.or_else(|| {
+                payload
+                    .source
+                    .as_ref()
+                    .filter(|source| source.kind == WorkSourceKind::Campaign)
+                    .map(|source| source.reference.clone())
+            })?;
+            let cycle = payload.kind == WorkItemKind::CampaignCycle
+                && payload
+                    .campaign_cycle
+                    .or_else(|| payload.source.as_ref().and_then(|source| source.cycle))
+                    .is_some();
             let formation = payload.kind == WorkItemKind::Workflow;
-            (source.kind == WorkSourceKind::Campaign && (cycle || formation)).then_some(Sweep {
-                campaign: source.reference,
+            (cycle || formation).then_some(Sweep {
+                campaign,
                 project: payload.project,
                 terminal: None,
             })
@@ -166,10 +176,9 @@ fn role_of(item: &WorkItem, campaign: &str, project: &str) -> Option<Role> {
     if let Some(cycle) = cycle_of(item, campaign, project) {
         return Some(Role::Cycle(cycle));
     }
-    let source = item.source.as_ref()?;
     (item.kind == WorkItemKind::Workflow
         && item.project == project
-        && source.matches(WorkSourceKind::Campaign, campaign))
+        && item.campaign_name() == Some(campaign))
     .then_some(Role::Formation)
 }
 
@@ -177,11 +186,10 @@ fn role_of(item: &WorkItem, campaign: &str, project: &str) -> Option<Role> {
 ///
 /// Only `campaign_cycle` items count, so only a cycle can carry the others.
 fn cycle_of(item: &WorkItem, campaign: &str, project: &str) -> Option<u64> {
-    let source = item.source.as_ref()?;
     (item.kind == WorkItemKind::CampaignCycle
         && item.project == project
-        && source.matches(WorkSourceKind::Campaign, campaign))
-    .then_some(source.cycle)
+        && item.campaign_name() == Some(campaign))
+    .then_some(item.campaign_cycle())
     .flatten()
 }
 

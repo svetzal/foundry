@@ -37,6 +37,10 @@ pub struct CampaignStore {
     pub version: u32,
     #[serde(default)]
     pub campaigns: Vec<Campaign>,
+    #[serde(default)]
+    pub initiatives: Vec<crate::initiative::Initiative>,
+    #[serde(default)]
+    pub findings: Vec<crate::initiative::Finding>,
 }
 
 impl Default for CampaignStore {
@@ -44,6 +48,8 @@ impl Default for CampaignStore {
         Self {
             version: default_version(),
             campaigns: vec![],
+            initiatives: vec![],
+            findings: vec![],
         }
     }
 }
@@ -158,6 +164,47 @@ impl CampaignStoreGuard {
     pub fn save(&self) -> Result<(), StoreError> {
         self.store.save(&self.path)
     }
+
+    /// Persist a brief and its record together under the campaign store lock.
+    /// If the record cannot be saved, restore the previous brief and in-memory state.
+    pub fn set_initiative_brief(
+        &mut self,
+        name: &str,
+        home: &Path,
+        content: &str,
+    ) -> Result<crate::initiative::InitiativeBrief, crate::initiative::InitiativeError> {
+        use crate::initiative::InitiativeError;
+        if self.store.find_initiative(name).is_none() {
+            return Err(InitiativeError::NotFound(format!("initiative '{name}' not found")));
+        }
+        let before = self.store.clone();
+        let brief_path = home.join("initiatives").join(name).join("BRIEF.md");
+        let previous = match std::fs::read(&brief_path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(InitiativeError::Persistence(format!("read previous brief: {error}")));
+            }
+        };
+        let brief = self.store.set_brief(name, home, content)?;
+        if let Err(error) = self.save() {
+            self.store = before;
+            let rollback = match previous {
+                Some(bytes) => {
+                    let tmp = brief_path.with_extension("rollback.tmp");
+                    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(tmp, &brief_path))
+                }
+                None => std::fs::remove_file(&brief_path),
+            };
+            return Err(InitiativeError::Persistence(match rollback {
+                Ok(()) => format!("save brief record: {error}"),
+                Err(rollback_error) => {
+                    format!("save brief record: {error}; restore previous brief: {rollback_error}")
+                }
+            }));
+        }
+        Ok(brief)
+    }
 }
 
 impl Drop for CampaignStoreGuard {
@@ -180,6 +227,10 @@ pub struct Campaign {
     pub name: String,
     pub project: String,
     pub mission: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<String>,
+    #[serde(default)]
+    pub providers: crate::gateway::StageProviders,
     #[serde(default)]
     pub intent_refs: Vec<String>,
     #[serde(default)]
@@ -622,6 +673,8 @@ mod tests {
                 name: "one".to_string(),
                 project: "p".to_string(),
                 mission: "ship one thing".to_string(),
+                initiative: None,
+                providers: crate::gateway::StageProviders::default(),
                 intent_refs: vec![],
                 context_paths: vec![],
                 done_evidence: vec![DoneEvidence::Review {
@@ -700,6 +753,8 @@ mod tests {
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),
+            initiative: None,
+            providers: crate::gateway::StageProviders::default(),
             intent_refs: vec![],
             context_paths: vec![],
             done_evidence: vec![DoneEvidence::Gate {
@@ -966,6 +1021,8 @@ mod tests {
             name: "one".to_string(),
             project: "p".to_string(),
             mission: "ship one thing".to_string(),
+            initiative: None,
+            providers: crate::gateway::StageProviders::default(),
             intent_refs: vec![],
             context_paths: vec![],
             done_evidence: vec![DoneEvidence::Review {
