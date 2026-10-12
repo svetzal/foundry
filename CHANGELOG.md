@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-12
+
 ### Added
 
 - A story-led book section based on Foundry's Tracker journeys. Fictional
@@ -28,7 +30,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Correct the slice boundary in initiative documentation. Integration gates,
   general campaign staging, outcome evaluation and Tracker closure are slice 2.
-  Slice 1 is validated on the Mac development daemon and awaits promotion.
+  Slice 1 was validated on the Mac development daemon before release.
 
 ## [0.47.0] - 2026-10-12
 
