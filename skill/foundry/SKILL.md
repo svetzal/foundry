@@ -5,6 +5,7 @@ description: >
   skill whenever the user mentions foundry, foundryd, foundry iterate, foundry
   scout, foundry validate, foundry run, foundry pipeline, foundry release,
   foundry gates, foundry campaign, campaigns, foundry queue, foundry pacing,
+  initiatives, foundry initiative, foundry finding, findings,
   the work queue, pacing, foundry registry, foundry
   sentinel, sentinels, scheduled triggers, quality gates, maintenance runs,
   drift assessment, pipeline health, CI remediation, release automation, or
@@ -253,8 +254,8 @@ an `Escalation:` block with the reason (and the task agent's question and
 choices when a task asked one); `Owner options:` with the command lines the
 owner can run now; and then its cycles as the
 work-item ledger records them (`Cycles in the ledger:`), read through the
-`ListWorkItems` source filter `campaign:<name>` — the same list
-`foundry queue --source campaign:<name>` prints — never inferred from traces.
+`ListWorkItems` campaign filter `campaign:<name>`. This is the same list
+`foundry queue --source campaign:<name>` prints. Never infer it from traces.
 Cycles that predate the typed source print `(none recorded)`. An earlier open
 cycle settles `cancelled` (`carried forward by campaign <name> cycle <n> (<id>)`)
 when a later cycle starts, and the remaining open cycles settle
@@ -515,7 +516,8 @@ The open group ends with every **escalated campaign**, one row each
 campaign state, not a ledger item, so it is never written to the ledger; the row
 comes from `ListCampaigns` and names any open cycle item of the campaign as
 `(open cycle <id>)`. `--source campaign:<name>` keeps that campaign's row;
-other source kinds show no campaign rows. The list forms' `--json` is an object,
+Initiative filters show their initiative escalation instead. Other source
+kinds show no campaign rows. The list forms' `--json` is an object,
 `{"items": [...], "escalated_campaigns": [...]}`; through 0.44.4 it was a bare
 array of items.
 
@@ -901,3 +903,72 @@ concurrent owner changes win, and preservation evidence is retained. Landed
 items receive the guarded branch cleanup described above; no agent is invoked. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use
 `FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).
+
+## Initiatives
+
+Use an initiative when existing campaigns serve one shared outcome. Add the
+campaigns first, then add the initiative definition. Each member's project
+must be registered and included in the initiative's projects. Online commands
+use the daemon; explicit `--offline` recovery uses the campaign store API.
+
+```bash
+foundry initiative add initiative.json
+foundry initiative list
+foundry initiative show shared-contract --json
+foundry initiative decide shared-contract --decision "Use port 5001"
+foundry initiative decide shared-contract \
+  --decision "Keep the adapter" --member adopt-contract
+foundry initiative brief set shared-contract BRIEF.md
+foundry initiative brief show shared-contract
+foundry finding add finding.json
+foundry finding list shared-contract --member adopt-contract --json
+foundry queue --source initiative:shared-contract
+foundry initiative complete shared-contract --reason "The outcome was reviewed"
+foundry initiative cancel shared-contract --reason "The outcome was withdrawn"
+```
+
+The definition contains `name`, `outcome`, `intent_refs`, `projects`, `members`,
+`done_evidence`, `budget`, `authorized_by`, `providers` and `status`. Members
+reference campaign names and optional `after` prerequisites. The shared budget
+has `max_cycles`, `max_active_members` (default two) and `max_open_questions`.
+The initiative owns member budgets. Slice 0 has no steering agent; use
+`foundry campaign advance <member>` to start eligible work.
+
+Decisions fan out to applicable members even while they are active. A changed
+formation snapshot is discarded and formed again. `queue open` shows an
+escalated initiative once, with member escalation rows suppressed. Open work
+items retain their own rows.
+
+Foundry owns the brief at `~/.foundry/initiatives/<name>/BRIEF.md`. Definitions
+must omit `brief`. Import external content with `brief set` after adding the
+initiative. Formation and execution receive its path and SHA-256 hash.
+Findings have an ID, initiative, source, applicable members, kind, text,
+references and consumption records.
+Kinds are `contract_changed`, `regression`, `blocker`, `evidence`, `owner_note`.
+An empty `to` applies to all members. Reviewer gaps from landed cycles and
+`defect` diagnoses create findings automatically. Formation and continuation
+receive bounded findings newest first. Only a landing consumes what the
+member's formation saw.
+
+Campaigns and initiatives accept `providers: { formation, execution, review }`.
+An explicit member stage overrides its initiative stage. Omitted stages use
+`agent_provider`. Claude and Codex enforce the execution worktree boundary.
+Claude uses the tested no-bypass write policy; worktrees remain under
+`~/.foundry/worktrees`. Campaign reports separate stage tokens by provider.
+
+From the repository that supplies Tracker intent, derive staged candidates:
+
+```bash
+foundry initiative derive --from et:goal:<id> --projects producer,consumer
+foundry initiative derive --from et:journey:<id> --projects producer,consumer
+```
+
+Optional `--authorized-by <owner>` defaults to the invoking user. Derivation
+records the initiative and staged candidates in Foundry without dispatching
+member campaigns.
+
+A committed projection is preferred. Otherwise the et CLI reads intent from
+that repository root. Foundry never reads its credentials or changes Tracker
+state. Candidates come from `create`, `update`, `delete` interactions in
+priority order; journey steps provide `after` order. Steering, project
+assignment, the codebase audit, integration gates and `et close` await slice 1.

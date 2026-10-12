@@ -513,3 +513,32 @@ concurrent owner changes win, and preservation evidence is retained. No cleanup
 or agent invocation occurs. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use
 `FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).
+
+## Initiative members
+
+Slice 0 supplies the shared outcome, brief, decisions and findings to existing
+campaign formation. It has no steering agent. An eligible member advances with
+`foundry campaign advance <member>`. The campaign store guard enforces the
+initiative's total cycle budget, active member limit and owner questions.
+
+Formation snapshots the initiative context under that guard, releases it
+while the agent runs, and compares current context before applying output.
+New decisions, findings or brief identity invalidate stale formation. Task
+payloads carry `initiative`, `initiative_brief`, `initiative_findings`,
+`finding_ids` and `providers`. Cycles use `initiative:<name>` as their source
+while retaining `campaign` and `campaign_cycle` in the payload.
+
+A landed result consumes the exact findings its formation saw for that member.
+Landed reviewer gaps and defect diagnoses become new findings. Preserved work
+consumes nothing. Campaign continuation and `queue resume` receive current
+findings and the brief identity.
+
+Each block selects its stage provider. Member choices override initiative
+choices; omitted stages inherit `agent_provider`. Read-only formation and
+review use scratch-only writes. Claude execution uses scoped edits, `dontAsk`
+and the OS sandbox with unsandboxed retries disabled. Worktrees stay in their
+existing home directory.
+
+Read-only Tracker derivation stages candidates from goals or journeys. It
+reads committed projections before the et CLI and never changes Tracker state.
+Slice 1 adds steering, the codebase audit, integration gates and Tracker closure.

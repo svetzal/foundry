@@ -10,6 +10,10 @@ Campaigns do not contain a pre-cut queue. The next objective is created only
 when the preceding task has a typed result, so stale downstream inventory and
 per-item retry loops are unnecessary.
 
+For a shared outcome across campaigns, use an [initiative](initiatives.md).
+The initiative supplies the brief, shared findings, owner decisions and stage
+providers. Each member campaign still derives its own next objective.
+
 ## Why campaigns reassess scope
 
 Implementation is a source of new knowledge. It can expose hidden dependencies,

@@ -894,3 +894,23 @@ Merged branches still use `git branch -d`. Branches used by live work or recorde
 preservation refs are retained. This housekeeping does not dispose of the
 workspace of a task undergoing review; task finalization remains responsible
 for its own workspace after landing or preservation.
+
+## Initiative work
+
+An [initiative](initiatives.md) groups campaigns under a shared outcome.
+Its cycles carry `source: initiative:<name>` while retaining the member's
+`campaign` and `campaign_cycle` in their task payload.
+
+```bash
+foundry queue --source initiative:shared-contract
+foundry queue open --source initiative:shared-contract
+```
+
+The open queue lists an escalated initiative once and suppresses its member
+campaign escalation rows. Open ledger items retain their own rows.
+`foundry initiative show <name>` lists each shared question, its applicable
+members and the command that answers it.
+
+A resumed initiative member receives the current brief path and content hash,
+stage providers and bounded findings. Its diagnosis remains available until
+work that saw the finding lands.
