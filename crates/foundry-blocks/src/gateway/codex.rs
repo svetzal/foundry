@@ -80,7 +80,7 @@ impl CliAgentAdapter for CodexAdapter {
         effort: &str,
         session_id: &str,
         session_log_dir: &Path,
-    ) -> Invocation {
+    ) -> Result<Invocation> {
         let last_message_path = session_log_dir.join(format!("{session_id}.last.txt"));
 
         // Prepend the agent persona (if any) to the prompt — codex has no
@@ -109,13 +109,14 @@ impl CliAgentAdapter for CodexAdapter {
             );
         }
 
-        Invocation {
+        Ok(Invocation {
             args,
             env: vec![],
             // The trailing `-` in argv makes codex read the prompt from stdin.
             stdin: Some(prompt.into_bytes()),
             last_message_path: Some(last_message_path),
-        }
+            _run_files: None,
+        })
     }
 
     fn interpret<'a>(
@@ -394,13 +395,15 @@ mod tests {
             requires_json: false,
         };
 
-        let inv = CodexAdapter.build_invocation(
-            &request,
-            "gpt-5.4",
-            "medium",
-            "sess",
-            Path::new("/tmp/codex-sessions"),
-        );
+        let inv = CodexAdapter
+            .build_invocation(
+                &request,
+                "gpt-5.4",
+                "medium",
+                "sess",
+                Path::new("/tmp/codex-sessions"),
+            )
+            .unwrap();
 
         assert_eq!(inv.args.last().map(String::as_str), Some("-"));
         assert!(
@@ -724,13 +727,9 @@ mod tests {
             trace_id: None,
             requires_json: false,
         };
-        let invocation = CodexAdapter.build_invocation(
-            &request,
-            "model",
-            "medium",
-            "session",
-            Path::new("/tmp/logs"),
-        );
+        let invocation = CodexAdapter
+            .build_invocation(&request, "model", "medium", "session", Path::new("/tmp/logs"))
+            .unwrap();
         let args = &invocation.args;
         assert!(args.windows(2).any(|p| p == ["-s", "workspace-write"]));
         assert!(args.contains(&"tool_output_token_limit=2000".into()));

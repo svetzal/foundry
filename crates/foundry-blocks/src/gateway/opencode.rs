@@ -66,7 +66,7 @@ impl CliAgentAdapter for OpencodeAdapter {
         effort: &str,
         _session_id: &str,
         _session_log_dir: &Path,
-    ) -> Invocation {
+    ) -> Result<Invocation> {
         // ReadOnly is advisory under opencode v1.15.12: there is no CLI
         // tool-allowlist, and the per-agent permission schema is unverified.
         // The iterate/maintain safety net (commit only on passing gates,
@@ -84,13 +84,14 @@ impl CliAgentAdapter for OpencodeAdapter {
             prepare_agent_config(request.agent_file.as_deref(), &request.project);
 
         let args = build_opencode_argv(model, effort, agent_key.as_deref(), &request.prompt);
-        Invocation {
+        Ok(Invocation {
             args,
             env,
             // opencode takes its prompt in argv and hangs on an open stdin.
             stdin: None,
             last_message_path: None,
-        }
+            _run_files: None,
+        })
     }
 
     fn interpret<'a>(

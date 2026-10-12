@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::paths;
@@ -34,6 +34,7 @@ pub use foundry_sdk::gateway::{
 // `CliAgentAdapter` impls in this module and the `opencode`/`codex` submodules.
 pub(crate) mod engine;
 use engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation, SessionContext};
+mod claude_boundary;
 
 // In-memory fakes for testing also live in the SDK, behind its `test-support`
 // feature (enabled as a dev-dependency). Re-exported so block and daemon tests
@@ -115,7 +116,7 @@ impl CliAgentAdapter for ClaudeAdapter {
         effort: &str,
         session_id: &str,
         _session_log_dir: &Path,
-    ) -> Invocation {
+    ) -> Result<Invocation> {
         let mut args: Vec<String> = vec![
             // Hand the CLI Foundry's own session id rather than letting it mint
             // one. Without this the id Foundry logs under and the id the CLI
@@ -133,27 +134,49 @@ impl CliAgentAdapter for ClaudeAdapter {
             "--effort".to_string(),
             effort.to_string(),
         ];
-        if let Some(ref agent_file) = request.agent_file {
-            args.push("--agent".to_string());
-            args.push(claude_agent_name(agent_file));
-        }
-        if request.access == AgentAccess::ReadOnly {
-            args.push("--allowedTools".to_string());
-            args.push("Read Glob Grep WebFetch WebSearch".to_string());
-        }
-        args.push("--dangerously-skip-permissions".to_string());
+        let boundary = claude_boundary::prepare(request, session_id)?;
+        let prompt = if boundary.is_some() {
+            bounded_claude_prompt(request)?
+        } else {
+            if let Some(ref agent_file) = request.agent_file {
+                args.push("--agent".to_string());
+                args.push(claude_agent_name(agent_file));
+            }
+            request.prompt.clone()
+        };
+        let mut env = vec![("CLAUDECODE".to_string(), String::new())];
+        let run_files = if let Some(boundary) = boundary {
+            args.extend([
+                "--permission-mode".into(),
+                "dontAsk".into(),
+                "--settings".into(),
+                boundary.settings_path.to_string_lossy().into(),
+                "--setting-sources".into(),
+                String::new(),
+                "--strict-mcp-config".into(),
+                "--disable-slash-commands".into(),
+                "--tools".into(),
+                "Read,Glob,Grep,Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch".into(),
+            ]);
+            env.push(("FOUNDRY_REVIEW_SCRATCH".into(), boundary.scratch.to_string_lossy().into()));
+            Some(boundary.files)
+        } else {
+            args.push("--dangerously-skip-permissions".to_string());
+            None
+        };
         // `-p` with no positional prompt: the CLI reads the prompt from stdin in
         // print mode. The prompt must NOT ride in argv — Linux caps one argv
         // element at MAX_ARG_STRLEN (131072 bytes), and a campaign prompt that
         // crosses it fails the spawn outright with E2BIG.
         args.push("-p".to_string());
         // CLAUDECODE="" prevents nested-session detection.
-        Invocation {
+        Ok(Invocation {
             args,
-            env: vec![("CLAUDECODE".to_string(), String::new())],
-            stdin: Some(request.prompt.clone().into_bytes()),
+            env,
+            stdin: Some(prompt.into_bytes()),
             last_message_path: None,
-        }
+            _run_files: run_files,
+        })
     }
 
     fn interpret<'a>(
@@ -215,6 +238,18 @@ cli_agent_gateway! {
     ClaudeAgentGateway, ClaudeAdapter
 }
 
+fn bounded_claude_prompt(request: &AgentRequest) -> Result<String> {
+    let Some(path) = &request.agent_file else {
+        return Ok(request.prompt.clone());
+    };
+    // Agent frontmatter can start MCP processes before tool permissions apply.
+    // Copy only its persona body into the prompt for a bounded invocation.
+    let body = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read bounded Claude persona {}", path.display()))?;
+    let persona = strip_frontmatter(&body);
+    Ok(format!("{persona}\n\n---\n\n{}", request.prompt))
+}
+
 fn claude_agent_name(agent_file: &Path) -> String {
     agent_file
         .file_stem()
@@ -255,14 +290,17 @@ fn claude_resume_args(original: &[String], session_id: &str, prompt: &str) -> Ve
     let mut index = 0;
     while index < original.len() {
         match original[index].as_str() {
-            flag @ ("--model" | "--effort" | "--agent" | "--allowedTools") => {
+            flag @ ("--model" | "--effort" | "--agent" | "--allowedTools" | "--permission-mode"
+            | "--settings" | "--setting-sources" | "--tools") => {
                 if let Some(value) = original.get(index + 1) {
                     args.push(flag.to_string());
                     args.push(value.clone());
                 }
                 index += 2;
             }
-            flag @ "--dangerously-skip-permissions" => {
+            flag @ ("--dangerously-skip-permissions"
+            | "--strict-mcp-config"
+            | "--disable-slash-commands") => {
                 args.push(flag.to_string());
                 index += 1;
             }
@@ -299,7 +337,13 @@ async fn resume_for_json(
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let env_opt = (!inv.env.is_empty()).then_some(inv.env.as_slice());
     match shell
-        .run(&request.working_dir, "claude", &arg_refs, env_opt, Some(request.timeout))
+        .run(
+            &request.working_dir,
+            "claude",
+            &arg_refs,
+            env_opt,
+            (!request.timeout.is_zero()).then_some(request.timeout),
+        )
         .await
     {
         Ok(result) if carries_json_object(&result.stdout) => {
@@ -393,11 +437,13 @@ pub(crate) fn emit_session_started(
     effective_effort: ReasoningEffort,
     session_id: &str,
     agent_type: &str,
+    provider: AgentProvider,
     log_path: &std::path::Path,
 ) -> Result<()> {
     let started_payload = AgentSessionStartedPayload {
         session_id: session_id.to_string(),
         agent_type: agent_type.to_string(),
+        provider: Some(provider),
         project: request.project.clone(),
         working_dir: request.working_dir.clone(),
         source_log_path: log_path.to_path_buf(),
@@ -835,9 +881,7 @@ mod claude_agent_gateway_streaming_tests {
             access: AgentAccess::ReadOnly,
             tier: ModelTier::Deep,
             effort: ReasoningEffort::High,
-            agent_file: Some(PathBuf::from(
-                "/Users/svetzal/.claude/agents/typescript-bun-cli-craftsperson.md",
-            )),
+            agent_file: None,
             provider: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
@@ -863,12 +907,12 @@ mod claude_agent_gateway_streaming_tests {
         assert!(captured.iter().any(|a| a == "claude-opus-5"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--effort"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "high"), "args: {captured:?}");
-        assert!(captured.iter().any(|a| a == "--allowedTools"), "args: {captured:?}");
-        let agent_flag = captured.iter().position(|a| a == "--agent").expect("agent flag present");
-        assert_eq!(
-            captured.get(agent_flag + 1).map(String::as_str),
-            Some("typescript-bun-cli-craftsperson")
+        assert!(
+            captured.windows(2).any(|a| a == ["--permission-mode", "dontAsk"]),
+            "args: {captured:?}"
         );
+        assert!(!captured.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!captured.iter().any(|arg| arg == "--agent"));
         assert!(
             !captured.iter().any(|a| std::path::Path::new(a)
                 .extension()
@@ -1126,6 +1170,26 @@ mod claude_json_recovery_tests {
         assert_eq!(args[tools_at + 1], "Read Glob Grep WebFetch WebSearch");
         assert_eq!(args.last().map(String::as_str), Some("answer now"));
         assert!(!args.iter().any(|a| a == "stream-json"), "recovery reads plain text: {args:?}");
+    }
+
+    #[test]
+    fn json_recovery_preserves_the_boundary_policy_and_excluded_settings() {
+        let original = [
+            "--permission-mode",
+            "dontAsk",
+            "--settings",
+            "/private/run/settings.json",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--tools",
+            "Read,Bash,Edit,Write",
+        ]
+        .map(str::to_string);
+        let resumed = claude_resume_args(&original, "session", "json");
+        assert!(resumed.windows(original.len()).any(|window| window == original));
+        assert!(!resumed.iter().any(|arg| arg == "--dangerously-skip-permissions"));
     }
 
     #[test]
