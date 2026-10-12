@@ -291,9 +291,10 @@ pub async fn decide_and_render(
     offline: bool,
     name: &str,
     decision: &str,
+    add_cycles: u64,
 ) -> Result<String> {
     if offline {
-        return decide_offline_and_render(store_path, name, decision);
+        return decide_offline_and_render(store_path, name, decision, add_cycles);
     }
 
     let mut client =
@@ -302,6 +303,7 @@ pub async fn decide_and_render(
         .decide_campaign(DecideCampaignRequest {
             name: name.to_string(),
             decision: decision.to_string(),
+            add_cycles,
         })
         .await
         .map_err(status_to_anyhow)?
@@ -317,8 +319,9 @@ pub async fn decide(
     offline: bool,
     name: &str,
     decision: &str,
+    add_cycles: u64,
 ) -> Result<()> {
-    let output = decide_and_render(store_path, addr, offline, name, decision).await?;
+    let output = decide_and_render(store_path, addr, offline, name, decision, add_cycles).await?;
     print!("{output}");
     Ok(())
 }
@@ -530,12 +533,17 @@ pub async fn advance(
             );
         }
         match campaign.status {
-            CampaignStatus::Paused => bail!(
-                "campaign '{name}' is {}; run `foundry campaign resume {name}` before advancing",
-                campaign.status
-            ),
-            CampaignStatus::Escalated => bail!(
-                "campaign '{name}' is escalated; record owner policy with `foundry campaign decide {name} --decision \"...\"` or use `foundry campaign resume {name}` when the escalation was budget-only"
+            // The owner options carry the transition rules, including the
+            // `--add-cycles` a spent budget needs, so the hint cannot drift.
+            CampaignStatus::Paused | CampaignStatus::Escalated => bail!(
+                "campaign '{name}' is {}; an owner must act before it can advance:\n{}",
+                campaign.status,
+                campaign
+                    .owner_options()
+                    .iter()
+                    .map(|option| format!("  {}  ({})", option.command, option.effect))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ),
             CampaignStatus::Completed => bail!("campaign '{name}' is already completed"),
             CampaignStatus::Cancelled => bail!(
@@ -716,7 +724,12 @@ fn pause_offline(store_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> Result<String> {
+fn decide_offline_and_render(
+    store_path: &Path,
+    name: &str,
+    decision: &str,
+    add_cycles: u64,
+) -> Result<String> {
     let decision = decision.trim();
     if decision.is_empty() {
         bail!("decision must be non-empty");
@@ -726,7 +739,7 @@ fn decide_offline_and_render(store_path: &Path, name: &str, decision: &str) -> R
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    campaign.record_owner_decision(decision.to_string(), Utc::now())?;
+    campaign.record_owner_decision(decision.to_string(), Utc::now(), add_cycles)?;
     let rendered = render::campaign::campaign_detail(campaign);
     guard.save()?;
     Ok(rendered)
@@ -1087,6 +1100,47 @@ mod tests {
         assert_eq!(campaign.budget.max_cycles, 3);
     }
 
+    /// `--offline` decide takes the same rule as the daemon: on a spent budget
+    /// it needs `--add-cycles`, records nothing when refused, and applies the
+    /// decision and the cycles together when accepted.
+    #[tokio::test]
+    async fn offline_decide_on_a_spent_budget_requires_and_applies_add_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "budget":{"max_cycles":2},
+                "cycles_completed":2,
+                "status":"escalated"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+        let before = std::fs::read(&store).unwrap();
+
+        let refused = decide_and_render(&store, "http://127.0.0.1:0", true, "c", "keep going", 0)
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("add_cycles > 0"), "{refused}");
+        assert_eq!(std::fs::read(&store).unwrap(), before, "a refusal records nothing");
+
+        let rendered = decide_and_render(&store, "http://127.0.0.1:0", true, "c", "keep going", 1)
+            .await
+            .unwrap();
+        assert!(rendered.contains("keep going"), "{rendered}");
+        let after = CampaignStore::load(&store).unwrap();
+        let campaign = after.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert_eq!(campaign.budget.max_cycles, 3);
+        assert_eq!(campaign.owner_decisions.len(), 1);
+    }
+
     /// `resume_offline` historically checked `authorized_by` and the cycle
     /// budget but never the status, so `--offline` could resume a campaign from
     /// any state — including reviving a cancelled one, which is terminal. Now
@@ -1153,6 +1207,74 @@ mod tests {
 
         let err = advance("http://127.0.0.1:0", &store, true, "c", None).await.unwrap_err();
         assert!(err.to_string().contains("cancelled"), "got: {err}");
+    }
+
+    /// An escalated campaign that has spent its budget cannot continue on a
+    /// plain `resume` or `decide`: both need `--add-cycles`. The offline
+    /// refusal used to suggest plain `resume` "when the escalation was
+    /// budget-only", the same trap the owner options now avoid, so it prints
+    /// the campaign's own owner options instead.
+    #[tokio::test]
+    async fn offline_advance_on_a_spent_escalation_names_the_add_cycles_controls() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "budget":{"max_cycles":2},
+                "cycles_completed":2,
+                "status":"escalated"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+
+        let err = advance("http://127.0.0.1:0", &store, true, "c", None).await.unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("is escalated"), "{message}");
+        assert!(
+            message.contains("foundry campaign decide c --decision \"<text>\" --add-cycles <n>"),
+            "{message}"
+        );
+        assert!(message.contains("foundry campaign resume c --add-cycles <n>"), "{message}");
+        assert!(
+            !message.contains("`foundry campaign resume c`"),
+            "plain resume is refused on a spent budget and must not be suggested: {message}"
+        );
+    }
+
+    /// The paused hint had the same trap: plain `resume` on a spent budget is
+    /// refused, so the refusal names `resume --add-cycles` instead.
+    #[tokio::test]
+    async fn offline_advance_on_a_spent_paused_campaign_names_resume_with_add_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester",
+                "budget":{"max_cycles":2},
+                "cycles_completed":2,
+                "status":"paused"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+
+        let err = advance("http://127.0.0.1:0", &store, true, "c", None).await.unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("is paused"), "{message}");
+        assert!(message.contains("foundry campaign resume c --add-cycles <n>"), "{message}");
+        assert!(!message.contains("`foundry campaign resume c`"), "{message}");
     }
 
     /// `Staged` is one of the two statuses `check_advanceable()` accepts, so
@@ -1375,7 +1497,7 @@ mod tests {
                 },
                 escalation: vec![],
                 status: CampaignStatus::Escalated,
-                cycles_completed: 2,
+                cycles_completed: 1,
                 cycles_landed: 1,
                 authorized_by: Some("tester".to_string()),
                 agent_provider: None,
@@ -1395,6 +1517,7 @@ mod tests {
             true,
             "c",
             "Use the typed daemon mutation path.",
+            0,
         )
         .await
         .unwrap();

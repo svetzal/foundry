@@ -930,6 +930,7 @@ async fn concurrent_mixed_lifecycle_ops_on_distinct_campaigns_no_lost_update() {
     let decide = service.decide_campaign(Request::new(foundryd::proto::DecideCampaignRequest {
         name: "campaign-c".to_string(),
         decision: "Use the daemon boundary.".to_string(),
+        add_cycles: 0,
     }));
 
     let (pause_result, resume_result, decide_result) = tokio::join!(pause, resume, decide);

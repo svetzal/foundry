@@ -242,7 +242,7 @@ foundry campaign show <name> [--json]
 foundry campaign report <name> [--json]
 foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
-foundry campaign decide <name> --decision "Use the generated tonic client path."
+foundry campaign decide <name> --decision "Use the generated tonic client path." [--add-cycles N]
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
@@ -331,7 +331,16 @@ silently ignore absent test files from yielding false-green evidence.
 
 When a campaign escalates because its cycle budget is exhausted, resuming
 requires an explicit owner-authorized extension, for example
-`foundry campaign resume <name> --add-cycles 1`.
+`foundry campaign resume <name> --add-cycles 1`. To record a decision at the
+same time, use `foundry campaign decide <name> --decision "<text>"
+--add-cycles 1`. On a spent budget, `decide` without `--add-cycles` is refused
+and records nothing, and a retried `decide` after a success is refused, so
+cycles are never added twice.
+
+Formation runs read-only and does not build or test. It takes test and gate
+evidence from the done-gate results the daemon ran against trunk, and from the
+last run result: a run with `landed: true` reached trunk only after every
+required gate in the project's gate file passed in its worktree.
 
 When a campaign escalates on a human judgment question, record the owner's
 policy with `foundry campaign decide <name> --decision "<text>"`. This appends

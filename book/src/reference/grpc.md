@@ -510,12 +510,24 @@ The persisted owner decision carries the decision text, the campaign's current
 `authorized_by` identity, and the daemon timestamp. Existing counters and any
 stored `pending_run_result` are preserved.
 
+**Spent budget:** when `cycles_completed >= max_cycles`, the request must carry
+a positive `add_cycles`. The daemon adds it to `max_cycles` (checked addition)
+in the same transition that records the decision and sets `active`. With
+`add_cycles == 0` the RPC returns `FAILED_PRECONDITION` and records nothing,
+because an active campaign with no cycle left would escalate on budget at its
+next advance, and `ResumeCampaign` does not accept an `active` campaign.
+
+**Retries:** `DecideCampaign` accepts only an `escalated` campaign, so a retry
+after a success returns `FAILED_PRECONDITION`. The decision is not recorded
+twice and `add_cycles` is not applied twice.
+
 **Request:**
 
-| Field      | Type   | Description                             |
-| ---------- | ------ | --------------------------------------- |
-| `name`     | string | Exact campaign name to update           |
-| `decision` | string | Non-empty owner decision text to record |
+| Field        | Type   | Description                                                                          |
+| ------------ | ------ | ------------------------------------------------------------------------------------ |
+| `name`       | string | Exact campaign name to update                                                        |
+| `decision`   | string | Non-empty owner decision text to record                                              |
+| `add_cycles` | uint64 | Cycles to add to `max_cycles` with the decision (0 = none; required on a spent budget) |
 
 **Response:**
 
@@ -526,11 +538,12 @@ stored `pending_run_result` are preserved.
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
 `INVALID_ARGUMENT` when `decision` is empty after trimming;
 `FAILED_PRECONDITION` when the campaign is not `escalated`, lacks
-`authorized_by`, or the campaign store is malformed; `INTERNAL` when the
+`authorized_by`, has spent its budget and `add_cycles == 0`, `add_cycles` would
+overflow `max_cycles`, or the campaign store is malformed; `INTERNAL` when the
 campaign store is unreadable or persistence fails. On save failure, the daemon
 leaves the persisted campaign store unchanged.
 
-**CLI:** `foundry campaign decide <name> --decision "<text>"` routes through
+**CLI:** `foundry campaign decide <name> --decision "<text>" [--add-cycles <n>]` routes through
 this RPC by default and therefore requires a reachable daemon. Pass `--offline`
 to bypass the daemon and mutate the store file directly. Without `--offline`, an
 unreachable daemon returns an error and leaves the client-side campaigns path

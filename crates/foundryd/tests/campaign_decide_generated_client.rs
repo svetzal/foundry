@@ -207,6 +207,7 @@ async fn generated_client_decide_campaign_appends_record_and_preserves_pending_r
         .decide_campaign(DecideCampaignRequest {
             name: "c".to_string(),
             decision: "Use the generated tonic client path.".to_string(),
+            add_cycles: 0,
         })
         .await
         .expect("decide campaign should succeed")
@@ -250,6 +251,7 @@ async fn generated_client_decide_campaign_invalid_state_returns_failed_precondit
         .decide_campaign(DecideCampaignRequest {
             name: "c".to_string(),
             decision: "Use the generated tonic client path.".to_string(),
+            add_cycles: 0,
         })
         .await
         .expect_err("decide campaign must reject non-escalated campaigns");
@@ -272,6 +274,7 @@ async fn generated_client_decide_campaign_missing_campaign_returns_not_found() {
         .decide_campaign(DecideCampaignRequest {
             name: "missing".to_string(),
             decision: "Use the generated tonic client path.".to_string(),
+            add_cycles: 0,
         })
         .await
         .expect_err("missing campaign must fail");
@@ -292,6 +295,7 @@ async fn generated_client_decide_campaign_malformed_store_returns_failed_precond
         .decide_campaign(DecideCampaignRequest {
             name: "c".to_string(),
             decision: "Use the generated tonic client path.".to_string(),
+            add_cycles: 0,
         })
         .await
         .expect_err("malformed store must fail");
@@ -334,6 +338,7 @@ async fn generated_client_decide_campaign_persist_failure_returns_internal_and_s
         .decide_campaign(DecideCampaignRequest {
             name: "c".to_string(),
             decision: "Use the daemon boundary.".to_string(),
+            add_cycles: 0,
         })
         .await
         .expect_err("persist failure must fail");

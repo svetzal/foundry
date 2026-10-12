@@ -146,6 +146,7 @@ async fn online_decide_renders_owner_decision_from_rpc_response() {
         false,
         "c",
         "Use the generated tonic client path.",
+        0,
     )
     .await
     .expect("online decide must succeed");
@@ -187,6 +188,7 @@ async fn online_decide_renders_from_rpc_response_not_cli_side_file() {
         false,
         "c",
         "Use the generated tonic client path.",
+        0,
     )
     .await
     .expect("online decide must succeed");
@@ -207,6 +209,7 @@ async fn online_decide_not_found_maps_to_daemon_error() {
         false,
         "missing",
         "Use the generated tonic client path.",
+        0,
     )
     .await
     .expect_err("missing campaign must fail");
@@ -228,6 +231,7 @@ async fn online_decide_unreachable_daemon_leaves_store_byte_for_byte_unchanged()
         false,
         "c",
         "Keep the generated tonic client boundary.",
+        0,
     )
     .await
     .expect_err("unreachable daemon must fail");
@@ -241,5 +245,100 @@ async fn online_decide_unreachable_daemon_leaves_store_byte_for_byte_unchanged()
     assert_eq!(
         after, before,
         "online decide must not mutate campaigns.json when the daemon is unreachable"
+    );
+}
+
+/// An escalated campaign that has spent its budget, with a pending run result.
+fn budget_exhausted_campaign(name: &str) -> Campaign {
+    let mut campaign = escalated_campaign(name);
+    campaign.cycles_completed = campaign.budget.max_cycles;
+    campaign.pending_run_result = Some(foundry_sdk::payload::TaskRunCompletedPayload {
+        project: "test-project".to_string(),
+        success: true,
+        landed: true,
+        summary: "task completed, reviewed, and landed".to_string(),
+        preservation_ref: Some("foundry-task/cli-decide-grpc-test-ref".to_string()),
+        land_blocked: None,
+        proof_evidence: None,
+        uncommitted_artifacts: None,
+        trunk_arrivals: Vec::new(),
+        verdict: foundry_sdk::payload::TaskVerdict::Complete,
+        context: foundry_sdk::payload::LoopContext {
+            campaign: Some(name.to_string()),
+            ..foundry_sdk::payload::LoopContext::default()
+        },
+    });
+    campaign
+}
+
+/// The stored `pending_run_result`, as the store file holds it.
+fn pending_run_result_json(tmp: &NamedTempFile) -> String {
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(tmp.path()).expect("read store")).expect("parse");
+    let pending = &raw["campaigns"][0]["pending_run_result"];
+    assert!(!pending.is_null(), "the seeded campaign carries a pending run result");
+    serde_json::to_string(pending).expect("serialize")
+}
+
+/// A budget-exhausted escalation answered with `decide --add-cycles 1` through
+/// the generated client: the campaign is active with one more cycle, the
+/// decision is recorded, and `pending_run_result` is untouched. A retry of the
+/// same command is refused and adds nothing, so owner-authorized cycles are
+/// never spent twice.
+#[tokio::test]
+async fn online_decide_with_add_cycles_reactivates_a_budget_exhausted_campaign() {
+    let (service, tmp_campaigns, _tmp_traces) = make_service();
+    seed_campaign(&tmp_campaigns, budget_exhausted_campaign("c"));
+    let pending_before = pending_run_result_json(&tmp_campaigns);
+    let addr = start_server(service).await;
+
+    let rendered =
+        decide_and_render(tmp_campaigns.path(), &addr, false, "c", "Keep the current design.", 1)
+            .await
+            .expect("decide with add_cycles must succeed");
+
+    let stored = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+    let campaign = stored.find("c").expect("campaign");
+    assert_eq!(campaign.status, CampaignStatus::Active);
+    assert_eq!(campaign.budget.max_cycles, 11, "the budget grows by exactly one");
+    assert_eq!(campaign.owner_decisions.len(), 1);
+    assert_eq!(campaign.owner_decisions[0].decision, "Keep the current design.");
+    assert_eq!(
+        pending_run_result_json(&tmp_campaigns),
+        pending_before,
+        "pending_run_result must survive decide unchanged"
+    );
+    assert!(rendered.contains("10/11"), "rendered output shows the new budget: {rendered}");
+
+    let retry =
+        decide_and_render(tmp_campaigns.path(), &addr, false, "c", "Keep the current design.", 1)
+            .await
+            .expect_err("a retried decide must be refused");
+    assert!(retry.to_string().contains("requires Escalated"), "{retry}");
+    let after_retry = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+    let campaign = after_retry.find("c").expect("campaign");
+    assert_eq!(campaign.budget.max_cycles, 11, "a retry adds no cycles");
+    assert_eq!(campaign.owner_decisions.len(), 1, "a retry records nothing");
+}
+
+/// Without `--add-cycles`, decide on a spent budget is refused, tells the owner
+/// how to authorize more work, and leaves the store exactly as it was.
+#[tokio::test]
+async fn online_decide_on_a_spent_budget_without_add_cycles_is_refused() {
+    let (service, tmp_campaigns, _tmp_traces) = make_service();
+    seed_campaign(&tmp_campaigns, budget_exhausted_campaign("c"));
+    let before = std::fs::read(tmp_campaigns.path()).expect("read store");
+    let addr = start_server(service).await;
+
+    let err =
+        decide_and_render(tmp_campaigns.path(), &addr, false, "c", "Keep the current design.", 0)
+            .await
+            .expect_err("decide on a spent budget without cycles must be refused");
+
+    assert!(err.to_string().contains("add_cycles > 0"), "{err}");
+    assert_eq!(
+        std::fs::read(tmp_campaigns.path()).expect("read store"),
+        before,
+        "a refused decide leaves the store byte-for-byte unchanged"
     );
 }
