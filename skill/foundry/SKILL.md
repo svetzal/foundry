@@ -19,7 +19,7 @@ compatibility:
   Requires foundryd daemon running locally (Rust binary, gRPC on
   127.0.0.1:50051)
 metadata:
-  version: "0.45.1"
+  version: "0.46.0"
   author: Stacey Vetzal
 ---
 

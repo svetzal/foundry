@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-11
+
 ### Fixed
 
 - A campaign cycle no longer continues from preserved work that was settled
