@@ -22,12 +22,23 @@ She saves the shared check as `delay-gates.json`:
     "kind": "gate",
     "command": "python3 dispatch-api/scripts/check-delay.py customer-portal",
     "required": true,
-    "artifacts": ["dispatch-api/scripts/check-delay.py", "customer-portal/package.json"]
+    "artifacts": [
+      "dispatch-api/scripts/check-delay.py",
+      "dispatch-api/contracts/delay-v2.json",
+      "customer-portal/package.json"
+    ]
   }
 ]
 ```
 
-The check starts both applications and verifies their shared contract.
+Both projects verify the same `delay-v2` executable contract in their required gates.
+The contract includes older responses that omit the optional reason field.
+Provider verification checks API behavior; consumer tests check the portal's handling
+of the same cases. Test doubles come from that contract.
+The results identify the contract hash and the tested commits on both sides.
+
+The shared check starts both applications with their deployment configuration.
+It tests whether a customer can read a useful explanation for a delayed delivery.
 Maya runs derivation from the repository that supplies the Tracker intent:
 
 ```bash
@@ -117,18 +128,19 @@ current intent. Editing an uncommitted projection does not change the input.
 
 ## Discover a gap between the two applications
 
-The portal change lands and its own gates pass.
-The initiative's integration check runs the current API and portal trunks together.
-It finds that older responses omit the new field.
-The portal still needs a useful explanation for those responses.
+The portal change lands. Both projects pass verification of the same contract,
+including the fallback for older responses.
+The initiative's shared check runs the current API and portal trunks together.
+It finds that the portal's deployment configuration still names a retired API address.
+The contracts agree, but the customer cannot reach the explanation.
 
 Foundry records a regression finding.
-Steering stages a compatibility campaign in `customer-portal` because the
-existing mission did not cover this case.
+Steering stages a configuration repair campaign in `customer-portal` because the
+existing mission did not cover this deployment setting.
 Maya can see the new member before its next advance starts work.
 It uses the initiative's existing authorization, providers and remaining cycle budget.
 
-The campaign adds the fallback and lands it.
+The campaign corrects the API address and lands it.
 The next integration check passes against both current trunks.
 Steering reviews the customer's journey and proposes completion.
 The proposal contains the tested commits and the evidence for each review statement.

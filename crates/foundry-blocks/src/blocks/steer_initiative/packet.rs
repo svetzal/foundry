@@ -101,10 +101,13 @@ pub(super) fn prompt(
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
         "completion_proposal":initiative.completion_proposal});
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
+    let contract_guidance = super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE;
     let text = format!(
         r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
 Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed.
+
+{contract_guidance}
 
 Return exactly one JSON object with action and audits. Action is exactly one tagged decision:
 advance: {{"decision":"advance","member":"existing member or audited candidate","project":null}}
@@ -244,6 +247,21 @@ pub(super) fn context_hash(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steering_receives_contract_guidance_without_a_brief_or_findings() {
+        let fixture = super::super::tests::Fixture::new();
+        let mut store = CampaignStore::load(&fixture.store).unwrap();
+        let snapshot = store.begin_steering("shared", "contract-guidance").unwrap();
+        assert!(snapshot.initiative.brief.is_none());
+        assert!(store.list_findings("shared").unwrap().is_empty());
+        let prompt = prompt(&snapshot, &store, &[], None, "[]", fixture.temp.path()).unwrap();
+        assert!(
+            prompt
+                .text
+                .contains(super::super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE)
+        );
+    }
 
     #[test]
     fn staging_prompt_demonstrates_the_typed_nested_budget_and_optional_declaration_fields() {

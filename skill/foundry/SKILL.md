@@ -1018,6 +1018,16 @@ Without that setting, Foundry keeps the configured stage providers.
 
 ### Initiative outcome evidence
 
+For a changed boundary, require provider and consumer verification of the same
+versioned executable contract set in each project's required gates.
+Cover relevant errors, optional fields and supported versions.
+Retain the contract version or hash, tested commits and both verification results.
+Independent mocks or matching schemas alone do not prove compatibility.
+Coordinate missing verification through the initiative within authorized repositories.
+Integration gates also check wiring and the user's full journey.
+The initiative reminder is agent guidance.
+It does not add an automatic contract verifier.
+
 Initiative integration gates use `done_evidence` entries of kind `gate`, with
 `command`, optional `host`, `required` and repository-relative `artifacts`.
 The default host is the daemon's host. Named remote hosts use SSH and their

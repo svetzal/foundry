@@ -313,6 +313,14 @@ Without that setting, Foundry keeps the configured stage providers.
 
 ### Initiative outcome evidence
 
+Changed boundaries need producer and consumer verification of the same versioned
+executable contract set in their required gates. Keep contract identity, tested
+commits and both verification results in outcome evidence. Cover relevant errors,
+optional fields and supported versions. Independent mocks do not establish
+compatibility. Coordinate missing verification within authorized repositories.
+Integration gates also check wiring and the user's full journey. The prompt
+reminder is guidance; no contract verifier or required evidence field is added.
+
 Initiative integration gates use `done_evidence` entries of kind `gate`, with
 `command`, optional `host`, `required` and repository-relative `artifacts`.
 Derivation accepts a JSON array of gate definitions with
@@ -709,6 +717,19 @@ foundry pacing resume --lane all        # the drain's pause survives the restart
 foundry init --global --force           # the skill is bundled in the binary; install the new one for every agent on this host
 which foundry && foundry --version && foundry status && foundry sentinel list
 ```
+
+When a promotion includes craftsperson guidance changes, refresh the host's
+installed agent copies from the `guidelines` source too.
+Inspect `cmx agent list --json` for installed agents and their platforms.
+Check each copy for local changes with
+`cmx --platform <platform> agent info <name> --json`.
+Refresh the source with `cmx source update guidelines`.
+
+Do not overwrite local changes silently.
+Update each installed craftsperson copy with
+`cmx --platform <platform> agent update <name>`.
+Use `cmx doctor --all --json` to check the resulting copies.
+New agent sessions receive the installed guidance.
 
 The script builds in a detached worktree with one target directory
 (`~/.cache/foundry-release/target`) and deletes both when it exits, pass or

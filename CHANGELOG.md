@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Initiative steering and member agents receive a shared contract-testing reminder.
+  Provider and consumer verify the same versioned contract set and retain both
+  results. The initiative guide and story distinguish contract compatibility
+  from deployment wiring and the user's full journey.
+
 ### Added
 
 - Slice 2 initiative outcome evidence: host-named integration checks on
