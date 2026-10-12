@@ -407,3 +407,70 @@ fn review_only_completion_still_requires_clean_registered_trunks() {
     }
     store.propose_completion("test", "done", snapshot(&store), reviews()).unwrap();
 }
+
+#[test]
+fn current_audit_receipts_do_not_invalidate_gate_evidence_for_unchanged_intent() {
+    use crate::initiative::{AuditClassification, AuditEvidence, DeriveSource, InitiativeMember};
+
+    let mut store = store();
+    let initiative = store.find_initiative_mut("test").unwrap();
+    initiative.derive_source = Some(DeriveSource {
+        repo: "/repos/one".into(),
+        from: "et:goal:ship".into(),
+    });
+    initiative.intent_refs = vec!["et:goal:ship".into(), "et:interaction:ship".into()];
+    initiative.members.push(InitiativeMember {
+        kind: MemberKind::Candidate,
+        name: "ship".into(),
+        after: vec![],
+        intent_ref: Some("et:interaction:ship".into()),
+        description: Some("User succeeds".into()),
+        intent_state: Some("create".into()),
+        audit_finding_id: None,
+    });
+    let gate_snapshot = snapshot(&store);
+    store.record_integration_result("test", result(&store)).unwrap();
+    for operation in ["first-audit", "second-audit"] {
+        let steering = store.begin_steering("test", operation).unwrap();
+        store
+            .commit_steering(
+                &steering,
+                operation,
+                SteeringDecision::Done { reviews: reviews() },
+                vec![AuditEvidence {
+                    intent_ref: "et:interaction:ship".into(),
+                    classification: AuditClassification::Realised,
+                    project: "one".into(),
+                    paths: vec!["src/current.rs".into()],
+                    explanation: "Current trunks implement the interaction".into(),
+                }],
+                "Review current outcome evidence".into(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store.find_initiative("test").unwrap().members[0].audit_finding_id.as_deref(),
+            Some(format!("fnd_{operation}_audit_0").as_str())
+        );
+        assert_eq!(snapshot(&store), gate_snapshot);
+        store.acknowledge_steering_action("test", operation, None).unwrap();
+    }
+    assert_eq!(store.findings.len(), 2);
+    store.propose_completion("test", "done", snapshot(&store), reviews()).unwrap();
+    store.validate_completion("test", &gate_snapshot).unwrap();
+    for mutation in 0..6 {
+        let mut changed = store.clone();
+        let initiative = changed.find_initiative_mut("test").unwrap();
+        match mutation {
+            0 => initiative.members[0].description = Some("Revised user outcome".into()),
+            1 => initiative.members[0].intent_state = Some("update".into()),
+            2 => initiative.members[0].after = vec!["ship:contract-landed".into()],
+            3 => initiative.providers.review = Some(crate::gateway::AgentProvider::Codex),
+            4 => initiative.budget.max_cycles += 1,
+            _ => initiative.intent_revision = "revised Tracker intent".into(),
+        }
+        let changed_snapshot = snapshot(&changed);
+        assert_ne!(changed_snapshot, gate_snapshot);
+        assert!(changed.validate_completion("test", &changed_snapshot).is_err());
+    }
+}
