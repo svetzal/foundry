@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-12
+
 ### Added
 
 - Slice 0 of initiatives: a shared outcome, member campaigns, owner decisions,
@@ -27,8 +29,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Read-only initiative derivation from Epilogue Tracker goals and journeys,
   using committed projections or the Tracker CLI. Derived intent stays staged.
   Steering, the codebase audit, Tracker completion and integration gates on
-  the production daemon's host remain for slice 1. Promotion to ops-01 awaits
-  Stacey's go-ahead.
+  the production daemon's host remain for slice 1. This release promotes
+  slice 0 to ops-01 through the manual release procedure.
 
 ## [0.46.0] - 2026-10-11
 
