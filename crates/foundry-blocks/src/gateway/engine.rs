@@ -49,7 +49,7 @@ pub(crate) trait CliAgentAdapter: Send + Sync {
         effort: &str,
         session_id: &str,
         session_log_dir: &Path,
-    ) -> Invocation;
+    ) -> Result<Invocation>;
     /// Extract the result from a completed stream run. Responsible for:
     /// - provider-specific success/failure determination,
     /// - authoritative stdout extraction (file read, export call, or stream scan),
@@ -76,6 +76,35 @@ pub(crate) struct Invocation {
     /// Codex writes its authoritative final answer to an `-o` file; stored here
     /// so `interpret` can read and clean it up. `None` for other providers.
     pub(crate) last_message_path: Option<PathBuf>,
+    /// Owned settings and scratch files. Kept alive through JSON recovery and
+    /// removed when the invocation ends, including cancellation and errors.
+    pub(crate) _run_files: Option<RunFiles>,
+}
+
+/// Private files for one CLI invocation, cleaned up when its future is dropped.
+pub(crate) struct RunFiles {
+    pub(crate) directory: PathBuf,
+}
+
+impl RunFiles {
+    pub(crate) fn create(directory: PathBuf) -> Result<Self> {
+        if let Some(parent) = directory.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Never reuse a previous invocation's directory or follow its symlink.
+        std::fs::create_dir(&directory)?;
+        Ok(Self { directory })
+    }
+}
+
+impl Drop for RunFiles {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.directory) {
+            // Best-effort: private scratch cleanup cannot change a completed
+            // session's verdict, but leftover files must remain visible.
+            tracing::warn!(%error, path = %self.directory.display(), "agent scratch cleanup failed");
+        }
+    }
 }
 
 fn with_request_environment(mut invocation: Invocation, request: &AgentRequest) -> Invocation {
@@ -244,11 +273,9 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
         Box::pin(async move {
             if request.env.iter().any(|(k, _)| k == "FOUNDRY_WRITABLE_ROOT")
-                && self.adapter.provider() != AgentProvider::Codex
+                && !self.adapter.provider().enforces_writable_root()
             {
-                anyhow::bail!(
-                    "campaign repository isolation currently requires --agent codex; this provider cannot enforce the declared writable repository"
-                );
+                anyhow::bail!("this provider cannot enforce the declared writable repository");
             }
             let session_id = Uuid::new_v4().to_string();
             let log_path = self.session_log_dir.join(format!("{session_id}.jsonl"));
@@ -265,7 +292,7 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                     &effort,
                     &session_id,
                     &self.session_log_dir,
-                ),
+                )?,
                 request,
             );
             let arg_refs: Vec<&str> = inv.args.iter().map(String::as_str).collect();
@@ -277,6 +304,7 @@ impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGatewa
                 effective_effort,
                 &session_id,
                 self.adapter.agent_type(),
+                provider,
                 &log_path,
             )?;
 
@@ -358,13 +386,14 @@ mod tests {
             _effort: &str,
             _session_id: &str,
             _session_log_dir: &Path,
-        ) -> Invocation {
-            Invocation {
+        ) -> Result<Invocation> {
+            Ok(Invocation {
                 args: vec![request.prompt.clone()],
                 env: vec![],
                 stdin: None,
                 last_message_path: None,
-            }
+                _run_files: None,
+            })
         }
 
         fn interpret<'a>(
@@ -502,7 +531,7 @@ mod tests {
             effort: &str,
             session_id: &str,
             session_log_dir: &Path,
-        ) -> Invocation {
+        ) -> Result<Invocation> {
             *self.0.lock().expect("capture lock") = Some(effort.to_string());
             EchoAdapter.build_invocation(request, model, effort, session_id, session_log_dir)
         }

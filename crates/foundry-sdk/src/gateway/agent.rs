@@ -30,6 +30,15 @@ pub enum AgentProvider {
 }
 
 impl AgentProvider {
+    /// Whether bounded invocations enforce the declared writable repository.
+    ///
+    /// Claude uses a scoped edit allowance, denied permission prompts and an
+    /// OS sandbox. Codex uses its workspace sandbox. Opencode has no proven
+    /// enforcement and must not run a campaign's bounded invocation.
+    pub const fn enforces_writable_root(self) -> bool {
+        matches!(self, Self::Claude | Self::Codex)
+    }
+
     /// The lowercase wire/CLI string for this provider.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -37,6 +46,124 @@ impl AgentProvider {
             AgentProvider::Opencode => "opencode",
             AgentProvider::Codex => "codex",
         }
+    }
+}
+
+/// The agent's role in a campaign cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStage {
+    Formation,
+    Execution,
+    Review,
+}
+
+impl AgentStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Formation => "formation",
+            Self::Execution => "execution",
+            Self::Review => "review",
+        }
+    }
+}
+
+/// Optional provider overrides for each stage. Omitted stages inherit the
+/// campaign's legacy provider or the daemon's default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageProviders {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formation: Option<AgentProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<AgentProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<AgentProvider>,
+}
+
+impl StageProviders {
+    /// Resolve one stage, preserving an absent daemon-default override.
+    pub fn resolve(
+        self,
+        stage: AgentStage,
+        fallback: Option<AgentProvider>,
+    ) -> Option<AgentProvider> {
+        match stage {
+            AgentStage::Formation => self.formation,
+            AgentStage::Execution => self.execution,
+            AgentStage::Review => self.review,
+        }
+        .or(fallback)
+    }
+
+    /// Inherit only the stages the member did not set.
+    #[must_use]
+    pub fn inherit(self, initiative: &Self) -> Self {
+        Self {
+            formation: self.formation.or(initiative.formation),
+            execution: self.execution.or(initiative.execution),
+            review: self.review.or(initiative.review),
+        }
+    }
+
+    /// Whether serializing this map would carry no provider overrides.
+    pub fn is_empty(&self) -> bool {
+        self.formation.is_none() && self.execution.is_none() && self.review.is_none()
+    }
+}
+
+#[cfg(test)]
+mod stage_provider_tests {
+    use super::*;
+
+    #[test]
+    fn stages_choose_explicit_provider_then_legacy_default() {
+        let providers = StageProviders {
+            formation: Some(AgentProvider::Claude),
+            execution: Some(AgentProvider::Codex),
+            review: None,
+        };
+        assert_eq!(
+            providers.resolve(AgentStage::Formation, Some(AgentProvider::Codex)),
+            Some(AgentProvider::Claude)
+        );
+        assert_eq!(
+            providers.resolve(AgentStage::Execution, Some(AgentProvider::Claude)),
+            Some(AgentProvider::Codex)
+        );
+        assert_eq!(
+            providers.resolve(AgentStage::Review, Some(AgentProvider::Codex)),
+            Some(AgentProvider::Codex)
+        );
+        assert_eq!(providers.resolve(AgentStage::Review, None), None);
+    }
+
+    #[test]
+    fn members_inherit_only_omitted_initiative_stages() {
+        let member = StageProviders {
+            execution: Some(AgentProvider::Codex),
+            ..StageProviders::default()
+        };
+        let initiative = StageProviders {
+            formation: Some(AgentProvider::Claude),
+            execution: Some(AgentProvider::Claude),
+            review: Some(AgentProvider::Claude),
+        };
+        assert_eq!(
+            member.inherit(&initiative),
+            StageProviders {
+                formation: Some(AgentProvider::Claude),
+                execution: Some(AgentProvider::Codex),
+                review: Some(AgentProvider::Claude)
+            }
+        );
+    }
+
+    #[test]
+    fn only_providers_with_enforced_boundaries_declare_writable_root_support() {
+        assert!(AgentProvider::Claude.enforces_writable_root());
+        assert!(AgentProvider::Codex.enforces_writable_root());
+        assert!(!AgentProvider::Opencode.enforces_writable_root());
     }
 }
 

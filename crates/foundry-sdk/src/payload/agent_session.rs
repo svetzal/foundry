@@ -13,6 +13,9 @@ use crate::token_usage::SessionUsage;
 pub struct AgentSessionStartedPayload {
     pub session_id: String,
     pub agent_type: String,
+    /// The provider actually invoked after routing, absent on older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::gateway::AgentProvider>,
     pub project: String,
     pub working_dir: std::path::PathBuf,
     pub source_log_path: std::path::PathBuf,
