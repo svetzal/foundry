@@ -231,10 +231,13 @@ mod tests {
 
         run_gates(&gates, &dir, shell.as_ref()).await.unwrap();
 
+        // The host scale (FOUNDRY_GATE_TIMEOUT_SCALE) applies to both, so a
+        // host that sets it still runs this test hermetically.
+        let scale = host_gate_timeout_scale();
         let calls = shell.invocations();
-        assert_eq!(calls[0].timeout, Some(DEFAULT_GATE_TIMEOUT));
+        assert_eq!(calls[0].timeout, Some(DEFAULT_GATE_TIMEOUT.mul_f64(scale)));
         assert_eq!(DEFAULT_GATE_TIMEOUT, std::time::Duration::from_secs(600));
-        assert_eq!(calls[1].timeout, Some(std::time::Duration::from_secs(1_800)));
+        assert_eq!(calls[1].timeout, Some(std::time::Duration::from_secs(1_800).mul_f64(scale)));
     }
 
     #[tokio::test]
