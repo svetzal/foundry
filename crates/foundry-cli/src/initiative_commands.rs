@@ -26,7 +26,7 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Request one read-only steer through the daemon \[mutates\]
+    /// Request one outcome assessment through the daemon \[mutates\]
     Advance {
         name: String,
         /// Pin this steer to a member and release its owner hold
@@ -94,11 +94,13 @@ pub enum Commands {
         #[arg(long = "evidence", required = true)]
         evidence: Vec<String>,
     },
-    /// Mark an owner-verified outcome complete \[mutates\]
+    /// Confirm reviewed outcome evidence and close linked Tracker intent \[mutates\]
     Complete {
         name: String,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        json: bool,
     },
     /// Stop an initiative \[mutates\]
     Cancel {
@@ -118,6 +120,9 @@ pub enum Commands {
         /// Owner authorizing this initiative (default: the invoking user)
         #[arg(long)]
         authorized_by: Option<String>,
+        /// JSON array of integration gate declarations to add to Tracker reviews
+        #[arg(long)]
+        integration_gates: Option<PathBuf>,
     },
 }
 
@@ -315,16 +320,11 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
         | Commands::Dispatch { .. }
         | Commands::Ask { .. }
         | Commands::Milestone { .. }) => owner_command_online(command, &mut client).await,
-        Commands::Complete { name, reason } => {
-            client
-                .complete_initiative(proto::EndInitiativeRequest {
-                    name: name.clone(),
-                    reason,
-                })
-                .await
-                .map_err(status_to_anyhow)?;
-            Ok(format!("Completed initiative '{name}'.\n"))
-        }
+        Commands::Complete {
+            name,
+            reason,
+            json: as_json,
+        } => complete_online(&mut client, name, reason, as_json).await,
         Commands::Cancel { name, reason } => {
             client
                 .cancel_initiative(proto::EndInitiativeRequest {
@@ -339,6 +339,26 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
         command @ (Commands::Advance { .. } | Commands::Derive { .. }) => {
             steering_command_online(command, &mut client).await
         }
+    }
+}
+
+async fn complete_online(
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    name: String,
+    reason: String,
+    as_json: bool,
+) -> Result<String> {
+    let initiative = client
+        .complete_initiative(proto::EndInitiativeRequest { name, reason })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .initiative
+        .context("daemon returned no initiative")?;
+    if as_json {
+        json(&initiative)
+    } else {
+        Ok(render::initiative::completion(&initiative))
     }
 }
 
@@ -468,6 +488,7 @@ async fn steering_command_online(
             from_ref,
             projects,
             authorized_by,
+            integration_gates,
         } => {
             let source_repo =
                 std::env::current_dir().context("cannot locate Tracker source repository")?;
@@ -479,6 +500,7 @@ async fn steering_command_online(
                         .or_else(|| std::env::var("USER").ok())
                         .context("set --authorized-by to name the initiative owner")?,
                     source_repo: source_repo.to_string_lossy().into_owned(),
+                    integration_gates: read_integration_gates(integration_gates.as_deref())?,
                 })
                 .await
                 .map_err(status_to_anyhow)?
@@ -491,6 +513,25 @@ async fn steering_command_online(
         }
         _ => unreachable!("only steering commands are routed here"),
     }
+}
+
+fn read_integration_gates(path: Option<&Path>) -> Result<Vec<proto::InitiativeEvidence>> {
+    use foundry_sdk::initiative::DoneEvidence;
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let evidence: Vec<DoneEvidence> = serde_json::from_str(
+        &std::fs::read_to_string(path)
+            .with_context(|| format!("read integration gates {}", path.display()))?,
+    )
+    .with_context(|| format!("parse integration gates {}", path.display()))?;
+    evidence.into_iter().map(|evidence| match evidence {
+        DoneEvidence::Gate { command, host, required, artifacts } => {
+            anyhow::ensure!(!command.trim().is_empty(), "an integration gate requires a command");
+            Ok(proto::InitiativeEvidence { kind:"gate".into(), command, host, required, artifacts, statement:String::new() })
+        },
+        DoneEvidence::Review { .. } => anyhow::bail!("--integration-gates accepts only gate declarations; Tracker supplies outcome reviews"),
+    }).collect()
 }
 
 async fn owner_action(
@@ -581,6 +622,7 @@ async fn add_definition(
 fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String> {
     match command {
         Commands::Advance { .. }
+        | Commands::Complete { .. }
         | Commands::Derive { .. }
         | Commands::Hold { .. }
         | Commands::Relay { .. }
@@ -641,11 +683,6 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                         Utc::now(),
                     )?;
                     format!("Recorded decision for initiative '{name}'.\n")
-                }
-                Commands::Complete { name, reason } => {
-                    let _transition =
-                        guard.store.complete_initiative(&name, &reason, Utc::now())?;
-                    format!("Completed initiative '{name}'.\n")
                 }
                 Commands::Cancel { name, reason } => {
                     let _transition = guard.store.cancel_initiative(&name, &reason, Utc::now())?;
@@ -776,6 +813,29 @@ mod tests {
 mod steering_transport_tests {
     use super::*;
 
+    #[test]
+    fn integration_gate_file_accepts_typed_gates_and_rejects_reviews() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("gates.json");
+        std::fs::write(&path, r#"[{"kind":"gate","command":"./check","host":"build-host","artifacts":["sample/contract.json"]}]"#).unwrap();
+        let gates = read_integration_gates(Some(&path)).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].kind, "gate");
+        assert_eq!(gates[0].host.as_deref(), Some("build-host"));
+        assert!(gates[0].required);
+        assert_eq!(gates[0].artifacts, ["sample/contract.json"]);
+        std::fs::write(&path, r#"[{"kind":"review","statement":"Bypass Tracker"}]"#).unwrap();
+        assert!(
+            read_integration_gates(Some(&path))
+                .unwrap_err()
+                .to_string()
+                .contains("only gate declarations")
+        );
+        assert!(read_integration_gates(None).unwrap().is_empty());
+        std::fs::write(&path, "[]").unwrap();
+        assert!(read_integration_gates(Some(&path)).unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn online_steering_never_reads_or_mutates_the_client_store() {
         let home = tempfile::tempdir().unwrap();
@@ -816,6 +876,12 @@ mod steering_transport_tests {
                 from_ref: "et:goal:shared".into(),
                 projects: vec!["sample".into()],
                 authorized_by: Some("Stacey".into()),
+                integration_gates: None,
+            },
+            Commands::Complete {
+                name: "shared".into(),
+                reason: "Owner confirmation".into(),
+                json: true,
             },
         ] {
             let result = run_and_render(

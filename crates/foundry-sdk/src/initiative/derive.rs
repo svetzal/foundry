@@ -21,6 +21,8 @@ pub struct IntentProjection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Goal {
     pub id: String,
+    #[serde(default)]
+    pub state: String,
     pub description: String,
     #[serde(default)]
     pub success_criteria: String,
@@ -260,6 +262,10 @@ fn derived_definition(
         intent_revision: String::new(),
         work_admissions: vec![],
         pairing_base_cycles: None,
+        integration_results: vec![],
+        completion_proposal: None,
+        completion_confirmation: None,
+        completion_receipts: vec![],
     }
 }
 

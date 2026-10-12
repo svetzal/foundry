@@ -105,14 +105,17 @@ The read-only agent chooses exactly one typed action:
 | Action | Effect |
 | --- | --- |
 | `advance` | Advance an eligible member, assigning a project to a candidate |
-| `dispatch` | Start one concrete initiative-owned task in a registered project |
+| `dispatch` | Start one initiative-owned task in a registered project |
 | `hold` | Wait for explicit member milestones |
 | `relay` | Record a finding for the selected members |
 | `ask` | Open one shared owner question |
+| `stage` | Add a campaign for work the existing members do not cover |
+| `done` | Propose completion after the outcome checks pass |
 | `escalate` | Stop for owner attention with a reason |
 
 The assessment receives the outcome, brief identity, member results, findings,
-questions, owner decisions and recent trunk evidence. Its provider is the
+questions, owner decisions, integration results and recent trunk evidence. Its
+provider is the
 initiative's formation provider, at balanced tier and medium effort.
 `initiative_steered` retains the exact prompt, provider and typed decision.
 
@@ -283,6 +286,11 @@ foundry initiative derive --from et:journey:adopt-contract --projects producer,c
 Add `--authorized-by <owner>` to record the authorizing owner. If omitted,
 it defaults to the invoking user. Derivation records the initiative in
 Foundry with staged candidates. It does not start member campaigns.
+Add `--integration-gates <file>` to include shared checks during derivation.
+The file contains a JSON array of gate definitions, as shown in
+[Check the outcome across repositories](#check-the-outcome-across-repositories).
+Foundry adds these gates to the reviews supplied by Tracker.
+The file accepts only entries of kind `gate`.
 
 Foundry reads a committed projection first. Supported paths are
 `.et/projection.json`, `.alloy/projections/et.json` and
@@ -308,22 +316,106 @@ It does not start redundant work or write Tracker state.
 Each later steer reads intent again. New approved intent becomes a candidate.
 Withdrawn intent stops its owned work gracefully. Completed intent retains its
 evidence and history. Existing findings and cycle counts remain attached to
-their intent references. Foundry never runs `et close` in slice 1.
+their intent references. Tracker stays unchanged until the owner confirms completion.
 
-## Complete or cancel
+## Check the outcome across repositories
 
-Complete an initiative after the owner affirms its outcome.
+Add integration gates to the initiative's `done_evidence`:
 
-Completion stops unfinished member campaigns gracefully and clears their owner
-questions. Those campaigns become cancelled because the overall outcome is
-verified; their individual missions are not recorded as complete. Members that
-are already complete or cancelled keep their status. Running cycles can settle
-and preserve their work, while queued cycles stop.
+```json
+{
+  "kind": "gate",
+  "command": "python3 producer/scripts/check-contract.py consumer",
+  "host": null,
+  "required": true,
+  "artifacts": ["producer/scripts/check-contract.py", "consumer/contract.json"]
+}
+```
+
+Omit `host`, or set it to `null`, to use the daemon's host.
+A named remote host uses SSH and that host's registered checkouts.
+The daemon's host is ops-01 in production and the Mac during development.
+The gate host needs Git, Python 3 and the Foundry CLI on its command path.
+Named remote hosts also need a running Foundry daemon for registry and pacing checks.
+
+Foundry fetches each registered trunk and permits only a fast-forward update.
+It creates disposable copies beneath a shared directory.
+Each copy uses its registered project name, such as `producer` or `consumer`.
+The command runs from that shared directory.
+Use paths relative to that directory for the command and required artifacts.
+
+Foundry checks the artifacts before starting the command.
+A missing artifact, failed checkout update or failed command cannot pass the gate.
+Commands run through `foundry capture`, with stdout and stderr retained in
+Foundry evidence.
+The result records the host and exact trunk commits.
+Gate failures create findings for the next assessment.
+
+Steering receives the gate results and reviews each outcome statement against
+the trunks.
+Passing member gates alone does not prove the shared outcome.
+Changed trunks, intent or owner policy invalidate an earlier completion proposal.
+
+## Add work uncovered by an integration check
+
+An integration check can expose work that no member campaign covers.
+Steering can choose `stage` to add a campaign within the initiative's registered
+projects.
+Foundry checks the campaign definition, ownership, providers and shared budget.
+It records the new member without starting an execution cycle.
+A later eligible advance starts its work through normal pacing.
+
+Inspect staged work with these commands:
+
+```bash
+foundry initiative show shared-contract
+foundry campaign list
+foundry queue --source initiative:shared-contract
+```
+
+## Confirm completion
+
+A `done` decision is a proposal for the owner.
+Every required integration gate must pass.
+Steering must affirm every review statement with supporting evidence.
+Open questions and unfinished intent prevent completion.
+The initiative remains open while it waits for the owner.
+
+Read the proposal and its evidence:
+
+```bash
+foundry initiative show shared-contract
+foundry initiative show shared-contract --json
+```
+
+Confirm the outcome with a reason:
 
 ```bash
 foundry initiative complete shared-contract \
   --reason "Both sides passed the contract review"
 ```
+
+Foundry checks that the evidence still matches the current trunks, intent and policy.
+If it changed, request another assessment with `initiative advance`.
+An explicit offline command cannot bypass outcome checks or change Tracker.
+
+For a derived initiative, confirmation closes verified Tracker interactions
+through `et close`.
+It closes the goal after its children are in reality and its success criteria
+are affirmed.
+Foundry runs the Tracker CLI from the supplying repository.
+It does not read or copy Tracker credentials.
+
+Closure receipts record successful Tracker changes.
+A failed closure leaves the initiative open and retains those receipts.
+Retry the same completion command after resolving the reported failure.
+A retry does not repeat a closure already confirmed by current Tracker state.
+After a restart, the daemon also retries completion that the owner has already
+confirmed. It checks the evidence again before each Tracker change.
+If evidence changes after confirmation, use `initiative decide` to record the
+new owner direction. Then request another assessment and confirm its proposal.
+
+## Cancel the initiative
 
 Cancel an initiative when the owner stops the work:
 
@@ -331,13 +423,13 @@ Cancel an initiative when the owner stops the work:
 foundry initiative cancel shared-contract --reason "The shared contract was withdrawn"
 ```
 
-Cancellation stops its member campaigns gracefully. Running cycles can settle
-and preserve their work. It does not discard preserved branches.
+Cancellation stops its member campaigns gracefully.
+Running cycles can settle and preserve their work.
+It does not discard preserved branches or close Tracker entities.
 
-Slice 2 adds integration gates, general campaign staging and outcome evaluation,
-including Tracker closure. Slice 3 adds question aging and dashboard controls.
-Development stays on the Mac's synthetic daemon. Promotion to ops-01 requires
-Stacey's go-ahead.
+Slice 3 adds question aging and dashboard controls.
+Development stays on the Mac's synthetic daemon.
+Promotion to ops-01 requires Stacey's go-ahead.
 
 See [campaigns](campaigns.md), [the work queue](work-queue.md) and
 [initiative events](../reference/event-types.md#initiatives-and-findings).

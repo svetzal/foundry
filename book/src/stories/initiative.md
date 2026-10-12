@@ -8,17 +8,32 @@ In Tracker, Maya has an approved goal, `explain-delays`, and a journey,
 `understand-delay`. Its interactions cover publishing a reason and displaying it
 to the customer. The journey puts the API interaction before the portal one.
 
-This story uses initiative slice 1, introduced in Foundry 0.48.0.
-Slice 2 will add automatic outcome evaluation and Tracker closure.
+This story includes slice 2, currently under development on the Mac.
+Promotion to ops-01 follows owner approval.
 
 ## Bring the intent into Foundry
 
 Maya has registered both execution projects with charters and required gates.
+She saves the shared check as `delay-gates.json`:
+
+```json
+[
+  {
+    "kind": "gate",
+    "command": "python3 dispatch-api/scripts/check-delay.py customer-portal",
+    "required": true,
+    "artifacts": ["dispatch-api/scripts/check-delay.py", "customer-portal/package.json"]
+  }
+]
+```
+
+The check starts both applications and verifies their shared contract.
 Maya runs derivation from the repository that supplies the Tracker intent:
 
 ```bash
 foundry initiative derive --from et:journey:understand-delay \
-  --projects dispatch-api,customer-portal --authorized-by Maya
+  --projects dispatch-api,customer-portal --authorized-by Maya \
+  --integration-gates delay-gates.json
 foundry initiative show understand-delay
 ```
 
@@ -100,12 +115,34 @@ If Maya uses a committed projection, she commits that update before steering.
 When the source uses the read-only Tracker CLI instead, steering reads its
 current intent. Editing an uncommitted projection does not change the input.
 
+## Discover a gap between the two applications
+
+The portal change lands and its own gates pass.
+The initiative's integration check runs the current API and portal trunks together.
+It finds that older responses omit the new field.
+The portal still needs a useful explanation for those responses.
+
+Foundry records a regression finding.
+Steering stages a compatibility campaign in `customer-portal` because the
+existing mission did not cover this case.
+Maya can see the new member before its next advance starts work.
+It uses the initiative's existing authorization, providers and remaining cycle budget.
+
+The campaign adds the fallback and lands it.
+The next integration check passes against both current trunks.
+Steering reviews the customer's journey and proposes completion.
+The proposal contains the tested commits and the evidence for each review statement.
+
 ## Check the customer's ending
 
-The portal change lands and its gates pass. Maya checks the two applications
-together with a representative delayed delivery. She confirms that the
-customer can see a useful explanation and that older API clients still work.
+Maya reads the proposal:
 
+```bash
+foundry initiative show understand-delay
+```
+
+She confirms that the customer can see a useful explanation and that older API
+clients still work.
 She records completion:
 
 ```bash
@@ -113,11 +150,12 @@ foundry initiative complete understand-delay \
   --reason "The portal explained a delayed delivery using the API response; old clients still worked"
 ```
 
-In slice 1, this owner check supplies the overall completion decision. Foundry
-does not run initiative integration gates or close Tracker entities. Maya
-handles Tracker closure through her normal intent review after checking the
-evidence.
+Foundry checks that the tested trunks and intent are still current.
+It closes the verified Tracker interactions, then the goal when its success
+criteria and children are satisfied.
+The initiative becomes complete after those changes succeed.
+A failed Tracker call leaves it open with receipts for the changes that did succeed.
 
-This follows Tracker journey `outcome_across_repos`, through its currently
-implemented steps. Read [Initiatives](../guide/initiatives.md) for definitions,
-milestones, holds and findings.
+This follows Tracker journey `outcome_across_repos`.
+Read [Initiatives](../guide/initiatives.md) for gate definitions, milestones,
+holds and findings.

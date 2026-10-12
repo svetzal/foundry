@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Slice 2 initiative outcome evidence: host-named integration checks on
+  disposable copies of current trunks, retained command logs and automatic
+  findings for failed checks. Tracker derivation accepts a gate definition file
+  with `--integration-gates`.
+- Steering can stage a campaign for uncovered work and propose `done` with
+  evidence for every outcome review. Completion requires current integration
+  results and an explicit owner confirmation.
+- Confirmed completion closes verified Tracker interactions and the linked
+  goal through the Tracker CLI. Durable receipts support partial-failure
+  recovery without reporting a failed closure as completion.
+- `foundry registry list --json` provides daemon-owned project paths for
+  integration checks on named hosts.
+
+Development and validation remain on the Mac. Promotion to ops-01 awaits
+Stacey's go-ahead.
+
 ## [0.48.0] - 2026-10-12
 
 ### Added

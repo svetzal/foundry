@@ -8,6 +8,11 @@ use foundry_sdk::registry::{
     resolve_skill_install,
 };
 
+/// Render registered projects as a JSON array, including empty registries.
+pub fn project_json(projects: &[ProjectEntry]) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(projects).map(|json| format!("{json}\n"))
+}
+
 /// Render a project's full detail view as a multi-line string.
 pub fn project_detail(project: &ProjectEntry) -> String {
     let mut out = String::new();

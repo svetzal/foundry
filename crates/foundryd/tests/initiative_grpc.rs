@@ -97,6 +97,176 @@ fn definition() -> String {
         "providers":{"formation":"claude","execution":"codex","review":"claude"}}).to_string()
 }
 
+fn seed_outcome_repository(home: &std::path::Path) {
+    for args in [
+        vec!["init", "--quiet", "--initial-branch=main"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.invalid"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(home)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    std::fs::write(home.join(".gitignore"), "*\n!.gitignore\n!README.md\n").unwrap();
+    std::fs::write(home.join("README.md"), "Synthetic trunk").unwrap();
+    for args in [
+        vec!["add", ".gitignore", "README.md"],
+        vec!["commit", "--quiet", "-m", "Seed trunk"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(home)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let origin = home.join("origin.git");
+    for args in [
+        vec![
+            "init",
+            "--quiet",
+            "--bare",
+            "--initial-branch=main",
+            origin.to_str().unwrap(),
+        ],
+        vec!["remote", "add", "origin", origin.to_str().unwrap()],
+        vec!["push", "--quiet", "origin", "main"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(home)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+fn propose_test_outcome(home: &std::path::Path) {
+    use foundry_sdk::initiative::{DoneEvidence, IntegrationGateResult, OutcomeReview};
+    let path = home.join("campaigns.json");
+    let registry: Registry = serde_json::from_value(json!({"version":2,"projects":[{"name":"sample","path":home,"stack":"rust","agent":"codex","repo":"local/sample","branch":"main"}]})).unwrap();
+    let mut guard = CampaignStore::lock_exclusive(&path).unwrap();
+    guard
+        .store
+        .find_initiative_mut("shared")
+        .unwrap()
+        .done_evidence
+        .push(DoneEvidence::Gate {
+            command: "true".into(),
+            host: None,
+            required: true,
+            artifacts: vec![],
+        });
+    let context = foundry_blocks::blocks::capture_initiative_external_context(
+        guard.store.find_initiative("shared").unwrap(),
+        &registry,
+    )
+    .unwrap();
+    let snapshot = guard.store.outcome_snapshot("shared", context.repositories).unwrap();
+    guard
+        .store
+        .record_integration_result(
+            "shared",
+            IntegrationGateResult {
+                id: "wire_gate".into(),
+                gate_index: 1,
+                host: "synthetic".into(),
+                command: "true".into(),
+                snapshot: snapshot.clone(),
+                passed: true,
+                exit_code: Some(0),
+                report: "gate-capture.md".into(),
+                artifacts: vec![],
+                recorded_at: chrono::Utc::now(),
+            },
+        )
+        .unwrap();
+    guard
+        .store
+        .propose_completion(
+            "shared",
+            "wire_done",
+            snapshot,
+            vec![OutcomeReview {
+                statement: "The contract works".into(),
+                affirmed: true,
+                evidence: vec!["gate-capture.md".into()],
+            }],
+        )
+        .unwrap();
+    guard.save().unwrap();
+    drop(guard);
+}
+
+#[tokio::test]
+async fn typed_outcome_evidence_and_owner_confirmation_survive_rpc_round_trip() {
+    let home = tempfile::tempdir().unwrap();
+    seed_outcome_repository(home.path());
+    seed(home.path());
+    let (mut client, server) = client(home.path()).await;
+    client
+        .add_initiative(proto::AddInitiativeRequest {
+            definition_json: definition(),
+        })
+        .await
+        .unwrap();
+    propose_test_outcome(home.path());
+    let shown = client
+        .get_initiative(proto::GetInitiativeRequest {
+            name: "shared".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(shown.integration_results[0].report, "gate-capture.md");
+    assert_eq!(shown.integration_results[0].exit_code, Some(0));
+    assert_eq!(
+        shown.integration_results[0].snapshot.as_ref().unwrap().repositories[0].project,
+        "sample"
+    );
+    assert!(shown.completion_proposal.as_ref().unwrap().reviews[0].affirmed);
+    assert!(shown.completion_confirmation.is_none());
+    let completed = client
+        .complete_initiative(proto::EndInitiativeRequest {
+            name: "shared".into(),
+            reason: "Owner verified the trunk evidence".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(completed.status, "completed");
+    assert_eq!(completed.completion_confirmation.as_ref().unwrap().proposal_id, "wire_done");
+    assert!(completed.completion_receipts.is_empty());
+    let retried = client
+        .complete_initiative(proto::EndInitiativeRequest {
+            name: "shared".into(),
+            reason: "Owner retried".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(retried, completed);
+    server.abort();
+}
+
 #[tokio::test]
 async fn typed_commands_fan_out_decisions_and_serve_owned_brief_and_findings() {
     let home = tempfile::tempdir().unwrap();
@@ -182,17 +352,15 @@ async fn typed_commands_fan_out_decisions_and_serve_owned_brief_and_findings() {
         shown.members[0].campaign.as_ref().unwrap().initiative.as_deref(),
         Some("shared")
     );
-    let completed = client
+    let incomplete = client
         .complete_initiative(proto::EndInitiativeRequest {
             name: "shared".into(),
             reason: "Verified both members".into(),
         })
         .await
-        .unwrap()
-        .into_inner()
-        .initiative
-        .unwrap();
-    assert_eq!(completed.status, "completed");
+        .unwrap_err();
+    assert_eq!(incomplete.code(), tonic::Code::FailedPrecondition);
+    assert!(incomplete.message().contains("no done proposal"));
     server.abort();
 }
 
@@ -396,10 +564,7 @@ async fn shared_budget_changes_only_through_initiative_and_never_after_terminal(
     server.abort();
 }
 
-#[tokio::test]
-async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
-    let home = tempfile::tempdir().unwrap();
-    let source = tempfile::tempdir().unwrap();
+fn seed_tracker_source(source: &std::path::Path) {
     for args in [
         vec!["init", "--quiet"],
         vec!["config", "user.email", "test@example.invalid"],
@@ -408,21 +573,21 @@ async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
         assert!(
             std::process::Command::new("git")
                 .args(args)
-                .current_dir(source.path())
+                .current_dir(source)
                 .status()
                 .unwrap()
                 .success()
         );
     }
-    std::fs::create_dir(source.path().join(".et")).unwrap();
-    std::fs::write(source.path().join(".et/projection.json"), json!({
+    std::fs::create_dir(source.join(".et")).unwrap();
+    std::fs::write(source.join(".et/projection.json"), json!({
         "goals":[{"id":"outcome","description":"An approved outcome","success_criteria":"A verified contract"}],
         "interactions":[{"id":"contract","description":"Implement the contract","state":"create","goals":["outcome"]}], "journeys":[]
     }).to_string()).unwrap();
     assert!(
         std::process::Command::new("git")
             .args(["add", ".et/projection.json"])
-            .current_dir(source.path())
+            .current_dir(source)
             .status()
             .unwrap()
             .success()
@@ -430,17 +595,25 @@ async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
     assert!(
         std::process::Command::new("git")
             .args(["commit", "--quiet", "-m", "Seed intent"])
-            .current_dir(source.path())
+            .current_dir(source)
             .status()
             .unwrap()
             .success()
     );
+}
+
+#[tokio::test]
+async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
+    let home = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    seed_tracker_source(source.path());
     let (mut client, server) = client(home.path()).await;
     let request = |projects| proto::DeriveInitiativeRequest {
         from_ref: "et:goal:outcome".into(),
         projects,
         authorized_by: "Stacey".into(),
         source_repo: source.path().to_string_lossy().into_owned(),
+        integration_gates: vec![],
     };
     assert_eq!(
         client
@@ -450,8 +623,27 @@ async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
             .code(),
         tonic::Code::InvalidArgument
     );
+    let mut definition = request(vec!["sample".into()]);
+    definition.integration_gates = vec![proto::InitiativeEvidence {
+        kind: "review".into(),
+        statement: "Cannot replace Tracker reviews".into(),
+        ..Default::default()
+    }];
+    assert_eq!(
+        client.derive_initiative(definition).await.unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+    let mut definition = request(vec!["sample".into()]);
+    definition.integration_gates = vec![proto::InitiativeEvidence {
+        kind: "gate".into(),
+        command: "python3 scripts/integrate.py".into(),
+        host: Some("build-host".into()),
+        required: true,
+        artifacts: vec!["sample/contract.json".into()],
+        ..Default::default()
+    }];
     let derived = client
-        .derive_initiative(request(vec!["sample".into()]))
+        .derive_initiative(definition)
         .await
         .unwrap()
         .into_inner()
@@ -459,6 +651,16 @@ async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
         .unwrap();
     assert_eq!(derived.members.len(), 1);
     assert_eq!(derived.members[0].kind, "candidate");
+    assert!(
+        derived.done_evidence.iter().any(
+            |evidence| evidence.kind == "review" && evidence.statement == "A verified contract"
+        )
+    );
+    let gate = derived.done_evidence.iter().find(|evidence| evidence.kind == "gate").unwrap();
+    assert_eq!(gate.command, "python3 scripts/integrate.py");
+    assert_eq!(gate.host.as_deref(), Some("build-host"));
+    assert!(gate.required);
+    assert_eq!(gate.artifacts, ["sample/contract.json"]);
     assert!(!derived.steering_enabled);
     assert_eq!(
         derived.derive_source.unwrap().repo,

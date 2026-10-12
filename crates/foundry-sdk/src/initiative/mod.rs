@@ -11,6 +11,8 @@ use crate::campaign::{CampaignStatus, CampaignStore, OwnerDecision, Transition};
 use crate::gateway::StageProviders;
 
 pub mod derive;
+pub mod outcome;
+pub use outcome::*;
 pub mod steering;
 pub use steering::*;
 
@@ -84,6 +86,14 @@ pub struct Initiative {
     pub work_admissions: Vec<WorkAdmission>,
     #[serde(default)]
     pub pairing_base_cycles: Option<u64>,
+    #[serde(default)]
+    pub integration_results: Vec<IntegrationGateResult>,
+    #[serde(default)]
+    pub completion_proposal: Option<CompletionProposal>,
+    #[serde(default)]
+    pub completion_confirmation: Option<CompletionConfirmation>,
+    #[serde(default)]
+    pub completion_receipts: Vec<EtCloseReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +398,25 @@ impl Initiative {
                 }
             }
         }
+        for member in &self.members {
+            let mut pending = member.after.clone();
+            let mut visited = BTreeSet::new();
+            while let Some(dependency) = pending.pop() {
+                let dependency = dependency.split(':').next().unwrap_or(&dependency);
+                if dependency == member.name {
+                    return Err(InitiativeError::Invalid(format!(
+                        "member '{}' has a dependency cycle",
+                        member.name
+                    )));
+                }
+                if visited.insert(dependency.to_owned())
+                    && let Some(prerequisite) =
+                        self.members.iter().find(|member| member.name == dependency)
+                {
+                    pending.extend(prerequisite.after.clone());
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -426,6 +455,10 @@ impl CampaignStore {
             || !initiative.work_admissions.is_empty()
             || !initiative.close_proposals.is_empty()
             || !initiative.milestones.is_empty()
+            || !initiative.integration_results.is_empty()
+            || initiative.completion_proposal.is_some()
+            || initiative.completion_confirmation.is_some()
+            || !initiative.completion_receipts.is_empty()
             || initiative.members.iter().any(|member| member.audit_finding_id.is_some())
         {
             return Err(InitiativeError::Invalid(
@@ -582,6 +615,9 @@ impl CampaignStore {
         }
         if let Some(initiative) = self.find_initiative_mut(name) {
             initiative.status = InitiativeStatus::Completed;
+            if let Some(confirmation) = &mut initiative.completion_confirmation {
+                confirmation.last_error = None;
+            }
             initiative.open_questions.clear();
             initiative.steering = None;
             initiative.pending_actions.clear();
@@ -727,7 +763,7 @@ impl CampaignStore {
                 });
             }
         }
-        if !initiative.open_questions.is_empty() {
+        if !initiative.open_questions.is_empty() || initiative.completion_proposal.is_some() {
             initiative.status = InitiativeStatus::Escalated;
         } else if has_progress || initiative.status == InitiativeStatus::Active {
             initiative.status = InitiativeStatus::Active;

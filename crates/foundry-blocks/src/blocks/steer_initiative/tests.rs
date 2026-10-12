@@ -5,14 +5,14 @@ use foundry_sdk::initiative::{Finding, FindingKind, FindingSource};
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
 
-struct Fixture {
-    temp: tempfile::TempDir,
-    store: PathBuf,
-    ledger: PathBuf,
-    registry: Arc<RwLock<Registry>>,
+pub(super) struct Fixture {
+    pub(super) temp: tempfile::TempDir,
+    pub(super) store: PathBuf,
+    pub(super) ledger: PathBuf,
+    pub(super) registry: Arc<RwLock<Registry>>,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("campaigns.json");
         let ledger = temp.path().join("ledger.json");
@@ -34,7 +34,7 @@ impl Fixture {
             registry: Arc::new(RwLock::new(registry)),
         }
     }
-    fn trigger(member: Option<&str>) -> Event {
+    pub(super) fn trigger(member: Option<&str>) -> Event {
         Event::new(
             EventType::InitiativeAdvanceRequested,
             "system".into(),
@@ -42,7 +42,11 @@ impl Fixture {
             serde_json::json!({"initiative":"shared","member":member}),
         )
     }
-    fn steer(&self, agent: Arc<dyn AgentGateway>, shell: Arc<dyn ShellGateway>) -> SteerInitiative {
+    pub(super) fn steer(
+        &self,
+        agent: Arc<dyn AgentGateway>,
+        shell: Arc<dyn ShellGateway>,
+    ) -> SteerInitiative {
         SteerInitiative::new(
             agent,
             shell,
@@ -52,7 +56,7 @@ impl Fixture {
         )
     }
 }
-fn ask() -> &'static str {
+pub(super) fn ask() -> &'static str {
     r#"{"action":{"decision":"ask","question":"Choose delivery priority","members":["one","two"]},"audits":[]}"#
 }
 

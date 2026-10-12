@@ -552,7 +552,11 @@ enum RegistryCommands {
     Init,
 
     /// List all projects from the daemon-owned registry
-    List,
+    List {
+        /// Print registered projects as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Show details for a project from the daemon-owned registry
     Show {
@@ -729,7 +733,7 @@ async fn handle_registry_command(
 ) -> Result<()> {
     match sub {
         RegistryCommands::Init => registry_commands::init(path, offline),
-        RegistryCommands::List => registry_commands::list(path, addr, offline).await,
+        RegistryCommands::List { json } => registry_commands::list(path, addr, offline, json).await,
         RegistryCommands::Show { name } => {
             registry_commands::show(path, addr, offline, &name).await
         }

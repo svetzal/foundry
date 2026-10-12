@@ -514,7 +514,55 @@ message Initiative {
     repeated InitiativeWorkAdmission work_admissions = 27;
     optional uint64 pairing_base_cycles = 28;
     uint64 steering_history_count = 29;
+    repeated InitiativeIntegrationResult integration_results = 30;
+    InitiativeCompletionProposal completion_proposal = 31;
+    InitiativeCompletionConfirmation completion_confirmation = 32;
+    repeated InitiativeEtCloseReceipt completion_receipts = 33;
 }
+message InitiativeRepositoryIdentity {
+    string project = 1;
+    string root = 2;
+    string registry = 3;
+    string trunk = 4;
+    string head = 5;
+    string status = 6;
+    string diff = 7;
+}
+message InitiativeOutcomeSnapshot {
+    repeated InitiativeRepositoryIdentity repositories = 1;
+    string intent_revision = 2;
+    string policy_hash = 3;
+}
+message InitiativeIntegrationResult {
+    string id = 1;
+    uint64 gate_index = 2;
+    string host = 3;
+    string command = 4;
+    InitiativeOutcomeSnapshot snapshot = 5;
+    bool passed = 6;
+    optional int32 exit_code = 7;
+    string report = 8;
+    repeated string artifacts = 9;
+    string recorded_at = 10;
+}
+message InitiativeOutcomeReview {
+    string statement = 1;
+    bool affirmed = 2;
+    repeated string evidence = 3;
+}
+message InitiativeCompletionProposal {
+    string id = 1;
+    InitiativeOutcomeSnapshot snapshot = 2;
+    repeated InitiativeOutcomeReview reviews = 3;
+    string proposed_at = 4;
+}
+message InitiativeCompletionConfirmation {
+    string proposal_id = 1;
+    string reason = 2;
+    string confirmed_at = 3;
+    optional string last_error = 4;
+}
+message InitiativeEtCloseReceipt { string intent_ref = 1; string completed_at = 2; string proposal_id = 3; }
 message DeriveSource { string repo = 1; string from = 2; }
 message MemberHold { string member = 1; repeated string until = 2; string reason = 3; bool owner = 4; }
 message MemberMilestone { string member = 1; string name = 2; repeated string evidence = 3; }
@@ -540,6 +588,7 @@ message DeriveInitiativeRequest {
     repeated string projects = 2;
     string authorized_by = 3;
     string source_repo = 4;
+    repeated InitiativeEvidence integration_gates = 5;
 }
 message HoldInitiativeMember { string member = 1; repeated string until = 2; string reason = 3; }
 message RelayInitiativeFinding { string finding_id = 1; repeated string members = 2; }

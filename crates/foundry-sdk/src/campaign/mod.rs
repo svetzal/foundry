@@ -475,7 +475,7 @@ impl Campaign {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignBudget {
     #[serde(default = "default_max_cycles")]
     pub max_cycles: u64,
@@ -634,7 +634,7 @@ pub struct OwnerDecision {
     pub decided_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoneEvidence {
     Gate {

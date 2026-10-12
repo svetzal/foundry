@@ -239,6 +239,7 @@ fn member_budget_is_granted_only_within_the_shared_total_and_atomic_owner_extens
 fn projection(state: &str) -> IntentProjection {
     IntentProjection {
         goals: vec![Goal {
+            state: "create".into(),
             id: "goal".into(),
             description: "Both behaviors work".into(),
             success_criteria: "Both verified".into(),
@@ -747,4 +748,143 @@ fn member_override_preserves_unmet_milestone_and_steering_holds() {
     assert_eq!(holds.len(), 2);
     assert!(holds.iter().all(|hold| !hold.until.is_empty()));
     assert!(store.enforce_can_form("two", &[]).is_err());
+}
+
+use crate::initiative::{
+    DoneEvidence, IntegrationGateResult, OutcomeReview, SteeringRepositoryIdentity,
+};
+
+fn derived_gate_store() -> (
+    CampaignStore,
+    IntentProjection,
+    Vec<DoneEvidence>,
+    Vec<SteeringRepositoryIdentity>,
+) {
+    let original = projection("create");
+    let mut initiative = super::super::derive::derive_from_projection(
+        &original,
+        "et:goal:goal",
+        vec!["sample".into()],
+    )
+    .unwrap();
+    initiative.authorized_by = Some("Stacey".into());
+    initiative.derive_source = Some(DeriveSource {
+        repo: "/tmp/intent".into(),
+        from: "et:goal:goal".into(),
+    });
+    let gates: Vec<DoneEvidence> = serde_json::from_value(serde_json::json!([
+        {"kind":"gate","command":"./first-probe","host":"development","artifacts":["first.json"]},
+        {"kind":"gate","command":"./second-probe","host":"development","artifacts":["second.json"]}
+    ]))
+    .unwrap();
+    let mut evidence = gates.clone();
+    evidence.extend(initiative.done_evidence);
+    initiative.done_evidence = evidence;
+    let mut store = CampaignStore::default();
+    store.add_initiative(initiative, &["sample".into()]).unwrap();
+    store.refresh_derived_intent("goal", &original).unwrap();
+    let identities = vec![SteeringRepositoryIdentity {
+        project: "sample".into(),
+        root: "/tmp/sample".into(),
+        registry: "sample".into(),
+        trunk: "aabbcc".into(),
+        head: "aabbcc".into(),
+        status: String::new(),
+        diff: String::new(),
+    }];
+    (store, original, gates, identities)
+}
+
+fn outcome_reviews(store: &CampaignStore) -> Vec<OutcomeReview> {
+    store
+        .find_initiative("goal")
+        .unwrap()
+        .done_evidence
+        .iter()
+        .filter_map(|evidence| {
+            if let DoneEvidence::Review { statement } = evidence {
+                Some(OutcomeReview {
+                    statement: statement.clone(),
+                    affirmed: true,
+                    evidence: vec!["review-proof.json".into()],
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+}
+
+#[test]
+fn refreshed_tracker_intent_preserves_owner_gate_indexes_and_invalidates_old_outcome_evidence() {
+    let (mut store, original, gates, identities) = derived_gate_store();
+    let before = store.outcome_snapshot("goal", identities.clone()).unwrap();
+    for (index, gate) in gates.iter().enumerate() {
+        let DoneEvidence::Gate {
+            command, artifacts, ..
+        } = gate
+        else {
+            panic!("expected gate")
+        };
+        store
+            .record_integration_result(
+                "goal",
+                IntegrationGateResult {
+                    id: format!("gate-{index}"),
+                    gate_index: index,
+                    host: "development".into(),
+                    command: command.clone(),
+                    snapshot: before.clone(),
+                    passed: true,
+                    exit_code: Some(0),
+                    report: "Captured integration evidence".into(),
+                    artifacts: artifacts.clone(),
+                    recorded_at: Utc::now(),
+                },
+            )
+            .unwrap();
+    }
+    store
+        .propose_completion("goal", "done", before.clone(), outcome_reviews(&store))
+        .unwrap();
+    store.refresh_derived_intent("goal", &original).unwrap();
+    assert_eq!(store.outcome_snapshot("goal", identities.clone()).unwrap(), before);
+    store.validate_completion("goal", &before).unwrap();
+    let mut changed = original;
+    changed.interactions[0].description = "The actor can greet the team by name".into();
+    changed.interactions.push(Interaction {
+        id: "follow-up".into(),
+        description: "The actor can receive a reply".into(),
+        state: "create".into(),
+        priority: 2,
+        goals: vec!["goal".into()],
+        goal: None,
+    });
+    store.refresh_derived_intent("goal", &changed).unwrap();
+    let current = store.find_initiative("goal").unwrap();
+    assert_eq!(
+        serde_json::to_value(&current.done_evidence[..2]).unwrap(),
+        serde_json::to_value(&gates).unwrap()
+    );
+    assert!(current.done_evidence.iter().any(|evidence|matches!(evidence,DoneEvidence::Review {statement} if statement=="The actor can greet the team by name")));
+    assert!(current.done_evidence.iter().any(|evidence|matches!(evidence,DoneEvidence::Review {statement} if statement=="The actor can receive a reply")));
+    assert!(!current.done_evidence.iter().any(|evidence|matches!(evidence,DoneEvidence::Review {statement} if statement=="The actor can greet the team")));
+    let fresh = store.outcome_snapshot("goal", identities).unwrap();
+    assert!(store.validate_completion("goal", &fresh).is_err());
+    assert!(store.invalidate_completion("goal", &fresh).unwrap());
+    assert!(
+        store
+            .propose_completion("goal", "new-done", fresh, outcome_reviews(&store))
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .find_initiative("goal")
+            .unwrap()
+            .integration_results
+            .iter()
+            .map(|result| result.gate_index)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
 }

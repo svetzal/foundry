@@ -266,6 +266,21 @@ impl DurableWorkAdmission {
             item.reserved_projects =
                 registry.active_projects().iter().map(|p| p.name.clone()).collect();
         }
+        if event.event_type == EventType::InitiativeAdvanceRequested
+            && let Some(name) = event.payload_str("initiative")
+        {
+            // Integration preparation fast-forwards registered trunks. Reserve
+            // their repositories through normal pacing before any Git work.
+            let campaigns = foundry_sdk::campaign::CampaignStore::load(&self.campaigns_path)?;
+            if let Some(initiative) = campaigns.find_initiative(name)
+                && (initiative.completion_proposal.is_some()
+                    || initiative.done_evidence.iter().any(|evidence| {
+                        matches!(evidence, foundry_sdk::initiative::DoneEvidence::Gate { .. })
+                    }))
+            {
+                item.reserved_projects.clone_from(&initiative.projects);
+            }
+        }
         Ok(Some(item))
     }
 }
@@ -845,6 +860,7 @@ mod tests {
                 EventType::ProjectIterationRequested,
                 EventType::ReleaseRequested,
                 EventType::CampaignAdvanceRequested,
+                EventType::InitiativeAdvanceRequested,
                 EventType::SupplyChainScanStarted,
                 EventType::PipelineCheckRequested,
                 EventType::MainBranchAudited,
@@ -1575,6 +1591,40 @@ mod tests {
             assert!(!result.is_success());
             assert!(h.effects.lock().expect("effects").is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn initiative_integration_waits_for_all_trunks_before_running() {
+        let h = Harness::new(true);
+        let mut campaigns = foundry_sdk::campaign::CampaignStore::default();
+        let initiative = serde_json::from_value(serde_json::json!({
+            "name":"shared", "outcome":"The trunks agree", "projects":["alpha","beta"],
+            "authorized_by":"Stacey", "members":[],
+            "done_evidence":[{"kind":"gate","command":"true","required":true}]
+        }))
+        .unwrap();
+        campaigns.add_initiative(initiative, &["alpha".into(), "beta".into()]).unwrap();
+        campaigns.save(&h.policy.campaigns_path).unwrap();
+        let running = h.seed_running("beta");
+        let event = steer_root("integration");
+        let Admission::Deferred { id, .. } = h.policy.prepare(&event, None).unwrap() else {
+            panic!("expected queued integration");
+        };
+        assert_eq!(
+            h.items().into_iter().find(|item| item.id == id).unwrap().reserved_projects,
+            ["alpha", "beta"]
+        );
+        h.scheduler.tick().await;
+        assert!(h.effects.lock().unwrap().is_empty());
+        h.settle(&running);
+        h.scheduler.tick().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while h.effects.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("integration starts after its trunks are released");
     }
 
     #[test]
