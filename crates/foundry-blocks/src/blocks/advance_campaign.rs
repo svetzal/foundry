@@ -11,7 +11,7 @@ use foundry_sdk::campaign::{
 };
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
-use foundry_sdk::gateway::AgentStage;
+use foundry_sdk::gateway::{AgentStage, StageProviders};
 use foundry_sdk::initiative::{Finding, FindingKind, FindingSource, InitiativeContext};
 use foundry_sdk::payload::{
     CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
@@ -679,6 +679,7 @@ impl AdvanceOutcome {
 #[derive(Default)]
 struct FormationRecord {
     initiative_context: Option<InitiativeContext>,
+    selected_providers: Option<StageProviders>,
     prompt: Option<String>,
     agent_provider: Option<String>,
     gate_results: Vec<foundry_sdk::gates::GateResult>,
@@ -889,6 +890,7 @@ fn execution_event(
     base_ref: Option<String>,
     operator_origin: Option<&str>,
     initiative_context: Option<&InitiativeContext>,
+    selected_providers: Option<StageProviders>,
 ) -> Event {
     // `cycles_completed` was incremented for this dispatch just above, so it is
     // the number of the cycle this task *is* — and it matches the count the
@@ -910,10 +912,11 @@ fn execution_event(
             .or_else(|| initiative_context.and_then(|context| context.agent_provider.as_deref()))
             .unwrap_or("codex")
     );
-    payload["providers"] = serde_json::json!(initiative_context.map_or_else(
-        || campaign.providers,
-        |context| campaign.providers.inherit(&context.providers)
-    ));
+    payload["providers"] =
+        serde_json::json!(selected_providers.unwrap_or_else(|| initiative_context.map_or_else(
+            || campaign.providers,
+            |context| campaign.providers.inherit(&context.providers)
+        )));
     if let Some(context) = initiative_context {
         payload["initiative"] = serde_json::json!(context.initiative);
         payload["initiative_brief"] = serde_json::json!(context.brief);
@@ -1022,7 +1025,23 @@ fn persist_or_terminal(
         .store
         .find(&execution.request.campaign)
         .and_then(|campaign| campaign.initiative.clone())
-        && let Err(error) = guard.store.refresh_questions(&initiative)
+        && let Err(error) = (|| -> anyhow::Result<()> {
+            if guard.store.find_initiative(&initiative).is_some_and(|value| {
+                !value.status.is_terminal()
+                    && value.authorized_by.as_ref().is_some_and(|owner| !owner.trim().is_empty())
+            }) && let Some(completed) =
+                events.iter().find(|event| event.event_type == EventType::CampaignCompleted)
+            {
+                guard.store.record_milestone(
+                    &initiative,
+                    &execution.request.campaign,
+                    "completed",
+                    vec![format!("event:{}", completed.id)],
+                )?;
+            }
+            guard.store.refresh_questions(&initiative)?;
+            Ok(())
+        })()
     {
         return terminal_error_result(
             &execution.request.campaign,
@@ -1196,6 +1215,26 @@ fn enforce_done_gate_truth(
     }
 }
 
+/// Member overrides precede the admitted pairing; preserved work keeps its pairing.
+fn cycle_providers(
+    campaign: &Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+    context: Option<&InitiativeContext>,
+) -> StageProviders {
+    let inherited = context.map(|context| context.providers).unwrap_or_default();
+    let admitted = if next_base_ref(request).is_some() {
+        request
+            .run_result
+            .as_ref()
+            .map(|result| result.context.providers)
+            .unwrap_or_default()
+            .inherit(&request.providers)
+    } else {
+        request.providers
+    };
+    campaign.providers.inherit(&admitted.inherit(&inherited))
+}
+
 async fn derive_advance_outcome(
     execution: &AdvanceExecution,
     entry: &foundry_sdk::registry::ProjectEntry,
@@ -1208,10 +1247,7 @@ async fn derive_advance_outcome(
     let trace_id = execution.trace_id.clone();
     let initiative_context = execution.initiative_context.as_ref();
     campaign.validate()?;
-    let providers = initiative_context.map_or_else(
-        || campaign.providers,
-        |context| campaign.providers.inherit(&context.providers),
-    );
+    let providers = cycle_providers(campaign, request, initiative_context);
     let fallback = campaign
         .agent_provider
         .as_deref()
@@ -1268,6 +1304,7 @@ async fn derive_advance_outcome(
         prompt: Some(decision_request.prompt),
         agent_provider: formation_provider.map(|provider| provider.to_string()),
         initiative_context: initiative_context.cloned(),
+        selected_providers: Some(providers),
         gate_results: gate_results.clone(),
     };
     Ok((
@@ -1388,6 +1425,7 @@ fn apply_advance_outcome(
                     base_ref,
                     request.operator_origin.as_deref(),
                     record.initiative_context.as_ref(),
+                    record.selected_providers,
                 ),
             ]
         }
@@ -1507,7 +1545,7 @@ fn outcome_summary(campaign: &str, outcome: &AdvanceOutcome) -> String {
 ///
 /// RPCs, offline CLI commands and other formations can hold it. Their critical
 /// sections are short, but a runtime worker must never park on a flock.
-async fn lock_store(store_path: &Path) -> anyhow::Result<CampaignStoreGuard> {
+pub(super) async fn lock_store(store_path: &Path) -> anyhow::Result<CampaignStoreGuard> {
     let store_path = store_path.to_path_buf();
     tokio::task::spawn_blocking(move || CampaignStore::lock_exclusive(&store_path))
         .await
@@ -1622,6 +1660,7 @@ fn record_initiative_result(
     };
     let mut events = Vec::new();
     if result.landed {
+        record_landing_milestone(store, &initiative, execution, work_item)?;
         for finding in store.consume_findings(
             &initiative,
             &execution.request.campaign,
@@ -1685,6 +1724,33 @@ fn record_initiative_result(
     Ok(events)
 }
 
+fn record_landing_milestone(
+    store: &mut CampaignStore,
+    initiative: &str,
+    execution: &AdvanceExecution,
+    work_item: &str,
+) -> anyhow::Result<()> {
+    if store.find_initiative(initiative).is_some_and(|value| {
+        !value.status.is_terminal()
+            && value.authorized_by.as_ref().is_some_and(|owner| !owner.trim().is_empty())
+    }) {
+        let mut proof = vec![
+            format!("event:{}", execution.request.run_event_id.as_deref().unwrap_or_default()),
+            format!("work_item:{work_item}"),
+        ];
+        if let Some(cycle) = execution
+            .request
+            .run_result
+            .as_ref()
+            .and_then(|result| result.context.campaign_cycle)
+        {
+            proof.push(format!("cycle:{cycle}"));
+        }
+        store.record_milestone(initiative, &execution.request.campaign, "landed", proof)?;
+    }
+    Ok(())
+}
+
 async fn result_work_item(execution: &AdvanceExecution) -> String {
     let fallback = execution.request.run_event_id.clone().unwrap_or_default();
     let Some(result) = &execution.request.run_result else {
@@ -1715,14 +1781,26 @@ async fn result_work_item(execution: &AdvanceExecution) -> String {
     found.map_or(fallback, |item| item.id.clone())
 }
 
-async fn active_member_names(work_items_path: &Path) -> anyhow::Result<Vec<String>> {
+async fn active_member_names(
+    work_items_path: &Path,
+    store: &CampaignStore,
+) -> anyhow::Result<Vec<String>> {
     let path = work_items_path.to_path_buf();
     let ledger = tokio::task::spawn_blocking(move || WorkItemStore::load(&path)).await??;
     Ok(ledger
         .items
         .iter()
-        .filter(|item| item.state.is_waiting() || item.state == WorkItemState::Running)
-        .filter_map(|item| item.campaign_name().map(str::to_string))
+        .filter(|item| item.state.is_waiting() || item.occupies_slot())
+        .filter_map(|item| {
+            item.campaign_name().map(str::to_string).or_else(|| {
+                store
+                    .initiatives
+                    .iter()
+                    .flat_map(|initiative| &initiative.task_dispatches)
+                    .find(|receipt| receipt.work_item == item.id)
+                    .map(|receipt| receipt.member.clone())
+            })
+        })
         .collect())
 }
 
@@ -1735,7 +1813,7 @@ async fn lock_formation_store(
         .find(&execution.request.campaign)
         .is_some_and(|campaign| campaign.initiative.is_some())
     {
-        active_member_names(&execution.work_items_path).await?
+        active_member_names(&execution.work_items_path, &guard.store).await?
     } else {
         Vec::new()
     };
@@ -1773,6 +1851,7 @@ async fn prepare_formation_inner(
             ));
         }
     }
+    let initiative_steers = initiative_steering_enabled(&guard.store, &execution.request.campaign);
     let Some(campaign) = guard.store.find_mut(&execution.request.campaign) else {
         return Prepared::Finished(terminal_error_result(
             &execution.request.campaign,
@@ -1858,8 +1937,47 @@ async fn prepare_formation_inner(
         ));
     }
 
+    if initiative_steers && execution.request.run_result.is_some() {
+        let accounted = campaign.clone();
+        return Prepared::Finished(accounted_for_initiative(execution, &mut guard, &accounted));
+    }
+
     let formed_from = campaign.clone();
     save_formation_snapshot(execution, &guard, formed_from, &active_members)
+}
+
+fn initiative_steering_enabled(store: &CampaignStore, member: &str) -> bool {
+    store
+        .find(member)
+        .and_then(|campaign| campaign.initiative.as_deref())
+        .and_then(|name| store.find_initiative(name))
+        .is_some_and(|initiative| initiative.steering_enabled)
+}
+
+fn accounted_for_initiative(
+    execution: &AdvanceExecution,
+    guard: &mut CampaignStoreGuard,
+    campaign: &Campaign,
+) -> TaskBlockResult {
+    let reason = format!(
+        "campaign '{}' result accounted; initiative chooses the next action",
+        campaign.name
+    );
+    let events = vec![stood_down_event(
+        campaign,
+        execution.throttle,
+        reason.clone(),
+        &FormationRecord::default(),
+    )];
+    persist_or_terminal(
+        execution,
+        guard,
+        events,
+        reason,
+        "initiative member result could not be saved",
+        campaign.cycles_completed,
+        campaign.cycles_landed,
+    )
 }
 
 fn save_formation_snapshot(
@@ -2197,6 +2315,7 @@ impl SimulatedSuccess for AdvanceCampaign {
                 None,
                 request.operator_origin.as_deref(),
                 None,
+                None,
             ),
         ]
     }
@@ -2250,6 +2369,7 @@ impl TaskBlock for AdvanceCampaign {
 #[cfg(test)]
 mod tests {
     include!("advance_campaign/initiative_tests.rs");
+    include!("advance_campaign/slice1_tests.rs");
     #[test]
     fn git_packet_compaction_is_bounded_unicode_safe_and_names_full_evidence() {
         let input = "界".repeat(4000);
@@ -2581,6 +2701,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -2612,6 +2733,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: None,
@@ -2668,6 +2790,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -2757,6 +2880,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -2838,6 +2962,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -2941,6 +3066,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-9".to_string()),
@@ -3027,6 +3153,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: None,
@@ -3184,6 +3311,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: None,
@@ -3310,6 +3438,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -3679,6 +3808,7 @@ mod tests {
             "p".to_string(),
             throttle,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: origin.map(ToString::to_string),
                 run_event_id: None,
@@ -3844,6 +3974,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: None,
@@ -3921,6 +4052,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -4148,6 +4280,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -4197,6 +4330,7 @@ mod tests {
             "p".to_string(),
             Throttle::Full,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: Some("run-1".to_string()),
@@ -4703,6 +4837,7 @@ mod tests {
             "p".to_string(),
             Throttle::DryRun,
             Event::serialize_payload(&CampaignAdvanceRequestedPayload {
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 campaign: "c".to_string(),
                 operator_origin: None,
                 run_event_id: None,

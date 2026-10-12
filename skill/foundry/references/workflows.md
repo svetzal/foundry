@@ -516,9 +516,10 @@ force ops observation below its normal volume threshold. Reports use
 
 ## Initiative members
 
-Slice 0 supplies the shared outcome, brief, decisions and findings to existing
-campaign formation. It has no steering agent. An eligible member advances with
-`foundry campaign advance <member>`. The campaign store guard enforces the
+Initiatives supply the shared outcome, brief, decisions and findings to
+campaign formation. Explicit `foundry initiative advance <name>` enables
+steering. Passive members retain `foundry campaign advance <member>`. The
+campaign store guard enforces the
 initiative's total cycle budget, active member limit and owner questions.
 
 Formation snapshots the initiative context under that guard, releases it
@@ -541,4 +542,33 @@ existing home directory.
 
 Read-only Tracker derivation stages candidates from goals or journeys. It
 reads committed projections before the et CLI and never changes Tracker state.
-Slice 1 adds steering, the codebase audit, integration gates and Tracker closure.
+Slice 1 adds steering and the codebase audit. Integration gates, general
+campaign staging, outcome evaluation and Tracker closure belong to slice 2.
+
+`foundry initiative advance <name>` submits one read-only assessment and enables
+steering after subsequent member settlements. `--member <name>` pins the next
+advance and releases that member's owner hold. Steering chooses one typed
+`advance`, `dispatch`, `hold`, `relay`, `ask` or `escalate` action. The retained
+`initiative_steered` fact includes the prompt, provider and decision.
+
+Queued formation, reserved admissions and standalone tasks count toward
+`max_active_members`. Shared cycles include initiative tasks. Use
+`initiative decide --add-cycles N` to authorize more shared cycles. Member
+budget grants cannot exceed that total. Owner holds and shared questions block
+ineligible work; milestone holds require explicit evidence.
+
+The first steer audits Tracker candidates against registered codebases. Audit
+findings retain checked paths and classify intent as `realised`, `partial`,
+`absent` or `misplaced`. Each steer refreshes intent from the supplying repo;
+that repo need not be a registered writable target. Withdrawn intent stops its
+owned work gracefully. Realised intent records a close proposal without an ET
+write. General staging, integration gates and outcome completion are slice 2.
+
+Only one assessment runs per initiative. Changed store or trunk evidence
+invalidates output. Durable pending actions recover on restart without double
+spending or dispatch. Hold, relay, ask and escalate do not self-trigger idle
+loops. Existing initiatives remain passive until explicitly advanced.
+
+Optional `provider_pairings` explicitly alternates stage maps. Member stage
+overrides remain binding, and continuations retain their admitted pairing.
+Without that setting, Foundry keeps the configured stage providers.

@@ -189,6 +189,7 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
         trace_id: event.trace_id.clone().unwrap_or_default(),
         started_at: chrono::Utc::now(),
         campaign,
+        initiative: event.payload_str("initiative").map(str::to_owned),
     });
 }
 
@@ -197,6 +198,22 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
 /// that reason.
 pub async fn settle_running_work_items_on_start(ctx: &RuntimeContext, path: &std::path::Path) {
     work_ledger::settle_running_items_on_start(ctx, path).await;
+}
+
+/// Recover pending steering delivery and abandoned leases before accepting RPCs.
+pub async fn recover_initiative_actions_on_start(
+    ctx: &RuntimeContext,
+    campaigns: &std::path::Path,
+    work_items: &std::path::Path,
+) -> Result<(), Status> {
+    let campaigns = campaigns.to_path_buf();
+    let work_items = work_items.to_path_buf();
+    let replay =
+        campaign_ops::blocking(move || initiative_ops::recover(&campaigns, &work_items)).await?;
+    for event in replay {
+        spawn_workflow(event, ctx);
+    }
+    Ok(())
 }
 
 /// End every agent session the previous process was stopped during, before
@@ -348,6 +365,82 @@ impl Foundry for FoundryService {
         }))
     }
 
+    async fn advance_initiative(
+        &self,
+        request: Request<crate::proto::AdvanceInitiativeRequest>,
+    ) -> Result<Response<crate::proto::AdvanceInitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let ledger = self.work_items_path.clone();
+        let response = self
+            .campaign_operation(move |path, ctx| {
+                initiative_ops::advance(path, &ledger, ctx, request)
+            })
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn act_on_initiative(
+        &self,
+        request: Request<crate::proto::ActOnInitiativeRequest>,
+    ) -> Result<Response<crate::proto::ActOnInitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let response = self
+            .campaign_operation(move |path, ctx| initiative_ops::act(path, ctx, request))
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn derive_initiative(
+        &self,
+        request: Request<crate::proto::DeriveInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let request = request.into_inner();
+        if request.authorized_by.trim().is_empty() {
+            return Err(Status::invalid_argument("name the authorizing owner"));
+        }
+        let projects = self
+            .ctx
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?
+            .projects
+            .iter()
+            .map(|project| project.name.clone())
+            .collect::<Vec<_>>();
+        if request.projects.is_empty()
+            || request.projects.iter().any(|project| !projects.contains(project))
+        {
+            return Err(Status::invalid_argument("derive requires registered target projects"));
+        }
+        // The intent repository can differ from the registered writable targets.
+        // Read it on the daemon host, never under a campaign-store lock.
+        let repo = initiative_ops::canonical_repository(&request.source_repo).await?;
+        let mut definition =
+            foundry_sdk::initiative::derive::derive(&repo, &request.from_ref, request.projects)
+                .await
+                .map_err(initiative_ops::error)?;
+        definition.authorized_by = Some(request.authorized_by);
+        definition.derive_source = Some(foundry_sdk::initiative::DeriveSource {
+            repo: repo.to_string_lossy().into_owned(),
+            from: request.from_ref,
+        });
+        let definition = serde_json::to_string(&definition)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        let initiative = self
+            .campaign_operation(move |path, _| initiative_ops::add(path, &projects, &definition))
+            .await?;
+        self.announce_initiative(
+            foundry_sdk::event::EventType::InitiativeAdded,
+            &initiative,
+            None,
+            None,
+            &[],
+        );
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
     async fn list_initiatives(
         &self,
         _request: Request<crate::proto::ListInitiativesRequest>,
@@ -377,7 +470,13 @@ impl Foundry for FoundryService {
         let decision = request.decision.clone();
         let initiative = self
             .campaign_operation(move |path, _| {
-                initiative_ops::decide(path, &request.name, &request.decision, &request.members)
+                initiative_ops::decide(
+                    path,
+                    &request.name,
+                    &request.decision,
+                    &request.members,
+                    request.add_cycles,
+                )
             })
             .await?;
         let members = initiative
@@ -2102,6 +2201,7 @@ mod tests {
             started_root: None,
             reserved_projects: Vec::new(),
             execution_completed: false,
+            coalesced_root: None,
         }
     }
 
@@ -2479,6 +2579,7 @@ mod tests {
             started_root: None,
             reserved_projects: Vec::new(),
             execution_completed: false,
+            coalesced_root: None,
             disposition: Some(WorkDisposition {
                 task_branch: None,
                 branch_cleanup: Vec::new(),

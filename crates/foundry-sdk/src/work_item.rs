@@ -317,6 +317,10 @@ pub struct WorkItem {
     /// The exact root dispatched by the scheduler, retained as admission proof.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_root: Option<Event>,
+    /// Latest distinct steering trigger arriving during an admitted steer.
+    /// Drained into one fresh queued steer after the current traversal ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_root: Option<Event>,
     /// Additional projects whose repositories this workflow uses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reserved_projects: Vec<String>,
@@ -413,6 +417,7 @@ impl WorkItem {
             started_root: None,
             reserved_projects: Vec::new(),
             execution_completed: false,
+            coalesced_root: None,
         }
     }
 

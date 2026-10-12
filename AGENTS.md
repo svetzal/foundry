@@ -229,14 +229,23 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 
 ### Initiative commands
 
-Slice 0 initiatives group member campaigns under one outcome. All online
+Initiatives group member campaigns under one outcome. All online
 initiative and finding reads and mutations use typed gRPC and the daemon's
 campaign store. Explicit `--offline` recovery uses the same store API and
 existing guard. Never parse or mutate the store file directly.
 
 - `foundry initiative add <definition.json>`, `list`, `show <name>`.
+- `foundry initiative advance <name> [--member <name>]`.
+- `foundry initiative hold <name> --member <name> --reason <text>`;
+  optional repeated `--until <member>:<milestone>` waits for proven milestones.
+- `initiative relay <name> --finding <id> --member <name>`,
+  `ask <name> --question <text> [--member <name>]` and
+  `dispatch <name> <project> <objective> [--member <candidate>]`.
+- `initiative milestone <name> --member <name> --milestone <name>`
+  records owner-verified proof with repeated `--evidence <ref>`.
 - `foundry initiative decide <name> --decision <text> [--member <name>]...`
-  records one decision and fans it into every applicable campaign, including
+  accepts `--add-cycles N` for the shared budget. It records one decision and
+  fans it into every applicable campaign, including
   active campaigns. Changes arriving during formation force reformation.
 - `foundry initiative complete|cancel <name> --reason <text>`.
 - `foundry initiative brief set <name> <file>` and `brief show <name>`.
@@ -267,9 +276,38 @@ User/project settings, hooks and MCP tools cannot widen the invocation.
 Worktrees stay under `~/.foundry/worktrees`. Read-only stages write only to
 scratch space. Keep the live installed-Claude boundary test as evidence.
 
-Slice 0 has no steering agent, codebase audit, integration gate runner or
-Tracker state writes. Those belong to slice 1. Development stays on the Mac's
+Slice 1 adds steering, the codebase audit and refreshed Tracker intent.
+Integration gates, outcome evaluation and Tracker state writes belong to
+slice 2. Development stays on the Mac's
 synthetic daemon; promotion to ops-01 needs Stacey's go-ahead.
+
+`foundry initiative advance <name>` submits one read-only assessment and enables
+steering after subsequent member settlements. `--member <name>` pins the next
+advance and releases that member's owner hold. Steering chooses one typed
+`advance`, `dispatch`, `hold`, `relay`, `ask` or `escalate` action. The retained
+`initiative_steered` fact includes the prompt, provider and decision.
+
+Queued formation, reserved admissions and standalone tasks count toward
+`max_active_members`. Shared cycles include initiative tasks. Use
+`initiative decide --add-cycles N` to authorize more shared cycles. Member
+budget grants cannot exceed that total. Owner holds and shared questions block
+ineligible work; milestone holds require explicit evidence.
+
+The first steer audits Tracker candidates against registered codebases. Audit
+findings retain checked paths and classify intent as `realised`, `partial`,
+`absent` or `misplaced`. Each steer refreshes intent from the supplying repo;
+that repo need not be a registered writable target. Withdrawn intent stops its
+owned work gracefully. Realised intent records a close proposal without an ET
+write. General staging, integration gates and outcome completion are slice 2.
+
+Only one assessment runs per initiative. Changed store or trunk evidence
+invalidates output. Durable pending actions recover on restart without double
+spending or dispatch. Hold, relay, ask and escalate do not self-trigger idle
+loops. Existing initiatives remain passive until explicitly advanced.
+
+Optional `provider_pairings` explicitly alternates stage maps. Member stage
+overrides remain binding, and continuations retain their admitted pairing.
+Without that setting, Foundry keeps the configured stage providers.
 
 ### Campaign commands
 

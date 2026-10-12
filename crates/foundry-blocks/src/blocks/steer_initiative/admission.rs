@@ -1,0 +1,223 @@
+use foundry_sdk::campaign::CampaignStore;
+use foundry_sdk::initiative::{Initiative, SteeringDecision};
+use foundry_sdk::registry::Registry;
+use foundry_sdk::work_item::WorkItemStore;
+
+pub(super) fn validate_member_pin(
+    pin: Option<&str>,
+    decision: &SteeringDecision,
+) -> anyhow::Result<()> {
+    if let Some(pin) = pin {
+        let chosen = match decision {
+            SteeringDecision::Advance { member, .. } => Some(member.as_str()),
+            SteeringDecision::Dispatch { member, .. } => member.as_deref(),
+            _ => return Ok(()),
+        };
+        if chosen != Some(pin) {
+            anyhow::bail!(
+                "owner requested member '{pin}'; steering cannot choose another work member"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn active_members(initiative: &Initiative, ledger: &WorkItemStore) -> Vec<String> {
+    initiative
+        .members
+        .iter()
+        .filter(|member| {
+            ledger.items.iter().any(|item| {
+                (item.state.is_waiting() || item.occupies_slot())
+                    && (item.campaign_name() == Some(member.name.as_str())
+                        || initiative.task_dispatches.iter().any(|receipt| {
+                            receipt.member == member.name && receipt.work_item == item.id
+                        }))
+            })
+        })
+        .map(|member| member.name.clone())
+        .collect()
+}
+
+pub(super) fn action_project<'a>(
+    decision: &'a SteeringDecision,
+    store: &'a CampaignStore,
+    _initiative: &'a Initiative,
+) -> anyhow::Result<Option<&'a str>> {
+    match decision {
+        SteeringDecision::Advance { member, project } => Ok(Some(
+            store
+                .find(member)
+                .map(|campaign| campaign.project.as_str())
+                .or(project.as_deref())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("member requires an explicitly registered project")
+                })?,
+        )),
+        SteeringDecision::Dispatch { project, .. } => Ok(Some(project)),
+        _ => Ok(None),
+    }
+}
+
+pub(super) fn ensure_action_repository_free(
+    decision: &SteeringDecision,
+    store: &CampaignStore,
+    initiative: &Initiative,
+    ledger: &WorkItemStore,
+    registry: &Registry,
+) -> anyhow::Result<()> {
+    let Some(project) = action_project(decision, store, initiative)? else {
+        return Ok(());
+    };
+    if !initiative.projects.iter().any(|allowed| allowed == project) {
+        anyhow::bail!("action project is outside initiative scope");
+    }
+    let entry = registry
+        .find_project(project)
+        .ok_or_else(|| anyhow::anyhow!("action project is not registered"))?;
+    if let Some(reason) = &entry.skip {
+        anyhow::bail!("action project is blocked: {reason}");
+    }
+    let key = foundry_sdk::pacing::repository_key(registry, project);
+    if ledger.items.iter().any(|item| {
+        item.occupies_slot()
+            && (foundry_sdk::pacing::repository_key(registry, &item.project) == key
+                || item
+                    .reserved_projects
+                    .iter()
+                    .any(|project| foundry_sdk::pacing::repository_key(registry, project) == key))
+    }) {
+        anyhow::bail!("action repository still has an execution or cleanup owner");
+    }
+    let active = active_members(initiative, ledger);
+    match decision {
+        SteeringDecision::Advance { member, .. }
+        | SteeringDecision::Dispatch {
+            member: Some(member),
+            ..
+        } => {
+            store.enforce_member_eligibility(&initiative.name, member, &active)?;
+        }
+        SteeringDecision::Dispatch { member: None, .. }
+            if active.len() >= initiative.budget.max_active_members =>
+        {
+            anyhow::bail!("initiative has reached its active member limit");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(super) fn live_operations(items: &WorkItemStore) -> Vec<String> {
+    let mut live = Vec::new();
+    for item in &items.items {
+        if item.state.is_waiting() || item.occupies_slot() {
+            live.push(item.id.clone());
+            for root in
+                [item.pending_root.as_ref(), item.started_root.as_ref()].into_iter().flatten()
+            {
+                live.push(root.id.clone());
+                if let Some(action) =
+                    root.payload.get("steering_action_id").and_then(serde_json::Value::as_str)
+                {
+                    live.push(action.into());
+                }
+            }
+        }
+    }
+    live
+}
+
+pub(super) fn record_task_evidence(
+    store: &mut CampaignStore,
+    name: &str,
+    ledger: &WorkItemStore,
+) -> anyhow::Result<()> {
+    let initiative = store.initiative_view(name)?;
+    for receipt in &initiative.task_dispatches {
+        let Some(item) = ledger.find(&receipt.work_item) else {
+            continue;
+        };
+        if !item.execution_completed {
+            continue;
+        }
+        let Some(commit) = item
+            .disposition
+            .as_ref()
+            .and_then(|disposition| disposition.landed_commit.as_deref())
+        else {
+            continue;
+        };
+        let ids = item
+            .started_root
+            .as_ref()
+            .map(|root| foundry_sdk::payload::ChainContext::extract_from(&root.payload).finding_ids)
+            .unwrap_or_default();
+        store.consume_findings(name, &receipt.member, &item.id, &ids)?;
+        store.record_milestone(
+            name,
+            &receipt.member,
+            "landed",
+            vec![format!("work item {} landed {commit}", item.id)],
+        )?;
+        if item.disposition.as_ref().and_then(|disposition| disposition.verdict.as_deref())
+            == Some("complete")
+        {
+            store.record_milestone(
+                name,
+                &receipt.member,
+                "completed",
+                vec![format!("work item {} completed at {commit}", item.id)],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn owner_pin_cannot_be_replaced_by_another_work_choice() {
+        assert!(
+            validate_member_pin(
+                Some("one"),
+                &SteeringDecision::Advance {
+                    member: "two".into(),
+                    project: None
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            validate_member_pin(
+                Some("one"),
+                &SteeringDecision::Dispatch {
+                    member: None,
+                    project: "sample".into(),
+                    objective: "work".into()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            validate_member_pin(
+                Some("one"),
+                &SteeringDecision::Advance {
+                    member: "one".into(),
+                    project: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_member_pin(
+                Some("one"),
+                &SteeringDecision::Escalate {
+                    reason: "already realised".into()
+                }
+            )
+            .is_ok()
+        );
+    }
+}

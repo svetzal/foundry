@@ -26,6 +26,17 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Request one read-only steer through the daemon \[mutates\]
+    Advance {
+        name: String,
+        /// Pin this steer to a member and release its owner hold
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        origin: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Record a decision for applicable members \[mutates\]
     Decide {
         name: String,
@@ -33,6 +44,55 @@ pub enum Commands {
         decision: String,
         #[arg(long = "member")]
         members: Vec<String>,
+        /// Extend the shared initiative budget by this many cycles
+        #[arg(long, default_value_t = 0)]
+        add_cycles: u64,
+    },
+    /// Hold a member until an owner release or named milestones \[mutates\]
+    Hold {
+        name: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long = "until")]
+        until: Vec<String>,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Relay an existing finding to members \[mutates\]
+    Relay {
+        name: String,
+        #[arg(long)]
+        finding: String,
+        #[arg(long = "member", required = true)]
+        members: Vec<String>,
+    },
+    /// Dispatch one task through initiative budget and pacing \[mutates\]
+    Dispatch {
+        name: String,
+        project: String,
+        objective: String,
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        origin: Option<String>,
+    },
+    /// Record one owner question covering applicable members \[mutates\]
+    Ask {
+        name: String,
+        #[arg(long)]
+        question: String,
+        #[arg(long = "member")]
+        members: Vec<String>,
+    },
+    /// Record owner-verified evidence for a member milestone \[mutates\]
+    Milestone {
+        name: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        milestone: String,
+        #[arg(long = "evidence", required = true)]
+        evidence: Vec<String>,
     },
     /// Mark an owner-verified outcome complete \[mutates\]
     Complete {
@@ -92,11 +152,35 @@ pub(crate) fn to_proto(
     initiative: &Initiative,
 ) -> Result<proto::Initiative> {
     let mut value = serde_json::to_value(initiative)?;
+    value["steering_history_count"] = serde_json::json!(initiative.steering_history.len());
+    value["steering_history"] =
+        serde_json::to_value(initiative.steering_history.last().into_iter().collect::<Vec<_>>())?;
+    for field in ["steering_history", "pending_actions"] {
+        if let Some(records) = value[field].as_array_mut() {
+            for record in records {
+                record["decision_json"] =
+                    serde_json::Value::String(serde_json::to_string(&record["decision"])?);
+                record.as_object_mut().context("invalid steering record")?.remove("decision");
+                if let Some(context) = record
+                    .as_object_mut()
+                    .context("invalid steering record")?
+                    .remove("external_context")
+                {
+                    record["external_context_json"] = if context.is_null() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(serde_json::to_string(&context)?)
+                    };
+                }
+            }
+        }
+    }
     if let Some(members) = value["members"].as_array_mut() {
         for member in members {
             if let Some(campaign) = member["name"].as_str().and_then(|name| store.find(name)) {
                 member["campaign"] =
                     serde_json::to_value(crate::campaign_commands::summary_to_proto(campaign))?;
+                member["project"] = serde_json::json!(campaign.project);
                 if let Some(verdict) =
                     campaign.pending_run_result.as_ref().map(|result| &result.verdict).or_else(
                         || {
@@ -151,30 +235,6 @@ pub async fn run_and_render(
     addr: &str,
     offline: bool,
 ) -> Result<String> {
-    if let Commands::Derive {
-        from_ref,
-        projects,
-        authorized_by,
-    } = command
-    {
-        let repo =
-            std::env::current_dir().context("cannot locate the Tracker source repository")?;
-        let mut initiative =
-            foundry_sdk::initiative::derive::derive(&repo, &from_ref, projects).await?;
-        initiative.authorized_by = Some(
-            authorized_by
-                .or_else(|| std::env::var("USER").ok())
-                .context("set --authorized-by to name the initiative owner")?,
-        );
-        return add_definition(
-            store_path,
-            registry_path,
-            addr,
-            offline,
-            &serde_json::to_string(&initiative)?,
-        )
-        .await;
-    }
     if offline {
         return run_offline(command, store_path, registry_path);
     }
@@ -191,15 +251,14 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
         Commands::Add { file } => {
             let definition = std::fs::read_to_string(&file)
                 .with_context(|| format!("read initiative definition {}", file.display()))?;
-            let response = client
-                .add_initiative(proto::AddInitiativeRequest {
-                    definition_json: definition,
-                })
-                .await
-                .map_err(status_to_anyhow)?
-                .into_inner();
-            let initiative = response.initiative.context("daemon returned no initiative")?;
-            Ok(format!("Added initiative '{}'.\n", initiative.name))
+            add_definition(
+                std::path::Path::new(""),
+                std::path::Path::new(""),
+                addr,
+                false,
+                &definition,
+            )
+            .await
         }
         Commands::List { json: as_json } => {
             let initiatives = client
@@ -235,12 +294,14 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
             name,
             decision,
             members,
+            add_cycles,
         } => {
             let initiative = client
                 .decide_initiative(proto::DecideInitiativeRequest {
                     name,
                     decision,
                     members,
+                    add_cycles,
                 })
                 .await
                 .map_err(status_to_anyhow)?
@@ -249,6 +310,11 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
                 .context("daemon returned no initiative")?;
             Ok(format!("Recorded decision for initiative '{}'.\n", initiative.name))
         }
+        command @ (Commands::Hold { .. }
+        | Commands::Relay { .. }
+        | Commands::Dispatch { .. }
+        | Commands::Ask { .. }
+        | Commands::Milestone { .. }) => owner_command_online(command, &mut client).await,
         Commands::Complete { name, reason } => {
             client
                 .complete_initiative(proto::EndInitiativeRequest {
@@ -270,8 +336,179 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
             Ok(format!("Cancelled initiative '{name}'.\n"))
         }
         Commands::Brief(_) => unreachable!("brief handled before other online commands"),
-        Commands::Derive { .. } => unreachable!("derive handled before transport selection"),
+        command @ (Commands::Advance { .. } | Commands::Derive { .. }) => {
+            steering_command_online(command, &mut client).await
+        }
     }
+}
+
+async fn owner_command_online(
+    command: Commands,
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+) -> Result<String> {
+    match command {
+        Commands::Hold {
+            name,
+            member,
+            until,
+            reason,
+        } => {
+            owner_action(
+                client,
+                name,
+                proto::act_on_initiative_request::Action::Hold(proto::HoldInitiativeMember {
+                    member,
+                    until,
+                    reason,
+                }),
+                None,
+            )
+            .await
+        }
+        Commands::Relay {
+            name,
+            finding,
+            members,
+        } => {
+            owner_action(
+                client,
+                name,
+                proto::act_on_initiative_request::Action::Relay(proto::RelayInitiativeFinding {
+                    finding_id: finding,
+                    members,
+                }),
+                None,
+            )
+            .await
+        }
+        Commands::Dispatch {
+            name,
+            project,
+            objective,
+            member,
+            origin,
+        } => {
+            owner_action(
+                client,
+                name,
+                proto::act_on_initiative_request::Action::Dispatch(proto::DispatchInitiativeTask {
+                    project,
+                    objective,
+                    member,
+                }),
+                origin,
+            )
+            .await
+        }
+        Commands::Ask {
+            name,
+            question,
+            members,
+        } => {
+            owner_action(
+                client,
+                name,
+                proto::act_on_initiative_request::Action::Ask(proto::AskInitiativeOwner {
+                    question,
+                    members,
+                }),
+                None,
+            )
+            .await
+        }
+        Commands::Milestone {
+            name,
+            member,
+            milestone,
+            evidence,
+        } => {
+            owner_action(
+                client,
+                name,
+                proto::act_on_initiative_request::Action::Milestone(
+                    proto::RecordInitiativeMilestone {
+                        member,
+                        milestone,
+                        evidence,
+                    },
+                ),
+                None,
+            )
+            .await
+        }
+        _ => unreachable!("only owner commands are routed here"),
+    }
+}
+async fn steering_command_online(
+    command: Commands,
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+) -> Result<String> {
+    match command {
+        Commands::Advance {
+            name,
+            member,
+            origin,
+            json: as_json,
+        } => {
+            let response = client
+                .advance_initiative(proto::AdvanceInitiativeRequest {
+                    name: name.clone(),
+                    member,
+                    operator_origin: crate::origin::local_operator_origin(origin.as_deref()),
+                })
+                .await
+                .map_err(status_to_anyhow)?
+                .into_inner();
+            if as_json {
+                return json(&response);
+            }
+            Ok(render::initiative::advance(&name, &response))
+        }
+        Commands::Derive {
+            from_ref,
+            projects,
+            authorized_by,
+        } => {
+            let source_repo =
+                std::env::current_dir().context("cannot locate Tracker source repository")?;
+            let response = client
+                .derive_initiative(proto::DeriveInitiativeRequest {
+                    from_ref,
+                    projects,
+                    authorized_by: authorized_by
+                        .or_else(|| std::env::var("USER").ok())
+                        .context("set --authorized-by to name the initiative owner")?,
+                    source_repo: source_repo.to_string_lossy().into_owned(),
+                })
+                .await
+                .map_err(status_to_anyhow)?
+                .into_inner();
+            let initiative = response.initiative.context("daemon returned no initiative")?;
+            Ok(format!(
+                "Derived initiative '{}'. First advance audits its candidates.\n",
+                initiative.name
+            ))
+        }
+        _ => unreachable!("only steering commands are routed here"),
+    }
+}
+
+async fn owner_action(
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    name: String,
+    action: proto::act_on_initiative_request::Action,
+    origin: Option<String>,
+) -> Result<String> {
+    let response = client
+        .act_on_initiative(proto::ActOnInitiativeRequest {
+            name: name.clone(),
+            operator_origin: crate::origin::local_operator_origin(origin.as_deref()),
+            action: Some(action),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    Ok(render::initiative::owner_action(&name, &response.event_id))
 }
 
 async fn brief_online(command: BriefCommands, addr: &str) -> Result<String> {
@@ -343,6 +580,15 @@ async fn add_definition(
 
 fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String> {
     match command {
+        Commands::Advance { .. }
+        | Commands::Derive { .. }
+        | Commands::Hold { .. }
+        | Commands::Relay { .. }
+        | Commands::Dispatch { .. }
+        | Commands::Ask { .. }
+        | Commands::Milestone { .. } => {
+            anyhow::bail!("initiative steering and derivation require the daemon; remove --offline")
+        }
         Commands::List { json: as_json } => {
             let initiatives = list_offline(path)?;
             if as_json {
@@ -385,8 +631,15 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                     name,
                     decision,
                     members,
+                    add_cycles,
                 } => {
-                    guard.store.decide_initiative(&name, &decision, &members, Utc::now())?;
+                    guard.store.decide_initiative_with_budget(
+                        &name,
+                        &decision,
+                        &members,
+                        add_cycles,
+                        Utc::now(),
+                    )?;
                     format!("Recorded decision for initiative '{name}'.\n")
                 }
                 Commands::Complete { name, reason } => {
@@ -516,5 +769,65 @@ mod tests {
         assert!(result.is_err());
         assert!(!path.exists());
         assert!(!path.with_extension("lock").exists());
+    }
+}
+
+#[cfg(test)]
+mod steering_transport_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn online_steering_never_reads_or_mutates_the_client_store() {
+        let home = tempfile::tempdir().unwrap();
+        let campaigns = home.path().join("campaigns.json");
+        std::fs::write(&campaigns, "client store deliberately malformed").unwrap();
+        let bytes = std::fs::read(&campaigns).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let result = run_and_render(
+            Commands::Advance {
+                name: "shared".into(),
+                member: None,
+                origin: None,
+                json: false,
+            },
+            &campaigns,
+            &home.path().join("registry.json"),
+            &address,
+            false,
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("daemon"));
+        assert_eq!(std::fs::read(campaigns).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn offline_steering_and_derivation_do_not_create_recovery_state() {
+        let home = tempfile::tempdir().unwrap();
+        for command in [
+            Commands::Advance {
+                name: "shared".into(),
+                member: None,
+                origin: None,
+                json: false,
+            },
+            Commands::Derive {
+                from_ref: "et:goal:shared".into(),
+                projects: vec!["sample".into()],
+                authorized_by: Some("Stacey".into()),
+            },
+        ] {
+            let result = run_and_render(
+                command,
+                &home.path().join("campaigns.json"),
+                &home.path().join("registry.json"),
+                "http://127.0.0.1:1",
+                true,
+            )
+            .await;
+            assert!(result.unwrap_err().to_string().contains("require the daemon"));
+            assert!(!home.path().join("campaigns.json").exists());
+        }
     }
 }

@@ -1,0 +1,302 @@
+use std::path::{Component, Path, PathBuf};
+
+use crate::gateway::ShellGateway;
+use foundry_sdk::campaign::CampaignStore;
+use foundry_sdk::initiative::{AuditEvidence, SteeringDecision, SteeringSnapshot};
+use foundry_sdk::registry::Registry;
+use serde::Deserialize;
+
+pub(super) const PACKET_BYTES: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SteeringResponse {
+    pub action: SteeringDecision,
+    #[serde(default)]
+    pub audits: Vec<AuditEvidence>,
+}
+
+pub(super) fn parse_response(output: &str) -> anyhow::Result<SteeringResponse> {
+    if output.len() > PACKET_BYTES {
+        anyhow::bail!("steering response exceeds its byte bound");
+    }
+    let value = super::super::parse_agent_json(output)
+        .ok_or_else(|| anyhow::anyhow!("steering agent returned no JSON decision"))?;
+    Ok(serde_json::from_value(value)?)
+}
+
+pub(super) fn validate_audits(
+    audits: &[AuditEvidence],
+    snapshot: &SteeringSnapshot,
+    repos: &[RepositorySnapshot],
+) -> anyhow::Result<()> {
+    for audit in audits {
+        if audit.paths.is_empty() {
+            anyhow::bail!("every audit classification requires checked supporting paths");
+        }
+        if !snapshot.initiative.intent_refs.contains(&audit.intent_ref) {
+            anyhow::bail!("audit names intent outside this initiative");
+        }
+        let repo = repos.iter().find(|repo| repo.project == audit.project).ok_or_else(|| {
+            anyhow::anyhow!("audit project is not a registered initiative project")
+        })?;
+        for path in &audit.paths {
+            checked_evidence_path(&repo.root, path)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn prompt(
+    snapshot: &SteeringSnapshot,
+    store: &CampaignStore,
+    repos: &[RepositorySnapshot],
+    requested_member: Option<&str>,
+    ledger: &str,
+    evidence_root: &Path,
+) -> anyhow::Result<BoundedPrompt> {
+    let initiative = &snapshot.initiative;
+    let campaigns: Vec<_> = store.campaigns.iter().filter(|campaign| campaign.initiative.as_deref() == Some(&initiative.name))
+        .map(|campaign| serde_json::json!({"name":campaign.name,"project":campaign.project,"mission":campaign.mission,
+            "status":campaign.status,"cycles_completed":campaign.cycles_completed,"cycles_landed":campaign.cycles_landed,
+            "last_objective":campaign.objective_history.last(),"escalation":campaign.open_escalation,"providers":campaign.providers}))
+        .collect();
+    let mut findings = Vec::new();
+    let mut finding_bytes = 0;
+    for finding in store.list_findings(&initiative.name)? {
+        let bytes = serde_json::to_vec(&finding)?.len();
+        if finding_bytes + bytes > 8192 {
+            continue;
+        }
+        finding_bytes += bytes;
+        findings.push(finding);
+    }
+    let repositories: Vec<_> = repos.iter().map(|repo| serde_json::json!({"project":repo.project,"path":repo.root,
+        "trunk":repo.trunk.trim(),"head":repo.head.trim(),"status":compact_evidence(&repo.status,1024,"git status --porcelain --untracked-files=all"),
+        "recent_commits":compact_evidence(&repo.recent,2048,"git log -8 --oneline"),
+        "diff":compact_evidence(&repo.diff,2048,"git diff HEAD --")})).collect();
+    let work_items: Vec<foundry_sdk::work_item::WorkItem> = serde_json::from_str(ledger)?;
+    let ledger_view: Vec<_> = work_items.iter().filter(|item| item.state.is_waiting() || item.state.is_open() || item.occupies_slot())
+        .map(|item| serde_json::json!({"id":item.id,"project":item.project,"state":item.state,"reason":item.reason,
+            "campaign":item.campaign_name(),"source":item.source,"execution_completed":item.execution_completed,"disposition":item.disposition})).collect();
+    let packet = serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"intent_refs":initiative.intent_refs,
+        "members":initiative.members,
+        "campaigns":campaigns,"projects":repositories,"brief":initiative.brief,
+        "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"budget":initiative.budget,
+        "holds":initiative.holds,"milestones":initiative.milestones,"close_proposals":initiative.close_proposals,
+        "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view});
+    let (packet, artifact) = bounded_packet(packet, evidence_root)?;
+    let text = format!(
+        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. No host integration gate execution, general staging, autonomous outcome completion, or et close is allowed in this slice. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
+
+Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed.
+
+Return exactly one JSON object with action and audits. Action is exactly one tagged decision:
+advance: {{"decision":"advance","member":"existing member or audited candidate","project":null}}
+dispatch: {{"decision":"dispatch","project":"registered initiative project","objective":"one concrete task","member":null}}
+hold: {{"decision":"hold","member":"member","until":["prerequisite:landed"],"reason":"reason"}}
+relay: {{"decision":"relay","finding":{{full finding record from packet}},"to":["member"]}}
+ask: {{"decision":"ask","question":"one question","members":["member"]}}
+escalate: {{"decision":"escalate","reason":"reason"}}
+Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Arbitrary campaign staging and done are forbidden. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
+
+STEERING PACKET:
+{packet}
+"#
+    );
+    let text = super::super::with_single_turn_discipline(&text);
+    if text.len() > PACKET_BYTES {
+        anyhow::bail!(
+            "steering packet exceeds {PACKET_BYTES} bytes; owner policy was not truncated"
+        );
+    }
+    Ok(BoundedPrompt { text, artifact })
+}
+
+pub(super) struct BoundedPrompt {
+    pub text: String,
+    pub artifact: Option<(PathBuf, String)>,
+}
+fn bounded_packet(
+    packet: serde_json::Value,
+    evidence_root: &Path,
+) -> anyhow::Result<(serde_json::Value, Option<(PathBuf, String)>)> {
+    let content = serde_json::to_string(&packet)?;
+    if content.len() <= PACKET_BYTES - 8192 {
+        return Ok((packet, None));
+    }
+    let root = evidence_root.join("initiatives").join("steering-evidence");
+    std::fs::create_dir_all(&root)?;
+    let path = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+    let hash = context_hash(&content);
+    std::fs::write(&path, &content)?;
+    let path = path.canonicalize()?;
+    Ok((
+        serde_json::json!({"context_artifact":{
+            "path":path,"sha256":hash,"bytes":content.len(),
+            "instruction":"Read this entire Foundry-exported selected context before choosing. It contains all binding owner policy, members, questions, current evidence and repository references. No prior steering prompts are included. Verify SHA-256 before using it."
+        }}),
+        Some((path, hash)),
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RepositorySnapshot {
+    pub project: String,
+    pub root: PathBuf,
+    pub registry: String,
+    pub trunk: String,
+    pub head: String,
+    pub status: String,
+    pub diff: String,
+    pub recent: String,
+}
+
+async fn git(shell: &dyn ShellGateway, root: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let output = shell.run(root, "git", args, None, None).await?;
+    if !output.success {
+        anyhow::bail!("steering cannot inspect Git evidence: {}", output.stderr);
+    }
+    Ok(output.stdout)
+}
+
+pub(super) async fn repositories(
+    registry: &Registry,
+    projects: &[String],
+    shell: &dyn ShellGateway,
+) -> anyhow::Result<Vec<RepositorySnapshot>> {
+    let mut snapshots = Vec::new();
+    for project in projects {
+        let entry = registry
+            .find_project(project)
+            .ok_or_else(|| anyhow::anyhow!("initiative project '{project}' is not registered"))?;
+        let root = PathBuf::from(&entry.path).canonicalize()?;
+        let branch = format!("refs/heads/{}", entry.branch);
+        snapshots.push(RepositorySnapshot {
+            project: project.clone(),
+            registry: serde_json::to_string(entry)?,
+            trunk: git(shell, &root, &["rev-parse", "--verify", "--end-of-options", &branch])
+                .await?,
+            head: git(shell, &root, &["rev-parse", "--verify", "HEAD"]).await?,
+            status: git(shell, &root, &["status", "--porcelain", "--untracked-files=all"]).await?,
+            diff: git(shell, &root, &["diff", "HEAD", "--"]).await?,
+            recent: git(shell, &root, &["log", "-8", "--oneline", &branch, "--"]).await?,
+            root,
+        });
+    }
+    Ok(snapshots)
+}
+
+pub(super) fn checked_evidence_path(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
+    let relative = Path::new(relative);
+    if relative.components().any(|component| {
+        matches!(component, Component::Prefix(_) | Component::RootDir | Component::ParentDir)
+    }) {
+        anyhow::bail!("audit reference must be relative to its registered project");
+    }
+    let root = root.canonicalize()?;
+    let path = root.join(relative).canonicalize()?;
+    if !path.starts_with(&root) {
+        anyhow::bail!("audit reference escapes its registered project");
+    }
+    Ok(path)
+}
+
+pub(super) fn compact_evidence(text: &str, limit: usize, command: &str) -> String {
+    if text.len() <= limit {
+        return text.into();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[{} bytes omitted; inspect complete evidence with `{command}`]",
+        &text[..end],
+        text.len() - end
+    )
+}
+
+pub(super) fn context_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(content.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evidence_must_name_an_existing_path_inside_the_registered_checkout() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("contract.rs"), "contract").unwrap();
+        assert_eq!(
+            checked_evidence_path(repo.path(), "contract.rs").unwrap(),
+            repo.path().join("contract.rs").canonicalize().unwrap()
+        );
+        assert!(checked_evidence_path(repo.path(), "missing.rs").is_err());
+        assert!(checked_evidence_path(repo.path(), "../contract.rs").is_err());
+        assert!(checked_evidence_path(repo.path(), "/tmp/outside.rs").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_evidence_symlink_cannot_relabel_a_sibling_checkout() {
+        let repo = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        std::fs::write(sibling.path().join("contract.rs"), "contract").unwrap();
+        std::os::unix::fs::symlink(sibling.path(), repo.path().join("sibling")).unwrap();
+        assert!(checked_evidence_path(repo.path(), "sibling/contract.rs").is_err());
+        assert!(checked_evidence_path(repo.path(), ".").is_ok());
+    }
+
+    #[test]
+    fn evidence_compaction_preserves_utf8_and_directs_the_agent_to_complete_evidence() {
+        let text = "éééé";
+        let result = compact_evidence(text, 5, "git log -8 --oneline");
+        assert!(result.starts_with("éé"));
+        assert!(result.contains("4 bytes omitted"));
+        assert!(result.contains("git log -8 --oneline"));
+        assert_eq!(compact_evidence("complete", 20, "git log"), "complete");
+    }
+
+    #[test]
+    fn oversized_policy_uses_a_hashed_selected_context_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = "Binding owner decision ".repeat(6000);
+        let packet = serde_json::json!({"owner_decisions":[policy],"members":["one","two"]});
+        let (reference, artifact) = bounded_packet(packet.clone(), directory.path()).unwrap();
+        assert!(serde_json::to_vec(&reference).unwrap().len() < PACKET_BYTES);
+        let (path, hash) = artifact.unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert_eq!(context_hash(&content), hash);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&content).unwrap(), packet);
+        assert!(
+            reference["context_artifact"]["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("Read this entire")
+        );
+    }
+
+    #[test]
+    fn a_steer_cannot_return_done_stage_or_multiple_actions() {
+        assert!(
+            parse_response(r#"{"action":{"decision":"done","reason":"complete"},"audits":[]}"#)
+                .is_err()
+        );
+        assert!(
+            parse_response(r#"{"action":{"decision":"stage","name":"new"},"audits":[]}"#).is_err()
+        );
+        assert!(
+            parse_response(
+                r#"{"action":{"decision":"ask","question":"which?"},"second_action":{}}"#
+            )
+            .is_err()
+        );
+        assert!(
+            parse_response(r#"{"action":{"decision":"ask","question":"which?"},"audits":[]}"#)
+                .is_ok()
+        );
+    }
+}

@@ -4,9 +4,13 @@ An initiative holds one outcome shared by several campaign missions. It keeps
 owner decisions, findings and a binding brief in one place. Each campaign
 still derives its own next objective from the repository and the last result.
 
-Slice 0 has no steering agent. Add existing campaigns as members, record the
-initiative, and advance the members with `foundry campaign advance`.
-Foundry enforces the shared cycle budget and member limits at dispatch.
+Add existing campaigns as members, or derive staged candidates from Tracker.
+An explicit `foundry initiative advance` enables steering. The steering agent
+reads the current evidence and chooses one next action. Foundry enforces the
+shared cycle budget, active member limit and questions before admitting work.
+
+Existing definitions remain passive until you enable steering. Passive members
+still advance with `foundry campaign advance`.
 
 ## Add an initiative
 
@@ -57,23 +61,89 @@ Run these commands:
 foundry initiative add initiative.json
 foundry initiative list
 foundry initiative show shared-contract
-foundry campaign advance publish-contract
+foundry initiative advance shared-contract
 ```
 
 `show` prints the outcome, member status, cycles used and landed, the latest
 verdict and reviewer gaps. It lists each open question once, with its
 applicable members and an answer command. `list` and `show` accept `--json`.
+The response includes the latest steering record and a total history count.
+The store and typed event history retain all assessment prompts and decisions.
 
 `max_cycles` counts dispatched cycles across all members. The initiative owns
 member budgets. `max_active_members` defaults to two. A member with an open
 owner question cannot advance. A member's `after` prerequisite must have
-landed a cycle or completed before that member can advance.
+landed a cycle or completed before that member can advance. Queued formation,
+reserved dispatches and standalone initiative tasks count toward the active cap.
+The engine checks repository ownership before starting another mutation.
 
 Initiatives and findings use the campaign store API and its existing lock.
 Online commands use typed gRPC and daemon-owned state. An unavailable daemon
 is an error. Use `--offline` only for recovery with the daemon stopped.
 The current storage file is `~/.foundry/campaigns.json`.
 Integrations must use the store API rather than depend on its file shape.
+
+## Steer the initiative
+
+Request one assessment, or pin it to an eligible member:
+
+```bash
+foundry initiative advance shared-contract
+foundry initiative advance shared-contract --member adopt-contract
+```
+
+The command returns the submitted event identity. Inspect the initiative and
+queue while work proceeds. Once enabled, steering runs again after member
+settlement and repository cleanup. It can select another member or pause for
+an owner decision. A passive initiative keeps its existing campaign behaviour.
+
+The read-only agent chooses exactly one typed action:
+
+| Action | Effect |
+| --- | --- |
+| `advance` | Advance an eligible member, assigning a project to a candidate |
+| `dispatch` | Start one concrete initiative-owned task in a registered project |
+| `hold` | Wait for explicit member milestones |
+| `relay` | Record a finding for the selected members |
+| `ask` | Open one shared owner question |
+| `escalate` | Stop for owner attention with a reason |
+
+The assessment receives the outcome, brief identity, member results, findings,
+questions, owner decisions and recent trunk evidence. Its provider is the
+initiative's formation provider, at balanced tier and medium effort.
+`initiative_steered` retains the exact prompt, provider and typed decision.
+
+Only one assessment can run per initiative. Store changes or a changed trunk
+invalidate stale output. Foundry releases the store guard during repository
+reads and agent execution. Durable action receipts prevent replay from starting
+work or spending cycles twice. Pending actions recover after daemon restart.
+Hold, relay, ask and escalate do not repeatedly wake an idle initiative.
+
+An indefinite owner hold remains until an owner releases it. Pinning an
+`initiative advance --member` releases that member's owner hold. A steering
+agent cannot release it. Holds with milestones require explicit evidence;
+an arbitrary milestone label is not satisfied by any landed cycle.
+
+Owner overrides use the same admission checks:
+
+```bash
+foundry initiative hold shared-contract --member adopt-contract \
+  --reason "Review the contract first"
+foundry initiative hold shared-contract --member adopt-contract \
+  --until publish-contract:contract-landed --reason "Wait for the contract"
+foundry initiative milestone shared-contract --member publish-contract \
+  --milestone contract-landed --evidence producer@a1b2c3d --evidence contract.md
+foundry initiative relay shared-contract --finding fnd_contract_port \
+  --member adopt-contract
+foundry initiative ask shared-contract --question "Which port is binding?" \
+  --member publish-contract --member adopt-contract
+foundry initiative dispatch shared-contract consumer "Verify the contract example"
+```
+
+Record custom milestones only after checking their evidence. Built-in settlement
+milestones retain actual landing or completion evidence. A meaningful owner
+override during a running assessment is refused with a retry instruction;
+it is never silently dropped.
 
 ## Record an owner decision
 
@@ -90,6 +160,10 @@ Foundry records the decision on the initiative and each selected campaign.
 It closes the questions that decision answers for those members. Formation
 that was running when the decision arrived discards its stale outcome and
 forms again from the current record. It does not overwrite the decision.
+
+Use `--add-cycles N` with `initiative decide` to authorize more shared cycles.
+Member grants stay within that total. Raising an individual campaign budget
+cannot authorize an initiative to exceed its shared budget.
 
 `foundry queue open` shows an escalated initiative once and suppresses its
 members' escalation rows beneath it. Open work items retain their own rows.
@@ -182,6 +256,18 @@ servers. It disables permission bypass and unsandboxed subprocess retries.
 Read-only formation and review allow writes only to temporary scratch space.
 Sibling repositories and Foundry's state remain readable.
 
+An initiative can explicitly alternate stage pairings:
+
+```json
+"provider_pairings": [
+  { "formation": "claude", "execution": "codex", "review": "claude" },
+  { "formation": "codex", "execution": "claude", "review": "codex" }
+]
+```
+
+Explicit member stages still take precedence. A continuation keeps its admitted
+pairing. Foundry does not alternate providers unless the definition requests it.
+
 ## Derive from Epilogue Tracker
 
 Run derivation in the repository that supplies the Tracker intent:
@@ -207,9 +293,19 @@ in `create`, `update` or `delete` state become staged candidates in priority
 order. Journey steps supply `after` order. Success criteria and interaction
 descriptions become review statements. `intent_refs` retain the Tracker IDs.
 
-Candidates do not dispatch campaigns in slice 0. Project assignment, the
-codebase audit, steering and Tracker completion belong to slice 1. Derivation
-never writes Tracker state or runs `et close`.
+Derivation retains the supplying repository and intent reference. The supplying
+repository need not be a registered execution target. Audit and dispatch can
+use only the initiative's registered projects.
+
+The first advance audits each candidate against the registered codebases before
+starting work. Findings retain checked paths and classify intent as `realised`,
+`partial`, `absent` or `misplaced`. Realised intent produces a close proposal.
+It does not start redundant work or write Tracker state.
+
+Each later steer reads intent again. New approved intent becomes a candidate.
+Withdrawn intent stops its owned work gracefully. Completed intent retains its
+evidence and history. Existing findings and cycle counts remain attached to
+their intent references. Foundry never runs `et close` in slice 1.
 
 ## Complete or cancel
 
@@ -235,9 +331,10 @@ foundry initiative cancel shared-contract --reason "The shared contract was with
 Cancellation stops its member campaigns gracefully. Running cycles can settle
 and preserve their work. It does not discard preserved branches.
 
-Slice 1 will add automatic steering, audit-based project assignment and
-integration gates on the production daemon's host. Slice 0 does not promote
-Foundry to production. Promotion to ops-01 needs Stacey's go-ahead.
+Slice 2 adds integration gates, general campaign staging and outcome evaluation,
+including Tracker closure. Slice 3 adds question aging and dashboard controls.
+Development stays on the Mac's synthetic daemon. Promotion to ops-01 requires
+Stacey's go-ahead.
 
 See [campaigns](campaigns.md), [the work queue](work-queue.md) and
 [initiative events](../reference/event-types.md#initiatives-and-findings).

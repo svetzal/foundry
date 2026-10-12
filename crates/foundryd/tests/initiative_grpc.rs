@@ -24,8 +24,28 @@ async fn client(
     let writer = Arc::new(TraceWriter::new(home.join("traces").to_str().unwrap()));
     let registry: Registry = serde_json::from_value(json!({"version":2,"projects":[{
         "name":"sample","path":home,"stack":"rust","agent":"codex","repo":"local/sample","branch":"main"}]})).unwrap();
+    let registry = Arc::new(RwLock::new(registry));
+    let event_writer =
+        Arc::new(foundry_engine::event_writer::EventWriter::new(home.join("events")));
+    let admission = foundryd::work_admission::DurableWorkAdmission::new(
+        home.join("work-items.json"),
+        registry.clone(),
+        foundry_sdk::pacing::PacingPaths {
+            limits: home.join("pacing.json"),
+            state: home.join("pacing-state.json"),
+        },
+        event_tx.clone(),
+        event_writer.clone(),
+        writer.clone(),
+    )
+    .with_campaigns_path(home.join("campaigns.json"));
     let ctx = RuntimeContext {
-        engine: Arc::new(Engine::new().with_event_broadcaster(event_tx.clone())),
+        engine: Arc::new(
+            Engine::new()
+                .with_event_writer(event_writer)
+                .with_event_broadcaster(event_tx.clone())
+                .with_work_admission(Arc::new(admission)),
+        ),
         trace_store: Arc::new(TraceStore::with_trace_writer(
             Duration::from_secs(60),
             writer.clone(),
@@ -33,7 +53,7 @@ async fn client(
         workflow_tracker: Arc::new(WorkflowTracker::new()),
         trace_writer: writer,
         event_tx,
-        registry: Arc::new(RwLock::new(registry)),
+        registry,
     };
     let service = FoundryService::new(
         ctx,
@@ -98,12 +118,14 @@ async fn typed_commands_fan_out_decisions_and_serve_owned_brief_and_findings() {
         client.decide_initiative(proto::DecideInitiativeRequest {
             name: "shared".into(),
             decision: "Use contract one".into(),
-            members: vec![]
+            members: vec![],
+            add_cycles: 0
         }),
         second_client.decide_initiative(proto::DecideInitiativeRequest {
             name: "shared".into(),
             decision: "Keep both compatible".into(),
-            members: vec![]
+            members: vec![],
+            add_cycles: 0
         })
     );
     first.unwrap();
@@ -193,10 +215,294 @@ async fn failed_mutation_preserves_the_store_and_returns_internal_through_the_cl
             name: "shared".into(),
             decision: "No lost updates".into(),
             members: vec![],
+            add_cycles: 0,
         })
         .await
         .unwrap_err();
     assert_eq!(error.code(), tonic::Code::Internal);
     assert_eq!(std::fs::read(path).unwrap(), before);
+    server.abort();
+}
+
+#[tokio::test]
+async fn concurrent_typed_steers_admit_once_and_explicit_owner_override_is_not_lost() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let (mut first, server) = client(home.path()).await;
+    first
+        .add_initiative(proto::AddInitiativeRequest {
+            definition_json: definition(),
+        })
+        .await
+        .unwrap();
+    let mut second = first.clone();
+    let request = || proto::AdvanceInitiativeRequest {
+        name: "shared".into(),
+        member: None,
+        operator_origin: String::new(),
+    };
+    let (one, two) =
+        tokio::join!(first.advance_initiative(request()), second.advance_initiative(request()));
+    let responses = [one.unwrap().into_inner(), two.unwrap().into_inner()];
+    assert_eq!(responses.iter().filter(|response| !response.event_id.is_empty()).count(), 1);
+    assert_eq!(responses.iter().filter(|response| response.in_flight.is_some()).count(), 1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let ledger =
+                foundry_sdk::work_item::WorkItemStore::load(&home.path().join("work-items.json"))
+                    .unwrap();
+            if ledger.items.len() == 1 {
+                assert_eq!(ledger.items[0].source.as_ref().unwrap().reference, "shared");
+                assert_eq!(ledger.items[0].lane, foundry_sdk::work_item::WorkLane::Campaign);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let override_result = first
+        .advance_initiative(proto::AdvanceInitiativeRequest {
+            name: "shared".into(),
+            member: Some("first".into()),
+            operator_origin: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(override_result.code(), tonic::Code::FailedPrecondition);
+    let stored = CampaignStore::load(&home.path().join("campaigns.json")).unwrap();
+    assert!(stored.find_initiative("shared").unwrap().steering_enabled);
+    server.abort();
+}
+
+#[tokio::test]
+async fn owner_hold_stays_passive_and_member_pin_releases_it() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let (mut client, server) = client(home.path()).await;
+    client
+        .add_initiative(proto::AddInitiativeRequest {
+            definition_json: definition(),
+        })
+        .await
+        .unwrap();
+    let response = client
+        .act_on_initiative(proto::ActOnInitiativeRequest {
+            name: "shared".into(),
+            operator_origin: "host test".into(),
+            action: Some(proto::act_on_initiative_request::Action::Hold(
+                proto::HoldInitiativeMember {
+                    member: "first".into(),
+                    until: vec![],
+                    reason: "Owner review pending".into(),
+                },
+            )),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!response.event_id.is_empty());
+    let event_id = response.event_id;
+    let response = response.initiative.unwrap();
+    assert!(!response.steering_enabled);
+    let fact = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let events = foundry_blocks::blocks::triage_core::read_events_jsonl(
+                &home.path().join("events"),
+                chrono::Utc::now() - chrono::Duration::minutes(1),
+            );
+            if let Some(fact) = events.into_iter().find(|event| event.id == event_id) {
+                break fact;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fact.event_type, foundry_sdk::event::EventType::InitiativeOwnerActionRecorded);
+    let payload: foundry_sdk::payload::InitiativeOwnerActionRecordedPayload =
+        fact.parse_payload().unwrap();
+    assert_eq!(payload.operator_origin, "host test");
+    assert!(
+        matches!(payload.action,foundry_sdk::payload::InitiativeOwnerControlAction::Hold {member,..} if member=="first")
+    );
+    assert!(
+        foundry_sdk::work_item::WorkItemStore::load(&home.path().join("work-items.json"))
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(response.holds[0].owner);
+    let response = client
+        .advance_initiative(proto::AdvanceInitiativeRequest {
+            name: "shared".into(),
+            member: Some("first".into()),
+            operator_origin: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert!(response.holds.is_empty());
+    assert!(response.steering_enabled);
+    server.abort();
+}
+
+#[tokio::test]
+async fn shared_budget_changes_only_through_initiative_and_never_after_terminal() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let (mut client, server) = client(home.path()).await;
+    client
+        .add_initiative(proto::AddInitiativeRequest {
+            definition_json: definition(),
+        })
+        .await
+        .unwrap();
+    let result = client
+        .decide_initiative(proto::DecideInitiativeRequest {
+            name: "shared".into(),
+            decision: "Spend three more cycles".into(),
+            members: vec![],
+            add_cycles: 3,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(result.budget.unwrap().max_cycles, 23);
+    assert!(!result.steering_enabled);
+    client
+        .cancel_initiative(proto::EndInitiativeRequest {
+            name: "shared".into(),
+            reason: "Stop the proof".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .advance_initiative(proto::AdvanceInitiativeRequest {
+                name: "shared".into(),
+                member: None,
+                operator_origin: String::new()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
+    let home = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "Test"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(source.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::create_dir(source.path().join(".et")).unwrap();
+    std::fs::write(source.path().join(".et/projection.json"), json!({
+        "goals":[{"id":"outcome","description":"An approved outcome","success_criteria":"A verified contract"}],
+        "interactions":[{"id":"contract","description":"Implement the contract","state":"create","goals":["outcome"]}], "journeys":[]
+    }).to_string()).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", ".et/projection.json"])
+            .current_dir(source.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["commit", "--quiet", "-m", "Seed intent"])
+            .current_dir(source.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (mut client, server) = client(home.path()).await;
+    let request = |projects| proto::DeriveInitiativeRequest {
+        from_ref: "et:goal:outcome".into(),
+        projects,
+        authorized_by: "Stacey".into(),
+        source_repo: source.path().to_string_lossy().into_owned(),
+    };
+    assert_eq!(
+        client
+            .derive_initiative(request(vec!["unregistered".into()]))
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::InvalidArgument
+    );
+    let derived = client
+        .derive_initiative(request(vec!["sample".into()]))
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(derived.members.len(), 1);
+    assert_eq!(derived.members[0].kind, "candidate");
+    assert!(!derived.steering_enabled);
+    assert_eq!(
+        derived.derive_source.unwrap().repo,
+        source.path().canonicalize().unwrap().to_string_lossy()
+    );
+    assert!(
+        foundry_sdk::work_item::WorkItemStore::load(&home.path().join("work-items.json"))
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn manual_campaign_completion_records_authoritative_milestone() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let (mut client, server) = client(home.path()).await;
+    client
+        .add_initiative(proto::AddInitiativeRequest {
+            definition_json: definition(),
+        })
+        .await
+        .unwrap();
+    client
+        .complete_campaign(proto::CompleteCampaignRequest {
+            name: "first".into(),
+            reason: "Owner verified the contract".into(),
+        })
+        .await
+        .unwrap();
+    let store = CampaignStore::load(&home.path().join("campaigns.json")).unwrap();
+    let initiative = store.find_initiative("shared").unwrap();
+    let milestone = initiative
+        .milestones
+        .iter()
+        .find(|milestone| milestone.member == "first" && milestone.name == "completed")
+        .unwrap();
+    assert!(milestone.evidence.iter().any(|proof| proof == "Owner verified the contract"));
+    assert_eq!(
+        store.find("first").unwrap().status,
+        foundry_sdk::campaign::CampaignStatus::Completed
+    );
+    assert!(!initiative.steering_enabled);
     server.abort();
 }

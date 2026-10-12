@@ -377,6 +377,7 @@ impl Harness {
                 run_event_id: Some(format!("evt_run_{name}")),
                 run_result: Some(run_result),
                 operator_origin: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
             })
             .unwrap(),
         );

@@ -395,6 +395,14 @@ pub enum EventType {
     InitiativeCompleted,
     /// An owner cancelled an initiative.
     InitiativeCancelled,
+    /// Request one read-only steering step for an initiative.
+    InitiativeAdvanceRequested,
+    /// Retains the steering prompt and its applied, stale or failed decision.
+    InitiativeSteered,
+    /// An owner changed a hold, recorded milestone evidence, or pinned a member.
+    InitiativeOwnerActionRecorded,
+    /// Apply an already committed, durable steering action.
+    InitiativeActionRequested,
     /// A typed finding was recorded for initiative members.
     FindingRecorded,
     /// A member cycle landed after its formation saw a finding.
@@ -613,6 +621,8 @@ impl EventType {
             | EventType::ExecutionRequested
             | EventType::TaskRunStarted
             | EventType::CampaignAdvanceRequested
+            | EventType::InitiativeAdvanceRequested
+            | EventType::InitiativeActionRequested
             | EventType::ValidationRequested
             | EventType::DriftAssessmentRequested
             | EventType::ReleaseRequested
@@ -654,6 +664,8 @@ impl EventType {
             | EventType::InitiativeDecided
             | EventType::InitiativeCompleted
             | EventType::InitiativeCancelled
+            | EventType::InitiativeSteered
+            | EventType::InitiativeOwnerActionRecorded
             | EventType::FindingRecorded
             | EventType::FindingConsumed
             | EventType::WorkItemSubmitted
