@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-12
+
 ### Changed
 
 - Initiative steering and member agents receive a shared contract-testing reminder.
@@ -28,9 +30,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recovery without reporting a failed closure as completion.
 - `foundry registry list --json` provides daemon-owned project paths for
   integration checks on named hosts.
-
-Development and validation remain on the Mac. Promotion to ops-01 awaits
-Stacey's go-ahead.
 
 ### Fixed
 
