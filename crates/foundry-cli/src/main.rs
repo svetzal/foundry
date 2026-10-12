@@ -1321,3 +1321,64 @@ mod cli_surface_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod initiative_parse_tests {
+    use super::{Cli, Commands};
+    use crate::initiative_commands;
+    use clap::Parser;
+
+    #[test]
+    fn initiative_decide_preserves_legacy_syntax_and_optional_budget_extension() {
+        for extra in [vec![], vec!["--add-cycles", "3"]] {
+            let mut args = vec![
+                "foundry",
+                "initiative",
+                "decide",
+                "shared",
+                "--decision",
+                "Use the verified contract",
+            ];
+            args.extend(extra);
+            let cli = Cli::try_parse_from(args).expect("initiative decide syntax");
+            let Commands::Initiative(initiative_commands::Commands::Decide { add_cycles, .. }) =
+                cli.command
+            else {
+                panic!("expected decide")
+            };
+            assert!(add_cycles == 0 || add_cycles == 3);
+        }
+    }
+
+    #[test]
+    fn initiative_pin_and_owner_hold_have_explicit_members() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "initiative",
+            "advance",
+            "shared",
+            "--member",
+            "first",
+        ])
+        .expect("pin syntax");
+        let Commands::Initiative(initiative_commands::Commands::Advance { member, .. }) =
+            cli.command
+        else {
+            panic!("expected advance")
+        };
+        assert_eq!(member.as_deref(), Some("first"));
+        assert!(
+            Cli::try_parse_from([
+                "foundry",
+                "initiative",
+                "hold",
+                "shared",
+                "--member",
+                "first",
+                "--reason",
+                "Owner is reviewing"
+            ])
+            .is_ok()
+        );
+    }
+}

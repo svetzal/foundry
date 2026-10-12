@@ -188,7 +188,7 @@ pub(crate) async fn invoke_coding_agent(
     invoke_agent(
         agent,
         AgentBlockSpec {
-            prompt: format!("{}\n\nCOMMAND OUTPUT: run verbose builds/tests through `foundry capture -- <command> [args]`. It preserves complete logs, returns the actual exit code, and emits a bounded failure tail. For shell pipelines use `foundry capture -- sh -c '...'` with pipefail where supported. Keep source reads scoped to relevant slices.", spec.prompt),
+            prompt: format!("{}\n\nCOMMAND OUTPUT: run verbose builds/tests through `foundry capture --log-dir .foundry/logs -- <command> [args]`. It keeps complete logs inside the execution worktree at `.foundry/logs`, returns the actual exit code, and emits a bounded failure tail. For shell pipelines use `foundry capture --log-dir .foundry/logs -- sh -c '...'` with pipefail where supported. Keep source reads scoped to relevant slices.", spec.prompt),
             working_dir: spec.working_dir,
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,

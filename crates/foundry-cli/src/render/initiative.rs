@@ -4,6 +4,28 @@ use std::fmt::Write;
 
 use crate::proto::{Finding, Initiative};
 
+pub fn advance(name: &str, response: &crate::proto::AdvanceInitiativeResponse) -> String {
+    if let Some(in_flight) = &response.in_flight {
+        format!(
+            "Initiative '{name}' already has a steer {} ({}). Nothing dispatched.\n",
+            in_flight.event_id, in_flight.state
+        )
+    } else {
+        format!(
+            "Requested steer for initiative '{name}'. Event: {}\nInspect with: foundry initiative show {name}\n",
+            response.event_id
+        )
+    }
+}
+
+pub fn owner_action(name: &str, event_id: &str) -> String {
+    if event_id.is_empty() {
+        format!("Recorded owner action for initiative '{name}'.\n")
+    } else {
+        format!("Recorded owner action for initiative '{name}'. Event: {event_id}\n")
+    }
+}
+
 pub fn detail(initiative: &Initiative) -> String {
     let mut out = format!(
         "Initiative '{}' ({})\nOutcome: {}\n",
@@ -43,6 +65,7 @@ pub fn detail(initiative: &Initiative) -> String {
             let _ = writeln!(out, "  {}: {statement}", evidence.kind);
         }
     }
+    render_steering(&mut out, initiative);
     out.push_str("\nMembers:\nNAME  PROJECT  STATUS  CYCLES USED/LANDED  LAST VERDICT\n");
     for member in &initiative.members {
         if let Some(campaign) = &member.campaign {
@@ -86,6 +109,41 @@ pub fn detail(initiative: &Initiative) -> String {
         }
     }
     out
+}
+
+fn render_steering(out: &mut String, initiative: &Initiative) {
+    let _ = writeln!(
+        out,
+        "Automatic steering: {}",
+        if initiative.steering_enabled {
+            "enabled"
+        } else {
+            "awaiting first advance"
+        }
+    );
+    if let Some(source) = &initiative.derive_source {
+        let _ = writeln!(out, "Tracker source: {} in {}", source.from, source.repo);
+    }
+    for hold in &initiative.holds {
+        let until = if hold.until.is_empty() {
+            "owner release".into()
+        } else {
+            hold.until.join(", ")
+        };
+        let _ = writeln!(out, "Hold: {} until {} ({})", hold.member, until, hold.reason);
+    }
+    if let Some(steer) = initiative.steering_history.last() {
+        let _ = writeln!(out, "Last steer: {} ({})", steer.id, steer.recorded_at);
+        let _ = writeln!(out, "Decision: {}", steer.decision_json);
+    }
+    for proposal in &initiative.close_proposals {
+        let _ = writeln!(
+            out,
+            "Tracker close proposed: {} (evidence: {})",
+            proposal.intent_ref,
+            proposal.evidence.join(", ")
+        );
+    }
 }
 
 fn render_questions(out: &mut String, initiative: &Initiative) {

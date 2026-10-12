@@ -899,7 +899,9 @@ for its own workspace after landing or preservation.
 
 An [initiative](initiatives.md) groups campaigns under a shared outcome.
 Its cycles carry `source: initiative:<name>` while retaining the member's
-`campaign` and `campaign_cycle` in their task payload.
+`campaign` and `campaign_cycle` in their task payload. Initiative steering and
+standalone dispatches use the same source filter. Their typed root and member
+identities distinguish them from campaign cycles.
 
 ```bash
 foundry queue --source initiative:shared-contract

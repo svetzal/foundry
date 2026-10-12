@@ -915,6 +915,14 @@ use the daemon; explicit `--offline` recovery uses the campaign store API.
 foundry initiative add initiative.json
 foundry initiative list
 foundry initiative show shared-contract --json
+
+foundry initiative advance shared-contract --member adopt-contract
+foundry initiative hold shared-contract --member adopt-contract --reason "Owner review"
+foundry initiative relay shared-contract --finding fnd_contract_port --member adopt-contract
+foundry initiative ask shared-contract --question "Which port?" --member adopt-contract
+foundry initiative dispatch shared-contract consumer "Verify the contract example"
+foundry initiative milestone shared-contract --member publish-contract \
+  --milestone contract-landed --evidence producer@a1b2c3d
 foundry initiative decide shared-contract --decision "Use port 5001"
 foundry initiative decide shared-contract \
   --decision "Keep the adapter" --member adopt-contract
@@ -931,8 +939,8 @@ The definition contains `name`, `outcome`, `intent_refs`, `projects`, `members`,
 `done_evidence`, `budget`, `authorized_by`, `providers` and `status`. Members
 reference campaign names and optional `after` prerequisites. The shared budget
 has `max_cycles`, `max_active_members` (default two) and `max_open_questions`.
-The initiative owns member budgets. Slice 0 has no steering agent; use
-`foundry campaign advance <member>` to start eligible work.
+The initiative owns member budgets. `foundry initiative advance <name>`
+enables steering; passive initiatives retain manual campaign advance.
 
 Decisions fan out to applicable members even while they are active. A changed
 formation snapshot is discarded and formed again. `queue open` shows an
@@ -970,5 +978,35 @@ member campaigns.
 A committed projection is preferred. Otherwise the et CLI reads intent from
 that repository root. Foundry never reads its credentials or changes Tracker
 state. Candidates come from `create`, `update`, `delete` interactions in
-priority order; journey steps provide `after` order. Steering, project
-assignment, the codebase audit, integration gates and `et close` await slice 1.
+priority order; journey steps provide `after` order. First advance audits
+the registered codebases and can activate approved candidates. Each steer
+refreshes intent. Realised intent produces close proposals; integration gates
+and `et close` belong to slice 2.
+
+`foundry initiative advance <name>` submits one read-only assessment and enables
+steering after subsequent member settlements. `--member <name>` pins the next
+advance and releases that member's owner hold. Steering chooses one typed
+`advance`, `dispatch`, `hold`, `relay`, `ask` or `escalate` action. The retained
+`initiative_steered` fact includes the prompt, provider and decision.
+
+Queued formation, reserved admissions and standalone tasks count toward
+`max_active_members`. Shared cycles include initiative tasks. Use
+`initiative decide --add-cycles N` to authorize more shared cycles. Member
+budget grants cannot exceed that total. Owner holds and shared questions block
+ineligible work; milestone holds require explicit evidence.
+
+The first steer audits Tracker candidates against registered codebases. Audit
+findings retain checked paths and classify intent as `realised`, `partial`,
+`absent` or `misplaced`. Each steer refreshes intent from the supplying repo;
+that repo need not be a registered writable target. Withdrawn intent stops its
+owned work gracefully. Realised intent records a close proposal without an ET
+write. General staging, integration gates and outcome completion are slice 2.
+
+Only one assessment runs per initiative. Changed store or trunk evidence
+invalidates output. Durable pending actions recover on restart without double
+spending or dispatch. Hold, relay, ask and escalate do not self-trigger idle
+loops. Existing initiatives remain passive until explicitly advanced.
+
+Optional `provider_pairings` explicitly alternates stage maps. Member stage
+overrides remain binding, and continuations retain their admitted pairing.
+Without that setting, Foundry keeps the configured stage providers.

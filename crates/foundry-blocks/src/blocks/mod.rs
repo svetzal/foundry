@@ -135,6 +135,7 @@ mod run_verify_gates;
 mod scan;
 mod scan_supply_chain;
 mod scout_drift;
+mod steer_initiative;
 mod strategic_assess;
 mod strategic_loop;
 mod summarize_commits;
@@ -195,6 +196,10 @@ pub use run_verify_gates::RunVerifyGates;
 pub use scan::ScanDependencies;
 pub use scan_supply_chain::ScanSupplyChain;
 pub use scout_drift::ScoutDrift;
+pub use steer_initiative::validate_steering_external_context;
+pub use steer_initiative::{
+    ApplyInitiativeAction, RecordInitiativeTaskResult, RequestInitiativeAdvance, SteerInitiative,
+};
 pub use strategic_assess::StrategicAssessor;
 pub use strategic_loop::StrategicLoopController;
 pub use summarize_commits::SummarizeCommits;

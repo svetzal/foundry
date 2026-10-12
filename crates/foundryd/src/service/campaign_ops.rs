@@ -452,6 +452,7 @@ pub(super) fn complete(
                 campaign: Some(campaign_to_detail(campaign)),
             }));
         }
+        let initiative_name = campaign.initiative.clone();
         let detail = campaign_to_detail(campaign);
         let payload = Event::serialize_payload(&CampaignTerminalPayload {
             campaign: campaign.name.clone(),
@@ -476,6 +477,32 @@ pub(super) fn complete(
         )
         .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
         .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
+        if let Some(initiative) = initiative_name.filter(|name| {
+            guard.store.find_initiative(name).is_some_and(|initiative| {
+                initiative
+                    .authorized_by
+                    .as_deref()
+                    .is_some_and(|owner| !owner.trim().is_empty())
+                    && !matches!(
+                        initiative.status,
+                        foundry_sdk::initiative::InitiativeStatus::Completed
+                            | foundry_sdk::initiative::InitiativeStatus::Cancelled
+                    )
+            })
+        }) {
+            guard
+                .store
+                .record_milestone(
+                    &initiative,
+                    &name,
+                    "completed",
+                    vec![
+                        event.id.clone(),
+                        event.payload_str("reason").unwrap_or_default().to_owned(),
+                    ],
+                )
+                .map_err(super::initiative_ops::error)?;
+        }
         guard.save().map_err(map_save_error)?;
         (detail, event)
     };
@@ -780,6 +807,14 @@ pub(super) fn advance(
         .find(&name)
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
     campaign.check_advanceable().map_err(|e| map_transition_error(&e))?;
+    if let Some(initiative) = campaign
+        .initiative
+        .as_deref()
+        .and_then(|name| guard.store.find_initiative(name))
+        && (initiative.reservations.iter().any(|reservation| reservation.member == campaign.name)
+            || initiative.pending_actions.iter().any(|action| matches!(&action.decision, foundry_sdk::initiative::SteeringDecision::Advance { member, .. } if member == &campaign.name))) {
+            return Err(Status::failed_precondition("the initiative already reserved this member; inspect initiative show before advancing it"));
+        }
     let detail = campaign_to_detail(campaign);
     let project = campaign.project.clone();
 
@@ -827,6 +862,7 @@ pub(super) fn advance(
         run_event_id: None,
         run_result: None,
         operator_origin,
+        providers: foundry_sdk::gateway::StageProviders::default(),
     })
     .map_err(|e| Status::internal(format!("failed to serialize advance payload: {e}")))?;
 
@@ -952,6 +988,7 @@ mod in_flight_tests {
             trace_id: "t".to_string(),
             started_at: Utc::now(),
             campaign: campaign.map(ToString::to_string),
+            initiative: None,
         }
     }
 
@@ -1036,6 +1073,7 @@ mod tests {
             trace_id: "a".repeat(32),
             started_at: Utc::now(),
             campaign: Some("campaign".into()),
+            initiative: None,
         };
         let mut started = coordinator.clone();
         started.event_id = "evt_started".into();

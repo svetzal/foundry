@@ -23,6 +23,7 @@ use foundry_blocks::blocks::{ADMITTED_WORK_ITEM_KEY, item_from_dispatch, queued_
 /// Admission policy sharing the daemon's existing ledger and pacing scheduler.
 pub struct DurableWorkAdmission {
     path: PathBuf,
+    campaigns_path: PathBuf,
     registry: Arc<RwLock<Registry>>,
     pacing: PacingPaths,
     changed: Arc<Notify>,
@@ -43,6 +44,10 @@ impl DurableWorkAdmission {
         result_writer: Arc<foundry_blocks::trace_writer::TraceWriter>,
     ) -> Self {
         Self {
+            campaigns_path: path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("campaigns.json"),
             path,
             registry,
             pacing,
@@ -55,8 +60,130 @@ impl DurableWorkAdmission {
         }
     }
 
+    #[must_use]
+    pub fn with_campaigns_path(mut self, path: PathBuf) -> Self {
+        self.campaigns_path = path;
+        self
+    }
+
     fn store(&self) -> anyhow::Result<WorkItemStore> {
         Ok(WorkItemStore::load(&self.path)?)
+    }
+
+    fn automatic_steer_after(&self, root: &Event) -> anyhow::Result<Option<Event>> {
+        let accounted_member = root.event_type == EventType::CampaignAdvanceRequested
+            && root
+                .parse_payload::<foundry_sdk::payload::CampaignAdvanceRequestedPayload>()
+                .is_ok_and(|payload| {
+                    payload.run_event_id.as_deref().is_some_and(|id| !id.trim().is_empty())
+                        && payload.run_result.is_some()
+                });
+        let standalone_task = root.event_type == EventType::ExecutionRequested
+            && WorkflowType::from_payload(&root.payload) == WorkflowType::Task
+            && root.payload_str("campaign").is_none();
+        if !accounted_member && !standalone_task {
+            return Ok(None);
+        }
+        let Some(name) = root.payload_str("initiative").or_else(|| {
+            root.source
+                .as_ref()
+                .filter(|source| {
+                    source.kind == foundry_sdk::work_source::WorkSourceKind::Initiative
+                })
+                .map(|source| source.reference.as_str())
+        }) else {
+            return Ok(None);
+        };
+        // CampaignStore saves by atomic rename. Reading here does not take its
+        // flock or invert the campaign-store-before-ledger mutation order.
+        let store = foundry_sdk::campaign::CampaignStore::load(&self.campaigns_path)?;
+        let enabled = store.find_initiative(name).is_some_and(|initiative| {
+            initiative.steering_enabled
+                && !matches!(
+                    initiative.status,
+                    foundry_sdk::initiative::InitiativeStatus::Completed
+                        | foundry_sdk::initiative::InitiativeStatus::Cancelled
+                )
+        });
+        if !enabled {
+            return Ok(None);
+        }
+        let trigger = root.causation_id.as_deref().unwrap_or(&root.id);
+        let payload =
+            Event::serialize_payload(&foundry_sdk::payload::InitiativeAdvanceRequestedPayload {
+                initiative: name.into(),
+                member: None,
+                operator_origin: None,
+                trigger_id: Some(trigger.into()),
+            })?;
+        let mut event = Event::new(
+            EventType::InitiativeAdvanceRequested,
+            "system".into(),
+            root.throttle,
+            payload,
+        )
+        .with_source(Some(foundry_sdk::work_source::WorkSource::initiative(name, 0)))
+        .with_trace_id(root.trace_id.clone())
+        .with_span_ids(Some(foundry_sdk::event::mint_span_id()), root.span_id.clone());
+        event.id = format!("evt_{trigger}_initiative_advance");
+        Ok(Some(event))
+    }
+
+    fn validate_external_context(
+        &self,
+        event: &Event,
+    ) -> anyhow::Result<Option<foundry_sdk::initiative::SteeringExternalContext>> {
+        let external_context = event
+            .payload
+            .get("steering_external_context")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                serde_json::from_value::<foundry_sdk::initiative::SteeringExternalContext>(
+                    value.clone(),
+                )
+            })
+            .transpose()?;
+        if event.payload_str("steering_action_id").is_some()
+            && !recorded_root(&self.store()?, &event.id)
+            && let Some(context) = external_context.as_ref()
+        {
+            let registry = foundry_sdk::error::read_lock(&self.registry, "registry")?.clone();
+            anyhow::ensure!(
+                foundry_blocks::blocks::validate_steering_external_context(context, &registry)?,
+                "initiative action context changed before final admission"
+            );
+        }
+        Ok(external_context)
+    }
+
+    fn queue_steering_root(
+        &self,
+        store: &mut WorkItemStore,
+        root: Event,
+        events: &mut Vec<Event>,
+    ) -> anyhow::Result<()> {
+        let existing = store.items.iter_mut().find(|item| {
+            (item.occupies_slot() || item.state.is_waiting())
+                && item.started_root.as_ref().or(item.pending_root.as_ref()).is_some_and(|event| {
+                    event.event_type == EventType::InitiativeAdvanceRequested
+                        && event.payload_str("initiative") == root.payload_str("initiative")
+                })
+        });
+        if let Some(existing) = existing {
+            if existing.occupies_slot() && distinct_steering_trigger(existing, &root) {
+                existing.coalesced_root = Some(root);
+            }
+        } else if !recorded_root(store, &root.id)
+            && let Some(mut next) = self.planned(&root)?
+        {
+            store.upsert(next.clone());
+            next.reason = queued_reason(store, &next.id, &self.registry, &self.pacing);
+            let submitted = lifecycle(EventType::WorkItemSubmitted, &next)?;
+            store.upsert(next);
+            self.writer.write(&submitted)?;
+            events.push(submitted);
+        }
+        Ok(())
     }
 
     fn stopped(&self, item: &WorkItem) -> anyhow::Result<ProcessResult> {
@@ -104,7 +231,10 @@ impl DurableWorkAdmission {
                 | EventType::PipelineChecked => WorkItemKind::Remediation,
                 _ => WorkItemKind::Workflow,
             };
-            let lane = if event.event_type == EventType::CampaignAdvanceRequested {
+            let lane = if matches!(
+                event.event_type,
+                EventType::CampaignAdvanceRequested | EventType::InitiativeAdvanceRequested
+            ) {
                 WorkLane::Campaign
             } else if event.gather_id.is_some() || system_work {
                 WorkLane::Maintenance
@@ -140,6 +270,42 @@ impl DurableWorkAdmission {
     }
 }
 
+fn acknowledge_action(
+    guard: &mut Option<foundry_sdk::campaign::CampaignStoreGuard>,
+    event: &Event,
+    item_id: &str,
+) -> anyhow::Result<()> {
+    if let (Some(guard), Some(action), Some(initiative)) = (
+        guard.as_mut(),
+        event.payload_str("steering_action_id"),
+        event.payload_str("initiative"),
+    ) {
+        guard.store.acknowledge_steering_action(initiative, action, Some(item_id))?;
+        guard.save()?;
+    }
+    Ok(())
+}
+
+fn recorded_root(store: &WorkItemStore, id: &str) -> bool {
+    store.items.iter().any(|item| {
+        item.pending_root.as_ref().is_some_and(|root| root.id == id)
+            || item
+                .started_root
+                .as_ref()
+                .is_some_and(|root| root.id == id || root.causation_id.as_deref() == Some(id))
+    })
+}
+
+fn distinct_steering_trigger(item: &WorkItem, event: &Event) -> bool {
+    let same_trigger = |root: &Event| {
+        root.id == event.id
+            || (event.payload_str("trigger_id").is_some()
+                && root.payload_str("trigger_id") == event.payload_str("trigger_id"))
+    };
+    !item.started_root.as_ref().is_some_and(same_trigger)
+        && !item.coalesced_root.as_ref().is_some_and(same_trigger)
+}
+
 /// Control facts and system coordination do not execute project work.
 fn control_event(kind: &EventType) -> bool {
     matches!(
@@ -156,6 +322,15 @@ fn control_event(kind: &EventType) -> bool {
             | EventType::PacingResumed
             | EventType::AgentSessionStarted
             | EventType::AgentSessionEnded
+            | EventType::InitiativeAdded
+            | EventType::InitiativeDecided
+            | EventType::InitiativeCompleted
+            | EventType::InitiativeCancelled
+            | EventType::InitiativeSteered
+            | EventType::InitiativeOwnerActionRecorded
+            | EventType::InitiativeActionRequested
+            | EventType::FindingRecorded
+            | EventType::FindingConsumed
             | EventType::CampaignCancelled
             | EventType::CampaignCompleted
             | EventType::CampaignEscalated
@@ -180,6 +355,26 @@ impl WorkAdmission for DurableWorkAdmission {
         self.changed.clone()
     }
     fn failure_events(&self, root: &Event, reason: &str) -> Vec<Event> {
+        if let (Some(action), Some(initiative)) =
+            (root.payload_str("steering_action_id"), root.payload_str("initiative"))
+        {
+            let discard = (|| -> anyhow::Result<()> {
+                let mut guard =
+                    foundry_sdk::campaign::CampaignStore::lock_exclusive(&self.campaigns_path)?;
+                let _gate = ledger_write_gate()
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("ledger gate poisoned"))?;
+                let store = self.store()?;
+                if !recorded_root(&store, &root.id) {
+                    guard.store.discard_steering_action(initiative, action)?;
+                    guard.save()?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = discard {
+                tracing::error!(%error, action, "could not release rejected initiative action; recovery retains its receipt");
+            }
+        }
         vec![stopped_event(root, reason)]
     }
 
@@ -200,7 +395,8 @@ impl WorkAdmission for DurableWorkAdmission {
 
     fn prepare(&self, event: &Event, owner: Option<&str>) -> anyhow::Result<Admission> {
         if let Some(id) = owner {
-            let independent = event.event_type == EventType::CampaignAdvanceRequested
+            let independent = event.event_type == EventType::InitiativeAdvanceRequested
+                || event.event_type == EventType::CampaignAdvanceRequested
                 || event.event_type == EventType::ExecutionRequested;
             let store = self.store()?;
             let item = store
@@ -215,6 +411,15 @@ impl WorkAdmission for DurableWorkAdmission {
                 return Ok(Admission::Execute);
             }
         }
+        let external_context = self.validate_external_context(event)?;
+        // An initiative action reserves under the campaign store before taking
+        // the ledger gate. A durable queued child is the receipt, even if the
+        // later campaign-store save fails and startup must acknowledge it again.
+        let mut action_guard = if event.payload_str("steering_action_id").is_some() {
+            Some(foundry_sdk::campaign::CampaignStore::lock_exclusive(&self.campaigns_path)?)
+        } else {
+            None
+        };
         let Some(mut item) = self.planned(event)? else {
             return Ok(Admission::Execute);
         };
@@ -229,8 +434,31 @@ impl WorkAdmission for DurableWorkAdmission {
                     .as_ref()
                     .is_some_and(|root| root.causation_id.as_deref() == Some(&event.id))
         }) {
+            acknowledge_action(&mut action_guard, event, &existing.id)?;
             return Ok(Admission::Deferred {
                 id: existing.id.clone(),
+                submitted: None,
+            });
+        }
+        validate_action_admission(action_guard.as_ref(), event, &store, external_context.as_ref())?;
+        if event.event_type == EventType::InitiativeAdvanceRequested
+            && let Some(existing) = store.items.iter_mut().find(|item| {
+                (item.state.is_waiting() || item.occupies_slot())
+                    && item.pending_root.as_ref().or(item.started_root.as_ref()).is_some_and(
+                        |root| {
+                            root.event_type == EventType::InitiativeAdvanceRequested
+                                && root.payload_str("initiative") == event.payload_str("initiative")
+                        },
+                    )
+            })
+        {
+            let id = existing.id.clone();
+            if existing.occupies_slot() && distinct_steering_trigger(existing, event) {
+                existing.coalesced_root = Some(event.clone());
+                store.save(&self.path)?;
+            }
+            return Ok(Admission::Deferred {
+                id,
                 submitted: None,
             });
         }
@@ -240,6 +468,7 @@ impl WorkAdmission for DurableWorkAdmission {
         let submitted = lifecycle(EventType::WorkItemSubmitted, &item)?;
         self.writer.write(&submitted)?;
         store.save(&self.path)?;
+        acknowledge_action(&mut action_guard, event, &item.id)?;
         Ok(Admission::Deferred {
             id: item.id.clone(),
             submitted: Some(Box::new(submitted)),
@@ -297,6 +526,19 @@ impl WorkAdmission for DurableWorkAdmission {
         let Some(id) = root.payload_str(ADMITTED_WORK_ITEM_KEY) else {
             return Ok(vec![]);
         };
+        let initiative_name = root.payload_str("initiative").or_else(|| {
+            root.source
+                .as_ref()
+                .filter(|source| {
+                    source.kind == foundry_sdk::work_source::WorkSourceKind::Initiative
+                })
+                .map(|source| source.reference.as_str())
+        });
+        // Completion releases admission reservations even for passive owner dispatches.
+        // Match the same campaign-store-before-ledger order as final admission.
+        let mut initiative_guard = initiative_name
+            .map(|_| foundry_sdk::campaign::CampaignStore::lock_exclusive(&self.campaigns_path))
+            .transpose()?;
         let _gate = ledger_write_gate()
             .lock()
             .map_err(|_| anyhow::anyhow!("ledger write gate poisoned"))?;
@@ -307,7 +549,7 @@ impl WorkAdmission for DurableWorkAdmission {
                 .ok_or_else(|| anyhow::anyhow!("execution owner disappeared: {id}"))?;
             self.result_writer.write(&root.id, result)?;
             item.execution_completed = true;
-            let events = if item.is_running() {
+            let mut events = if item.is_running() {
                 if root.event_type == EventType::ExecutionRequested
                     && WorkflowType::from_payload(&root.payload) == WorkflowType::Task
                     && root.throttle.permits_mutation()
@@ -333,7 +575,23 @@ impl WorkAdmission for DurableWorkAdmission {
             } else {
                 vec![]
             };
+            if (root.event_type != EventType::CampaignAdvanceRequested
+                || workflow_succeeded(root, result))
+                && let Some(next_root) = self.automatic_steer_after(root)?
+            {
+                self.queue_steering_root(&mut store, next_root, &mut events)?;
+            }
+            let rerun = store.find_mut(id).and_then(|item| item.coalesced_root.take());
+            if let Some(rerun) = rerun {
+                self.queue_steering_root(&mut store, rerun, &mut events)?;
+            }
             store.save(&self.path)?;
+            if let (Some(guard), Some(name)) = (initiative_guard.as_mut(), initiative_name)
+                && guard.store.find_initiative(name).is_some()
+            {
+                guard.store.release_member_reservation(name, id)?;
+                guard.save()?;
+            }
             Ok(events)
         })();
         if let Err(error) = &completion {
@@ -363,6 +621,60 @@ impl WorkAdmission for DurableWorkAdmission {
     }
 }
 
+fn validate_action_admission(
+    guard: Option<&foundry_sdk::campaign::CampaignStoreGuard>,
+    event: &Event,
+    store: &WorkItemStore,
+    external_context: Option<&foundry_sdk::initiative::SteeringExternalContext>,
+) -> anyhow::Result<()> {
+    if let (Some(guard), Some(action), Some(initiative)) =
+        (guard, event.payload_str("steering_action_id"), event.payload_str("initiative"))
+    {
+        let active = store
+            .items
+            .iter()
+            .filter(|item| item.state.is_waiting() || item.occupies_slot())
+            .filter_map(|item| {
+                item.campaign_name().map(str::to_owned).or_else(|| {
+                    guard.store.find_initiative(initiative).and_then(|initiative| {
+                        initiative
+                            .task_dispatches
+                            .iter()
+                            .find(|receipt| receipt.work_item == item.id)
+                            .map(|receipt| receipt.member.clone())
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let pending = guard
+            .store
+            .find_initiative(initiative)
+            .and_then(|initiative| {
+                initiative.pending_actions.iter().find(|pending| pending.id == action)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("initiative action receipt disappeared before admission")
+            })?;
+        anyhow::ensure!(
+            external_context.is_some(),
+            "initiative work action requires captured external evidence"
+        );
+        anyhow::ensure!(
+            pending.external_context.as_ref() == external_context,
+            "initiative child evidence differs from the persisted action receipt"
+        );
+        guard.store.enforce_steering_action(initiative, action, &active)?;
+        anyhow::ensure!(
+            !store.items.iter().any(|item| item.occupies_slot()
+                && (item.project == event.project
+                    || item.reserved_projects.contains(&event.project))),
+            "initiative action cannot dispatch into a busy project: {}",
+            event.project
+        );
+    }
+    Ok(())
+}
+
 /// The event that ends `root`'s workflow and carries its verdict, if it has one.
 fn terminal_kind(root: &Event) -> Option<EventType> {
     match root.event_type {
@@ -373,6 +685,7 @@ fn terminal_kind(root: &Event) -> Option<EventType> {
         EventType::ProjectIterationRequested => Some(EventType::ProjectIterationCompleted),
         EventType::ReleaseRequested => Some(EventType::ReleaseCompleted),
         EventType::CampaignAdvanceRequested => Some(EventType::CampaignAdvanceCompleted),
+        EventType::InitiativeAdvanceRequested => Some(EventType::InitiativeSteered),
         EventType::ExecutionRequested
             if WorkflowType::from_payload(&root.payload) == WorkflowType::Task =>
         {
@@ -467,6 +780,7 @@ fn stopped_event(root: &Event, reason: &str) -> Event {
         EventType::ValidationRequested => EventType::ValidationCompleted,
         EventType::DriftAssessmentRequested => EventType::DriftAssessmentCompleted,
         EventType::CampaignAdvanceRequested => EventType::CampaignAdvanceCompleted,
+        EventType::InitiativeAdvanceRequested => EventType::InitiativeSteered,
         EventType::SupplyChainScanStarted => EventType::SupplyChainScanCompleted,
         _ => EventType::Custom("workflow_refused".to_string()),
     };
@@ -548,6 +862,7 @@ mod tests {
                 EventType::ProjectIterationRequested => EventType::ProjectIterationCompleted,
                 EventType::ReleaseRequested => EventType::ReleaseCompleted,
                 EventType::CampaignAdvanceRequested => EventType::CampaignAdvanceCompleted,
+                EventType::InitiativeAdvanceRequested => EventType::InitiativeSteered,
                 EventType::PipelineCheckRequested | EventType::MainBranchAudited => {
                     EventType::RemediationCompleted
                 }
@@ -1441,5 +1756,344 @@ mod tests {
         let item = h.items().remove(1);
         assert_eq!(item.state, WorkItemState::Landed);
         assert_eq!(item.reason, "dry-run completed; mutations simulated");
+    }
+    fn steer_root(trigger: &str) -> Event {
+        let mut event = root(EventType::InitiativeAdvanceRequested, "system");
+        event.payload = serde_json::json!({"initiative":"shared","trigger_id":trigger});
+        event.source = Some(WorkSource::initiative("shared", 0));
+        event
+    }
+
+    fn start_admitted(h: &Harness, event: &Event) -> (String, Event) {
+        let Admission::Deferred { id, .. } = h.policy.prepare(event, None).expect("admit") else {
+            panic!("expected queued")
+        };
+        let mut started = event.clone();
+        started.payload[ADMITTED_WORK_ITEM_KEY] = serde_json::json!(id);
+        let _gate = ledger_write_gate().lock().expect("gate");
+        let mut store = h.policy.store().expect("store");
+        let item = store.find_mut(&id).expect("owner");
+        item.start(Utc::now());
+        item.started_root = Some(started.clone());
+        store.save(&h.policy.path).expect("persist started root");
+        (id, started)
+    }
+
+    #[test]
+    fn steering_dedup_retains_one_distinct_fact_and_queues_it_after_completion() {
+        let h = Harness::new(true);
+        let initial = steer_root("first-fact");
+        let (id, started) = start_admitted(&h, &initial);
+        let duplicate = steer_root("first-fact");
+        h.policy.prepare(&duplicate, None).expect("dedup same fact");
+        assert!(h.items()[0].coalesced_root.is_none());
+        let changed = steer_root("new-fact");
+        h.policy.prepare(&changed, None).expect("coalesce changed fact");
+        h.policy.prepare(&changed, None).expect("retry changed fact");
+        let before = h.items();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].id, id);
+        assert_eq!(before[0].coalesced_root.as_ref().unwrap().id, changed.id);
+        let result = ProcessResult {
+            events: vec![Event::new(
+                EventType::InitiativeSteered,
+                "system".into(),
+                Throttle::Full,
+                serde_json::json!({"success":true}),
+            )],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        h.policy.complete(&started, &result).expect("complete and queue changed packet");
+        let after = h.items();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after.iter().filter(|item| item.is_queued()).count(), 1);
+        assert!(after.iter().all(|item| item.coalesced_root.is_none()));
+        h.policy.complete(&started, &result).expect("completion retry");
+        assert_eq!(h.items().len(), 2);
+    }
+
+    #[test]
+    fn coalesced_steering_fact_survives_restart_and_failed_completion_save() {
+        let h = Harness::new(true);
+        let (_, started) = start_admitted(&h, &steer_root("first"));
+        let changed = steer_root("changed");
+        h.policy.prepare(&changed, None).expect("persist dirty root");
+        let before = std::fs::read(&h.policy.path).unwrap();
+        std::fs::create_dir(h.policy.path.with_extension("json.tmp")).unwrap();
+        let result = ProcessResult {
+            events: vec![],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert!(h.policy.complete(&started, &result).is_err());
+        assert_eq!(std::fs::read(&h.policy.path).unwrap(), before);
+        std::fs::remove_dir(h.policy.path.with_extension("json.tmp")).unwrap();
+        let mut store = h.policy.store().unwrap();
+        crate::service::work_ledger::settle_running(&mut store);
+        store.save(&h.policy.path).unwrap();
+        assert_eq!(store.items.iter().filter(|item| item.is_queued()).count(), 1);
+        assert!(
+            store
+                .items
+                .iter()
+                .any(|item| item.pending_root.as_ref().is_some_and(|root| root.id == changed.id))
+        );
+        crate::service::work_ledger::settle_running(&mut store);
+        assert_eq!(store.items.len(), 2);
+    }
+
+    #[test]
+    fn action_ack_save_failure_retries_the_same_durable_child_without_double_spend() {
+        let h = Harness::new(true);
+        let path = h.policy.campaigns_path.clone();
+        let mut store = foundry_sdk::campaign::CampaignStore::default();
+        let initiative = serde_json::from_value(serde_json::json!({"name":"shared","outcome":"A working contract","projects":["alpha"],
+            "authorized_by":"Stacey","members":[],"done_evidence":[{"kind":"review","statement":"The contract works"}]})).unwrap();
+        store.add_initiative(initiative, &["alpha".into()]).unwrap();
+        let action = store
+            .commit_owner_action(
+                "shared",
+                "owner_dispatch",
+                foundry_sdk::initiative::SteeringDecision::Dispatch {
+                    project: "alpha".into(),
+                    objective: "Implement the contract".into(),
+                    member: None,
+                },
+                "Owner requested the task".into(),
+            )
+            .unwrap();
+        let action = store
+            .bind_external_context("shared", &action.id, synthetic_external_context())
+            .unwrap();
+        store.save(&path).unwrap();
+        let mut child = root(EventType::ExecutionRequested, "alpha");
+        child.id = "evt_owner_dispatch_dispatch".into();
+        child.payload = serde_json::json!({"project":"alpha","workflow":"task","prompt":"Implement the contract",
+            "initiative":"shared","steering_action_id":action.id,"steering_external_context":action.external_context});
+        child.source = Some(WorkSource::initiative("shared", 0));
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(h.policy.prepare(&child, None).is_err());
+        assert_eq!(h.items().len(), 1);
+        assert_eq!(
+            foundry_sdk::campaign::CampaignStore::load(&path)
+                .unwrap()
+                .find_initiative("shared")
+                .unwrap()
+                .pending_actions
+                .len(),
+            1
+        );
+        std::fs::remove_dir(path.with_extension("json.tmp")).unwrap();
+        h.policy.prepare(&child, None).expect("acknowledge same queued child");
+        assert_eq!(h.items().len(), 1);
+        let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
+        let initiative = store.find_initiative("shared").unwrap();
+        assert!(initiative.pending_actions.is_empty());
+        assert_eq!(initiative.task_dispatches.len(), 1);
+        assert_eq!(initiative.work_admissions.len(), 1);
+        assert_eq!(store.shared_cycles_used("shared").unwrap(), 1);
+    }
+    #[test]
+    fn passive_owner_dispatch_releases_reservations_after_each_cleanup() {
+        let h = Harness::new(true);
+        let path = h.policy.campaigns_path.clone();
+        let mut store = foundry_sdk::campaign::CampaignStore::default();
+        let initiative = serde_json::from_value(serde_json::json!({"name":"shared","outcome":"A working contract","projects":["alpha"],
+            "authorized_by":"Stacey","members":[],"budget":{"max_cycles":6,"max_active_members":2,"max_open_questions":3},
+            "done_evidence":[{"kind":"review","statement":"The contract works"}]})).unwrap();
+        store.add_initiative(initiative, &["alpha".into()]).unwrap();
+        store.save(&path).unwrap();
+        for number in 0..3 {
+            let mut guard = foundry_sdk::campaign::CampaignStore::lock_exclusive(&path).unwrap();
+            let action = guard
+                .store
+                .commit_owner_action(
+                    "shared",
+                    &format!("task_{number}"),
+                    foundry_sdk::initiative::SteeringDecision::Dispatch {
+                        project: "alpha".into(),
+                        objective: format!("Task {number}"),
+                        member: None,
+                    },
+                    "Owner requested the task".into(),
+                )
+                .unwrap();
+            let action = guard
+                .store
+                .bind_external_context("shared", &action.id, synthetic_external_context())
+                .unwrap();
+            guard.save().unwrap();
+            drop(guard);
+            let mut child = root(EventType::ExecutionRequested, "alpha");
+            child.id = format!("evt_{}_dispatch", action.id);
+            child.payload = serde_json::json!({"project":"alpha","workflow":"task","prompt":"Implement the contract",
+                "initiative":"shared","steering_action_id":action.id,"steering_external_context":action.external_context});
+            child.source = Some(WorkSource::initiative("shared", 0));
+            let (_, started) = start_admitted(&h, &child);
+            h.policy
+                .complete(
+                    &started,
+                    &ProcessResult {
+                        events: vec![],
+                        block_executions: vec![],
+                        total_duration_ms: 0,
+                    },
+                )
+                .unwrap();
+            let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
+            let initiative = store.find_initiative("shared").unwrap();
+            assert!(!initiative.steering_enabled);
+            assert!(initiative.reservations.is_empty());
+            assert_eq!(initiative.work_admissions.len(), number + 1);
+        }
+        assert_eq!(h.items().len(), 3, "passive cleanup does not schedule a steer");
+    }
+    fn synthetic_external_context() -> foundry_sdk::initiative::SteeringExternalContext {
+        foundry_sdk::initiative::SteeringExternalContext {
+            repositories: vec![],
+            derive_source: None,
+            intent: None,
+            brief: None,
+            brief_content: None,
+        }
+    }
+    #[test]
+    fn changed_git_evidence_refuses_and_discards_a_child_before_ledger_admission() {
+        let h = Harness::new(true);
+        let registry = h.policy.registry.read().unwrap().clone();
+        let project = registry.find_project("alpha").unwrap();
+        let repo = std::path::Path::new(&project.path);
+        std::fs::create_dir(repo).unwrap();
+        let git = |args: &[&str]| {
+            let output =
+                std::process::Command::new("git").current_dir(repo).args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "-b", "main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Fixture",
+        ]);
+        let mut context = synthetic_external_context();
+        context.repositories.push(foundry_sdk::initiative::SteeringRepositoryIdentity {
+            project: "alpha".into(),
+            root: repo.canonicalize().unwrap().display().to_string(),
+            registry: serde_json::to_string(project).unwrap(),
+            trunk: git(&["rev-parse", "refs/heads/main"]),
+            head: git(&["rev-parse", "HEAD"]),
+            status: git(&["status", "--porcelain", "--untracked-files=all"]),
+            diff: git(&["diff", "HEAD", "--"]),
+        });
+        let path = h.policy.campaigns_path.clone();
+        let mut store = foundry_sdk::campaign::CampaignStore::default();
+        store.add_initiative(serde_json::from_value(serde_json::json!({"name":"shared","outcome":"Contract works","projects":["alpha"],"authorized_by":"Stacey","members":[],
+            "done_evidence":[{"kind":"review","statement":"It works"}]})).unwrap(),&["alpha".into()]).unwrap();
+        let action = store
+            .commit_owner_action(
+                "shared",
+                "changed_context",
+                foundry_sdk::initiative::SteeringDecision::Dispatch {
+                    project: "alpha".into(),
+                    objective: "Write contract".into(),
+                    member: None,
+                },
+                "Owner dispatch".into(),
+            )
+            .unwrap();
+        let action = store.bind_external_context("shared", &action.id, context).unwrap();
+        store.save(&path).unwrap();
+        std::fs::write(repo.join("new-evidence.txt"), "The repository changed").unwrap();
+        let mut child = root(EventType::ExecutionRequested, "alpha");
+        child.id = "evt_changed_context_dispatch".into();
+        child.payload = serde_json::json!({"project":"alpha","workflow":"task","prompt":"Write contract","initiative":"shared","steering_action_id":action.id,"steering_external_context":action.external_context});
+        let error = h.policy.prepare(&child, None).err().unwrap();
+        assert!(error.to_string().contains("context changed"));
+        assert!(h.items().is_empty());
+        h.policy.failure_events(&child, &error.to_string());
+        let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
+        let initiative = store.find_initiative("shared").unwrap();
+        assert!(initiative.pending_actions.is_empty());
+        assert!(initiative.reservations.is_empty());
+        assert!(initiative.work_admissions.is_empty());
+    }
+    #[test]
+    fn formation_cleanup_waits_for_cycle_result_accounting_before_steering() {
+        let h = Harness::new(true);
+        let mut campaigns = foundry_sdk::campaign::CampaignStore::default();
+        campaigns.add_initiative(serde_json::from_value(serde_json::json!({"name":"shared","outcome":"A working contract","projects":["alpha"],"authorized_by":"Stacey","members":[],
+            "done_evidence":[{"kind":"review","statement":"The contract works"}]})).unwrap(),&["alpha".into()]).unwrap();
+        campaigns.enable_steering("shared").unwrap();
+        campaigns.save(&h.policy.campaigns_path).unwrap();
+        let mut formation = root(EventType::CampaignAdvanceRequested, "alpha");
+        formation.payload =
+            Event::serialize_payload(&foundry_sdk::payload::CampaignAdvanceRequestedPayload {
+                campaign: "member".into(),
+                run_event_id: None,
+                run_result: None,
+                operator_origin: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+            })
+            .unwrap();
+        formation.payload["initiative"] = serde_json::json!("shared");
+        formation.source = Some(WorkSource::initiative("shared", 0));
+        let (_, started) = start_admitted(&h, &formation);
+        let result = ProcessResult {
+            events: vec![root(EventType::CampaignAdvanceCompleted, "alpha")],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        h.policy.complete(&started, &result).unwrap();
+        assert!(
+            h.items().iter().all(|item| !item.is_queued()),
+            "initial formation must wait for its dispatched cycle"
+        );
+        let mut accounting = root(EventType::CampaignAdvanceRequested, "alpha");
+        accounting.payload = Event::serialize_payload(&foundry_sdk::payload::CampaignAdvanceRequestedPayload {
+            campaign:"member".into(),run_event_id:Some("completed_cycle".into()),
+            run_result:Some(serde_json::from_value(serde_json::json!({"project":"alpha","success":true,"landed":true,"summary":"Contract landed","verdict":"complete"})).unwrap()),
+            operator_origin:None,providers:foundry_sdk::gateway::StageProviders::default(),
+        }).unwrap();
+        accounting.payload["initiative"] = serde_json::json!("shared");
+        accounting.source = Some(WorkSource::initiative("shared", 1));
+        let mut failed_accounting = accounting.clone();
+        failed_accounting.id = "failed_result_accounting".into();
+        let (_, failed_started) = start_admitted(&h, &failed_accounting);
+        let mut failed_terminal = root(EventType::CampaignAdvanceCompleted, "alpha");
+        failed_terminal.payload["success"] = serde_json::json!(false);
+        h.policy
+            .complete(
+                &failed_started,
+                &ProcessResult {
+                    events: vec![failed_terminal],
+                    block_executions: vec![],
+                    total_duration_ms: 0,
+                },
+            )
+            .unwrap();
+        assert!(
+            h.items().iter().all(|item| !item.is_queued()),
+            "failed result accounting must not schedule work from unrecorded counters"
+        );
+        let (_, started) = start_admitted(&h, &accounting);
+        h.policy.complete(&started, &result).unwrap();
+        h.policy.complete(&started, &result).unwrap();
+        let items = h.items();
+        let queued = items.iter().filter(|item| item.is_queued()).collect::<Vec<_>>();
+        assert_eq!(queued.len(), 1, "one result-accounting cleanup schedules one steer");
+        let pending = queued[0].pending_root.as_ref().unwrap();
+        assert_eq!(pending.event_type, EventType::InitiativeAdvanceRequested);
+        assert_eq!(pending.payload_str("trigger_id"), Some(accounting.id.as_str()));
     }
 }

@@ -13,6 +13,9 @@ per-item retry loops are unnecessary.
 For a shared outcome across campaigns, use an [initiative](initiatives.md).
 The initiative supplies the brief, shared findings, owner decisions and stage
 providers. Each member campaign still derives its own next objective.
+Once `initiative advance` enables steering, a settled member reports its result
+before the initiative chooses the next action. Passive initiatives retain the
+usual independent campaign loop.
 
 ## Why campaigns reassess scope
 

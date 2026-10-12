@@ -19,6 +19,8 @@ pub struct ActiveWorkflow {
     /// again — so this is what lets `foundry campaign cancel --now` find the
     /// single task to abort.
     pub campaign: Option<String>,
+    /// Initiative named by a steering root, for race-free manual dispatch.
+    pub initiative: Option<String>,
 }
 
 struct Inner {
@@ -179,12 +181,14 @@ mod tests {
             trace_id: format!("trc_{id}"),
             started_at: Utc::now(),
             campaign: None,
+            initiative: None,
         }
     }
 
     fn campaign_workflow(id: &str, campaign: &str) -> ActiveWorkflow {
         ActiveWorkflow {
             campaign: Some(campaign.to_string()),
+            initiative: None,
             ..sample_workflow(id)
         }
     }

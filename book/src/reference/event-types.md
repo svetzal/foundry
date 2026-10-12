@@ -540,10 +540,16 @@ moments.
 
 ## Initiatives and findings
 
-These facts belong to the existing span. They do not open a workflow.
+Lifecycle and finding facts belong to the existing span. Steering requests
+open an admitted workflow; the decision fact and action request retain its
+causation and initiative source.
 
 | Type | Meaning |
 | --- | --- |
+| `initiative_advance_requested` | Request one read-only steering assessment |
+| `initiative_steered` | Retain the assessment prompt, provider and one typed decision |
+| `initiative_action_requested` | Apply the durable admitted steering action |
+| `initiative_owner_action_recorded` | Record a direct owner hold, milestone or member override |
 | `initiative_added` | An initiative and its member references entered the store |
 | `initiative_decided` | An owner decision was recorded for applicable members |
 | `initiative_completed` | The owner affirmed the shared outcome |
@@ -565,3 +571,26 @@ and the result event. The source envelope names the initiative.
 `work_item_id` and the updated `finding` with its consumption records.
 Consumption follows an actual landing. Forming or preserving a cycle emits no
 consumption fact.
+
+`initiative_advance_requested` carries `initiative`, an optional pinned `member`,
+`operator_origin` and `trigger_id`. Roots are paced on the campaign lane and
+deduplicated per initiative. A distinct trigger during assessment is retained
+for a subsequent assessment.
+
+`initiative_steered` carries `success`, `outcome`, `error`, `initiative`,
+`steer_id`, `prompt`, `decision`, `provider` and the optional durable `action`.
+Its decision is exactly one of `advance`, `dispatch`, `hold`, `relay`, `ask`
+or `escalate`. Failed or stale assessments admit no work.
+
+`initiative_action_requested` carries the persisted `action`, including its
+identity, initiative, typed decision, provider pairing and context fingerprint.
+The admission boundary compares current state before dispatch. Replay uses
+that identity to acknowledge the same work rather than dispatch it again.
+Audit findings also retain `audit` with the intent reference, classification,
+registered project, checked paths and explanation. Tracker close proposals
+remain on the initiative; slice 1 does not write Tracker state.
+
+`initiative_owner_action_recorded` carries `initiative`, `action_id`,
+`operator_origin` and a typed `action` (`hold`, `milestone` or
+`member_override`). It is emitted after persistence and does not activate
+steering. The event envelope records its timestamp and identity.

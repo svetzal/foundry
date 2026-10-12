@@ -55,6 +55,17 @@ pub async fn derive(
     from: &str,
     projects: Vec<String>,
 ) -> Result<Initiative, InitiativeError> {
+    let projection = read_projection(repo).await?;
+    let mut initiative = derive_from_projection(&projection, from, projects)?;
+    initiative.derive_source = Some(super::DeriveSource {
+        repo: repo.to_string_lossy().into_owned(),
+        from: from.into(),
+    });
+    Ok(initiative)
+}
+
+/// Read current intent without changing Tracker state or exposing its credentials.
+pub async fn read_projection(repo: &Path) -> Result<IntentProjection, InitiativeError> {
     let mut projection = None;
     for path in [
         ".et/projection.json",
@@ -85,7 +96,7 @@ pub async fn derive(
             journeys: read_entities(repo, "journeys").await?,
         },
     };
-    derive_from_projection(&projection, from, projects)
+    Ok(projection)
 }
 
 async fn read_entities<T: serde::de::DeserializeOwned>(
@@ -167,6 +178,8 @@ pub fn derive_from_projection(
             after: vec![],
             intent_ref: Some(format!("et:interaction:{}", i.id)),
             description: Some(i.description.clone()),
+            intent_state: Some(i.state.clone()),
+            audit_finding_id: None,
         })
         .collect();
     for journey in &journeys {
@@ -204,8 +217,22 @@ pub fn derive_from_projection(
     } else {
         format!("{}\nSuccess criteria: {}", goal.description, goal.success_criteria)
     };
-    let initiative = Initiative {
-        name: parts[2].into(),
+    let initiative =
+        derived_definition(parts[2], outcome, intent_refs, projects, members, done_evidence);
+    initiative.validate()?;
+    Ok(initiative)
+}
+
+fn derived_definition(
+    name: &str,
+    outcome: String,
+    intent_refs: Vec<String>,
+    projects: Vec<String>,
+    members: Vec<InitiativeMember>,
+    done_evidence: Vec<DoneEvidence>,
+) -> Initiative {
+    Initiative {
+        name: name.into(),
         outcome,
         intent_refs,
         projects,
@@ -219,9 +246,21 @@ pub fn derive_from_projection(
         status: InitiativeStatus::Staged,
         owner_decisions: vec![],
         open_questions: vec![],
-    };
-    initiative.validate()?;
-    Ok(initiative)
+        derive_source: None,
+        provider_pairings: vec![],
+        holds: vec![],
+        milestones: vec![],
+        task_dispatches: vec![],
+        reservations: vec![],
+        steering: None,
+        steering_history: vec![],
+        pending_actions: vec![],
+        close_proposals: vec![],
+        steering_enabled: false,
+        intent_revision: String::new(),
+        work_admissions: vec![],
+        pairing_base_cycles: None,
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Slice 1 initiative steering: one read-only assessment chooses `advance`,
+  `dispatch`, `hold`, `relay`, `ask` or `escalate`. Explicit advance enables
+  automatic steering after member settlement. Existing initiatives stay passive.
+- Shared member admission, cycle grants, owner holds and milestone checks.
+  Durable steering receipts prevent duplicate work during replay and recovery.
+  Owner decisions can extend the shared budget with `--add-cycles`.
+- First-steer codebase audits and refreshed Tracker intent on every steer.
+  Findings retain checked paths and `realised`, `partial`, `absent` or
+  `misplaced` classifications. Realised intent produces close proposals only.
+- Explicit provider pairings for alternating formation, execution and review.
+  Member stage overrides and continuation provider choices remain binding.
+
+### Changed
+
+- Correct the slice boundary in initiative documentation. Integration gates,
+  general campaign staging, outcome evaluation and Tracker closure are slice 2.
+  Slice 1 is validated on the Mac development daemon and awaits promotion.
+
 ## [0.47.0] - 2026-10-12
 
 ### Added
@@ -28,8 +48,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   rather than requiring Codex by name.
 - Read-only initiative derivation from Epilogue Tracker goals and journeys,
   using committed projections or the Tracker CLI. Derived intent stays staged.
-  Steering, the codebase audit, Tracker completion and integration gates on
-  the production daemon's host remain for slice 1. This release promotes
+  Steering and the codebase audit remain for slice 1. Tracker completion and
+  integration gates on the production daemon's host remain for slice 2.
+  This release promotes
   slice 0 to ops-01 through the manual release procedure.
 
 ## [0.46.0] - 2026-10-11

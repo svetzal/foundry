@@ -267,6 +267,12 @@ async fn main() -> Result<()> {
     // session running.
     service::settle_running_work_items_on_start(&ctx, &foundry_sdk::paths::work_items_path()).await;
     service::end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
+    service::recover_initiative_actions_on_start(
+        &ctx,
+        &foundry_sdk::paths::campaigns_path(),
+        &foundry_sdk::paths::work_items_path(),
+    )
+    .await?;
 
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
@@ -797,6 +803,26 @@ fn register_campaign_blocks(
     shell: &Arc<dyn foundry_blocks::gateway::ShellGateway>,
     registry: &Arc<RwLock<foundry_sdk::registry::Registry>>,
 ) {
+    engine.register(Box::new(foundry_blocks::blocks::RecordInitiativeTaskResult::new(
+        foundry_sdk::paths::campaigns_path(),
+        foundry_sdk::paths::work_items_path(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::RequestInitiativeAdvance::new(
+        foundry_sdk::paths::campaigns_path(),
+        foundry_sdk::paths::work_items_path(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::SteerInitiative::new(
+        agent.clone(),
+        shell.clone(),
+        registry.clone(),
+        foundry_sdk::paths::campaigns_path(),
+        foundry_sdk::paths::work_items_path(),
+    )));
+    engine.register(Box::new(foundry_blocks::blocks::ApplyInitiativeAction::new(
+        registry.clone(),
+        foundry_sdk::paths::campaigns_path(),
+        foundry_sdk::paths::work_items_path(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::RequestCampaignAdvance));
     engine.register(Box::new(foundry_blocks::blocks::SurfaceCampaignTerminal));
     engine.register(Box::new(foundry_blocks::blocks::DisposeCampaignWork::new(

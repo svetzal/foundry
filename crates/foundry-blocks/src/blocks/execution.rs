@@ -238,6 +238,10 @@ async fn execute_agent_block_in_store(
     env.push(("FOUNDRY_AGENT_STAGE".into(), "execution".into()));
     if let Some(campaign) = ctx.payload.get("campaign").and_then(serde_json::Value::as_str) {
         env.push(("FOUNDRY_CAMPAIGN".into(), campaign.into()));
+    }
+    if ctx.payload.get("campaign").and_then(serde_json::Value::as_str).is_some()
+        || ctx.payload.get("initiative").and_then(serde_json::Value::as_str).is_some()
+    {
         env.push(("FOUNDRY_WRITABLE_ROOT".into(), project_path.to_string_lossy().into()));
     }
     let timeout = limits.map_or(entry.timeout(), |_| std::time::Duration::ZERO);
@@ -470,6 +474,47 @@ mod tests {
         assert!(requests[0].prompt.contains("/brief/BRIEF.md"));
         assert!(requests[0].prompt.contains("abc123"));
         assert!(requests[0].prompt.contains("shared failure diagnosis"));
+    }
+
+    #[tokio::test]
+    async fn standalone_initiative_executor_enforces_its_selected_worktree() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        let directory = tempfile::tempdir().unwrap();
+        let store = directory.path().join("store.json");
+        std::fs::write(&store,serde_json::json!({"initiatives":[{"name":"i","outcome":"work","projects":["p"],"done_evidence":[],"status":"active"}]}).to_string()).unwrap();
+        let agent = FakeAgentGateway::success_with("done");
+        let shell = test_helpers::passing_shell();
+        let entry = test_helpers::project_entry("p", "/repo/isolated-task");
+        let payload =
+            serde_json::json!({"initiative":"i","agent_provider":"claude","campaign_limits":{}});
+        let context = ExecutionContext {
+            project: "p",
+            trace_id: None,
+            workflow: WorkflowType::Task,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        super::execute_agent_block_in_store(
+            &*agent,
+            &*shell,
+            &entry,
+            &context,
+            "work".into(),
+            &store,
+        )
+        .await;
+        assert_eq!(
+            agent.invocations()[0]
+                .env
+                .iter()
+                .find(|(key, _)| key == "FOUNDRY_WRITABLE_ROOT")
+                .unwrap()
+                .1,
+            "/repo/isolated-task"
+        );
     }
 
     #[tokio::test]

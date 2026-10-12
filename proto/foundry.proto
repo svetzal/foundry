@@ -451,6 +451,9 @@ message InitiativeMember {
     Campaign campaign = 6;
     optional string last_verdict = 7;
     repeated string reviewer_gaps = 8;
+    optional string intent_state = 9;
+    optional string audit_finding_id = 10;
+    optional string project = 11;
 }
 message InitiativeBudget {
     uint64 max_cycles = 1;
@@ -496,7 +499,65 @@ message Initiative {
     repeated InitiativeDecision owner_decisions = 12;
     repeated InitiativeQuestion open_questions = 13;
     optional string agent_provider = 14;
+    DeriveSource derive_source = 15;
+    repeated StageProviders provider_pairings = 16;
+    repeated MemberHold holds = 17;
+    repeated MemberMilestone milestones = 18;
+    repeated TaskDispatch task_dispatches = 19;
+    repeated MemberReservation reservations = 20;
+    SteeringLease steering = 21;
+    repeated EtCloseProposal close_proposals = 22;
+    bool steering_enabled = 23;
+    repeated SteeringRecord steering_history = 24;
+    repeated DurableSteeringAction pending_actions = 25;
+    string intent_revision = 26;
+    repeated InitiativeWorkAdmission work_admissions = 27;
+    optional uint64 pairing_base_cycles = 28;
+    uint64 steering_history_count = 29;
 }
+message DeriveSource { string repo = 1; string from = 2; }
+message MemberHold { string member = 1; repeated string until = 2; string reason = 3; bool owner = 4; }
+message MemberMilestone { string member = 1; string name = 2; repeated string evidence = 3; }
+message TaskDispatch { string member = 1; string work_item = 2; string project = 3; }
+message MemberReservation { string member = 1; string operation_id = 2; string kind = 3; }
+message SteeringLease { string id = 1; string fingerprint = 2; }
+message EtCloseProposal { string intent_ref = 1; repeated string evidence = 2; }
+message SteeringRecord { string id = 1; string prompt = 2; string decision_json = 3; optional string provider = 4; string recorded_at = 5; }
+message DurableSteeringAction { string id = 1; string initiative = 2; string decision_json = 3; StageProviders providers = 4; string fingerprint = 5; optional string external_context_json = 6; }
+message InitiativeWorkAdmission { string action_id = 1; string member = 2; StageProviders providers = 3; optional string work_item = 4; }
+message AdvanceInitiativeRequest {
+    string name = 1;
+    optional string member = 2;
+    string operator_origin = 3;
+}
+message AdvanceInitiativeResponse {
+    Initiative initiative = 1;
+    string event_id = 2;
+    CampaignWorkInFlight in_flight = 3;
+}
+message DeriveInitiativeRequest {
+    string from_ref = 1;
+    repeated string projects = 2;
+    string authorized_by = 3;
+    string source_repo = 4;
+}
+message HoldInitiativeMember { string member = 1; repeated string until = 2; string reason = 3; }
+message RelayInitiativeFinding { string finding_id = 1; repeated string members = 2; }
+message DispatchInitiativeTask { string project = 1; string objective = 2; optional string member = 3; }
+message AskInitiativeOwner { string question = 1; repeated string members = 2; }
+message RecordInitiativeMilestone { string member = 1; string milestone = 2; repeated string evidence = 3; }
+message ActOnInitiativeRequest {
+    string name = 1;
+    string operator_origin = 2;
+    oneof action {
+        HoldInitiativeMember hold = 3;
+        RelayInitiativeFinding relay = 4;
+        DispatchInitiativeTask dispatch = 5;
+        AskInitiativeOwner ask = 6;
+        RecordInitiativeMilestone milestone = 7;
+    }
+}
+message ActOnInitiativeResponse { Initiative initiative = 1; string event_id = 2; }
 message AddInitiativeRequest { string definition_json = 1; }
 message InitiativeResponse { Initiative initiative = 1; }
 message ListInitiativesRequest {}
@@ -506,6 +567,7 @@ message DecideInitiativeRequest {
     string name = 1;
     string decision = 2;
     repeated string members = 3;
+    uint64 add_cycles = 4;
 }
 message EndInitiativeRequest { string name = 1; string reason = 2; }
 message SetInitiativeBriefRequest { string name = 1; string content = 2; }
@@ -522,6 +584,14 @@ message Finding {
     repeated string refs = 7;
     repeated FindingConsumption consumed_by = 8;
     string recorded_at = 9;
+    AuditEvidence audit = 10;
+}
+message AuditEvidence {
+    string intent_ref = 1;
+    string classification = 2;
+    string project = 3;
+    repeated string paths = 4;
+    string explanation = 5;
 }
 message AddFindingRequest { string definition_json = 1; }
 message FindingResponse { Finding finding = 1; }
@@ -1079,6 +1149,9 @@ service Foundry {
 
     // Add one durable campaign definition to the configured campaign store.
     rpc AddInitiative(AddInitiativeRequest) returns (InitiativeResponse);
+    rpc AdvanceInitiative(AdvanceInitiativeRequest) returns (AdvanceInitiativeResponse);
+    rpc DeriveInitiative(DeriveInitiativeRequest) returns (InitiativeResponse);
+    rpc ActOnInitiative(ActOnInitiativeRequest) returns (ActOnInitiativeResponse);
     rpc ListInitiatives(ListInitiativesRequest) returns (ListInitiativesResponse);
     rpc GetInitiative(GetInitiativeRequest) returns (InitiativeResponse);
     rpc DecideInitiative(DecideInitiativeRequest) returns (InitiativeResponse);

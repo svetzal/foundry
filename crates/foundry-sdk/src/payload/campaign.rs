@@ -18,6 +18,9 @@ pub struct CampaignAdvanceRequestedPayload {
     /// can record who asked; never parsed or acted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_origin: Option<String>,
+    /// The initiative-selected pairing for this cycle, below explicit member overrides.
+    #[serde(default)]
+    pub providers: crate::gateway::StageProviders,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -202,6 +202,7 @@ fn make_service() -> (FoundryService, TempDir) {
         trace_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         started_at: parse_utc("2026-07-24T12:00:00Z"),
         campaign: None,
+        initiative: None,
     });
     workflow_tracker.insert(ActiveWorkflow {
         event_id: "wf_beta".to_string(),
@@ -210,6 +211,7 @@ fn make_service() -> (FoundryService, TempDir) {
         trace_id: "cccccccccccccccccccccccccccccccc".to_string(),
         started_at: parse_utc("2026-07-24T10:30:00Z"),
         campaign: None,
+        initiative: None,
     });
 
     let registry = Arc::new(RwLock::new(Registry {

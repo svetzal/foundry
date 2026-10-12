@@ -37,6 +37,39 @@ pub(crate) fn settle_running(store: &mut WorkItemStore) -> Vec<WorkItem> {
             settled.push(item.clone());
         }
     }
+    // Distinct facts observed during a running steer survive this process
+    // ending. Admit one fresh root in the same save as the failed old owner.
+    let reruns = store
+        .items
+        .iter_mut()
+        .filter(|item| !item.occupies_slot())
+        .filter_map(|item| item.coalesced_root.take())
+        .collect::<Vec<_>>();
+    for root in reruns {
+        if store.items.iter().any(|item| {
+            item.pending_root.as_ref().is_some_and(|event| event.id == root.id)
+                || item.started_root.as_ref().is_some_and(|event| {
+                    event.id == root.id || event.causation_id.as_deref() == Some(&root.id)
+                })
+        }) {
+            continue;
+        }
+        store.upsert(
+            foundry_sdk::work_item::WorkItem::queued(
+                foundry_sdk::work_item::WorkItemSpec {
+                    project: root.project.clone(),
+                    objective: format!("{} for {}", root.event_type, root.project),
+                    kind: foundry_sdk::work_item::WorkItemKind::Workflow,
+                    lane: foundry_sdk::work_item::WorkLane::Campaign,
+                    origin: root.event_type.to_string(),
+                    trace_id: root.trace_id.clone(),
+                },
+                root.clone(),
+                now,
+            )
+            .with_source(root.source),
+        );
+    }
     settled
 }
 
@@ -82,8 +115,9 @@ fn settle_running_in_file(path: &Path) -> Vec<WorkItem> {
         }
     };
 
+    let had_reruns = store.items.iter().any(|item| item.coalesced_root.is_some());
     let settled = settle_running(&mut store);
-    if settled.is_empty() {
+    if settled.is_empty() && !had_reruns {
         return settled;
     }
     if let Err(error) = store.save(path) {

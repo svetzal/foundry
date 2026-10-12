@@ -350,6 +350,10 @@ force ops observation below its normal volume threshold. Reports use
 
 | Event | Category | Main payload fields |
 | --- | --- | --- |
+| `InitiativeAdvanceRequested` | Workflow root | `initiative`, optional `member`, `operator_origin`, `trigger_id` |
+| `InitiativeSteered` | Domain fact | `success`, `outcome`, `error`, `initiative`, `steer_id`, exact `prompt`, typed `decision`, `provider`, optional durable `action` |
+| `InitiativeActionRequested` | Control | Durable `action` identity, typed decision, stage providers and context fingerprint |
+| `InitiativeOwnerActionRecorded` | Domain fact | `initiative`, `action_id`, `operator_origin`, typed owner `action` (`hold`, `milestone`, `member_override`) |
 | `InitiativeAdded` | Domain fact | `initiative`, `outcome`, `projects`, `members`, `status`, `budget` |
 | `InitiativeDecided` | Domain fact | Initiative fields, `decision`, `applicable_members` |
 | `InitiativeCompleted` | Domain fact | Initiative fields, `reason` |
@@ -357,7 +361,9 @@ force ops observation below its normal volume threshold. Reports use
 | `FindingRecorded` | Domain fact | `id`, `finding_id`, `initiative`, `from`, `to`, `kind`, `text`, `refs`, `consumed_by`, `recorded_at` |
 | `FindingConsumed` | Domain fact | `initiative`, `finding_id`, `member`, `work_item_id`, updated `finding` |
 
-These events do not open spans. Initiative member cycles carry a typed
+Lifecycle and finding facts do not open spans. Steering roots are admitted
+on the campaign lane and deduplicated per initiative. Distinct triggers during
+assessment survive as a pending rerun. Initiative member cycles carry a typed
 `source` with `kind: initiative`, `ref: <name>` and their cycle number.
 The payload retains `campaign` and `campaign_cycle` so members stay explicit.
 Formation and task context carry `providers`, the brief path/hash, bounded

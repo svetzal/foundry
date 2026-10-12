@@ -44,6 +44,7 @@ impl TaskBlock for RequestCampaignAdvance {
                     // The automatic post-result advance: no operator issued it,
                     // so there is no operator origin to carry.
                     operator_origin: None,
+                    providers: foundry_sdk::gateway::StageProviders::default(),
                 },
             )
         })

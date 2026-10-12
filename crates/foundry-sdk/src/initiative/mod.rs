@@ -11,6 +11,8 @@ use crate::campaign::{CampaignStatus, CampaignStore, OwnerDecision, Transition};
 use crate::gateway::StageProviders;
 
 pub mod derive;
+pub mod steering;
+pub use steering::*;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum InitiativeError {
@@ -54,6 +56,34 @@ pub struct Initiative {
     pub owner_decisions: Vec<InitiativeOwnerDecision>,
     #[serde(default)]
     pub open_questions: Vec<InitiativeQuestion>,
+    #[serde(default)]
+    pub derive_source: Option<DeriveSource>,
+    #[serde(default)]
+    pub provider_pairings: Vec<StageProviders>,
+    #[serde(default)]
+    pub holds: Vec<MemberHold>,
+    #[serde(default)]
+    pub milestones: Vec<MemberMilestone>,
+    #[serde(default)]
+    pub task_dispatches: Vec<TaskDispatch>,
+    #[serde(default)]
+    pub reservations: Vec<MemberReservation>,
+    #[serde(default)]
+    pub steering: Option<SteeringLease>,
+    #[serde(default)]
+    pub steering_history: Vec<SteeringRecord>,
+    #[serde(default)]
+    pub pending_actions: Vec<DurableSteeringAction>,
+    #[serde(default)]
+    pub close_proposals: Vec<EtCloseProposal>,
+    #[serde(default)]
+    pub steering_enabled: bool,
+    #[serde(default)]
+    pub intent_revision: String,
+    #[serde(default)]
+    pub work_admissions: Vec<WorkAdmission>,
+    #[serde(default)]
+    pub pairing_base_cycles: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +102,11 @@ pub struct InitiativeMember {
     pub intent_ref: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub intent_state: Option<String>,
+    /// The classified evidence that licenses activation, invalidated by revised intent.
+    #[serde(default)]
+    pub audit_finding_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +115,8 @@ pub enum MemberKind {
     Campaign,
     /// Intent awaiting the slice 1 audit and project assignment; never dispatched.
     Candidate,
+    /// A standing slot whose actual work state lives in the work-item ledger.
+    Task,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +153,7 @@ impl MemberKind {
         match self {
             Self::Campaign => "campaign",
             Self::Candidate => "candidate",
+            Self::Task => "task",
         }
     }
 }
@@ -239,6 +277,8 @@ pub struct Finding {
     pub consumed_by: Vec<FindingConsumption>,
     #[serde(default = "Utc::now")]
     pub recorded_at: DateTime<Utc>,
+    #[serde(default)]
+    pub audit: Option<AuditEvidence>,
 }
 
 impl Finding {
@@ -260,6 +300,7 @@ impl Finding {
             refs,
             consumed_by: vec![],
             recorded_at: Utc::now(),
+            audit: None,
         }
     }
 }
@@ -377,6 +418,20 @@ impl CampaignStore {
         registered_projects: &[String],
     ) -> Result<()> {
         initiative.validate()?;
+        if initiative.steering.is_some()
+            || !initiative.steering_history.is_empty()
+            || !initiative.pending_actions.is_empty()
+            || !initiative.reservations.is_empty()
+            || !initiative.task_dispatches.is_empty()
+            || !initiative.work_admissions.is_empty()
+            || !initiative.close_proposals.is_empty()
+            || !initiative.milestones.is_empty()
+            || initiative.members.iter().any(|member| member.audit_finding_id.is_some())
+        {
+            return Err(InitiativeError::Invalid(
+                "initiative definitions must omit durable steering records and evidence".into(),
+            ));
+        }
         if initiative.brief.is_some() {
             return Err(InitiativeError::Invalid(
                 "initiative definitions must omit brief; import it with 'foundry initiative brief set'".into(),
@@ -423,12 +478,7 @@ impl CampaignStore {
     }
     fn applicable_members(&self, name: &str, members: &[String]) -> Result<Vec<String>> {
         let initiative = self.require_initiative(name)?;
-        let all: Vec<_> = initiative
-            .members
-            .iter()
-            .filter(|m| m.kind == MemberKind::Campaign)
-            .map(|m| m.name.clone())
-            .collect();
+        let all: Vec<_> = initiative.members.iter().map(|m| m.name.clone()).collect();
         if members.iter().any(|m| !all.contains(m)) {
             return Err(InitiativeError::Invalid(
                 "decision or finding names a campaign outside the initiative".into(),
@@ -533,6 +583,9 @@ impl CampaignStore {
         if let Some(initiative) = self.find_initiative_mut(name) {
             initiative.status = InitiativeStatus::Completed;
             initiative.open_questions.clear();
+            initiative.steering = None;
+            initiative.pending_actions.clear();
+            initiative.reservations.clear();
         }
         Ok(Transition::Applied)
     }
@@ -566,6 +619,9 @@ impl CampaignStore {
         if let Some(initiative) = self.find_initiative_mut(name) {
             initiative.status = InitiativeStatus::Cancelled;
             initiative.open_questions.clear();
+            initiative.steering = None;
+            initiative.pending_actions.clear();
+            initiative.reservations.clear();
         }
         Ok(Transition::Applied)
     }
@@ -687,55 +743,7 @@ impl CampaignStore {
         let Some(name) = &campaign.initiative else {
             return Ok(());
         };
-        let initiative = self.require_initiative(name)?;
-        if initiative.status.is_terminal() {
-            return Err(InitiativeError::Precondition(format!(
-                "initiative '{name}' is {}",
-                initiative.status
-            )));
-        }
-        if initiative
-            .open_questions
-            .iter()
-            .any(|q| q.members.is_empty() || q.members.iter().any(|m| m == member))
-        {
-            return Err(InitiativeError::Precondition(format!(
-                "member '{member}' waits on an initiative owner question"
-            )));
-        }
-        let names: BTreeSet<_> = initiative.members.iter().map(|m| m.name.as_str()).collect();
-        let mut active: BTreeSet<&str> = active_members
-            .iter()
-            .filter(|n| names.contains(n.as_str()))
-            .map(String::as_str)
-            .collect();
-        active.extend(
-            self.campaigns
-                .iter()
-                .filter(|c| {
-                    c.initiative.as_deref() == Some(name)
-                        && c.objective_history.last().is_some_and(|o| o.outcome.is_none())
-                })
-                .map(|c| c.name.as_str()),
-        );
-        if !active.contains(member) && active.len() >= initiative.budget.max_active_members {
-            return Err(InitiativeError::Precondition(format!(
-                "initiative '{name}' has reached its active member limit"
-            )));
-        }
-        if let Some(definition) = initiative.members.iter().find(|m| m.name == member) {
-            for after in &definition.after {
-                let prerequisite = after.split(':').next().unwrap_or(after);
-                if !self
-                    .find(prerequisite)
-                    .is_some_and(|c| c.cycles_landed > 0 || c.status == CampaignStatus::Completed)
-                {
-                    return Err(InitiativeError::Precondition(format!(
-                        "member '{member}' waits on '{after}'"
-                    )));
-                }
-            }
-        }
+        self.enforce_member_eligibility(name, member, active_members)?;
         Ok(())
     }
     /// Before dispatch, also enforce the initiative's shared cycle budget.
@@ -746,11 +754,7 @@ impl CampaignStore {
             return Ok(());
         };
         let initiative = self.require_initiative(name)?;
-        let used = self
-            .campaigns
-            .iter()
-            .filter(|c| c.initiative.as_deref() == Some(name))
-            .fold(0u64, |used, c| used.saturating_add(c.cycles_completed));
+        let used = self.shared_cycles_used(name)?;
         if used >= initiative.budget.max_cycles {
             return Err(InitiativeError::Precondition(format!(
                 "initiative '{name}' exhausted its cycle budget"
