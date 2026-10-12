@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A story-led book section based on Foundry's Tracker journeys. Fictional
+  situations cover owner attention, preserved work, campaign decisions,
+  cross-repository outcomes and safe promotion of Foundry itself.
 - Slice 1 initiative steering: one read-only assessment chooses `advance`,
   `dispatch`, `hold`, `relay`, `ask` or `escalate`. Explicit advance enables
   automatic steering after member settlement. Existing initiatives stay passive.

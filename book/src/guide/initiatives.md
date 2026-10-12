@@ -1,5 +1,8 @@
 # Initiatives
 
+For a concrete example, start with
+[Deliver one outcome across repositories](../stories/initiative.md).
+
 An initiative holds one outcome shared by several campaign missions. It keeps
 owner decisions, findings and a binding brief in one place. Each campaign
 still derives its own next objective from the repository and the last result.

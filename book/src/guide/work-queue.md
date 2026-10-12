@@ -1,5 +1,7 @@
 # The Work Queue
 
+For a daily walkthrough, read [A morning check](../stories/morning-check.md).
+
 Foundry runs engineering work continuously — one-shot tasks, campaign cycles,
 nightly maintenance, releases, remediations. The **work-item ledger** is the
 durable record of that work *as units*, so you can answer "what is running,

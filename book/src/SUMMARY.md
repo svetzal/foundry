@@ -3,6 +3,15 @@
 [Introduction](introduction.md)
 [Charter](charter.md)
 
+# Using Foundry
+
+- [Choose a story](stories/index.md)
+  - [A morning check](stories/morning-check.md)
+  - [Finish a change that stopped](stories/recover-work.md)
+  - [Make a tool safe to adopt](stories/campaign.md)
+  - [Deliver one outcome across repositories](stories/initiative.md)
+  - [Change Foundry while work continues](stories/promote.md)
+
 # Architecture
 
 - [Concepts](architecture/concepts.md)
