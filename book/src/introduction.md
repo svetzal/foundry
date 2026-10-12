@@ -1,26 +1,27 @@
 # Foundry
 
-Foundry is an event-driven workflow engine for engineering automation. It
-replaces imperative shell scripts with composable **task blocks** connected by
-**events**, with **throttle** controlling how far each event ripples through the
-system.
+Foundry runs engineering work across registered Git repositories. You set an
+objective or outcome, authorise a budget, and answer the decisions that need you.
+Foundry admits the work, runs coding agents, checks gates and review, and records
+what landed or remains unfinished.
 
-Foundry runs as a daemon (`foundryd`) with a CLI controller (`foundry`)
-communicating over gRPC. Any emitter — a scheduled job, a webhook, a manual
-command — can fire an event and trigger the same downstream workflow.
+The stories in [Using Foundry](stories/index.md) follow that work through ordinary
+situations: a morning check, a preserved change, a broader mission, and an outcome
+that spans repositories.
 
 For day-to-day engineering work, the main entry points are:
 
 - `foundry task` for one concrete objective in an isolated, reviewed worktree;
 - `foundry campaign` for a durable mission that derives one task at a time from
   live evidence;
+- `foundry initiative` for a shared outcome across repositories and campaigns;
 - `foundry validate`, `iterate`, and `scout` for project health and intent;
 - `foundry run` and sentinels for maintenance and scheduled operations.
 
-Start with [Getting Started](guide/getting-started.md), then read
-[Tasks and Campaigns](guide/campaigns.md) before authorizing autonomous coding
-work. The remaining chapters explain the event engine, workflow formations,
-operations, and wire-level reference.
+Start with [Using Foundry](stories/index.md) for stories that follow work from
+a user's need to its outcome. For setup, read
+[Getting Started](guide/getting-started.md). The command guides, architecture
+chapters and reference provide details when you need them.
 
 ## How We Got Here
 

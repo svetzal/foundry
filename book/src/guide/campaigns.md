@@ -1,5 +1,8 @@
 # Tasks and Campaigns
 
+For a worked example, read [Make a tool safe to adopt](../stories/campaign.md).
+For preserved work, read [Finish a change that stopped](../stories/recover-work.md).
+
 Foundry has two engineering dispatch primitives:
 
 - A **task** executes one concrete objective immediately.
