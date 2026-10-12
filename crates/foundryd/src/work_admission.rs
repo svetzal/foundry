@@ -681,6 +681,7 @@ fn validate_action_admission(
         guard.store.enforce_steering_action(initiative, action, &active)?;
         anyhow::ensure!(
             !store.items.iter().any(|item| item.occupies_slot()
+                && !owns_assessment_reservation(item, pending)
                 && (item.project == event.project
                     || item.reserved_projects.contains(&event.project))),
             "initiative action cannot dispatch into a busy project: {}",
@@ -688,6 +689,17 @@ fn validate_action_admission(
         );
     }
     Ok(())
+}
+
+fn owns_assessment_reservation(
+    item: &WorkItem,
+    action: &foundry_sdk::initiative::DurableSteeringAction,
+) -> bool {
+    item.started_root.as_ref().is_some_and(|root| {
+        root.id == action.id
+            && root.event_type == EventType::InitiativeAdvanceRequested
+            && root.payload_str("initiative") == Some(action.initiative.as_str())
+    })
 }
 
 /// The event that ends `root`'s workflow and carries its verdict, if it has one.
@@ -1943,6 +1955,134 @@ mod tests {
         assert_eq!(initiative.task_dispatches.len(), 1);
         assert_eq!(initiative.work_admissions.len(), 1);
         assert_eq!(store.shared_cycles_used("shared").unwrap(), 1);
+    }
+
+    fn assessment_work_child(h: &Harness, campaign: bool) -> (String, Event) {
+        use foundry_sdk::initiative::SteeringDecision;
+        let path = &h.policy.campaigns_path;
+        let mut store = foundry_sdk::campaign::CampaignStore::default();
+        store.add(serde_json::from_value(serde_json::json!({
+            "name":"member","project":"alpha","mission":"Align the contract",
+            "authorized_by":"Stacey","done_evidence":[{"kind":"review","statement":"Aligned"}]
+        })).unwrap()).unwrap();
+        store
+            .add_initiative(
+                serde_json::from_value(serde_json::json!({
+                    "name":"shared","outcome":"The trunks agree","projects":["alpha","beta"],
+                    "authorized_by":"Stacey","members":[{"kind":"campaign","name":"member"}],
+                    "done_evidence":[{"kind":"gate","command":"true","required":true}]
+                }))
+                .unwrap(),
+                &["alpha".into(), "beta".into()],
+            )
+            .unwrap();
+        store.save(path).unwrap();
+        let (owner, assessment) = start_admitted(h, &steer_root("assessment"));
+        let mut store = foundry_sdk::campaign::CampaignStore::load(path).unwrap();
+        let decision = if campaign {
+            SteeringDecision::Advance {
+                member: "member".into(),
+                project: None,
+            }
+        } else {
+            SteeringDecision::Dispatch {
+                project: "alpha".into(),
+                objective: "Align contract".into(),
+                member: None,
+            }
+        };
+        let action = store
+            .commit_owner_action("shared", &assessment.id, decision, "One assessed step".into())
+            .unwrap();
+        let action = store
+            .bind_external_context("shared", &action.id, synthetic_external_context())
+            .unwrap();
+        store.save(path).unwrap();
+        let mut child = root(
+            if campaign {
+                EventType::CampaignAdvanceRequested
+            } else {
+                EventType::ExecutionRequested
+            },
+            "alpha",
+        );
+        child.id = format!("evt_{}_child", action.id);
+        child.payload = serde_json::json!({"project":"alpha","workflow":"task","prompt":"Align contract","campaign":if campaign {Some("member")} else {None},
+            "initiative":"shared","steering_action_id":action.id,"steering_external_context":action.external_context});
+        child.source = Some(WorkSource::initiative("shared", 0));
+        (owner, child)
+    }
+
+    #[test]
+    fn assessed_work_admits_beneath_its_own_reservation_once() {
+        for campaign in [false, true] {
+            let h = Harness::new(true);
+            let (owner, child) = assessment_work_child(&h, campaign);
+            assert_eq!(
+                h.items().iter().find(|item| item.id == owner).unwrap().reserved_projects,
+                ["alpha", "beta"]
+            );
+            let Admission::Deferred { id, .. } = h.policy.prepare(&child, Some(&owner)).unwrap()
+            else {
+                panic!("child must be queued")
+            };
+            let Admission::Deferred {
+                id: retry,
+                submitted,
+            } = h.policy.prepare(&child, Some(&owner)).unwrap()
+            else {
+                panic!("retry must use its durable child")
+            };
+            assert_eq!(retry, id);
+            assert!(submitted.is_none());
+            assert_eq!(h.items().len(), 2);
+            let store =
+                foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+            let initiative = store.find_initiative("shared").unwrap();
+            assert!(initiative.pending_actions.is_empty());
+            assert_eq!(initiative.work_admissions.len(), 1);
+            assert_eq!(initiative.task_dispatches.len(), usize::from(!campaign));
+        }
+    }
+
+    #[test]
+    fn assessed_work_still_rejects_unrelated_execution_and_cleanup_owners() {
+        for cleanup in [false, true] {
+            let h = Harness::new(true);
+            let (owner, child) = assessment_work_child(&h, true);
+            let other = h.seed_running("alpha");
+            if cleanup {
+                let _gate = ledger_write_gate().lock().unwrap();
+                let mut ledger = h.policy.store().unwrap();
+                let item = ledger.find_mut(&other).unwrap();
+                item.execution_completed = false;
+                item.started_root = Some(root(EventType::ProjectRunStarted, "alpha"));
+                item.state = WorkItemState::Landed;
+                assert!(item.occupies_slot(), "settled work retains its cleanup owner");
+                ledger.save(&h.policy.path).unwrap();
+            }
+            let error = h.policy.prepare(&child, Some(&owner)).err().unwrap();
+            assert!(error.to_string().contains("busy project"));
+            assert_eq!(h.items().len(), 2);
+            let store =
+                foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+            assert_eq!(store.find_initiative("shared").unwrap().pending_actions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn assessment_reservation_identity_cannot_hide_another_initiative_or_root_kind() {
+        let h = Harness::new(true);
+        let (owner, child) = assessment_work_child(&h, true);
+        let store = foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+        let action = &store.find_initiative("shared").unwrap().pending_actions[0];
+        let mut item = h.items().into_iter().find(|item| item.id == owner).unwrap();
+        assert!(owns_assessment_reservation(&item, action));
+        item.started_root.as_mut().unwrap().payload["initiative"] = serde_json::json!("other");
+        assert!(!owns_assessment_reservation(&item, action));
+        item.started_root.as_mut().unwrap().payload["initiative"] = serde_json::json!("shared");
+        item.started_root.as_mut().unwrap().event_type = child.event_type;
+        assert!(!owns_assessment_reservation(&item, action));
     }
     #[test]
     fn passive_owner_dispatch_releases_reservations_after_each_cleanup() {
