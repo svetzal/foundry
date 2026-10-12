@@ -25,13 +25,23 @@ chapters and reference provide details when you need them.
 
 ## How We Got Here
 
-Foundry has been evolving for roughly four months. It started as a patchwork of
-shell scripts and launchd jobs — nightly maintenance automation that grew into a
-linear pipeline: iterate projects, audit for vulnerabilities, cut releases,
-install locally. Each step waited for all previous steps to complete. Projects
-couldn't run in parallel. An audit couldn't start until every project finished
-updating. A vulnerability discovered at 2pm had to wait for the 2am maintenance
-window.
+Foundry is the latest step in work that started in the summer of 2025, with a
+series of hand-made harnesses for running coding agents against real projects.
+Each harness tested ideas about how to hand an agent a piece of work and how to
+check what came back.
+
+Hopper, a personal work queue for AI agents, came out of those harnesses in
+February 2026. It fixed principles that Foundry still follows: one discrete
+objective per unit of work, agents as first-class users of a CLI with structured
+output, and an explicit handoff between claiming work and completing it. Foundry
+started in March 2026 and took over executable work from Hopper in July 2026.
+
+Beside the queue, nightly maintenance ran as a patchwork of shell scripts and
+launchd jobs. It grew into a linear pipeline: iterate projects, audit for
+vulnerabilities, cut releases, install locally. Each step waited for all
+previous steps to complete. Projects couldn't run in parallel. An audit couldn't
+start until every project finished updating. A vulnerability discovered at 2pm
+had to wait for the 2am maintenance window.
 
 As the scripts accumulated, the concepts started to clarify. Events, task
 blocks, throttle control, self-filtering — these patterns kept emerging from the
