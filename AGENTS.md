@@ -227,6 +227,50 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry pacing drain [--timeout <duration>] [--origin <text>]` | Pause every lane and wait until nothing is running; exit 0 idle, exit 1 on timeout naming what still runs |
 | `foundry emit <event>` | Raw event emission for advanced use |
 
+### Initiative commands
+
+Slice 0 initiatives group member campaigns under one outcome. All online
+initiative and finding reads and mutations use typed gRPC and the daemon's
+campaign store. Explicit `--offline` recovery uses the same store API and
+existing guard. Never parse or mutate the store file directly.
+
+- `foundry initiative add <definition.json>`, `list`, `show <name>`.
+- `foundry initiative decide <name> --decision <text> [--member <name>]...`
+  records one decision and fans it into every applicable campaign, including
+  active campaigns. Changes arriving during formation force reformation.
+- `foundry initiative complete|cancel <name> --reason <text>`.
+- `foundry initiative brief set <name> <file>` and `brief show <name>`.
+- `foundry finding add <definition.json>` and
+  `finding list <initiative> [--member <name>] [--json]`.
+- `foundry initiative derive` takes `--from et:goal:<id>|et:journey:<id>`
+  and `--projects <a,b,c>`. It reads committed projections or the repository's
+  et CLI. Optional `--authorized-by <owner>` defaults to the invoking user.
+  It records staged candidates in Foundry and never changes Tracker state.
+
+The initiative owns the cycle budget across members. `max_active_members`
+defaults to two. Member owner questions and `after` prerequisites prevent
+ineligible dispatch. `queue --source initiative:<name>` lists initiative work.
+`queue open` collapses member escalation rows under an escalated initiative.
+
+Foundry stores briefs under `~/.foundry/initiatives/<name>/BRIEF.md` and records
+the SHA-256 hash. Definitions must omit `brief`; import content with `brief set`.
+Formation and execution receive its path and hash. Findings
+reach formation and continuations as a bounded section, newest first. Only an
+actual landing consumes the finding for the member that saw it.
+
+Campaigns and initiatives accept `providers` for `formation`, `execution` and
+`review`. Explicit member stages override initiative stages. Omitted stages
+inherit `agent_provider`. Execution requires a provider that declares writable
+root enforcement. Claude uses per-invocation settings, `dontAsk`, a scoped
+Edit allowance and an enabled OS sandbox without unsandboxed retries.
+User/project settings, hooks and MCP tools cannot widen the invocation.
+Worktrees stay under `~/.foundry/worktrees`. Read-only stages write only to
+scratch space. Keep the live installed-Claude boundary test as evidence.
+
+Slice 0 has no steering agent, codebase audit, integration gate runner or
+Tracker state writes. Those belong to slice 1. Development stays on the Mac's
+synthetic daemon; promotion to ops-01 needs Stacey's go-ahead.
+
 ### Campaign commands
 
 Campaign agents must not have clock-time limits. Bound content or token size
@@ -258,7 +302,7 @@ are legal.
 |---------|-----------------|-------|
 | `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign list` | Yes (or `--offline`) | Reads daemon-owned campaign state via `ListCampaigns`; `--offline` reads the file directly |
-| `foundry campaign show <name> [--json]` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`, then lists the campaign's cycles from the work-item ledger via `ListWorkItems` with the source filter `campaign:<name>` (never by trace inference); `--offline` reads both files directly. An escalated campaign prints its `open_escalation` (reason, time, cycles, the agent's question and choices), and every campaign prints its owner options as command lines from `foundry_sdk::campaign::owner_options`. The reason comes from the campaign record; an escalation older than the record is recovered from the newest `campaign_escalated` event (`--offline` reads `FOUNDRY_EVENTS_DIR` through the same `resolve_open_escalations`). `--json` emits one object with `open_escalation`, `owner_options` and `cycles` |
+| `foundry campaign show <name> [--json]` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`, then lists the campaign's cycles from the work-item ledger via `ListWorkItems` with the campaign filter `campaign:<name>`, including initiative-owned cycles by their retained member identity (never by trace inference); `--offline` reads both files directly. An escalated campaign prints its `open_escalation` (reason, time, cycles, the agent's question and choices), and every campaign prints its owner options as command lines from `foundry_sdk::campaign::owner_options`. The reason comes from the campaign record; an escalation older than the record is recovered from the newest `campaign_escalated` event (`--offline` reads `FOUNDRY_EVENTS_DIR` through the same `resolve_open_escalations`). `--json` emits one object with `open_escalation`, `owner_options` and `cycles` |
 | `foundry campaign advance <name> [--origin <text>]` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback. `--origin` records a free-text operator note on the dispatched cycle's work item, beside the CLI client's hostname. Returns promptly while any campaign forms: formation holds the campaign store lock only for short read and write sections, never across its agent, and applies its outcome only to an unchanged record. A campaign stopped before or while it forms makes the advance stand down (`campaign_advance_completed` with `decision: "stood_down"`), which settles its work item `landed`; a campaign edited while it forms is formed again from the edit, at most three formations, then the advance fails. A duplicate is a no-op: when the campaign already has an advance or a cycle submitted, queued, held or running (ledger, or the workflow tracker before admission), nothing is dispatched, the response's `in_flight` names that work, and the CLI prints it and exits 0. The check and the dispatch share the store lock, so two simultaneous advances yield one workflow. The CLI follows only its own advance's trace |
 | `foundry campaign pause <name>` | Yes (or `--offline`) | Mutates via `PauseCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
@@ -278,7 +322,7 @@ the settled group alone.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`/`held`), open (`preserved`/`needs_decision`/`failed`, then every escalated campaign from `ListCampaigns`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`, before or after it); an unknown kind is INVALID_ARGUMENT. `campaign:<name>` also selects that campaign's escalation; other kinds select none. Rows carry a source column, `-` when none was recorded |
+| `foundry queue [--source <kind>:<ref>]` | Yes (or `--offline`) | Renders `ListWorkItems` as four groups: running, queued (`submitted`/`queued`/`held`), open (`preserved`/`needs_decision`/`failed`, then every escalated campaign from `ListCampaigns`), and the newest 20 settled (`landed`/`cancelled`). `--source` is the RPC's exact-match source filter (also on `open`, before or after it); an unknown kind is INVALID_ARGUMENT. `campaign:<name>` also selects that campaign's escalation; `initiative:<name>` selects its initiative escalation. Other kinds select none. Rows carry a source column, `-` when none was recorded |
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only, then one `campaign <name> … escalated <when> <reason>` row per escalated campaign with `next: foundry campaign show <name> (<controls>)`. Escalations are campaign state, never ledger items: they come from `ListCampaigns` (offline: the campaign store plus the event-log fallback). Every escalated campaign is listed, also one with an open cycle item, and its row names that item (`(open cycle <id>)`) |
@@ -664,7 +708,10 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
 ## Key Directories
 
 - `~/.foundry/registry.json` — project registry; online `list/show/add/edit/remove` route through `foundryd` gRPC so both reads and mutations use daemon-owned state. Use `--offline` only for direct file recovery while the daemon is not running.
-- `~/.foundry/campaigns.json` — durable campaign definitions and cycle state; owned by `foundryd` for normal online reads and mutations, with direct file access reserved for explicit `--offline` recovery
+- `~/.foundry/campaigns.json` holds durable campaigns, initiatives, findings
+  and cycle state. `foundryd` owns online reads and mutations. Use direct
+  file access only for explicit `--offline` recovery.
+- `~/.foundry/initiatives/<name>/BRIEF.md` is the authoritative initiative brief.
 - `~/.foundry/work-items.json` — one durable queue for all engineering workflows.
   Every root enters `queued` before blocks run, including raw emitted roots.
   The engine admission boundary shares the scheduler's ledger write gate.

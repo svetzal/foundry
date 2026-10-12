@@ -345,3 +345,21 @@ concurrent owner changes win, and preservation evidence is retained. No cleanup
 or agent invocation occurs. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use
 `FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).
+
+### Initiatives and findings
+
+| Event | Category | Main payload fields |
+| --- | --- | --- |
+| `InitiativeAdded` | Domain fact | `initiative`, `outcome`, `projects`, `members`, `status`, `budget` |
+| `InitiativeDecided` | Domain fact | Initiative fields, `decision`, `applicable_members` |
+| `InitiativeCompleted` | Domain fact | Initiative fields, `reason` |
+| `InitiativeCancelled` | Domain fact | Initiative fields, `reason` |
+| `FindingRecorded` | Domain fact | `id`, `finding_id`, `initiative`, `from`, `to`, `kind`, `text`, `refs`, `consumed_by`, `recorded_at` |
+| `FindingConsumed` | Domain fact | `initiative`, `finding_id`, `member`, `work_item_id`, updated `finding` |
+
+These events do not open spans. Initiative member cycles carry a typed
+`source` with `kind: initiative`, `ref: <name>` and their cycle number.
+The payload retains `campaign` and `campaign_cycle` so members stay explicit.
+Formation and task context carry `providers`, the brief path/hash, bounded
+findings and the exact `finding_ids`. A consumption fact follows a landing,
+never formation alone or preservation.

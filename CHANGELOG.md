@@ -7,6 +7,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Slice 0 of initiatives: a shared outcome, member campaigns, owner decisions,
+  budgets and open questions in the campaign store. Typed daemon commands and
+  explicit offline recovery cover `initiative add/list/show/decide`,
+  `initiative complete/cancel`, `brief set/show` and `finding add/list`.
+  Decisions fan out to active
+  and escalated members. The open queue groups member escalations under their
+  initiative, and `queue --source initiative:<name>` lists initiative work.
+- Foundry-owned briefs with SHA-256 identity, typed findings from owners and
+  task results, and bounded findings in formation and continuations. A finding
+  is consumed for a member only when work formed from it lands.
+- Per-stage providers for campaigns and initiatives. Formation, execution and
+  review select their own provider; campaign reports retain tokens by stage
+  and provider. Claude execution uses the tested write policy with worktrees
+  in their existing location. Campaign admission checks provider capability
+  rather than requiring Codex by name.
+- Read-only initiative derivation from Epilogue Tracker goals and journeys,
+  using committed projections or the Tracker CLI. Derived intent stays staged.
+  Steering, the codebase audit, Tracker completion and integration gates on
+  the production daemon's host remain for slice 1. Promotion to ops-01 awaits
+  Stacey's go-ahead.
+
 ## [0.46.0] - 2026-10-11
 
 ### Fixed

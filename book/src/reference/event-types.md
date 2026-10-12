@@ -537,3 +537,31 @@ end is in the log, a later start does not end the same session again.
 Unparseable lines in the log are skipped and do not stop the daemon from
 starting. `usage` and `cost` are absent: nothing measured the session's last
 moments.
+
+## Initiatives and findings
+
+These facts belong to the existing span. They do not open a workflow.
+
+| Type | Meaning |
+| --- | --- |
+| `initiative_added` | An initiative and its member references entered the store |
+| `initiative_decided` | An owner decision was recorded for applicable members |
+| `initiative_completed` | The owner affirmed the shared outcome |
+| `initiative_cancelled` | The owner stopped the initiative and its members |
+| `finding_recorded` | A typed finding became available to initiative members |
+| `finding_consumed` | A member cycle landed after its formation saw a finding |
+
+Initiative lifecycle payloads include `initiative`, `outcome`, `projects`,
+`intent_refs`, `members`, `status`, `authorized_by` and `budget`. Owner actions
+also retain `reason`, `decision` or `applicable_members` as applicable.
+Readers can render the initiative and its member references directly.
+
+`finding_recorded` retains `id`, `finding_id`, `initiative`, `from`, `to`,
+`kind`, `text`, `refs`, `consumed_by` and `recorded_at`. The source records its
+kind and ID. Automatic reviewer gaps and defect diagnoses identify the cycle
+and the result event. The source envelope names the initiative.
+
+`finding_consumed` includes `initiative`, `finding_id`, `member`,
+`work_item_id` and the updated `finding` with its consumption records.
+Consumption follows an actual landing. Forming or preserving a cycle emits no
+consumption fact.

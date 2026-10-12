@@ -25,6 +25,7 @@
 - [Inference costs](guide/inference-costs.md)
 - [Tasks and Campaigns](guide/campaigns.md)
   - [Context-mixer2 formation audit](guide/campaign-formation-audit.md)
+- [Initiatives](guide/initiatives.md)
 - [Sentinels (Scheduled Triggers)](guide/sentinels.md)
 - [The Work Queue](guide/work-queue.md)
 - [Work Reconciler](guide/work-reconciler.md)
