@@ -7,6 +7,7 @@ use foundry_sdk::registry::Registry;
 use serde::Deserialize;
 
 pub(super) const PACKET_BYTES: usize = 65_536;
+const STAGE_ACTION_EXAMPLE: &str = r#"{"decision":"stage","campaign":{"name":"new-scoped-campaign","project":"registered initiative project","mission":"specific uncovered work","intent_refs":[],"after":[],"context_paths":[],"writable_repositories":[],"done_evidence":[{"kind":"review","statement":"observable behavior"},{"kind":"gate","command":"repository-local mechanical probe","required":true,"artifacts":["existing repository-relative probe"]}],"budget":{"max_cycles":2,"stages":{"formation_prompt_bytes":32768}},"providers":{"formation":null,"execution":null,"review":null},"agent_provider":null},"member":null}"#;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,9 +113,11 @@ hold: {{"decision":"hold","member":"member","until":["prerequisite:landed"],"rea
 relay: {{"decision":"relay","finding":{{full finding record from packet}},"to":["member"]}}
 ask: {{"decision":"ask","question":"one question","members":["member"]}}
 escalate: {{"decision":"escalate","reason":"reason"}}
-stage: {{"decision":"stage","campaign":{{"name":"new scoped campaign","project":"registered initiative project","mission":"specific uncovered work","done_evidence":[{{"kind":"review","statement":"observable behavior"}}]}},"member":null}}
+stage: {STAGE_ACTION_EXAMPLE}
 done: {{"decision":"done","reviews":[{{"statement":"exact initiative review statement","affirmed":true,"evidence":["checked project-relative path or gate result id"]}}]}}
 Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Stage adds one campaign when uncovered outcome work requires it, and starts no execution. Done requires every required gate to have passed on current trunk identities and every initiative review statement affirmed from checked evidence. A done decision proposes completion for the owner's initiative complete confirmation; it never completes the initiative or closes Tracker itself. If evidence is missing, choose work, stage it, or ask the owner. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
+
+The stage example shows the complete allowed campaign declaration. Optional fields may be omitted: intent_refs, after, context_paths, writable_repositories, budget, providers and agent_provider. Provider stages omitted or null inherit initiative policy. Set the cycle limit ONLY at campaign.budget.max_cycles, with any stage limits inside campaign.budget.stages. Do not flatten max_cycles into campaign, and do not return execution state such as cycles_completed, cycles_landed, status or history. The declaration rejects unknown fields. Choose review evidence, gate evidence, or both as appropriate. A campaign gate has command, required and artifacts; it runs inside its one repository and has no host field. The campaign declaration's after names prerequisite initiative members. To stage an existing intent candidate, set action.member to its exact name; otherwise leave member null.
 
 STEERING PACKET:
 {packet}
@@ -241,6 +244,37 @@ pub(super) fn context_hash(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_prompt_demonstrates_the_typed_nested_budget_and_optional_declaration_fields() {
+        let fixture = super::super::tests::Fixture::new();
+        let mut store = CampaignStore::load(&fixture.store).unwrap();
+        let snapshot = store.begin_steering("shared", "stage-schema").unwrap();
+        let prompt = prompt(&snapshot, &store, &[], None, "[]", fixture.temp.path()).unwrap();
+        let example = prompt.text.lines().find_map(|line| line.strip_prefix("stage: ")).unwrap();
+        let response = parse_response(&format!(r#"{{"action":{example},"audits":[]}}"#)).unwrap();
+        let SteeringDecision::Stage { campaign, member } = response.action else {
+            panic!("stage example must parse as staging")
+        };
+        assert_eq!(campaign.budget.max_cycles, 2);
+        assert_eq!(campaign.budget.stages.formation_prompt_bytes, 32768);
+        assert!(member.is_none());
+        let value: serde_json::Value = serde_json::from_str(example).unwrap();
+        for field in [
+            "intent_refs",
+            "after",
+            "context_paths",
+            "writable_repositories",
+            "providers",
+            "agent_provider",
+        ] {
+            assert!(value["campaign"].get(field).is_some(), "missing {field}");
+        }
+        assert!(value["campaign"].get("max_cycles").is_none());
+        assert!(prompt.text.contains("campaign.budget.max_cycles"));
+        assert!(prompt.text.contains("Do not flatten max_cycles"));
+        assert!(prompt.text.contains("cycles_completed, cycles_landed, status or history"));
+    }
 
     #[test]
     fn evidence_must_name_an_existing_path_inside_the_registered_checkout() {
