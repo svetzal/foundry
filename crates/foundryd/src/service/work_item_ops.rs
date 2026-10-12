@@ -924,10 +924,31 @@ fn attach_initiative_context(
     root.payload["providers"] =
         serde_json::to_value(providers).map_err(|error| Status::internal(error.to_string()))?;
     root.payload["initiative_findings"] = serde_json::json!(findings);
-    root.payload["finding_ids"] = serde_json::json!(context.finding_ids());
+    root.payload["finding_ids"] = serde_json::json!(resumed_finding_ids(parent_root, &context)?);
     root.payload["prompt"] = serde_json::json!(child.objective);
     root.source.clone_from(&child.source);
     Ok(())
+}
+
+/// Keep the original formation's seen IDs when a newer bounded packet replaces its text.
+fn resumed_finding_ids(
+    parent_root: Option<&foundry_sdk::event::Event>,
+    context: &foundry_sdk::initiative::InitiativeContext,
+) -> Result<Vec<String>, Status> {
+    let mut ids: Vec<String> = parent_root
+        .and_then(|root| root.payload.get("finding_ids"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| {
+            Status::internal(format!("cannot read original formation finding IDs: {error}"))
+        })?
+        .unwrap_or_default();
+    for id in context.finding_ids() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// The record a resume admission saves first, failing closed: until the
@@ -1153,11 +1174,29 @@ mod tests {
             },
             vec!["member".into()],
             foundry_sdk::initiative::FindingKind::Regression,
-            "The argument was lost",
+            &format!("The argument was lost. {}", "x".repeat(6900)),
             vec![],
         );
         let finding_id = finding.id.clone();
         guard.store.add_finding(finding).unwrap();
+        let mut older = foundry_sdk::initiative::Finding::new(
+            "shared",
+            foundry_sdk::initiative::FindingSource {
+                kind: "owner".into(),
+                id: "Stacey".into(),
+            },
+            vec!["member".into()],
+            foundry_sdk::initiative::FindingKind::Evidence,
+            &"Original formation evidence. ".repeat(40),
+            vec![],
+        );
+        older.recorded_at -= chrono::Duration::seconds(1);
+        let older_id = older.id.clone();
+        guard.store.add_finding(older).unwrap();
+        assert_eq!(
+            guard.store.formation_context("member", 8192).unwrap().unwrap().finding_ids(),
+            vec![finding_id.clone()]
+        );
         let brief = guard
             .set_initiative_brief("shared", home.path(), "Use the corrected argument")
             .unwrap();
@@ -1167,14 +1206,14 @@ mod tests {
             foundry_sdk::event::EventType::ExecutionRequested,
             "sample".into(),
             foundry_sdk::throttle::Throttle::Full,
-            serde_json::json!({"campaign":"member","campaign_cycle":1,"agent_provider":"codex"}),
+            serde_json::json!({"campaign":"member","campaign_cycle":1,"agent_provider":"codex", "finding_ids":[older_id]}),
         ));
         let mut child = super::resume_child(&parent, "preserved-work", Some("owner host".into()));
         super::attach_initiative_context(&parent, &guard.store, &mut child).unwrap();
         let root = child.pending_root.as_ref().unwrap();
         assert_eq!(root.payload["campaign"], "member");
         assert_eq!(root.payload["campaign_cycle"], 1);
-        assert_eq!(root.payload["finding_ids"], serde_json::json!([finding_id]));
+        assert_eq!(root.payload["finding_ids"], serde_json::json!([older_id, finding_id]));
         assert_eq!(root.payload["initiative_brief"]["hash"], brief.hash);
         assert_eq!(root.payload["providers"]["execution"], "claude");
         assert!(root.payload["prompt"].as_str().unwrap().contains("The argument was lost"));
