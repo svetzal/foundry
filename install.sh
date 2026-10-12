@@ -2,8 +2,8 @@
 set -euo pipefail
 
 echo "Installing Foundry binaries..."
-cargo install --path crates/foundryd
-cargo install --path crates/foundry-cli
+cargo install --locked --path crates/foundryd
+cargo install --locked --path crates/foundry-cli
 
 # On macOS, cargo's default ad-hoc signature uses a hash-derived identifier
 # (e.g. "foundryd-7c8b3941b75c7124") that changes on every rebuild. macOS TCC
