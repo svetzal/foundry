@@ -37,6 +37,7 @@ use foundry_engine::engine::Engine;
 
 mod campaign_ops;
 pub(crate) mod eventing_ops;
+mod initiative_completion;
 mod initiative_ops;
 mod pacing_ops;
 mod recovery;
@@ -208,9 +209,25 @@ pub async fn recover_initiative_actions_on_start(
 ) -> Result<(), Status> {
     let campaigns = campaigns.to_path_buf();
     let work_items = work_items.to_path_buf();
-    let replay =
-        campaign_ops::blocking(move || initiative_ops::recover(&campaigns, &work_items)).await?;
+    let replay_campaigns = campaigns.clone();
+    let replay_work_items = work_items.clone();
+    let replay = campaign_ops::blocking(move || {
+        initiative_ops::recover(&replay_campaigns, &replay_work_items)
+    })
+    .await?;
     for event in replay {
+        spawn_workflow(event, ctx);
+    }
+    let registry = ctx
+        .registry
+        .read()
+        .map_err(|_| Status::internal("registry lock poisoned"))?
+        .clone();
+    let recovered = campaign_ops::blocking(move || {
+        initiative_completion::recover(&campaigns, &work_items, &registry)
+    })
+    .await?;
+    for event in recovered {
         spawn_workflow(event, ctx);
     }
     Ok(())
@@ -398,6 +415,8 @@ impl Foundry for FoundryService {
         if request.authorized_by.trim().is_empty() {
             return Err(Status::invalid_argument("name the authorizing owner"));
         }
+        let mut integration_gates =
+            initiative_ops::integration_gates_from_proto(request.integration_gates)?;
         let projects = self
             .ctx
             .registry
@@ -420,6 +439,8 @@ impl Foundry for FoundryService {
                 .await
                 .map_err(initiative_ops::error)?;
         definition.authorized_by = Some(request.authorized_by);
+        integration_gates.append(&mut definition.done_evidence);
+        definition.done_evidence = integration_gates;
         definition.derive_source = Some(foundry_sdk::initiative::DeriveSource {
             repo: repo.to_string_lossy().into_owned(),
             from: request.from_ref,
@@ -504,8 +525,9 @@ impl Foundry for FoundryService {
         let reason = request.reason.clone();
         let work_items_path = self.work_items_path.clone();
         let (initiative, changed, waiting) = self
-            .campaign_operation(move |path, _| {
-                let (initiative, changed) = initiative_ops::end(path, &request.name, &request.reason, true)?;
+            .campaign_operation(move |path, ctx| {
+                let registry = ctx.registry.read().map_err(|_| Status::internal("registry lock poisoned"))?.clone();
+                let (initiative, changed) = initiative_completion::complete(path, &work_items_path, &registry, &request.name, &request.reason)?;
                 let members = initiative.members.iter().filter(|member| member.kind == "campaign")
                     .map(|member| member.name.clone()).collect::<Vec<_>>();
                 let waiting = match work_item_ops::cancel_waiting_initiative(&work_items_path, &request.name, &members, &request.reason) {

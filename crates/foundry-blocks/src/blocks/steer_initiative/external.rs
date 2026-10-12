@@ -42,7 +42,7 @@ fn projection(root: &Path) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&projection)?)
 }
 
-pub(super) fn capture(
+pub fn capture(
     initiative: &Initiative,
     registry: &Registry,
 ) -> anyhow::Result<SteeringExternalContext> {

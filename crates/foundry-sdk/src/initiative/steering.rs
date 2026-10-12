@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     CampaignStore, Finding, FindingKind, FindingSource, Initiative, InitiativeBrief,
-    InitiativeError, MemberKind, Result,
+    InitiativeError, MemberKind, OutcomeReview, Result, StageCampaignDefinition,
 };
 use crate::campaign::{Campaign, CampaignStatus};
 use crate::gateway::{AgentProvider, StageProviders};
@@ -135,6 +135,14 @@ pub enum SteeringDecision {
     Escalate {
         reason: String,
     },
+    Stage {
+        campaign: Box<StageCampaignDefinition>,
+        #[serde(default)]
+        member: Option<String>,
+    },
+    Done {
+        reviews: Vec<OutcomeReview>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +216,11 @@ impl CampaignStore {
         if initiative.steering_history.iter().any(|record| record.id == id) {
             return Err(InitiativeError::AlreadyExists(
                 "steering operation already committed".into(),
+            ));
+        }
+        if initiative.completion_proposal.is_some() {
+            return Err(InitiativeError::Precondition(
+                "done proposal awaits owner confirmation".into(),
             ));
         }
         if initiative.steering.is_some() || !initiative.pending_actions.is_empty() {
@@ -339,7 +352,9 @@ impl CampaignStore {
         if snapshot.initiative.derive_source.is_some()
             && matches!(
                 decision,
-                SteeringDecision::Advance { .. } | SteeringDecision::Dispatch { .. }
+                SteeringDecision::Advance { .. }
+                    | SteeringDecision::Dispatch { .. }
+                    | SteeringDecision::Stage { .. }
             )
         {
             for member in snapshot.initiative.members.iter().filter(|member| {
@@ -378,8 +393,12 @@ impl CampaignStore {
         prompt: String,
         provider: Option<AgentProvider>,
     ) -> Result<DurableSteeringAction> {
-        if matches!(decision, SteeringDecision::Advance { .. } | SteeringDecision::Dispatch { .. })
-            && self.require_initiative(name)?.derive_source.is_some()
+        if matches!(
+            decision,
+            SteeringDecision::Advance { .. }
+                | SteeringDecision::Dispatch { .. }
+                | SteeringDecision::Stage { .. }
+        ) && self.require_initiative(name)?.derive_source.is_some()
         {
             for member in self.require_initiative(name)?.members.iter().filter(|member| {
                 member.intent_ref.is_some()
@@ -581,6 +600,10 @@ impl CampaignStore {
             SteeringDecision::Escalate { reason } => {
                 self.record_question(name, reason, &[])?;
             }
+            SteeringDecision::Stage { campaign, member } => {
+                self.stage_initiative_campaign(name, campaign, member.as_deref())?;
+            }
+            SteeringDecision::Done { reviews } => self.validate_outcome_reviews(name, reviews)?,
         }
         Ok(())
     }
@@ -1300,6 +1323,10 @@ impl CampaignStore {
             }
         }
         let record = candidate.decide_initiative(name, decision, members, at)?;
+        if let Some(initiative) = candidate.find_initiative_mut(name) {
+            initiative.completion_proposal = None;
+            initiative.completion_confirmation = None;
+        }
         *self = candidate;
         Ok(record)
     }
@@ -1439,7 +1466,16 @@ impl CampaignStore {
                 initiative.members.push(incoming);
             }
         }
-        initiative.done_evidence = derived.done_evidence;
+        // Host gates are owner declarations, while Tracker owns the review text.
+        // Keep gates first so added or removed interactions never renumber them.
+        let mut evidence: Vec<_> = initiative
+            .done_evidence
+            .iter()
+            .filter(|evidence| matches!(evidence, super::DoneEvidence::Gate { .. }))
+            .cloned()
+            .collect();
+        evidence.extend(derived.done_evidence);
+        initiative.done_evidence = evidence;
         initiative
             .reservations
             .retain(|reservation| !cancelled.contains(&reservation.member));

@@ -912,6 +912,45 @@ async fn online_list_reads_daemon_registry_without_creating_client_registry_file
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn online_json_list_returns_registered_paths_without_reading_client_files() {
+    let registry = Registry {
+        version: 2,
+        projects: vec![fully_populated_project("integration-target")],
+    };
+    let file = NamedTempFile::new().unwrap();
+    registry.save(file.path()).unwrap();
+    let (service, _traces) = make_service_with_registry(registry.clone(), file.path().into());
+    let addr = start_server(service).await;
+    let home = tempfile::tempdir().unwrap();
+    let (client_path, original) = seed_client_registry_trap(home.path());
+    let output = run_foundry(home.path(), &client_path, &addr, &["registry", "list", "--json"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let entries: Vec<ProjectEntry> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        serde_json::to_value(entries).unwrap(),
+        serde_json::to_value(registry.projects).unwrap()
+    );
+    assert_eq!(std::fs::read(client_path).unwrap(), original);
+}
+
+#[test]
+fn offline_json_list_returns_empty_array_for_empty_registry() {
+    let home = tempfile::tempdir().unwrap();
+    let registry = init_registry();
+    let output = run_foundry(
+        home.path(),
+        registry.path(),
+        DUMMY_ADDR,
+        &["--offline", "registry", "list", "--json"],
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn online_show_reads_exact_daemon_fields_without_client_registry_file() {
     let expected = fully_populated_project("server-only");
     let daemon_registry = Registry {

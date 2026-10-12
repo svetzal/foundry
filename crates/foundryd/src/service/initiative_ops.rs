@@ -81,7 +81,83 @@ pub(super) fn to_proto(store: &CampaignStore, initiative: &Initiative) -> proto:
     };
     set_steering_state(&mut response, initiative);
     set_steering_receipts(&mut response, initiative);
+    set_outcome_receipts(&mut response, initiative);
     response
+}
+
+fn outcome_snapshot_to_proto(
+    snapshot: &foundry_sdk::initiative::OutcomeSnapshot,
+) -> proto::InitiativeOutcomeSnapshot {
+    proto::InitiativeOutcomeSnapshot {
+        repositories: snapshot
+            .repositories
+            .iter()
+            .map(|repo| proto::InitiativeRepositoryIdentity {
+                project: repo.project.clone(),
+                root: repo.root.clone(),
+                registry: repo.registry.clone(),
+                trunk: repo.trunk.clone(),
+                head: repo.head.clone(),
+                status: repo.status.clone(),
+                diff: repo.diff.clone(),
+            })
+            .collect(),
+        intent_revision: snapshot.intent_revision.clone(),
+        policy_hash: snapshot.policy_hash.clone(),
+    }
+}
+
+fn set_outcome_receipts(response: &mut proto::Initiative, initiative: &Initiative) {
+    response.integration_results = initiative
+        .integration_results
+        .iter()
+        .map(|result| proto::InitiativeIntegrationResult {
+            id: result.id.clone(),
+            gate_index: u64::try_from(result.gate_index).unwrap_or(u64::MAX),
+            host: result.host.clone(),
+            command: result.command.clone(),
+            snapshot: Some(outcome_snapshot_to_proto(&result.snapshot)),
+            passed: result.passed,
+            exit_code: result.exit_code,
+            report: result.report.clone(),
+            artifacts: result.artifacts.clone(),
+            recorded_at: result.recorded_at.to_rfc3339(),
+        })
+        .collect();
+    response.completion_proposal = initiative.completion_proposal.as_ref().map(|proposal| {
+        proto::InitiativeCompletionProposal {
+            id: proposal.id.clone(),
+            snapshot: Some(outcome_snapshot_to_proto(&proposal.snapshot)),
+            reviews: proposal
+                .reviews
+                .iter()
+                .map(|review| proto::InitiativeOutcomeReview {
+                    statement: review.statement.clone(),
+                    affirmed: review.affirmed,
+                    evidence: review.evidence.clone(),
+                })
+                .collect(),
+            proposed_at: proposal.proposed_at.to_rfc3339(),
+        }
+    });
+    response.completion_confirmation =
+        initiative.completion_confirmation.as_ref().map(|confirmation| {
+            proto::InitiativeCompletionConfirmation {
+                proposal_id: confirmation.proposal_id.clone(),
+                reason: confirmation.reason.clone(),
+                confirmed_at: confirmation.confirmed_at.to_rfc3339(),
+                last_error: confirmation.last_error.clone(),
+            }
+        });
+    response.completion_receipts = initiative
+        .completion_receipts
+        .iter()
+        .map(|receipt| proto::InitiativeEtCloseReceipt {
+            intent_ref: receipt.intent_ref.clone(),
+            completed_at: receipt.completed_at.to_rfc3339(),
+            proposal_id: receipt.proposal_id.clone(),
+        })
+        .collect();
 }
 fn set_steering_state(response: &mut proto::Initiative, initiative: &Initiative) {
     response.derive_source = initiative.derive_source.as_ref().map(|source| proto::DeriveSource {
@@ -249,6 +325,17 @@ fn evidence_to_proto(
             statement: statement.clone(),
         },
     }
+}
+
+pub(super) fn integration_gates_from_proto(
+    gates: Vec<proto::InitiativeEvidence>,
+) -> Result<Vec<foundry_sdk::initiative::DoneEvidence>, Status> {
+    gates.into_iter().map(|gate| {
+        if gate.kind != "gate" || !gate.statement.is_empty() || gate.command.trim().is_empty() {
+            return Err(Status::invalid_argument("integration_gates accepts only gate declarations with a command; Tracker supplies outcome reviews"));
+        }
+        Ok(foundry_sdk::initiative::DoneEvidence::Gate { command:gate.command, host:gate.host, required:gate.required, artifacts:gate.artifacts })
+    }).collect()
 }
 
 fn brief_to_proto(brief: &foundry_sdk::initiative::InitiativeBrief) -> proto::InitiativeBrief {

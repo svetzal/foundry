@@ -27,6 +27,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".foundry.SteeringRecord",
         ".foundry.DurableSteeringAction",
         ".foundry.InitiativeWorkAdmission",
+        ".foundry.InitiativeRepositoryIdentity",
+        ".foundry.InitiativeOutcomeSnapshot",
+        ".foundry.InitiativeIntegrationResult",
+        ".foundry.InitiativeOutcomeReview",
+        ".foundry.InitiativeCompletionProposal",
+        ".foundry.InitiativeCompletionConfirmation",
+        ".foundry.InitiativeEtCloseReceipt",
     ] {
         builder = builder.type_attribute(
             message,

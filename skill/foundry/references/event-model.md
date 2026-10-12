@@ -369,3 +369,11 @@ The payload retains `campaign` and `campaign_cycle` so members stay explicit.
 Formation and task context carry `providers`, the brief path/hash, bounded
 findings and the exact `finding_ids`. A consumption fact follows a landing,
 never formation alone or preservation.
+
+Integration results retain exact trunk commits, host, command exit status and
+capture logs in the initiative record. Failed integration checks record
+findings before steering chooses its next action. `InitiativeSteered` also
+retains `stage` and `done` decisions. A `done` decision proposes completion;
+only successful owner-confirmed completion emits `InitiativeCompleted`.
+Tracker closure receipts are exposed by typed initiative reads and retained
+for retry after a partial failure.

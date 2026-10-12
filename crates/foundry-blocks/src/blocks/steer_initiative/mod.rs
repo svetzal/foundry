@@ -1,6 +1,8 @@
 mod action;
 mod admission;
 mod external;
+mod integration;
+pub use external::capture as capture_initiative_external_context;
 pub use external::validate_steering_external_context;
 mod packet;
 mod request;
@@ -72,68 +74,50 @@ impl SteerInitiative {
     async fn prepare(
         &self,
         request: &InitiativeAdvanceRequestedPayload,
-        id: &str,
+        trigger: &Event,
     ) -> anyhow::Result<Prepared> {
         let initial = CampaignStore::load(&self.store_path)?;
         let initiative = initial.initiative_view(&request.initiative)?;
         let projection = intent(&initiative).await?;
+        let (evidence_store, mut events) =
+            self.refresh_intent(&initiative, projection.as_ref()).await?;
+        let registry = self.registry()?;
+        let evidence = integration::run(
+            self.shell.as_ref(),
+            &registry,
+            &evidence_store,
+            &initiative.name,
+            &self.work_items_path,
+            &self.store_path,
+            &trigger.id,
+        )
+        .await?;
+        let repos =
+            packet::repositories(&registry, &initiative.projects, self.shell.as_ref()).await?;
         let mut guard = lock_store(&self.store_path).await?;
-        if guard.store.initiative_view(&initiative.name)?.derive_source != initiative.derive_source
-        {
-            anyhow::bail!("initiative derivation source changed before steering");
+        let previous_findings = guard.store.list_findings(&initiative.name)?;
+        for result in evidence {
+            guard.store.record_integration_result(&initiative.name, result)?;
         }
-        let mut events = Vec::new();
-        let ledger;
-        {
-            let _gate = ledger_write_gate()
-                .lock()
-                .map_err(|_| anyhow::anyhow!("ledger write gate poisoned"))?;
-            let mut items = WorkItemStore::load(&self.work_items_path)?;
-            if let Some(projection) = &projection {
-                let cancelled = guard.store.refresh_derived_intent(&initiative.name, projection)?;
-                // Intent cancellation is durable before its ledger obligations are discharged.
-                guard.save()?;
-                for item in &mut items.items {
-                    let task =
-                        guard.store.find_initiative(&initiative.name).is_some_and(|initiative| {
-                            initiative.task_dispatches.iter().any(|receipt| {
-                                receipt.work_item == item.id && cancelled.contains(&receipt.member)
-                            })
-                        });
-                    if (item
-                        .campaign_name()
-                        .is_some_and(|member| cancelled.iter().any(|name| name == member))
-                        || task)
-                        && (item.state.is_open() || item.state.is_waiting())
-                    {
-                        item.settle_cancelled(
-                            "initiative intent was discarded or revoked",
-                            item.disposition.clone(),
-                            chrono::Utc::now(),
-                        );
-                        events.push(Event::new(
-                            EventType::WorkItemCancelled,
-                            item.project.clone(),
-                            foundry_sdk::throttle::Throttle::Full,
-                            Event::serialize_payload(&WorkItemEventPayload::from_item(item))?,
-                        ));
-                    }
-                }
-                items.save(&self.work_items_path)?;
+        for finding in guard.store.list_findings(&initiative.name)? {
+            if !previous_findings.iter().any(|previous| previous == &finding) {
+                events.push(finding_event(trigger, &finding)?);
             }
-            record_task_evidence(&mut guard.store, &initiative.name, &items)?;
-            let live = live_operations(&items);
-            guard.store.recover_steering(&initiative.name, &live)?;
-            ledger = ledger_snapshot(&items, &guard.store.initiative_view(&initiative.name)?)?;
         }
-        let snapshot = guard.store.begin_steering(&initiative.name, id)?;
+        if guard.store.initiative_view(&initiative.name)?.completion_proposal.is_some() {
+            let snapshot =
+                guard.store.outcome_snapshot(&initiative.name, repository_identities(&repos))?;
+            guard.store.invalidate_completion(&initiative.name, &snapshot)?;
+        }
+        let ledger = ledger_snapshot(
+            &WorkItemStore::load(&self.work_items_path)?,
+            &guard.store.initiative_view(&initiative.name)?,
+        )?;
+        guard.save()?;
+        let snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
         guard.save()?;
         let store = guard.store.clone();
         drop(guard);
-        let registry = self.registry()?;
-        let repos =
-            packet::repositories(&registry, &snapshot.initiative.projects, self.shell.as_ref())
-                .await?;
         if repos.is_empty() {
             anyhow::bail!("initiative has no registered repository");
         }
@@ -175,6 +159,64 @@ impl SteerInitiative {
         })
     }
 
+    async fn refresh_intent(
+        &self,
+        initiative: &Initiative,
+        projection: Option<&IntentProjection>,
+    ) -> anyhow::Result<(CampaignStore, Vec<Event>)> {
+        let mut guard = lock_store(&self.store_path).await?;
+        if guard.store.initiative_view(&initiative.name)?.derive_source != initiative.derive_source
+        {
+            anyhow::bail!("initiative derivation source changed before steering");
+        }
+        let mut events = Vec::new();
+        {
+            let _gate = ledger_write_gate()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("ledger write gate poisoned"))?;
+            let mut items = WorkItemStore::load(&self.work_items_path)?;
+            if let Some(projection) = projection {
+                let cancelled = guard.store.refresh_derived_intent(&initiative.name, projection)?;
+                // Intent cancellation is durable before its ledger obligations are discharged.
+                guard.save()?;
+                for item in &mut items.items {
+                    let task =
+                        guard.store.find_initiative(&initiative.name).is_some_and(|initiative| {
+                            initiative.task_dispatches.iter().any(|receipt| {
+                                receipt.work_item == item.id && cancelled.contains(&receipt.member)
+                            })
+                        });
+                    if (item
+                        .campaign_name()
+                        .is_some_and(|member| cancelled.iter().any(|name| name == member))
+                        || task)
+                        && (item.state.is_open() || item.state.is_waiting())
+                    {
+                        item.settle_cancelled(
+                            "initiative intent was discarded or revoked",
+                            item.disposition.clone(),
+                            chrono::Utc::now(),
+                        );
+                        events.push(Event::new(
+                            EventType::WorkItemCancelled,
+                            item.project.clone(),
+                            foundry_sdk::throttle::Throttle::Full,
+                            Event::serialize_payload(&WorkItemEventPayload::from_item(item))?,
+                        ));
+                    }
+                }
+                items.save(&self.work_items_path)?;
+            }
+            record_task_evidence(&mut guard.store, &initiative.name, &items)?;
+            let live = live_operations(&items);
+            guard.store.recover_steering(&initiative.name, &live)?;
+        }
+        guard.save()?;
+        let evidence_store = guard.store.clone();
+        drop(guard);
+        Ok((evidence_store, events))
+    }
+
     async fn unchanged(&self, prepared: &Prepared) -> anyhow::Result<bool> {
         let registry = self.registry()?;
         let repos = packet::repositories(
@@ -211,7 +253,7 @@ impl SteerInitiative {
 
     async fn run(&self, trigger: &Event) -> anyhow::Result<TaskBlockResult> {
         let request = trigger.parse_payload::<InitiativeAdvanceRequestedPayload>()?;
-        let mut prepared = match self.prepare(&request, &trigger.id).await {
+        let mut prepared = match self.prepare(&request, trigger).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.release(&request.initiative, &trigger.id).await?;
@@ -296,7 +338,7 @@ impl SteerInitiative {
         &self,
         trigger: &Event,
         prepared: &Prepared,
-        response: SteeringResponse,
+        mut response: SteeringResponse,
     ) -> anyhow::Result<TaskBlockResult> {
         let initiative = &prepared.snapshot.initiative.name;
         let checked = validate_member_pin(prepared.requested_member.as_deref(), &response.action)
@@ -315,6 +357,14 @@ impl SteerInitiative {
                 None,
             );
         }
+        let mut rejected = None;
+        if matches!(response.action, foundry_sdk::initiative::SteeringDecision::Done { .. })
+            && let Err(error) = self.validate_done(trigger, prepared, &response.action)
+        {
+            rejected =
+                Some(serde_json::json!({"decision":response.action,"reason":error.to_string()}));
+            response.action = self.repair_action(prepared, &response, &error.to_string())?;
+        }
         if !self.unchanged(prepared).await? {
             return steering_result(
                 trigger,
@@ -327,7 +377,117 @@ impl SteerInitiative {
                 None,
             );
         }
-        self.commit_response(trigger, prepared, response).await
+        let mut result = self.commit_response(trigger, prepared, response).await?;
+        if let Some(rejected) = rejected {
+            for event in &mut result.events {
+                if event.event_type == EventType::InitiativeSteered {
+                    event.payload["rejected_completion"] = rejected.clone();
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn validate_done(
+        &self,
+        trigger: &Event,
+        prepared: &Prepared,
+        decision: &foundry_sdk::initiative::SteeringDecision,
+    ) -> anyhow::Result<()> {
+        if let foundry_sdk::initiative::SteeringDecision::Done { reviews } = decision {
+            for review in reviews {
+                for reference in &review.evidence {
+                    if prepared
+                        .snapshot
+                        .initiative
+                        .integration_results
+                        .iter()
+                        .any(|gate| gate.id == *reference)
+                    {
+                        continue;
+                    }
+                    let (project, path) = reference.split_once('/').ok_or_else(|| anyhow::anyhow!("review evidence must name a gate result or project-relative checked path"))?;
+                    let repo =
+                        prepared.repos.iter().find(|repo| repo.project == project).ok_or_else(
+                            || {
+                                anyhow::anyhow!(
+                                    "review evidence names a project outside the initiative"
+                                )
+                            },
+                        )?;
+                    packet::checked_evidence_path(&repo.root, path)?;
+                }
+            }
+            let items = admission::without_steering_owner(
+                &WorkItemStore::load(&self.work_items_path)?,
+                &trigger.id,
+            );
+            if admission::outcome_has_live_work(&prepared.snapshot.initiative, &items) {
+                anyhow::bail!("initiative members still have live or waiting work");
+            }
+            let mut store = CampaignStore::load(&self.store_path)?;
+            let snapshot = store.outcome_snapshot(
+                &prepared.snapshot.initiative.name,
+                repository_identities(&prepared.repos),
+            )?;
+            store.propose_completion(
+                &prepared.snapshot.initiative.name,
+                &trigger.id,
+                snapshot,
+                reviews.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn repair_action(
+        &self,
+        prepared: &Prepared,
+        response: &SteeringResponse,
+        reason: &str,
+    ) -> anyhow::Result<foundry_sdk::initiative::SteeringDecision> {
+        let store = CampaignStore::load(&self.store_path)?;
+        let items = admission::without_steering_owner(
+            &WorkItemStore::load(&self.work_items_path)?,
+            &prepared.snapshot.id,
+        );
+        let registry = self.registry()?;
+        for member in &prepared.snapshot.initiative.members {
+            let decision = foundry_sdk::initiative::SteeringDecision::Advance {
+                member: member.name.clone(),
+                project: None,
+            };
+            if validate_member_pin(prepared.requested_member.as_deref(), &decision).is_err()
+                || ensure_action_repository_free(
+                    &decision,
+                    &store,
+                    &prepared.snapshot.initiative,
+                    &items,
+                    &registry,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let mut candidate = store.clone();
+            if candidate
+                .commit_steering(
+                    &prepared.snapshot,
+                    &prepared.snapshot.id,
+                    decision.clone(),
+                    response.audits.clone(),
+                    prepared.prompt.clone(),
+                    Some(prepared.provider),
+                )
+                .is_ok()
+            {
+                return Ok(decision);
+            }
+        }
+        Ok(foundry_sdk::initiative::SteeringDecision::Ask {
+            question: format!("Outcome completion lacks evidence: {reason}"),
+            members: vec![],
+        })
     }
     async fn commit_response(
         &self,
@@ -359,7 +519,7 @@ impl SteerInitiative {
             &response.action,
             &guard.store,
             &prepared.snapshot.initiative,
-            &ledger,
+            &admission::without_steering_owner(&ledger, &trigger.id),
             &self.registry()?,
         )?;
         let previous_findings = guard.store.list_findings(initiative)?;
@@ -389,6 +549,8 @@ impl SteerInitiative {
             action.decision,
             foundry_sdk::initiative::SteeringDecision::Advance { .. }
                 | foundry_sdk::initiative::SteeringDecision::Dispatch { .. }
+                | foundry_sdk::initiative::SteeringDecision::Done { .. }
+                | foundry_sdk::initiative::SteeringDecision::Stage { .. }
         ) {
             action = guard.store.bind_external_context(
                 initiative,
@@ -439,25 +601,30 @@ struct Prepared {
 impl Prepared {
     fn external_context(&self) -> foundry_sdk::initiative::SteeringExternalContext {
         foundry_sdk::initiative::SteeringExternalContext {
-            repositories: self
-                .repos
-                .iter()
-                .map(|repo| foundry_sdk::initiative::SteeringRepositoryIdentity {
-                    project: repo.project.clone(),
-                    root: repo.root.to_string_lossy().into_owned(),
-                    registry: repo.registry.clone(),
-                    trunk: repo.trunk.clone(),
-                    head: repo.head.clone(),
-                    status: repo.status.clone(),
-                    diff: repo.diff.clone(),
-                })
-                .collect(),
+            repositories: repository_identities(&self.repos),
             derive_source: self.snapshot.initiative.derive_source.clone(),
             intent: self.projection.clone(),
             brief: self.snapshot.initiative.brief.clone(),
             brief_content: self.brief.clone(),
         }
     }
+}
+
+fn repository_identities(
+    repos: &[RepositorySnapshot],
+) -> Vec<foundry_sdk::initiative::SteeringRepositoryIdentity> {
+    repos
+        .iter()
+        .map(|repo| foundry_sdk::initiative::SteeringRepositoryIdentity {
+            project: repo.project.clone(),
+            root: repo.root.to_string_lossy().into_owned(),
+            registry: repo.registry.clone(),
+            trunk: repo.trunk.clone(),
+            head: repo.head.clone(),
+            status: repo.status.clone(),
+            diff: repo.diff.clone(),
+        })
+        .collect()
 }
 
 async fn intent(initiative: &Initiative) -> anyhow::Result<Option<IntentProjection>> {
@@ -568,6 +735,8 @@ impl TaskBlock for SteerInitiative {
     }
 }
 
+#[cfg(test)]
+mod outcome_tests;
 #[cfg(test)]
 mod tests;
 

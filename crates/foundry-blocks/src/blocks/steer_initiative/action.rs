@@ -118,7 +118,10 @@ impl ApplyInitiativeAction {
         Ok(if let Some(recorded) = &initial_action {
             if matches!(
                 recorded.decision,
-                SteeringDecision::Advance { .. } | SteeringDecision::Dispatch { .. }
+                SteeringDecision::Advance { .. }
+                    | SteeringDecision::Dispatch { .. }
+                    | SteeringDecision::Done { .. }
+                    | SteeringDecision::Stage { .. }
             ) {
                 let expected = recorded.external_context.clone();
                 let initiative = initial.initiative_view(&recorded.initiative)?;
@@ -172,7 +175,10 @@ impl ApplyInitiativeAction {
             guard.save()?;
         }
         let initiative = guard.store.initiative_view(&action.initiative)?;
-        let items = WorkItemStore::load(&self.work_items_path)?;
+        let items = super::admission::without_steering_owner(
+            &WorkItemStore::load(&self.work_items_path)?,
+            &action.id,
+        );
         let registry = super::super::read_registry(&self.registry)?.clone();
         guard.store.enforce_steering_action(
             &initiative.name,
@@ -190,30 +196,7 @@ impl ApplyInitiativeAction {
         let kind = match &action.decision {
             SteeringDecision::Advance { .. } => EventType::CampaignAdvanceRequested,
             SteeringDecision::Dispatch { .. } => EventType::ExecutionRequested,
-            _ => {
-                guard.store.finish_steering_action(&initiative.name, &action.id)?;
-                guard.save()?;
-                let facts = if let SteeringDecision::Relay { finding, .. } = &action.decision {
-                    let current = guard
-                        .store
-                        .find_finding(&finding.id)
-                        .ok_or_else(|| anyhow::anyhow!("durable relay finding is missing"))?;
-                    if guard
-                        .store
-                        .initiative_view(&initiative.name)?
-                        .steering_history
-                        .iter()
-                        .any(|record| record.id == action.id && record.provider.is_some())
-                    {
-                        vec![]
-                    } else {
-                        vec![super::finding_event(trigger, current)?]
-                    }
-                } else {
-                    vec![]
-                };
-                return Ok(TaskBlockResult::success("initiative idle decision applied", facts));
-            }
+            _ => return apply_idle(trigger, &action, &items, &mut guard),
         };
         let project = action_project(&action.decision, &guard.store, &initiative)?
             .ok_or_else(|| anyhow::anyhow!("work action lacks project"))?
@@ -260,6 +243,50 @@ impl TaskBlock for ApplyInitiativeAction {
             Box::pin(async move { self.run(&trigger).await })
         }
     }
+}
+
+fn apply_idle(
+    trigger: &Event,
+    action: &foundry_sdk::initiative::DurableSteeringAction,
+    items: &WorkItemStore,
+    guard: &mut foundry_sdk::campaign::CampaignStoreGuard,
+) -> anyhow::Result<TaskBlockResult> {
+    let initiative = guard.store.initiative_view(&action.initiative)?;
+    if let SteeringDecision::Done { reviews } = &action.decision {
+        if super::admission::outcome_has_live_work(&initiative, items) {
+            anyhow::bail!("initiative members still have live or waiting work");
+        }
+        let external = action.external_context.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("completion action has no current repository evidence")
+        })?;
+        let snapshot =
+            guard.store.outcome_snapshot(&initiative.name, external.repositories.clone())?;
+        guard
+            .store
+            .propose_completion(&initiative.name, &action.id, snapshot, reviews.clone())?;
+    }
+    guard.store.finish_steering_action(&initiative.name, &action.id)?;
+    guard.save()?;
+    let facts = if let SteeringDecision::Relay { finding, .. } = &action.decision {
+        let current = guard
+            .store
+            .find_finding(&finding.id)
+            .ok_or_else(|| anyhow::anyhow!("durable relay finding is missing"))?;
+        if guard
+            .store
+            .initiative_view(&initiative.name)?
+            .steering_history
+            .iter()
+            .any(|record| record.id == action.id && record.provider.is_some())
+        {
+            vec![]
+        } else {
+            vec![super::finding_event(trigger, current)?]
+        }
+    } else {
+        vec![]
+    };
+    Ok(TaskBlockResult::success("initiative idle decision applied", facts))
 }
 
 fn child_event(

@@ -541,14 +541,17 @@ and the OS sandbox with unsandboxed retries disabled. Worktrees stay in their
 existing home directory.
 
 Read-only Tracker derivation stages candidates from goals or journeys. It
-reads committed projections before the et CLI and never changes Tracker state.
-Slice 1 adds steering and the codebase audit. Integration gates, general
-campaign staging, outcome evaluation and Tracker closure belong to slice 2.
+reads committed projections before the et CLI and changes no Tracker state
+during derivation or steering. Slice 2 checks integration evidence, stages
+new campaigns and proposes completion for owner confirmation. Derivation can
+attach a JSON array of gate definitions with `--integration-gates <file>`; it
+keeps the outcome reviews supplied by Tracker.
 
-`foundry initiative advance <name>` submits one read-only assessment and enables
+`foundry initiative advance <name>` submits one outcome assessment and enables
 steering after subsequent member settlements. `--member <name>` pins the next
 advance and releases that member's owner hold. Steering chooses one typed
-`advance`, `dispatch`, `hold`, `relay`, `ask` or `escalate` action. The retained
+`advance`, `dispatch`, `hold`, `relay`, `ask`, `stage`, `done` or `escalate`
+action. The retained
 `initiative_steered` fact includes the prompt, provider and decision.
 
 Queued formation, reserved admissions and standalone tasks count toward
@@ -562,7 +565,8 @@ findings retain checked paths and classify intent as `realised`, `partial`,
 `absent` or `misplaced`. Each steer refreshes intent from the supplying repo;
 that repo need not be a registered writable target. Withdrawn intent stops its
 owned work gracefully. Realised intent records a close proposal without an ET
-write. General staging, integration gates and outcome completion are slice 2.
+write. Slice 2 checks integration evidence, stages campaigns for uncovered work
+and proposes completion for owner confirmation.
 
 Only one assessment runs per initiative. Changed store or trunk evidence
 invalidates output. Durable pending actions recover on restart without double
@@ -572,3 +576,32 @@ loops. Existing initiatives remain passive until explicitly advanced.
 Optional `provider_pairings` explicitly alternates stage maps. Member stage
 overrides remain binding, and continuations retain their admitted pairing.
 Without that setting, Foundry keeps the configured stage providers.
+
+### Initiative outcome evidence
+
+Initiative integration gates use `done_evidence` entries of kind `gate`, with
+`command`, optional `host`, `required` and repository-relative `artifacts`.
+The default host is the daemon's host. Named remote hosts use SSH and their
+online registry API. Foundry fetches and fast-forwards registered trunks,
+then creates disposable copies named after each registered project.
+Commands and artifact paths start at the shared parent directory.
+`foundry capture` retains stdout and stderr. Results retain host, trunk commits
+and log references. Missing artifacts or failed updates cannot pass a gate.
+Failures become initiative findings.
+
+Steering can `stage` a validated campaign within the initiative's projects.
+It becomes a member under the existing shared authorization and budget.
+Staging does not start an execution cycle.
+A `done` action supplies evidence for every outcome review.
+Passing required integration gates and current intent are enforced in code.
+The initiative stays open until the owner confirms with
+`initiative complete <name> --reason <text>`.
+Changed trunks, intent or owner policy require a fresh assessment.
+
+For derived initiatives, confirmed completion invokes `et close` from the
+supplying repository for verified interactions, then the goal when its
+children and success criteria are satisfied. Closure receipts survive partial
+failure and restart. Failed closure leaves the initiative open.
+Offline recovery cannot bypass outcome evidence or write Tracker state.
+Cancellation never closes Tracker. Development stays on the Mac; promotion
+still requires Stacey's go-ahead.

@@ -33,8 +33,8 @@ work. In Foundry's own development setup, real projects belong to the production
 daemon on ops-01. The Mac daemon accepts synthetic sandbox projects only.
 
 The initiative story describes slice 1, introduced in Foundry 0.48.0.
-Its ending includes an owner check. Automatic outcome evaluation and Tracker
-closure belong to slice 2.
+Its ending includes integration evidence and owner-confirmed Tracker closure.
+These slice 2 steps are under development on the Mac and await promotion approval.
 
 ## The journeys behind the stories
 

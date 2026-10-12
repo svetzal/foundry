@@ -128,6 +128,34 @@ pub(super) fn live_operations(items: &WorkItemStore) -> Vec<String> {
     live
 }
 
+/// The integration steer owns its trunks until it emits the next action. That
+/// reservation protects evidence collection, and must not block its own action.
+pub(super) fn without_steering_owner(items: &WorkItemStore, id: &str) -> WorkItemStore {
+    let mut items = items.clone();
+    items.items.retain(|item| {
+        !item.started_root.as_ref().is_some_and(|root| {
+            root.id == id
+                && root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
+        })
+    });
+    items
+}
+
+pub(super) fn outcome_has_live_work(initiative: &Initiative, items: &WorkItemStore) -> bool {
+    items.items.iter().any(|item| {
+        (item.state.is_waiting() || item.state.is_open() || item.occupies_slot())
+            && (initiative.projects.contains(&item.project)
+                || item
+                    .reserved_projects
+                    .iter()
+                    .any(|project| initiative.projects.contains(project))
+                || item.source.as_ref().is_some_and(|source| {
+                    source.kind == foundry_sdk::work_source::WorkSourceKind::Initiative
+                        && source.reference == initiative.name
+                }))
+    })
+}
+
 pub(super) fn record_task_evidence(
     store: &mut CampaignStore,
     name: &str,

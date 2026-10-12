@@ -79,15 +79,29 @@ pub(super) fn prompt(
     let ledger_view: Vec<_> = work_items.iter().filter(|item| item.state.is_waiting() || item.state.is_open() || item.occupies_slot())
         .map(|item| serde_json::json!({"id":item.id,"project":item.project,"state":item.state,"reason":item.reason,
             "campaign":item.campaign_name(),"source":item.source,"execution_completed":item.execution_completed,"disposition":item.disposition})).collect();
+    let integration_results: Vec<_> = initiative
+        .done_evidence
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| {
+            initiative
+                .integration_results
+                .iter()
+                .rev()
+                .find(|result| result.gate_index == index)
+        })
+        .collect();
     let packet = serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"intent_refs":initiative.intent_refs,
         "members":initiative.members,
         "campaigns":campaigns,"projects":repositories,"brief":initiative.brief,
         "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"budget":initiative.budget,
         "holds":initiative.holds,"milestones":initiative.milestones,"close_proposals":initiative.close_proposals,
-        "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view});
+        "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view,
+        "done_evidence":initiative.done_evidence,"integration_results":integration_results,
+        "completion_proposal":initiative.completion_proposal});
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
     let text = format!(
-        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. No host integration gate execution, general staging, autonomous outcome completion, or et close is allowed in this slice. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
+        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
 Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed.
 
@@ -98,7 +112,9 @@ hold: {{"decision":"hold","member":"member","until":["prerequisite:landed"],"rea
 relay: {{"decision":"relay","finding":{{full finding record from packet}},"to":["member"]}}
 ask: {{"decision":"ask","question":"one question","members":["member"]}}
 escalate: {{"decision":"escalate","reason":"reason"}}
-Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Arbitrary campaign staging and done are forbidden. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
+stage: {{"decision":"stage","campaign":{{"name":"new scoped campaign","project":"registered initiative project","mission":"specific uncovered work","done_evidence":[{{"kind":"review","statement":"observable behavior"}}]}},"member":null}}
+done: {{"decision":"done","reviews":[{{"statement":"exact initiative review statement","affirmed":true,"evidence":["checked project-relative path or gate result id"]}}]}}
+Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Stage adds one campaign when uncovered outcome work requires it, and starts no execution. Done requires every required gate to have passed on current trunk identities and every initiative review statement affirmed from checked evidence. A done decision proposes completion for the owner's initiative complete confirmation; it never completes the initiative or closes Tracker itself. If evidence is missing, choose work, stage it, or ask the owner. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
 
 STEERING PACKET:
 {packet}
@@ -280,13 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn a_steer_cannot_return_done_stage_or_multiple_actions() {
+    fn a_steer_requires_typed_outcome_actions_and_rejects_multiple_actions() {
         assert!(
             parse_response(r#"{"action":{"decision":"done","reason":"complete"},"audits":[]}"#)
                 .is_err()
         );
         assert!(
             parse_response(r#"{"action":{"decision":"stage","name":"new"},"audits":[]}"#).is_err()
+        );
+        assert!(
+            parse_response(r#"{"action":{"decision":"done","reviews":[]},"audits":[]}"#).is_ok()
         );
         assert!(
             parse_response(

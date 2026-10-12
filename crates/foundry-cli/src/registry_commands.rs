@@ -80,9 +80,9 @@ pub fn init(registry_path: &Path, offline: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn list(registry_path: &Path, addr: &str, offline: bool) -> Result<()> {
+pub async fn list(registry_path: &Path, addr: &str, offline: bool, json: bool) -> Result<()> {
     if offline {
-        return list_offline(registry_path);
+        return list_offline(registry_path, json);
     }
 
     let mut client = connect_daemon_required(addr, &registry_offline_hint("list")).await?;
@@ -92,12 +92,16 @@ pub async fn list(registry_path: &Path, addr: &str, offline: bool) -> Result<()>
         .map_err(status_to_anyhow)?
         .into_inner();
 
-    render_project_table(&response.projects)
+    render_project_table(&response.projects, json)
 }
 
-fn list_offline(registry_path: &Path) -> Result<()> {
+fn list_offline(registry_path: &Path, json: bool) -> Result<()> {
     let registry = Registry::load(registry_path)?;
 
+    if json {
+        print!("{}", render::registry::project_json(&registry.projects)?);
+        return Ok(());
+    }
     if registry.projects.is_empty() {
         println!("No projects in registry.");
         return Ok(());
@@ -483,13 +487,17 @@ fn registry_offline_hint(command_suffix: &str) -> String {
     format!("foundry registry {command_suffix} --offline")
 }
 
-fn render_project_table(projects: &[Project]) -> Result<()> {
+fn render_project_table(projects: &[Project], json: bool) -> Result<()> {
+    let entries = projects.iter().map(project_from_proto).collect::<Result<Vec<_>>>()?;
+    if json {
+        print!("{}", render::registry::project_json(&entries)?);
+        return Ok(());
+    }
     if projects.is_empty() {
         println!("No projects in registry.");
         return Ok(());
     }
 
-    let entries = projects.iter().map(project_from_proto).collect::<Result<Vec<_>>>()?;
     print!("{}", render::registry::project_table(&entries));
     Ok(())
 }
