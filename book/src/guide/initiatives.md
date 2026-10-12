@@ -320,6 +320,25 @@ their intent references. Tracker stays unchanged until the owner confirms comple
 
 ## Check the outcome across repositories
 
+For a changed boundary, both sides must verify the same versioned executable
+contract set. Consumer tests state the behavior needed by the consumer.
+Provider verification checks that same contract against the implementation.
+Cover relevant errors, optional fields and supported old and new versions.
+Independent mocks or matching schemas alone do not establish compatibility.
+
+Run contract verification in each project's required gates.
+Include the contract version or hash, tested commits and both verification results
+in the initiative's outcome evidence.
+Record missing verification as unfinished work within the authorized repositories.
+Use the brief, shared decisions and findings to coordinate the contract
+and missing work.
+
+Contract tests establish compatibility for their declared cases and versions.
+Integration gates also check wiring and the user's full journey.
+Foundry repeats a short contract reminder in initiative agent prompts.
+This guidance does not add a contract verifier or a required evidence field.
+Declared gates and outcome reviews provide the completion checks.
+
 Add integration gates to the initiative's `done_evidence`:
 
 ```json
@@ -353,7 +372,8 @@ Gate failures create findings for the next assessment.
 
 Steering receives the gate results and reviews each outcome statement against
 the trunks.
-Passing member gates alone does not prove the shared outcome.
+Passing contract gates on both sides proves compatibility for the tested contract.
+Other outcome claims still need their declared evidence.
 Changed trunks, intent or owner policy invalidate an earlier completion proposal.
 
 ## Add work uncovered by an integration check

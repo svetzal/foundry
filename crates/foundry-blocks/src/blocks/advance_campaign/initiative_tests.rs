@@ -44,6 +44,21 @@ async fn initiative_findings_and_brief_reach_formation_and_execution() {
 }
 
 #[tokio::test]
+async fn initiative_formation_receives_contract_guidance_without_a_brief_or_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, registry) = initiative_store(dir.path(), 5, 2);
+    let agent = FakeAgentGateway::success_with(r#"{"decision":"advance","objective":"Verify shared contract","reason":"missing verification"}"#);
+    let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, path);
+    let result = block.execute(&manual_advance_trigger()).await.unwrap();
+    assert!(result.success, "{}", result.summary);
+    assert!(agent.invocations()[0].prompt.contains(crate::blocks::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE));
+    let execution = result.events.iter().find(|event| event.event_type == EventType::ExecutionRequested).unwrap();
+    assert_eq!(execution.payload["initiative"], "both");
+    assert!(execution.payload["initiative_brief"].is_null());
+    assert_eq!(execution.payload["initiative_findings"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn initiative_consumes_only_seen_findings_when_the_cycle_lands() {
     let dir = tempfile::tempdir().unwrap();
     let (path, registry) = initiative_store(dir.path(), 5, 2);

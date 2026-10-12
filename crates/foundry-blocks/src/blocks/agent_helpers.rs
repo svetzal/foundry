@@ -54,6 +54,10 @@ pub(crate) fn chain_stage_provider(
     .or_else(|| chain_agent_provider(payload))
 }
 
+/// Shared engineering guidance for initiative boundaries, used by steering,
+/// formation, execution and review without prescribing a test framework.
+pub(crate) const INITIATIVE_CONTRACT_GUIDANCE: &str = "CONTRACT TESTING: For changed cross-repository boundaries, producer and consumer must verify the same identifiable, versioned executable contract set. Preserve supported old/new versions; test semantics, optional fields and error behavior. Report contract version or hash, tested commits and both verification commands and results. Matching schemas or independent mocks do not prove contract verification. Passing both sides establishes compatibility for the declared cases and versions; retain customer-outcome checks beyond the contract. Add or relay missing verification work. Write only in this task's authorized repository; coordinate other-side changes as separate initiative work.";
+
 /// Foundry-owned brief identity and findings carried by the chain. The
 /// formation bounds findings before dispatch, and executors see the same
 /// records when a preserved task resumes.
@@ -76,6 +80,14 @@ pub(crate) fn with_initiative_context(prompt: &str, payload: &serde_json::Value)
         for finding in findings {
             let _ = writeln!(context, "{finding}");
         }
+    }
+    if payload
+        .get("initiative")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| !name.is_empty())
+        || !context.is_empty()
+    {
+        let _ = write!(context, "\n\n{INITIATIVE_CONTRACT_GUIDANCE}");
     }
     format!("{prompt}{context}")
 }
@@ -497,6 +509,26 @@ mod tests {
         assert!(prompt.contains("123"));
         assert!(prompt.contains("fnd_1"));
         assert!(prompt.contains("resume must fix this diagnosis"));
+        assert!(prompt.contains(INITIATIVE_CONTRACT_GUIDANCE));
+    }
+
+    #[test]
+    fn initiative_ownership_supplies_contract_guidance_without_optional_context() {
+        let payload = serde_json::json!({"initiative":"shared", "initiative_brief":null, "initiative_findings":[]});
+        let prompt = with_initiative_context("task", &payload);
+        assert!(prompt.contains(INITIATIVE_CONTRACT_GUIDANCE));
+        assert!(!prompt.contains("INITIATIVE BRIEF"));
+        assert!(!prompt.contains("FINDINGS FROM THE INITIATIVE"));
+    }
+
+    #[test]
+    fn ordinary_tasks_do_not_receive_initiative_guidance() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"initiative":null, "initiative_brief":null, "initiative_findings":[]}),
+        ] {
+            assert_eq!(with_initiative_context("task", &payload), "task");
+        }
     }
 
     use super::*;

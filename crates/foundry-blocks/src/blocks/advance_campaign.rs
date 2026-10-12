@@ -1264,6 +1264,7 @@ async fn derive_advance_outcome(
     let mut context = read_context_files(repo, &campaign.context_paths)?;
     if let Some(initiative) = initiative_context {
         let _ = write!(context, "\n\nINITIATIVE: {}\n", initiative.initiative);
+        let _ = writeln!(context, "{}", super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE);
         if let Some(brief) = &initiative.brief {
             let _ = write!(
                 context,
